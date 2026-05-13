@@ -1,0 +1,660 @@
+import React, { useState } from "react";
+
+const teacherPassword = "Morgan123";
+
+const startingStudents = [
+  { id: 1, name: "Isaac", balance: 125, pin: "1001" },
+  { id: 2, name: "Pankti", balance: 140, pin: "1002" },
+  { id: 3, name: "Manuel", balance: 95, pin: "1003" },
+  { id: 4, name: "Abigail", balance: 160, pin: "1004" }
+];
+
+const startingTransactions = [
+  {
+    id: 1,
+    studentId: 1,
+    studentName: "Isaac",
+    type: "Add",
+    amount: 25,
+    reason: "Weekly payday",
+    status: "Approved",
+    source: "Teacher"
+  },
+  {
+    id: 2,
+    studentId: 2,
+    studentName: "Pankti",
+    type: "Subtract",
+    amount: 5,
+    reason: "Store purchase",
+    status: "Pending",
+    source: "Student"
+  }
+];
+
+function dollars(amount) {
+  return "$" + Number(amount).toLocaleString();
+}
+
+export default function App() {
+  const [students, setStudents] = useState(startingStudents);
+  const [transactions, setTransactions] = useState(startingTransactions);
+  const [screen, setScreen] = useState("login");
+  const [loginTab, setLoginTab] = useState("student");
+  const [isTeacher, setIsTeacher] = useState(false);
+  const [loggedInStudentId, setLoggedInStudentId] = useState(null);
+  const [message, setMessage] = useState("Choose Student Login or Teacher Login.");
+
+  const [teacherInput, setTeacherInput] = useState("");
+  const [studentSelect, setStudentSelect] = useState(1);
+  const [studentPin, setStudentPin] = useState("");
+
+  const [selectedStudent, setSelectedStudent] = useState("whole");
+  const [type, setType] = useState("Add");
+  const [amount, setAmount] = useState("10");
+  const [reason, setReason] = useState("Weekly payday");
+
+  const [newStudentName, setNewStudentName] = useState("");
+  const [newStudentPin, setNewStudentPin] = useState("");
+  const [newStudentBalance, setNewStudentBalance] = useState("100");
+
+  const currentStudent = students.find(function(student) {
+    return student.id === loggedInStudentId;
+  });
+
+  function loginTeacher() {
+    if (teacherInput === teacherPassword) {
+      setIsTeacher(true);
+      setLoggedInStudentId(null);
+      setScreen("teacher");
+      setMessage("Teacher dashboard unlocked.");
+    } else {
+      setMessage("Wrong teacher password.");
+    }
+  }
+
+  function loginStudent() {
+    const student = students.find(function(item) {
+      return item.id === Number(studentSelect);
+    });
+
+    if (student && student.pin === studentPin) {
+      setIsTeacher(false);
+      setLoggedInStudentId(student.id);
+      setScreen("student");
+      setMessage(student.name + " is logged in.");
+    } else {
+      setMessage("Wrong student PIN.");
+    }
+  }
+
+  function logout() {
+    setIsTeacher(false);
+    setLoggedInStudentId(null);
+    setTeacherInput("");
+    setStudentPin("");
+    setScreen("login");
+    setMessage("Logged out. Choose Student Login or Teacher Login.");
+  }
+
+  function changeStudentBalance(studentId, transactionType, transactionAmount) {
+    setStudents(function(oldStudents) {
+      return oldStudents.map(function(student) {
+        if (student.id !== studentId) {
+          return student;
+        }
+
+        const newBalance = transactionType === "Add"
+          ? student.balance + transactionAmount
+          : student.balance - transactionAmount;
+
+        return {
+          id: student.id,
+          name: student.name,
+          balance: newBalance,
+          pin: student.pin
+        };
+      });
+    });
+  }
+
+  function saveTeacherTransaction() {
+    const transactionAmount = Number(amount);
+    if (!transactionAmount || transactionAmount <= 0) {
+      return;
+    }
+
+    let targetStudents = [];
+
+    if (selectedStudent === "whole") {
+      targetStudents = students;
+    } else {
+      targetStudents = students.filter(function(student) {
+        return student.id === Number(selectedStudent);
+      });
+    }
+
+    targetStudents.forEach(function(student) {
+      changeStudentBalance(student.id, type, transactionAmount);
+    });
+
+    const newTransactions = targetStudents.map(function(student, index) {
+      return {
+        id: Date.now() + index,
+        studentId: student.id,
+        studentName: student.name,
+        type: type,
+        amount: transactionAmount,
+        reason: reason,
+        status: "Approved",
+        source: "Teacher"
+      };
+    });
+
+    setTransactions(function(oldTransactions) {
+      return newTransactions.concat(oldTransactions);
+    });
+  }
+
+  function submitStudentRequest() {
+    if (!currentStudent) {
+      return;
+    }
+
+    const transactionAmount = Number(amount);
+    if (!transactionAmount || transactionAmount <= 0) {
+      return;
+    }
+
+    const newTransaction = {
+      id: Date.now(),
+      studentId: currentStudent.id,
+      studentName: currentStudent.name,
+      type: type,
+      amount: transactionAmount,
+      reason: reason,
+      status: "Pending",
+      source: "Student"
+    };
+
+    setTransactions(function(oldTransactions) {
+      return [newTransaction].concat(oldTransactions);
+    });
+  }
+
+  function approveTransaction(transactionId) {
+    const transaction = transactions.find(function(item) {
+      return item.id === transactionId;
+    });
+
+    if (!transaction || transaction.status !== "Pending") {
+      return;
+    }
+
+    changeStudentBalance(transaction.studentId, transaction.type, transaction.amount);
+
+    setTransactions(function(oldTransactions) {
+      return oldTransactions.map(function(item) {
+        if (item.id === transactionId) {
+          return {
+            id: item.id,
+            studentId: item.studentId,
+            studentName: item.studentName,
+            type: item.type,
+            amount: item.amount,
+            reason: item.reason,
+            status: "Approved",
+            source: item.source
+          };
+        }
+        return item;
+      });
+    });
+  }
+
+  function denyTransaction(transactionId) {
+    setTransactions(function(oldTransactions) {
+      return oldTransactions.map(function(item) {
+        if (item.id === transactionId) {
+          return {
+            id: item.id,
+            studentId: item.studentId,
+            studentName: item.studentName,
+            type: item.type,
+            amount: item.amount,
+            reason: item.reason,
+            status: "Denied",
+            source: item.source
+          };
+        }
+        return item;
+      });
+    });
+  }
+
+  function addStudent() {
+    if (newStudentName.trim() === "") {
+      return;
+    }
+
+    const newId = students.length + 1;
+    const newStudent = {
+      id: newId,
+      name: newStudentName,
+      pin: newStudentPin || String(1000 + newId),
+      balance: Number(newStudentBalance) || 0
+    };
+
+    setStudents(function(oldStudents) {
+      return oldStudents.concat([newStudent]);
+    });
+
+    setNewStudentName("");
+    setNewStudentPin("");
+    setNewStudentBalance("100");
+  }
+
+  function removeStudent(studentId) {
+    setStudents(function(oldStudents) {
+      return oldStudents.filter(function(student) {
+        return student.id !== studentId;
+      });
+    });
+  }
+
+  function resetDemo() {
+    setStudents(startingStudents);
+    setTransactions(startingTransactions);
+    setScreen("login");
+    setIsTeacher(false);
+    setLoggedInStudentId(null);
+    setMessage("Demo reset. Choose Student Login or Teacher Login.");
+  }
+
+  const totalCash = students.reduce(function(total, student) {
+    return total + student.balance;
+  }, 0);
+
+  const pendingTransactions = transactions.filter(function(transaction) {
+    return transaction.status === "Pending";
+  });
+
+  const studentTransactions = currentStudent
+    ? transactions.filter(function(transaction) {
+        return transaction.studentId === currentStudent.id;
+      })
+    : [];
+
+  const pendingChange = studentTransactions.reduce(function(total, transaction) {
+    if (transaction.status !== "Pending") {
+      return total;
+    }
+
+    if (transaction.type === "Add") {
+      return total + transaction.amount;
+    }
+
+    return total - transaction.amount;
+  }, 0);
+
+  return (
+    <div style={styles.page}>
+      <h1>Mr. Morgan's Class Cash</h1>
+      <p style={styles.message}>{message}</p>
+
+      <div style={styles.buttonBar}>
+        <button style={styles.button} onClick={function() { setScreen("login"); }}>Home/Login</button>
+        {isTeacher && <button style={styles.button} onClick={function() { setScreen("teacher"); }}>Teacher Dashboard</button>}
+        {isTeacher && <button style={styles.button} onClick={function() { setScreen("approvals"); }}>Approvals</button>}
+        {isTeacher && <button style={styles.button} onClick={function() { setScreen("roster"); }}>Roster</button>}
+        {loggedInStudentId && <button style={styles.button} onClick={function() { setScreen("student"); }}>Student View</button>}
+        <button style={styles.button} onClick={logout}>Lock</button>
+        <button style={styles.button} onClick={resetDemo}>Reset</button>
+      </div>
+
+      <div style={styles.stats}>
+        <div style={styles.statBox}>Students: {students.length}</div>
+        <div style={styles.statBox}>Total Cash: {dollars(totalCash)}</div>
+        <div style={styles.statBox}>Pending: {pendingTransactions.length}</div>
+      </div>
+
+      {screen === "login" && (
+        <div style={styles.card}>
+          <div style={styles.loginTabs}>
+            <button
+              style={loginTab === "student" ? styles.activeLoginTab : styles.loginTab}
+              onClick={function() { setLoginTab("student"); }}
+            >
+              Student Login
+            </button>
+            <button
+              style={loginTab === "teacher" ? styles.activeLoginTab : styles.loginTab}
+              onClick={function() { setLoginTab("teacher"); }}
+            >
+              Teacher Login
+            </button>
+          </div>
+
+          {loginTab === "student" && (
+            <div>
+              <h2>Student Login</h2>
+              <select style={styles.input} value={studentSelect} onChange={function(event) { setStudentSelect(Number(event.target.value)); }}>
+                {students.map(function(student) {
+                  return <option key={student.id} value={student.id}>{student.name}</option>;
+                })}
+              </select>
+              <input style={styles.input} type="password" value={studentPin} onChange={function(event) { setStudentPin(event.target.value); }} placeholder="PIN / nine number" />
+              <button style={styles.primaryButton} onClick={loginStudent}>Login as Student</button>
+            </div>
+          )}
+
+          {loginTab === "teacher" && (
+            <div>
+              <h2>Teacher Login</h2>
+              <input style={styles.input} type="password" value={teacherInput} onChange={function(event) { setTeacherInput(event.target.value); }} placeholder="Teacher password" />
+              <button style={styles.primaryButton} onClick={loginTeacher}>Login as Teacher</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {screen === "teacher" && isTeacher && (
+        <div style={styles.grid}>
+          <div style={styles.card}>
+            <h2>Add or Subtract Money</h2>
+            <select style={styles.input} value={selectedStudent} onChange={function(event) { setSelectedStudent(event.target.value); }}>
+              <option value="whole">Whole Class</option>
+              {students.map(function(student) {
+                return <option key={student.id} value={student.id}>{student.name}</option>;
+              })}
+            </select>
+
+            <select style={styles.input} value={type} onChange={function(event) { setType(event.target.value); }}>
+              <option value="Add">Add</option>
+              <option value="Subtract">Subtract</option>
+            </select>
+
+            <input style={styles.input} type="number" value={amount} onChange={function(event) { setAmount(event.target.value); }} />
+
+            <select style={styles.input} value={reason} onChange={function(event) { setReason(event.target.value); }}>
+              <option value="Weekly payday">Weekly payday</option>
+              <option value="Class job">Class job</option>
+              <option value="Showing work">Showing work</option>
+              <option value="Desk rent">Desk rent</option>
+              <option value="Bathroom break">Bathroom break</option>
+              <option value="Store purchase">Store purchase</option>
+              <option value="Bonus">Bonus</option>
+            </select>
+
+            <button style={styles.primaryButton} onClick={saveTeacherTransaction}>Save Approved Transaction</button>
+          </div>
+
+          <div style={styles.card}>
+            <h2>All Transactions</h2>
+            <TransactionTable transactions={transactions} approveTransaction={approveTransaction} denyTransaction={denyTransaction} showActions={true} />
+          </div>
+        </div>
+      )}
+
+      {screen === "approvals" && isTeacher && (
+        <div style={styles.card}>
+          <h2>Pending Approvals</h2>
+          <TransactionTable transactions={pendingTransactions} approveTransaction={approveTransaction} denyTransaction={denyTransaction} showActions={true} />
+        </div>
+      )}
+
+      {screen === "roster" && isTeacher && (
+        <div style={styles.grid}>
+          <div style={styles.card}>
+            <h2>Add Student</h2>
+            <input style={styles.input} value={newStudentName} onChange={function(event) { setNewStudentName(event.target.value); }} placeholder="Student name" />
+            <input style={styles.input} value={newStudentPin} onChange={function(event) { setNewStudentPin(event.target.value); }} placeholder="PIN / nine number" />
+            <input style={styles.input} type="number" value={newStudentBalance} onChange={function(event) { setNewStudentBalance(event.target.value); }} placeholder="Starting balance" />
+            <button style={styles.primaryButton} onClick={addStudent}>Add Student</button>
+          </div>
+
+          <div style={styles.card}>
+            <h2>Roster</h2>
+            {students.map(function(student) {
+              return (
+                <div key={student.id} style={styles.rosterRow}>
+                  <span>{student.name} — {dollars(student.balance)} — PIN: {student.pin}</span>
+                  <button style={styles.dangerButton} onClick={function() { removeStudent(student.id); }}>Remove</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {screen === "student" && currentStudent && (
+        <div style={styles.grid}>
+          <div style={styles.card}>
+            <h2>{currentStudent.name}'s Account</h2>
+            <div style={styles.bigBalance}>Approved Balance: {dollars(currentStudent.balance)}</div>
+            <div style={styles.pendingBalance}>Pending Change: {pendingChange >= 0 ? "+" : ""}{dollars(pendingChange)}</div>
+            <div style={styles.pendingBalance}>Pending Total: {dollars(currentStudent.balance + pendingChange)}</div>
+
+            <h3>Submit Request</h3>
+            <select style={styles.input} value={type} onChange={function(event) { setType(event.target.value); }}>
+              <option value="Add">Add</option>
+              <option value="Subtract">Subtract</option>
+            </select>
+            <input style={styles.input} type="number" value={amount} onChange={function(event) { setAmount(event.target.value); }} />
+            <select style={styles.input} value={reason} onChange={function(event) { setReason(event.target.value); }}>
+              <option value="Class job">Class job</option>
+              <option value="Showing work">Showing work</option>
+              <option value="Store purchase">Store purchase</option>
+              <option value="Bathroom break">Bathroom break</option>
+              <option value="Bonus">Bonus</option>
+            </select>
+            <button style={styles.primaryButton} onClick={submitStudentRequest}>Submit Pending Request</button>
+          </div>
+
+          <div style={styles.card}>
+            <h2>My Transactions</h2>
+            <TransactionTable transactions={studentTransactions} showActions={false} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TransactionTable(props) {
+  const transactions = props.transactions;
+  const approveTransaction = props.approveTransaction;
+  const denyTransaction = props.denyTransaction;
+  const showActions = props.showActions;
+
+  if (!transactions || transactions.length === 0) {
+    return <p>No transactions yet.</p>;
+  }
+
+  return (
+    <table style={styles.table}>
+      <thead>
+        <tr>
+          <th style={styles.th}>Student</th>
+          <th style={styles.th}>Type</th>
+          <th style={styles.th}>Amount</th>
+          <th style={styles.th}>Reason</th>
+          <th style={styles.th}>Source</th>
+          <th style={styles.th}>Status</th>
+          <th style={styles.th}>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {transactions.map(function(transaction) {
+          return (
+            <tr key={transaction.id}>
+              <td style={styles.td}>{transaction.studentName}</td>
+              <td style={styles.td}>{transaction.type}</td>
+              <td style={styles.td}>{dollars(transaction.amount)}</td>
+              <td style={styles.td}>{transaction.reason}</td>
+              <td style={styles.td}>{transaction.source}</td>
+              <td style={styles.td}>{transaction.status}</td>
+              <td style={styles.td}>
+                {showActions && transaction.status === "Pending" ? (
+                  <span>
+                    <button style={styles.approveButton} onClick={function() { approveTransaction(transaction.id); }}>Approve</button>
+                    <button style={styles.dangerButton} onClick={function() { denyTransaction(transaction.id); }}>Deny</button>
+                  </span>
+                ) : (
+                  <span>—</span>
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+const styles = {
+  page: {
+    minHeight: "100vh",
+    backgroundColor: "#f1f5f9",
+    padding: 24,
+    fontFamily: "Arial, sans-serif",
+    color: "#0f172a"
+  },
+  message: {
+    backgroundColor: "#e0f2fe",
+    padding: 12,
+    borderRadius: 10,
+    fontWeight: "bold"
+  },
+  buttonBar: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+    marginBottom: 16
+  },
+  loginTabs: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 8,
+    backgroundColor: "#f8fafc",
+    padding: 8,
+    borderRadius: 12,
+    marginBottom: 16
+  },
+  loginTab: {
+    padding: "12px 14px",
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    backgroundColor: "white",
+    cursor: "pointer",
+    fontWeight: "bold"
+  },
+  activeLoginTab: {
+    padding: "12px 14px",
+    borderRadius: 10,
+    border: "0",
+    backgroundColor: "#0f172a",
+    color: "white",
+    cursor: "pointer",
+    fontWeight: "bold"
+  },
+  button: {
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    backgroundColor: "white",
+    cursor: "pointer"
+  },
+  primaryButton: {
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "0",
+    backgroundColor: "#0f172a",
+    color: "white",
+    cursor: "pointer",
+    marginTop: 8
+  },
+  dangerButton: {
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "0",
+    backgroundColor: "#dc2626",
+    color: "white",
+    cursor: "pointer",
+    marginLeft: 6
+  },
+  approveButton: {
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "0",
+    backgroundColor: "#16a34a",
+    color: "white",
+    cursor: "pointer"
+  },
+  stats: {
+    display: "flex",
+    gap: 12,
+    flexWrap: "wrap",
+    marginBottom: 16
+  },
+  statBox: {
+    backgroundColor: "white",
+    padding: 14,
+    borderRadius: 12,
+    border: "1px solid #e2e8f0"
+  },
+  grid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+    gap: 16
+  },
+  card: {
+    backgroundColor: "white",
+    padding: 18,
+    borderRadius: 14,
+    border: "1px solid #e2e8f0",
+    overflowX: "auto"
+  },
+  input: {
+    display: "block",
+    width: "100%",
+    boxSizing: "border-box",
+    padding: 10,
+    marginBottom: 10,
+    borderRadius: 8,
+    border: "1px solid #cbd5e1"
+  },
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+    minWidth: 700
+  },
+  th: {
+    textAlign: "left",
+    padding: 8,
+    backgroundColor: "#f8fafc",
+    borderBottom: "1px solid #e2e8f0"
+  },
+  td: {
+    padding: 8,
+    borderBottom: "1px solid #e2e8f0"
+  },
+  rosterRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 10,
+    border: "1px solid #e2e8f0",
+    borderRadius: 10,
+    marginBottom: 8
+  },
+  bigBalance: {
+    fontSize: 24,
+    fontWeight: "bold",
+    marginBottom: 10
+  },
+  pendingBalance: {
+    fontSize: 18,
+    marginBottom: 8
+  }
+};
