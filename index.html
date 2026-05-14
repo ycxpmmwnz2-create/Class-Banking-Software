@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -36,6 +35,24 @@
     .pending-balance { font-size: 18px; margin-bottom: 8px; }
     .small-note { font-size: 13px; color: #475569; margin-top: 8px; line-height: 1.35; }
     .empty { padding: 18px; border-radius: 12px; background-color: #f8fafc; border: 1px dashed #cbd5e1; color: #475569; }
+    .backup-reminder {
+      background-color: #fef3c7;
+      border: 1px solid #f59e0b;
+      color: #78350f;
+      padding: 12px;
+      border-radius: 10px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .print-only { display: none; }
+    @media print {
+      body { background: white; padding: 16px; }
+      .no-print { display: none !important; }
+      .print-only { display: block; }
+      .card { border: none; padding: 0; }
+      table { min-width: 0; font-size: 14px; }
+      th, td { border: 1px solid #999; }
+    }
     @media (max-width: 700px) { body { padding: 12px; } .roster-row { grid-template-columns: 1fr; } .danger { margin-left: 0; } }
   </style>
 </head>
@@ -45,7 +62,7 @@
   <script>
     const teacherPassword = "Morgan123";
     const STORAGE_KEY = "mrMorganClassCashDataV2";
-    const defaultData = { students: [], transactions: [] };
+    const defaultData = { students: [], transactions: [], lastBackupAt: null };
     let data = loadData();
     let screen = "login";
     let loginTab = "teacher";
@@ -53,7 +70,7 @@
     let loggedInStudentId = null;
     let message = "Log in as teacher to add students and set up your class bank.";
 
-    function cloneDefault() { return { students: [], transactions: [] }; }
+    function cloneDefault() { return { students: [], transactions: [], lastBackupAt: null }; }
 
     function loadData() {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -62,7 +79,8 @@
         const parsed = JSON.parse(saved);
         return {
           students: Array.isArray(parsed.students) ? parsed.students : [],
-          transactions: Array.isArray(parsed.transactions) ? parsed.transactions : []
+          transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
+          lastBackupAt: parsed.lastBackupAt || null
         };
       } catch {
         return cloneDefault();
@@ -71,6 +89,15 @@
 
     function saveData() { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
     function dollars(amount) { return "$" + Number(amount || 0).toLocaleString(); }
+
+    function backupText() {
+      if (!data.lastBackupAt) return "No backup exported yet.";
+      return "Last backup exported: " + new Date(data.lastBackupAt).toLocaleString();
+    }
+
+    function printRoster() {
+      window.print();
+    }
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -272,7 +299,9 @@
     }
 
     function exportBackup() {
-      const backup = { students: data.students, transactions: data.transactions, exportedAt: new Date().toISOString() };
+      data.lastBackupAt = new Date().toISOString();
+      saveData();
+      const backup = { students: data.students, transactions: data.transactions, exportedAt: data.lastBackupAt };
       const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -295,6 +324,7 @@
           }
           data.students = imported.students;
           data.transactions = imported.transactions;
+          data.lastBackupAt = imported.exportedAt || new Date().toISOString();
           saveData();
           message = "Backup imported.";
           render();
@@ -345,7 +375,7 @@
       let html = `
         <h1>Mr. Morgan's Class Cash</h1>
         <p class="message">${escapeHtml(message)}</p>
-        <div class="button-bar">
+        <div class="button-bar no-print">
           <button onclick="setScreen('login')">Home/Login</button>
           ${isTeacher ? `<button onclick="setScreen('teacher')">Teacher Dashboard</button>` : ""}
           ${isTeacher ? `<button onclick="setScreen('approvals')">Approvals</button>` : ""}
@@ -353,7 +383,7 @@
           ${loggedInStudentId ? `<button onclick="setScreen('student')">Student View</button>` : ""}
           <button onclick="logout()">Lock</button>
         </div>
-        <div class="stats">
+        <div class="stats no-print">
           <div class="stat-box">Students: ${data.students.length}</div>
           <div class="stat-box">Total Cash: ${dollars(totalCash)}</div>
           <div class="stat-box">Pending: ${pendingTransactions.length}</div>
@@ -439,16 +469,22 @@
               <button class="primary" onclick="addStudent()">Add Student</button>
 
               <h2 style="margin-top: 24px;">Backup</h2>
+              <div class="backup-reminder">${escapeHtml(backupText())}</div>
               <button onclick="exportBackup()">Export Backup</button>
+              <button onclick="printRoster()">Print Roster/PIN List</button>
               <label for="backupFile" style="margin-top: 12px;">Import Backup</label>
               <input id="backupFile" type="file" accept=".json" onchange="importBackup(event)" />
-              <p class="small-note">This version saves to this browser using localStorage. Use Export Backup often, especially before big changes.</p>
+              <p class="small-note">This version saves to this browser using localStorage. Export a backup after adding students or making big balance changes.</p>
 
               <h2 style="margin-top: 24px;">Reset/Cleanup</h2>
               <button onclick="clearTransactions()">Clear Transaction History</button>
               <button class="danger" onclick="resetEverything()">Reset Everything</button>
             </div>
             <div class="card">
+              <div class="print-only">
+                <h1>Mr. Morgan's Class Cash — Roster/PIN List</h1>
+                <p>Generated from the classroom banking app.</p>
+              </div>
               <h2>Roster</h2>
               ${data.students.length === 0 ? `<div class="empty">No students yet. Add your first student on the left.</div>` : data.students.map(student => `
                 <div class="roster-row">
