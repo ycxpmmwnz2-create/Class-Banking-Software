@@ -1,5 +1,3 @@
-
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -54,11 +52,13 @@
       color: white;
       margin-left: 6px;
     }
+    .danger:hover { background-color: #b91c1c; }
     .approve {
       border: 0;
       background-color: #16a34a;
       color: white;
     }
+    .approve:hover { background-color: #15803d; }
     .stat-box {
       background-color: white;
       padding: 14px;
@@ -88,20 +88,1015 @@
       font-size: 16px;
       font-family: Arial, sans-serif;
     }
+    textarea { min-height: 120px; }
+    label {
+      display: block;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .login-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      background-color: #f8fafc;
+      padding: 8px;
+      border-radius: 12px;
+      margin-bottom: 16px;
+    }
+    .active-tab {
+      border: 0;
+      background-color: #0f172a;
+      color: white;
+      font-weight: bold;
+    }
+    .inactive-tab {
+      background-color: white;
+      font-weight: bold;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 820px;
+    }
+    th {
+      text-align: left;
+      padding: 8px;
+      background-color: #f8fafc;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    td {
+      padding: 8px;
+      border-bottom: 1px solid #e2e8f0;
+      vertical-align: top;
+    }
+    .roster-row {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr 0.7fr auto;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      margin-bottom: 8px;
+    }
+    .big-balance {
+      font-size: 28px;
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+    .pending-balance {
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+    .small-note {
+      font-size: 13px;
+      color: #475569;
+      margin-top: 8px;
+      line-height: 1.35;
+    }
+    .empty {
+      padding: 18px;
+      border-radius: 12px;
+      background-color: #f8fafc;
+      border: 1px dashed #cbd5e1;
+      color: #475569;
+    }
+    .backup-reminder {
+      background-color: #fef3c7;
+      border: 1px solid #f59e0b;
+      color: #78350f;
+      padding: 12px;
+      border-radius: 10px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .lock-note {
+      background-color: #ecfeff;
+      border: 1px solid #06b6d4;
+      color: #164e63;
+      padding: 12px;
+      border-radius: 10px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .purchase-note {
+      background-color: #f0fdf4;
+      border: 1px solid #22c55e;
+      color: #14532d;
+      padding: 12px;
+      border-radius: 10px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .print-only { display: none; }
+    @media print {
+      body { background: white; padding: 16px; }
+      .no-print { display: none !important; }
+      .print-only { display: block; }
+      .card { border: none; padding: 0; }
+      table { min-width: 0; font-size: 14px; }
+      th, td { border: 1px solid #999; }
+    }
+    @media (max-width: 700px) {
+      body { padding: 12px; }
+      .roster-row { grid-template-columns: 1fr; }
+      .danger { margin-left: 0; }
+    }
   </style>
 </head>
 <body>
-  <div style="padding:20px;background:#fff;border-radius:12px;max-width:900px;margin:auto;">
-    <h1>Version 5 Code Placeholder</h1>
-    <p>
-      The full Version 5 file was too large to cleanly place into Canvas in one shot.
-    </p>
-    <p>
-      The easier route is still to use the downloadable file above and copy/paste the entire contents into GitHub.
-    </p>
-    <p>
-      Open the downloaded HTML file in Chrome, right-click, choose “View Page Source,” then Ctrl+A and Ctrl+C.
-    </p>
-  </div>
+  <div id="app"></div>
+
+  <script>
+    const STORAGE_KEY = "mrMorganClassCashDataV5";
+
+    const defaultSettings = {
+      teacherPassword: "Morgan123",
+      studentRequestsEnabled: true,
+      studentAddRequestsEnabled: true,
+      studentSubtractRequestsEnabled: true,
+      purchaseRequestsEnabled: true,
+      requireTeacherApproval: true,
+      reasons: [
+        "Weekly payday",
+        "Class job",
+        "Showing work",
+        "Desk rent",
+        "Bathroom break",
+        "Bonus",
+        "Other"
+      ],
+      purchaseCategories: [
+        "School Store",
+        "Road Runner Tickets",
+        "Other"
+      ]
+    };
+
+    const defaultData = {
+      students: [],
+      transactions: [],
+      settings: defaultSettings,
+      lastBackupAt: null
+    };
+
+    let data = loadData();
+    let screen = "login";
+    let loginTab = "teacher";
+    let isTeacher = false;
+    let loggedInStudentId = null;
+    let message = "Log in as teacher to add students and set up your class bank.";
+
+    function cloneDefault() {
+      return JSON.parse(JSON.stringify(defaultData));
+    }
+
+    function normalizeData(parsed) {
+      return {
+        students: Array.isArray(parsed.students) ? parsed.students : [],
+        transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
+        settings: {
+          ...defaultSettings,
+          ...(parsed.settings || {}),
+          reasons: Array.isArray(parsed.settings?.reasons) ? parsed.settings.reasons : defaultSettings.reasons,
+          purchaseCategories: Array.isArray(parsed.settings?.purchaseCategories) ? parsed.settings.purchaseCategories : defaultSettings.purchaseCategories
+        },
+        lastBackupAt: parsed.lastBackupAt || null
+      };
+    }
+
+    function loadData() {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (!saved) return cloneDefault();
+      try {
+        return normalizeData(JSON.parse(saved));
+      } catch {
+        return cloneDefault();
+      }
+    }
+
+    function saveData() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    }
+
+    function dollars(amount) {
+      return "$" + Number(amount || 0).toLocaleString();
+    }
+
+    function backupText() {
+      if (!data.lastBackupAt) return "No backup exported yet.";
+      return "Last backup exported: " + new Date(data.lastBackupAt).toLocaleString();
+    }
+
+    function printRoster() {
+      window.print();
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function showMessage(text) {
+      message = text;
+      render();
+    }
+
+    function setScreen(newScreen) {
+      screen = newScreen;
+      render();
+    }
+
+    function setLoginTab(tab) {
+      loginTab = tab;
+      render();
+    }
+
+    function currentStudent() {
+      return data.students.find(student => student.id === loggedInStudentId);
+    }
+
+    function loginTeacher() {
+      const input = document.getElementById("teacherPassword").value;
+      if (input === data.settings.teacherPassword) {
+        isTeacher = true;
+        loggedInStudentId = null;
+        screen = "teacher";
+        message = "Teacher dashboard unlocked.";
+      } else {
+        message = "Wrong teacher password.";
+      }
+      render();
+    }
+
+    function loginStudent() {
+      const studentId = Number(document.getElementById("studentSelect").value);
+      const pin = document.getElementById("studentPin").value;
+      const student = data.students.find(item => item.id === studentId);
+
+      if (student && student.pin === pin) {
+        isTeacher = false;
+        loggedInStudentId = student.id;
+        screen = "student";
+        message = student.name + " is logged in.";
+      } else {
+        message = "Wrong student PIN.";
+      }
+      render();
+    }
+
+    function logout() {
+      isTeacher = false;
+      loggedInStudentId = null;
+      screen = "login";
+      loginTab = "teacher";
+      message = "Logged out.";
+      render();
+    }
+
+    function changeStudentBalance(studentId, transactionType, transactionAmount) {
+      data.students = data.students.map(student => {
+        if (student.id !== studentId) return student;
+        const newBalance = transactionType === "Add"
+          ? Number(student.balance) + transactionAmount
+          : Number(student.balance) - transactionAmount;
+        return { ...student, balance: newBalance };
+      });
+    }
+
+    function saveTeacherTransaction() {
+      const selectedStudent = document.getElementById("selectedStudent").value;
+      const type = document.getElementById("transactionType").value;
+      const amount = Number(document.getElementById("transactionAmount").value);
+      const reason = document.getElementById("transactionReason").value;
+
+      if (!amount || amount <= 0) {
+        showMessage("Enter an amount greater than 0.");
+        return;
+      }
+
+      const targetStudents = selectedStudent === "whole"
+        ? data.students
+        : data.students.filter(student => student.id === Number(selectedStudent));
+
+      if (targetStudents.length === 0) {
+        showMessage("Add students first.");
+        return;
+      }
+
+      const newTransactions = targetStudents.map((student, index) => {
+        changeStudentBalance(student.id, type, amount);
+        return {
+          id: Date.now() + index,
+          date: new Date().toLocaleString(),
+          studentId: student.id,
+          studentName: student.name,
+          type,
+          amount,
+          reason,
+          memo: "",
+          category: "",
+          status: "Approved",
+          source: "Teacher"
+        };
+      });
+
+      data.transactions = newTransactions.concat(data.transactions);
+      saveData();
+      message = "Teacher transaction saved and approved.";
+      render();
+    }
+
+    function submitStudentRequest() {
+      const student = currentStudent();
+      if (!student) return;
+
+      if (!data.settings.studentRequestsEnabled) {
+        showMessage("Student requests are currently turned off.");
+        return;
+      }
+
+      const type = document.getElementById("studentRequestType").value;
+      const amount = Number(document.getElementById("studentRequestAmount").value);
+      const reason = document.getElementById("studentRequestReason").value;
+
+      if (type === "Add" && !data.settings.studentAddRequestsEnabled) {
+        showMessage("Add-money requests are currently turned off.");
+        return;
+      }
+
+      if (type === "Subtract" && !data.settings.studentSubtractRequestsEnabled) {
+        showMessage("Spend-money requests are currently turned off.");
+        return;
+      }
+
+      if (!amount || amount <= 0) {
+        showMessage("Enter an amount greater than 0.");
+        return;
+      }
+
+      const newTransaction = {
+        id: Date.now(),
+        date: new Date().toLocaleString(),
+        studentId: student.id,
+        studentName: student.name,
+        type,
+        amount,
+        reason,
+        memo: "",
+        category: "",
+        status: data.settings.requireTeacherApproval ? "Pending" : "Approved",
+        source: "Student"
+      };
+
+      if (!data.settings.requireTeacherApproval) {
+        changeStudentBalance(student.id, type, amount);
+      }
+
+      data.transactions = [newTransaction].concat(data.transactions);
+      saveData();
+      message = data.settings.requireTeacherApproval
+        ? "Request submitted for teacher approval."
+        : "Request submitted and automatically approved.";
+      render();
+    }
+
+    function submitPurchaseRequest() {
+      const student = currentStudent();
+      if (!student) return;
+
+      if (!data.settings.purchaseRequestsEnabled) {
+        showMessage("Purchase requests are currently turned off.");
+        return;
+      }
+
+      const category = document.getElementById("purchaseCategory").value;
+      const memo = document.getElementById("purchaseMemo").value.trim();
+      const amount = Number(document.getElementById("purchaseAmount").value);
+
+      if (!amount || amount <= 0) {
+        showMessage("Enter a purchase amount greater than 0.");
+        return;
+      }
+
+      if (amount > Number(student.balance)) {
+        showMessage("That purchase is more than your approved balance. Ask Mr. Morgan if you think that is wrong.");
+        return;
+      }
+
+      const reason = "Purchase: " + category;
+
+      const newTransaction = {
+        id: Date.now(),
+        date: new Date().toLocaleString(),
+        studentId: student.id,
+        studentName: student.name,
+        type: "Subtract",
+        amount,
+        reason,
+        memo,
+        category,
+        status: "Pending",
+        source: "Student Purchase"
+      };
+
+      data.transactions = [newTransaction].concat(data.transactions);
+      saveData();
+      message = "Purchase request submitted for teacher approval.";
+      render();
+    }
+
+    function approveTransaction(transactionId) {
+      const transaction = data.transactions.find(item => item.id === transactionId);
+      if (!transaction || transaction.status !== "Pending") return;
+
+      const student = data.students.find(item => item.id === transaction.studentId);
+      if (!student) {
+        showMessage("Student no longer exists on the roster.");
+        return;
+      }
+
+      if (transaction.type === "Subtract" && Number(transaction.amount) > Number(student.balance)) {
+        const confirmed = confirm("This approval would make " + student.name + "'s balance negative. Approve anyway?");
+        if (!confirmed) return;
+      }
+
+      changeStudentBalance(transaction.studentId, transaction.type, transaction.amount);
+
+      data.transactions = data.transactions.map(item => {
+        if (item.id === transactionId) return { ...item, status: "Approved" };
+        return item;
+      });
+
+      saveData();
+      message = "Transaction approved.";
+      render();
+    }
+
+    function denyTransaction(transactionId) {
+      data.transactions = data.transactions.map(item => {
+        if (item.id === transactionId) return { ...item, status: "Denied" };
+        return item;
+      });
+
+      saveData();
+      message = "Transaction denied.";
+      render();
+    }
+
+    function addStudent() {
+      const name = document.getElementById("newStudentName").value.trim();
+      const pin = document.getElementById("newStudentPin").value.trim();
+      const balanceInput = document.getElementById("newStudentBalance").value;
+      const startingBalance = balanceInput === "" ? 0 : Number(balanceInput);
+
+      if (!name) {
+        showMessage("Enter a student name.");
+        return;
+      }
+
+      if (!pin) {
+        showMessage("Enter a PIN/password for the student.");
+        return;
+      }
+
+      if (data.students.some(student => student.name.toLowerCase() === name.toLowerCase())) {
+        showMessage("That student name is already on the roster.");
+        return;
+      }
+
+      const maxId = data.students.reduce((max, student) => Math.max(max, student.id), 0);
+      const newStudent = {
+        id: maxId + 1,
+        name,
+        pin,
+        balance: Number.isFinite(startingBalance) ? startingBalance : 0
+      };
+
+      data.students.push(newStudent);
+      saveData();
+      message = name + " added with a starting balance of " + dollars(newStudent.balance) + ".";
+      render();
+    }
+
+    function updateStudent(studentId) {
+      const name = document.getElementById("name-" + studentId).value.trim();
+      const pin = document.getElementById("pin-" + studentId).value.trim();
+      const balance = Number(document.getElementById("balance-" + studentId).value);
+
+      if (!name || !pin) {
+        showMessage("Student name and PIN cannot be blank.");
+        return;
+      }
+
+      data.students = data.students.map(student => {
+        if (student.id !== studentId) return student;
+        return {
+          ...student,
+          name,
+          pin,
+          balance: Number.isFinite(balance) ? balance : 0
+        };
+      });
+
+      data.transactions = data.transactions.map(transaction => {
+        if (transaction.studentId !== studentId) return transaction;
+        return { ...transaction, studentName: name };
+      });
+
+      saveData();
+      message = "Student updated.";
+      render();
+    }
+
+    function removeStudent(studentId) {
+      const student = data.students.find(s => s.id === studentId);
+      if (!student) return;
+
+      const confirmed = confirm("Remove " + student.name + "? This removes the student from the roster but keeps old transaction records.");
+      if (!confirmed) return;
+
+      data.students = data.students.filter(student => student.id !== studentId);
+      if (loggedInStudentId === studentId) loggedInStudentId = null;
+      saveData();
+      message = student.name + " removed.";
+      render();
+    }
+
+    function saveSettings() {
+      const currentPassword = document.getElementById("currentTeacherPassword").value;
+      const newPassword = document.getElementById("newTeacherPassword").value.trim();
+      const reasonsText = document.getElementById("reasonList").value;
+      const categoriesText = document.getElementById("purchaseCategoryList").value;
+
+      if (newPassword && currentPassword !== data.settings.teacherPassword) {
+        showMessage("Current teacher password is incorrect. Teacher password was not changed.");
+        return;
+      }
+
+      if (newPassword) {
+        data.settings.teacherPassword = newPassword;
+      }
+
+      data.settings.studentRequestsEnabled = document.getElementById("studentRequestsEnabled").checked;
+      data.settings.studentAddRequestsEnabled = document.getElementById("studentAddRequestsEnabled").checked;
+      data.settings.studentSubtractRequestsEnabled = document.getElementById("studentSubtractRequestsEnabled").checked;
+      data.settings.purchaseRequestsEnabled = document.getElementById("purchaseRequestsEnabled").checked;
+      data.settings.requireTeacherApproval = document.getElementById("requireTeacherApproval").checked;
+
+      const newReasons = reasonsText
+        .split("\\n")
+        .map(reason => reason.trim())
+        .filter(reason => reason.length > 0);
+
+      const newCategories = categoriesText
+        .split("\\n")
+        .map(category => category.trim())
+        .filter(category => category.length > 0);
+
+      data.settings.reasons = newReasons.length > 0 ? newReasons : defaultSettings.reasons;
+      data.settings.purchaseCategories = newCategories.length > 0 ? newCategories : defaultSettings.purchaseCategories;
+
+      saveData();
+      message = "Settings saved.";
+      render();
+    }
+
+    function clearTransactions() {
+      const confirmed = confirm("Clear all transaction history? Balances will stay the same.");
+      if (!confirmed) return;
+      data.transactions = [];
+      saveData();
+      message = "Transaction history cleared.";
+      render();
+    }
+
+    function resetBalancesToZero() {
+      const confirmed = confirm("Reset every student balance to $0? Transaction history will stay.");
+      if (!confirmed) return;
+      data.students = data.students.map(student => ({ ...student, balance: 0 }));
+      saveData();
+      message = "All balances reset to $0.";
+      render();
+    }
+
+    function resetEverything() {
+      const confirmed = confirm("Reset EVERYTHING? This will erase students, balances, PINs, settings, and transactions from this browser.");
+      if (!confirmed) return;
+      data = cloneDefault();
+      saveData();
+      isTeacher = false;
+      loggedInStudentId = null;
+      screen = "login";
+      loginTab = "teacher";
+      message = "Everything reset. Log in as teacher to add students.";
+      render();
+    }
+
+    function exportBackup() {
+      data.lastBackupAt = new Date().toISOString();
+      saveData();
+
+      const backup = {
+        students: data.students,
+        transactions: data.transactions,
+        settings: data.settings,
+        exportedAt: data.lastBackupAt
+      };
+
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "class-bank-backup.json";
+      link.click();
+      URL.revokeObjectURL(url);
+      message = "Backup exported.";
+      render();
+    }
+
+    function importBackup(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const imported = JSON.parse(e.target.result);
+          if (!Array.isArray(imported.students) || !Array.isArray(imported.transactions)) {
+            alert("That backup file does not look right.");
+            return;
+          }
+
+          data = normalizeData({
+            students: imported.students,
+            transactions: imported.transactions,
+            settings: imported.settings || data.settings,
+            lastBackupAt: imported.exportedAt || new Date().toISOString()
+          });
+
+          saveData();
+          message = "Backup imported.";
+          render();
+        } catch {
+          alert("Could not import that file.");
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    function reasonOptions(selectedReason) {
+      return data.settings.reasons.map(reason =>
+        `<option value="${escapeHtml(reason)}" ${selectedReason === reason ? "selected" : ""}>${escapeHtml(reason)}</option>`
+      ).join("");
+    }
+
+    function purchaseCategoryOptions(selectedCategory) {
+      return data.settings.purchaseCategories.map(category =>
+        `<option value="${escapeHtml(category)}" ${selectedCategory === category ? "selected" : ""}>${escapeHtml(category)}</option>`
+      ).join("");
+    }
+
+    function transactionTable(transactions, showActions) {
+      if (!transactions || transactions.length === 0) {
+        return '<div class="empty">No transactions yet.</div>';
+      }
+
+      const rows = transactions.map(transaction => `
+        <tr>
+          <td>${escapeHtml(transaction.date || "")}</td>
+          <td>${escapeHtml(transaction.studentName)}</td>
+          <td>${escapeHtml(transaction.type)}</td>
+          <td>${dollars(transaction.amount)}</td>
+          <td>${escapeHtml(transaction.reason)}</td>
+          <td>${escapeHtml(transaction.memo || "")}</td>
+          <td>${escapeHtml(transaction.source)}</td>
+          <td>${escapeHtml(transaction.status)}</td>
+          <td>
+            ${showActions && transaction.status === "Pending"
+              ? `<button class="approve" onclick="approveTransaction(${transaction.id})">Approve</button>
+                 <button class="danger" onclick="denyTransaction(${transaction.id})">Deny</button>`
+              : "—"}
+          </td>
+        </tr>
+      `).join("");
+
+      return `
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Student</th>
+              <th>Type</th>
+              <th>Amount</th>
+              <th>Reason/Category</th>
+              <th>Memo</th>
+              <th>Source</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function render() {
+      const student = currentStudent();
+      const totalCash = data.students.reduce((total, student) => total + Number(student.balance || 0), 0);
+      const pendingTransactions = data.transactions.filter(transaction => transaction.status === "Pending");
+      const approvedTransactions = data.transactions.filter(transaction => transaction.status === "Approved");
+      const purchaseTransactions = data.transactions.filter(transaction => transaction.source === "Student Purchase");
+      const studentOptions = data.students.map(student =>
+        `<option value="${student.id}">${escapeHtml(student.name)}</option>`
+      ).join("");
+
+      let html = `
+        <h1>Mr. Morgan's Class Cash</h1>
+        <p class="message">${escapeHtml(message)}</p>
+
+        <div class="button-bar no-print">
+          <button onclick="setScreen('login')">Home/Login</button>
+          ${isTeacher ? `<button onclick="setScreen('teacher')">Teacher Dashboard</button>` : ""}
+          ${isTeacher ? `<button onclick="setScreen('approvals')">Approvals</button>` : ""}
+          ${isTeacher ? `<button onclick="setScreen('purchases')">Purchases</button>` : ""}
+          ${isTeacher ? `<button onclick="setScreen('roster')">Roster</button>` : ""}
+          ${isTeacher ? `<button onclick="setScreen('settings')">Settings</button>` : ""}
+          ${loggedInStudentId ? `<button onclick="setScreen('student')">Student View</button>` : ""}
+          <button onclick="logout()">Lock</button>
+        </div>
+
+        <div class="stats no-print">
+          <div class="stat-box">Students: ${data.students.length}</div>
+          <div class="stat-box">Total Cash: ${dollars(totalCash)}</div>
+          <div class="stat-box">Pending: ${pendingTransactions.length}</div>
+          <div class="stat-box">Purchases: ${purchaseTransactions.length}</div>
+          <div class="stat-box">Approved Transactions: ${approvedTransactions.length}</div>
+        </div>
+      `;
+
+      if (screen === "login") {
+        html += `
+          <div class="card">
+            <div class="login-tabs">
+              <button class="${loginTab === "teacher" ? "active-tab" : "inactive-tab"}" onclick="setLoginTab('teacher')">Teacher Login</button>
+              <button class="${loginTab === "student" ? "active-tab" : "inactive-tab"}" onclick="setLoginTab('student')">Student Login</button>
+            </div>
+
+            ${loginTab === "teacher" ? `
+              <h2>Teacher Login</h2>
+              <label for="teacherPassword">Teacher password</label>
+              <input id="teacherPassword" type="password" placeholder="Teacher password" autocomplete="current-password" />
+              <button class="primary" onclick="loginTeacher()">Login as Teacher</button>
+            ` : `
+              <h2>Student Login</h2>
+              ${data.students.length === 0 ? `
+                <div class="empty">No students have been added yet. Log in as teacher and add your roster.</div>
+              ` : `
+                <label for="studentSelect">Student</label>
+                <select id="studentSelect">${studentOptions}</select>
+                <label for="studentPin">PIN / password</label>
+                <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" />
+                <button class="primary" onclick="loginStudent()">Login as Student</button>
+              `}
+            `}
+          </div>
+        `;
+      }
+
+      if (screen === "teacher" && isTeacher) {
+        html += `
+          <div class="grid">
+            <div class="card">
+              <h2>Add or Subtract Money</h2>
+              <div class="lock-note">Teacher transactions are approved immediately. Student requests stay pending unless changed in Settings.</div>
+              ${data.students.length === 0 ? `
+                <div class="empty">Add students on the Roster page first.</div>
+              ` : `
+                <label for="selectedStudent">Student or whole class</label>
+                <select id="selectedStudent">
+                  <option value="whole">Whole Class</option>
+                  ${studentOptions}
+                </select>
+
+                <label for="transactionType">Type</label>
+                <select id="transactionType">
+                  <option value="Add">Add</option>
+                  <option value="Subtract">Subtract</option>
+                </select>
+
+                <label for="transactionAmount">Amount</label>
+                <input id="transactionAmount" type="number" min="1" value="1" />
+
+                <label for="transactionReason">Reason</label>
+                <select id="transactionReason">${reasonOptions("")}</select>
+
+                <button class="primary" onclick="saveTeacherTransaction()">Save Approved Transaction</button>
+              `}
+            </div>
+
+            <div class="card">
+              <h2>Recent Transactions</h2>
+              ${transactionTable(data.transactions.slice(0, 25), true)}
+            </div>
+          </div>
+        `;
+      }
+
+      if (screen === "approvals" && isTeacher) {
+        html += `
+          <div class="card">
+            <h2>Pending Approvals</h2>
+            ${transactionTable(pendingTransactions, true)}
+          </div>
+        `;
+      }
+
+      if (screen === "purchases" && isTeacher) {
+        const pendingPurchases = data.transactions.filter(transaction => transaction.source === "Student Purchase" && transaction.status === "Pending");
+        html += `
+          <div class="grid">
+            <div class="card">
+              <h2>Pending Purchase Requests</h2>
+              <div class="purchase-note">Approving a purchase subtracts the money from the student balance. Denying it leaves the balance alone.</div>
+              ${transactionTable(pendingPurchases, true)}
+            </div>
+            <div class="card">
+              <h2>All Purchase History</h2>
+              ${transactionTable(purchaseTransactions, false)}
+            </div>
+          </div>
+        `;
+      }
+
+      if (screen === "roster" && isTeacher) {
+        html += `
+          <div class="grid">
+            <div class="card no-print">
+              <h2>Add Student</h2>
+              <label for="newStudentName">Student name</label>
+              <input id="newStudentName" placeholder="Example: Alex" />
+
+              <label for="newStudentPin">PIN / password</label>
+              <input id="newStudentPin" placeholder="Example: 1234" />
+
+              <label for="newStudentBalance">Starting balance</label>
+              <input id="newStudentBalance" type="number" value="0" />
+
+              <button class="primary" onclick="addStudent()">Add Student</button>
+
+              <h2 style="margin-top: 24px;">Backup</h2>
+              <div class="backup-reminder">${escapeHtml(backupText())}</div>
+              <button onclick="exportBackup()">Export Backup</button>
+              <button onclick="printRoster()">Print Roster/PIN List</button>
+              <label for="backupFile" style="margin-top: 12px;">Import Backup</label>
+              <input id="backupFile" type="file" accept=".json" onchange="importBackup(event)" />
+              <p class="small-note">This version saves to this browser using localStorage. Export a backup after adding students or making big balance changes.</p>
+            </div>
+
+            <div class="card">
+              <div class="print-only">
+                <h1>Mr. Morgan's Class Cash — Roster/PIN List</h1>
+                <p>Generated from the classroom banking app.</p>
+              </div>
+              <h2>Roster</h2>
+              ${data.students.length === 0 ? `
+                <div class="empty">No students yet. Add your first student on the left.</div>
+              ` : data.students.map(student => `
+                <div class="roster-row">
+                  <input id="name-${student.id}" value="${escapeHtml(student.name)}" />
+                  <input id="pin-${student.id}" value="${escapeHtml(student.pin)}" />
+                  <input id="balance-${student.id}" type="number" value="${student.balance}" />
+                  <div class="no-print">
+                    <button onclick="updateStudent(${student.id})">Save</button>
+                    <button class="danger" onclick="removeStudent(${student.id})">Remove</button>
+                  </div>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        `;
+      }
+
+      if (screen === "settings" && isTeacher) {
+        html += `
+          <div class="grid">
+            <div class="card">
+              <h2>Teacher Settings</h2>
+
+              <h3>Change Teacher Password</h3>
+              <label for="currentTeacherPassword">Current teacher password</label>
+              <input id="currentTeacherPassword" type="password" placeholder="Required only if changing password" />
+
+              <label for="newTeacherPassword">New teacher password</label>
+              <input id="newTeacherPassword" type="password" placeholder="Leave blank to keep current password" />
+
+              <h3>Student Permissions</h3>
+              <label><input id="studentRequestsEnabled" type="checkbox" ${data.settings.studentRequestsEnabled ? "checked" : ""} /> Students can submit add/subtract requests</label>
+              <label><input id="studentAddRequestsEnabled" type="checkbox" ${data.settings.studentAddRequestsEnabled ? "checked" : ""} /> Students can request money added</label>
+              <label><input id="studentSubtractRequestsEnabled" type="checkbox" ${data.settings.studentSubtractRequestsEnabled ? "checked" : ""} /> Students can request money spent/subtracted</label>
+              <label><input id="purchaseRequestsEnabled" type="checkbox" ${data.settings.purchaseRequestsEnabled ? "checked" : ""} /> Students can submit purchase requests</label>
+              <label><input id="requireTeacherApproval" type="checkbox" ${data.settings.requireTeacherApproval ? "checked" : ""} /> General student add/subtract requests require teacher approval</label>
+
+              <h3>General Transaction Reasons</h3>
+              <label for="reasonList">One reason per line</label>
+              <textarea id="reasonList">${escapeHtml(data.settings.reasons.join("\\n"))}</textarea>
+
+              <h3>Purchase Choices</h3>
+              <label for="purchaseCategoryList">One purchase choice per line</label>
+              <textarea id="purchaseCategoryList">${escapeHtml(data.settings.purchaseCategories.join("\\n"))}</textarea>
+
+              <button class="primary" onclick="saveSettings()">Save Settings</button>
+            </div>
+
+            <div class="card">
+              <h2>Backup and Reset Tools</h2>
+              <div class="backup-reminder">${escapeHtml(backupText())}</div>
+              <button onclick="exportBackup()">Export Backup</button>
+              <label for="backupFileSettings" style="margin-top: 12px;">Import Backup</label>
+              <input id="backupFileSettings" type="file" accept=".json" onchange="importBackup(event)" />
+
+              <h3>Cleanup</h3>
+              <button onclick="clearTransactions()">Clear Transaction History</button>
+              <button onclick="resetBalancesToZero()">Reset All Balances to $0</button>
+              <button class="danger" onclick="resetEverything()">Reset Everything</button>
+
+              <p class="small-note">
+                Teacher settings are only visible after teacher login. This is still a classroom app structure, not bank-level security.
+              </p>
+            </div>
+          </div>
+        `;
+      }
+
+      if (screen === "student" && student) {
+        const studentTransactions = data.transactions.filter(transaction => transaction.studentId === student.id);
+        const pendingChange = studentTransactions.reduce((total, transaction) => {
+          if (transaction.status !== "Pending") return total;
+          return transaction.type === "Add" ? total + Number(transaction.amount) : total - Number(transaction.amount);
+        }, 0);
+
+        html += `
+          <div class="grid">
+            <div class="card">
+              <h2>${escapeHtml(student.name)}'s Account</h2>
+              <div class="big-balance">Approved Balance: ${dollars(student.balance)}</div>
+              <div class="pending-balance">Pending Change: ${pendingChange >= 0 ? "+" : ""}${dollars(pendingChange)}</div>
+              <div class="pending-balance">Pending Total: ${dollars(Number(student.balance) + pendingChange)}</div>
+
+              <h3>Purchase Request</h3>
+              ${!data.settings.purchaseRequestsEnabled ? `
+                <div class="empty">Purchase requests are currently turned off.</div>
+              ` : `
+                <div class="purchase-note">Choose what you want to buy. Mr. Morgan must approve it before the money comes out.</div>
+                <label for="purchaseCategory">Purchase choice</label>
+                <select id="purchaseCategory">${purchaseCategoryOptions("")}</select>
+
+                <label for="purchaseMemo">Memo/details</label>
+                <input id="purchaseMemo" placeholder="Example: Takis, 2 tickets, or prize box" />
+
+                <label for="purchaseAmount">Amount</label>
+                <input id="purchaseAmount" type="number" min="1" value="1" />
+
+                <button class="primary" onclick="submitPurchaseRequest()">Submit Purchase Request</button>
+              `}
+
+              <h3 style="margin-top: 24px;">Other Money Request</h3>
+              ${!data.settings.studentRequestsEnabled ? `
+                <div class="empty">Other money requests are currently turned off.</div>
+              ` : `
+                <label for="studentRequestType">Type</label>
+                <select id="studentRequestType">
+                  ${data.settings.studentAddRequestsEnabled ? `<option value="Add">Add</option>` : ""}
+                  ${data.settings.studentSubtractRequestsEnabled ? `<option value="Subtract">Subtract</option>` : ""}
+                </select>
+
+                <label for="studentRequestAmount">Amount</label>
+                <input id="studentRequestAmount" type="number" min="1" value="1" />
+
+                <label for="studentRequestReason">Reason</label>
+                <select id="studentRequestReason">${reasonOptions("")}</select>
+
+                <button class="primary" onclick="submitStudentRequest()">Submit Other Request</button>
+              `}
+            </div>
+
+            <div class="card">
+              <h2>My Transactions</h2>
+              ${transactionTable(studentTransactions, false)}
+            </div>
+          </div>
+        `;
+      }
+
+      document.getElementById("app").innerHTML = html;
+    }
+
+    render();
+  </script>
 </body>
 </html>
