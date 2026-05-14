@@ -1,660 +1,677 @@
-import React, { useState } from "react";
-
-const teacherPassword = "Morgan123";
-
-const startingStudents = [
-  { id: 1, name: "Isaac", balance: 125, pin: "1001" },
-  { id: 2, name: "Pankti", balance: 140, pin: "1002" },
-  { id: 3, name: "Manuel", balance: 95, pin: "1003" },
-  { id: 4, name: "Abigail", balance: 160, pin: "1004" }
-];
-
-const startingTransactions = [
-  {
-    id: 1,
-    studentId: 1,
-    studentName: "Isaac",
-    type: "Add",
-    amount: 25,
-    reason: "Weekly payday",
-    status: "Approved",
-    source: "Teacher"
-  },
-  {
-    id: 2,
-    studentId: 2,
-    studentName: "Pankti",
-    type: "Subtract",
-    amount: 5,
-    reason: "Store purchase",
-    status: "Pending",
-    source: "Student"
-  }
-];
-
-function dollars(amount) {
-  return "$" + Number(amount).toLocaleString();
-}
-
-export default function App() {
-  const [students, setStudents] = useState(startingStudents);
-  const [transactions, setTransactions] = useState(startingTransactions);
-  const [screen, setScreen] = useState("login");
-  const [loginTab, setLoginTab] = useState("student");
-  const [isTeacher, setIsTeacher] = useState(false);
-  const [loggedInStudentId, setLoggedInStudentId] = useState(null);
-  const [message, setMessage] = useState("Choose Student Login or Teacher Login.");
-
-  const [teacherInput, setTeacherInput] = useState("");
-  const [studentSelect, setStudentSelect] = useState(1);
-  const [studentPin, setStudentPin] = useState("");
-
-  const [selectedStudent, setSelectedStudent] = useState("whole");
-  const [type, setType] = useState("Add");
-  const [amount, setAmount] = useState("10");
-  const [reason, setReason] = useState("Weekly payday");
-
-  const [newStudentName, setNewStudentName] = useState("");
-  const [newStudentPin, setNewStudentPin] = useState("");
-  const [newStudentBalance, setNewStudentBalance] = useState("100");
-
-  const currentStudent = students.find(function(student) {
-    return student.id === loggedInStudentId;
-  });
-
-  function loginTeacher() {
-    if (teacherInput === teacherPassword) {
-      setIsTeacher(true);
-      setLoggedInStudentId(null);
-      setScreen("teacher");
-      setMessage("Teacher dashboard unlocked.");
-    } else {
-      setMessage("Wrong teacher password.");
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mr. Morgan's Class Cash</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background-color: #f1f5f9;
+      padding: 24px;
+      font-family: Arial, sans-serif;
+      color: #0f172a;
+      box-sizing: border-box;
     }
-  }
-
-  function loginStudent() {
-    const student = students.find(function(item) {
-      return item.id === Number(studentSelect);
-    });
-
-    if (student && student.pin === studentPin) {
-      setIsTeacher(false);
-      setLoggedInStudentId(student.id);
-      setScreen("student");
-      setMessage(student.name + " is logged in.");
-    } else {
-      setMessage("Wrong student PIN.");
+    * { box-sizing: border-box; }
+    h1 { margin-top: 0; }
+    .message {
+      background-color: #e0f2fe;
+      padding: 12px;
+      border-radius: 10px;
+      font-weight: bold;
     }
-  }
+    .button-bar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    button {
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #cbd5e1;
+      background-color: white;
+      cursor: pointer;
+    }
+    .primary {
+      border: 0;
+      background-color: #0f172a;
+      color: white;
+      margin-top: 8px;
+    }
+    .danger {
+      border: 0;
+      background-color: #dc2626;
+      color: white;
+      margin-left: 6px;
+    }
+    .approve {
+      border: 0;
+      background-color: #16a34a;
+      color: white;
+    }
+    .stats {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .stat-box {
+      background-color: white;
+      padding: 14px;
+      border-radius: 12px;
+      border: 1px solid #e2e8f0;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+    }
+    .card {
+      background-color: white;
+      padding: 18px;
+      border-radius: 14px;
+      border: 1px solid #e2e8f0;
+      overflow-x: auto;
+    }
+    input, select {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 10px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+    }
+    .login-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      background-color: #f8fafc;
+      padding: 8px;
+      border-radius: 12px;
+      margin-bottom: 16px;
+    }
+    .active-tab {
+      border: 0;
+      background-color: #0f172a;
+      color: white;
+      font-weight: bold;
+    }
+    .inactive-tab {
+      background-color: white;
+      font-weight: bold;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 700px;
+    }
+    th {
+      text-align: left;
+      padding: 8px;
+      background-color: #f8fafc;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    td {
+      padding: 8px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .roster-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    .big-balance {
+      font-size: 24px;
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+    .pending-balance {
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+    .small-note {
+      font-size: 13px;
+      color: #475569;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
 
-  function logout() {
-    setIsTeacher(false);
-    setLoggedInStudentId(null);
-    setTeacherInput("");
-    setStudentPin("");
-    setScreen("login");
-    setMessage("Logged out. Choose Student Login or Teacher Login.");
-  }
+  <script>
+    const teacherPassword = "Morgan123";
+    const STORAGE_KEY = "mrMorganClassCashData";
 
-  function changeStudentBalance(studentId, transactionType, transactionAmount) {
-    setStudents(function(oldStudents) {
-      return oldStudents.map(function(student) {
-        if (student.id !== studentId) {
-          return student;
+    const startingStudents = [
+      { id: 1, name: "Isaac", balance: 125, pin: "1001" },
+      { id: 2, name: "Pankti", balance: 140, pin: "1002" },
+      { id: 3, name: "Manuel", balance: 95, pin: "1003" },
+      { id: 4, name: "Abigail", balance: 160, pin: "1004" }
+    ];
+
+    const startingTransactions = [
+      {
+        id: 1,
+        studentId: 1,
+        studentName: "Isaac",
+        type: "Add",
+        amount: 25,
+        reason: "Weekly payday",
+        status: "Approved",
+        source: "Teacher"
+      },
+      {
+        id: 2,
+        studentId: 2,
+        studentName: "Pankti",
+        type: "Subtract",
+        amount: 5,
+        reason: "Store purchase",
+        status: "Pending",
+        source: "Student"
+      }
+    ];
+
+    let state = {
+      students: startingStudents,
+      transactions: startingTransactions,
+      screen: "login",
+      loginTab: "student",
+      isTeacher: false,
+      loggedInStudentId: null,
+      message: "Choose Student Login or Teacher Login.",
+      teacherInput: "",
+      studentSelect: 1,
+      studentPin: "",
+      selectedStudent: "whole",
+      type: "Add",
+      amount: "10",
+      reason: "Weekly payday",
+      newStudentName: "",
+      newStudentPin: "",
+      newStudentBalance: "100"
+    };
+
+    function loadData() {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (!saved) return;
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed.students && parsed.transactions) {
+          state.students = parsed.students;
+          state.transactions = parsed.transactions;
+          if (state.students.length > 0) {
+            state.studentSelect = state.students[0].id;
+          }
         }
+      } catch (error) {
+        console.error("Could not load saved data:", error);
+      }
+    }
 
+    function saveData() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        students: state.students,
+        transactions: state.transactions
+      }));
+    }
+
+    function dollars(amount) {
+      return "$" + Number(amount).toLocaleString();
+    }
+
+    function setState(updates, shouldSave = false) {
+      state = { ...state, ...updates };
+      if (shouldSave) saveData();
+      render();
+    }
+
+    function currentStudent() {
+      return state.students.find(student => student.id === state.loggedInStudentId);
+    }
+
+    function loginTeacher() {
+      if (state.teacherInput === teacherPassword) {
+        setState({
+          isTeacher: true,
+          loggedInStudentId: null,
+          screen: "teacher",
+          message: "Teacher dashboard unlocked."
+        });
+      } else {
+        setState({ message: "Wrong teacher password." });
+      }
+    }
+
+    function loginStudent() {
+      const student = state.students.find(item => item.id === Number(state.studentSelect));
+      if (student && student.pin === state.studentPin) {
+        setState({
+          isTeacher: false,
+          loggedInStudentId: student.id,
+          screen: "student",
+          message: student.name + " is logged in."
+        });
+      } else {
+        setState({ message: "Wrong student PIN." });
+      }
+    }
+
+    function logout() {
+      setState({
+        isTeacher: false,
+        loggedInStudentId: null,
+        teacherInput: "",
+        studentPin: "",
+        screen: "login",
+        message: "Logged out. Choose Student Login or Teacher Login."
+      });
+    }
+
+    function changeStudentBalance(studentId, transactionType, transactionAmount) {
+      state.students = state.students.map(student => {
+        if (student.id !== studentId) return student;
         const newBalance = transactionType === "Add"
           ? student.balance + transactionAmount
           : student.balance - transactionAmount;
-
-        return {
-          id: student.id,
-          name: student.name,
-          balance: newBalance,
-          pin: student.pin
-        };
-      });
-    });
-  }
-
-  function saveTeacherTransaction() {
-    const transactionAmount = Number(amount);
-    if (!transactionAmount || transactionAmount <= 0) {
-      return;
-    }
-
-    let targetStudents = [];
-
-    if (selectedStudent === "whole") {
-      targetStudents = students;
-    } else {
-      targetStudents = students.filter(function(student) {
-        return student.id === Number(selectedStudent);
+        return { ...student, balance: newBalance };
       });
     }
 
-    targetStudents.forEach(function(student) {
-      changeStudentBalance(student.id, type, transactionAmount);
-    });
+    function saveTeacherTransaction() {
+      const transactionAmount = Number(state.amount);
+      if (!transactionAmount || transactionAmount <= 0) return;
 
-    const newTransactions = targetStudents.map(function(student, index) {
-      return {
+      const targetStudents = state.selectedStudent === "whole"
+        ? state.students
+        : state.students.filter(student => student.id === Number(state.selectedStudent));
+
+      targetStudents.forEach(student => {
+        changeStudentBalance(student.id, state.type, transactionAmount);
+      });
+
+      const newTransactions = targetStudents.map((student, index) => ({
         id: Date.now() + index,
         studentId: student.id,
         studentName: student.name,
-        type: type,
+        type: state.type,
         amount: transactionAmount,
-        reason: reason,
+        reason: state.reason,
         status: "Approved",
         source: "Teacher"
+      }));
+
+      state.transactions = newTransactions.concat(state.transactions);
+      state.message = "Transaction saved.";
+      saveData();
+      render();
+    }
+
+    function submitStudentRequest() {
+      const student = currentStudent();
+      if (!student) return;
+
+      const transactionAmount = Number(state.amount);
+      if (!transactionAmount || transactionAmount <= 0) return;
+
+      const newTransaction = {
+        id: Date.now(),
+        studentId: student.id,
+        studentName: student.name,
+        type: state.type,
+        amount: transactionAmount,
+        reason: state.reason,
+        status: "Pending",
+        source: "Student"
       };
-    });
 
-    setTransactions(function(oldTransactions) {
-      return newTransactions.concat(oldTransactions);
-    });
-  }
-
-  function submitStudentRequest() {
-    if (!currentStudent) {
-      return;
+      state.transactions = [newTransaction].concat(state.transactions);
+      state.message = "Request submitted for teacher approval.";
+      saveData();
+      render();
     }
 
-    const transactionAmount = Number(amount);
-    if (!transactionAmount || transactionAmount <= 0) {
-      return;
-    }
+    function approveTransaction(transactionId) {
+      const transaction = state.transactions.find(item => item.id === transactionId);
+      if (!transaction || transaction.status !== "Pending") return;
 
-    const newTransaction = {
-      id: Date.now(),
-      studentId: currentStudent.id,
-      studentName: currentStudent.name,
-      type: type,
-      amount: transactionAmount,
-      reason: reason,
-      status: "Pending",
-      source: "Student"
-    };
+      changeStudentBalance(transaction.studentId, transaction.type, transaction.amount);
 
-    setTransactions(function(oldTransactions) {
-      return [newTransaction].concat(oldTransactions);
-    });
-  }
-
-  function approveTransaction(transactionId) {
-    const transaction = transactions.find(function(item) {
-      return item.id === transactionId;
-    });
-
-    if (!transaction || transaction.status !== "Pending") {
-      return;
-    }
-
-    changeStudentBalance(transaction.studentId, transaction.type, transaction.amount);
-
-    setTransactions(function(oldTransactions) {
-      return oldTransactions.map(function(item) {
+      state.transactions = state.transactions.map(item => {
         if (item.id === transactionId) {
-          return {
-            id: item.id,
-            studentId: item.studentId,
-            studentName: item.studentName,
-            type: item.type,
-            amount: item.amount,
-            reason: item.reason,
-            status: "Approved",
-            source: item.source
-          };
+          return { ...item, status: "Approved" };
         }
         return item;
       });
-    });
-  }
 
-  function denyTransaction(transactionId) {
-    setTransactions(function(oldTransactions) {
-      return oldTransactions.map(function(item) {
+      state.message = "Transaction approved.";
+      saveData();
+      render();
+    }
+
+    function denyTransaction(transactionId) {
+      state.transactions = state.transactions.map(item => {
         if (item.id === transactionId) {
-          return {
-            id: item.id,
-            studentId: item.studentId,
-            studentName: item.studentName,
-            type: item.type,
-            amount: item.amount,
-            reason: item.reason,
-            status: "Denied",
-            source: item.source
-          };
+          return { ...item, status: "Denied" };
         }
         return item;
       });
-    });
-  }
 
-  function addStudent() {
-    if (newStudentName.trim() === "") {
-      return;
+      state.message = "Transaction denied.";
+      saveData();
+      render();
     }
 
-    const newId = students.length + 1;
-    const newStudent = {
-      id: newId,
-      name: newStudentName,
-      pin: newStudentPin || String(1000 + newId),
-      balance: Number(newStudentBalance) || 0
-    };
+    function addStudent() {
+      if (state.newStudentName.trim() === "") return;
 
-    setStudents(function(oldStudents) {
-      return oldStudents.concat([newStudent]);
-    });
+      const maxId = state.students.reduce((max, student) => Math.max(max, student.id), 0);
+      const newId = maxId + 1;
 
-    setNewStudentName("");
-    setNewStudentPin("");
-    setNewStudentBalance("100");
-  }
+      const newStudent = {
+        id: newId,
+        name: state.newStudentName.trim(),
+        pin: state.newStudentPin || String(1000 + newId),
+        balance: Number(state.newStudentBalance) || 0
+      };
 
-  function removeStudent(studentId) {
-    setStudents(function(oldStudents) {
-      return oldStudents.filter(function(student) {
-        return student.id !== studentId;
-      });
-    });
-  }
-
-  function resetDemo() {
-    setStudents(startingStudents);
-    setTransactions(startingTransactions);
-    setScreen("login");
-    setIsTeacher(false);
-    setLoggedInStudentId(null);
-    setMessage("Demo reset. Choose Student Login or Teacher Login.");
-  }
-
-  const totalCash = students.reduce(function(total, student) {
-    return total + student.balance;
-  }, 0);
-
-  const pendingTransactions = transactions.filter(function(transaction) {
-    return transaction.status === "Pending";
-  });
-
-  const studentTransactions = currentStudent
-    ? transactions.filter(function(transaction) {
-        return transaction.studentId === currentStudent.id;
-      })
-    : [];
-
-  const pendingChange = studentTransactions.reduce(function(total, transaction) {
-    if (transaction.status !== "Pending") {
-      return total;
+      state.students = state.students.concat([newStudent]);
+      state.newStudentName = "";
+      state.newStudentPin = "";
+      state.newStudentBalance = "100";
+      state.studentSelect = state.students[0]?.id || newId;
+      state.message = "Student added.";
+      saveData();
+      render();
     }
 
-    if (transaction.type === "Add") {
-      return total + transaction.amount;
+    function removeStudent(studentId) {
+      const student = state.students.find(s => s.id === studentId);
+      if (!student) return;
+
+      const confirmed = confirm("Remove " + student.name + "? This will keep old transactions but remove the student from the roster.");
+      if (!confirmed) return;
+
+      state.students = state.students.filter(student => student.id !== studentId);
+      if (state.studentSelect === studentId && state.students.length > 0) {
+        state.studentSelect = state.students[0].id;
+      }
+      state.message = "Student removed.";
+      saveData();
+      render();
     }
 
-    return total - transaction.amount;
-  }, 0);
+    function resetDemo() {
+      const confirmed = confirm("Reset all demo data? This will erase saved students, balances, and transactions in this browser.");
+      if (!confirmed) return;
 
-  return (
-    <div style={styles.page}>
-      <h1>Mr. Morgan's Class Cash</h1>
-      <p style={styles.message}>{message}</p>
+      state.students = [...startingStudents];
+      state.transactions = [...startingTransactions];
+      state.screen = "login";
+      state.isTeacher = false;
+      state.loggedInStudentId = null;
+      state.message = "Demo reset. Choose Student Login or Teacher Login.";
+      state.studentSelect = 1;
+      saveData();
+      render();
+    }
 
-      <div style={styles.buttonBar}>
-        <button style={styles.button} onClick={function() { setScreen("login"); }}>Home/Login</button>
-        {isTeacher && <button style={styles.button} onClick={function() { setScreen("teacher"); }}>Teacher Dashboard</button>}
-        {isTeacher && <button style={styles.button} onClick={function() { setScreen("approvals"); }}>Approvals</button>}
-        {isTeacher && <button style={styles.button} onClick={function() { setScreen("roster"); }}>Roster</button>}
-        {loggedInStudentId && <button style={styles.button} onClick={function() { setScreen("student"); }}>Student View</button>}
-        <button style={styles.button} onClick={logout}>Lock</button>
-        <button style={styles.button} onClick={resetDemo}>Reset</button>
-      </div>
+    function exportBackup() {
+      const data = {
+        students: state.students,
+        transactions: state.transactions,
+        exportedAt: new Date().toISOString()
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "class-bank-backup.json";
+      link.click();
+      URL.revokeObjectURL(url);
+    }
 
-      <div style={styles.stats}>
-        <div style={styles.statBox}>Students: {students.length}</div>
-        <div style={styles.statBox}>Total Cash: {dollars(totalCash)}</div>
-        <div style={styles.statBox}>Pending: {pendingTransactions.length}</div>
-      </div>
+    function importBackup(event) {
+      const file = event.target.files[0];
+      if (!file) return;
 
-      {screen === "login" && (
-        <div style={styles.card}>
-          <div style={styles.loginTabs}>
-            <button
-              style={loginTab === "student" ? styles.activeLoginTab : styles.loginTab}
-              onClick={function() { setLoginTab("student"); }}
-            >
-              Student Login
-            </button>
-            <button
-              style={loginTab === "teacher" ? styles.activeLoginTab : styles.loginTab}
-              onClick={function() { setLoginTab("teacher"); }}
-            >
-              Teacher Login
-            </button>
-          </div>
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const data = JSON.parse(e.target.result);
+          if (!Array.isArray(data.students) || !Array.isArray(data.transactions)) {
+            alert("That backup file does not look right.");
+            return;
+          }
+          state.students = data.students;
+          state.transactions = data.transactions;
+          state.studentSelect = state.students[0]?.id || "";
+          state.message = "Backup imported.";
+          saveData();
+          render();
+        } catch (error) {
+          alert("Could not import that file.");
+        }
+      };
+      reader.readAsText(file);
+    }
 
-          {loginTab === "student" && (
-            <div>
-              <h2>Student Login</h2>
-              <select style={styles.input} value={studentSelect} onChange={function(event) { setStudentSelect(Number(event.target.value)); }}>
-                {students.map(function(student) {
-                  return <option key={student.id} value={student.id}>{student.name}</option>;
-                })}
-              </select>
-              <input style={styles.input} type="password" value={studentPin} onChange={function(event) { setStudentPin(event.target.value); }} placeholder="PIN / nine number" />
-              <button style={styles.primaryButton} onClick={loginStudent}>Login as Student</button>
-            </div>
-          )}
+    function transactionTable(transactions, showActions) {
+      if (!transactions || transactions.length === 0) {
+        return "<p>No transactions yet.</p>";
+      }
 
-          {loginTab === "teacher" && (
-            <div>
-              <h2>Teacher Login</h2>
-              <input style={styles.input} type="password" value={teacherInput} onChange={function(event) { setTeacherInput(event.target.value); }} placeholder="Teacher password" />
-              <button style={styles.primaryButton} onClick={loginTeacher}>Login as Teacher</button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {screen === "teacher" && isTeacher && (
-        <div style={styles.grid}>
-          <div style={styles.card}>
-            <h2>Add or Subtract Money</h2>
-            <select style={styles.input} value={selectedStudent} onChange={function(event) { setSelectedStudent(event.target.value); }}>
-              <option value="whole">Whole Class</option>
-              {students.map(function(student) {
-                return <option key={student.id} value={student.id}>{student.name}</option>;
-              })}
-            </select>
-
-            <select style={styles.input} value={type} onChange={function(event) { setType(event.target.value); }}>
-              <option value="Add">Add</option>
-              <option value="Subtract">Subtract</option>
-            </select>
-
-            <input style={styles.input} type="number" value={amount} onChange={function(event) { setAmount(event.target.value); }} />
-
-            <select style={styles.input} value={reason} onChange={function(event) { setReason(event.target.value); }}>
-              <option value="Weekly payday">Weekly payday</option>
-              <option value="Class job">Class job</option>
-              <option value="Showing work">Showing work</option>
-              <option value="Desk rent">Desk rent</option>
-              <option value="Bathroom break">Bathroom break</option>
-              <option value="Store purchase">Store purchase</option>
-              <option value="Bonus">Bonus</option>
-            </select>
-
-            <button style={styles.primaryButton} onClick={saveTeacherTransaction}>Save Approved Transaction</button>
-          </div>
-
-          <div style={styles.card}>
-            <h2>All Transactions</h2>
-            <TransactionTable transactions={transactions} approveTransaction={approveTransaction} denyTransaction={denyTransaction} showActions={true} />
-          </div>
-        </div>
-      )}
-
-      {screen === "approvals" && isTeacher && (
-        <div style={styles.card}>
-          <h2>Pending Approvals</h2>
-          <TransactionTable transactions={pendingTransactions} approveTransaction={approveTransaction} denyTransaction={denyTransaction} showActions={true} />
-        </div>
-      )}
-
-      {screen === "roster" && isTeacher && (
-        <div style={styles.grid}>
-          <div style={styles.card}>
-            <h2>Add Student</h2>
-            <input style={styles.input} value={newStudentName} onChange={function(event) { setNewStudentName(event.target.value); }} placeholder="Student name" />
-            <input style={styles.input} value={newStudentPin} onChange={function(event) { setNewStudentPin(event.target.value); }} placeholder="PIN / nine number" />
-            <input style={styles.input} type="number" value={newStudentBalance} onChange={function(event) { setNewStudentBalance(event.target.value); }} placeholder="Starting balance" />
-            <button style={styles.primaryButton} onClick={addStudent}>Add Student</button>
-          </div>
-
-          <div style={styles.card}>
-            <h2>Roster</h2>
-            {students.map(function(student) {
-              return (
-                <div key={student.id} style={styles.rosterRow}>
-                  <span>{student.name} — {dollars(student.balance)} — PIN: {student.pin}</span>
-                  <button style={styles.dangerButton} onClick={function() { removeStudent(student.id); }}>Remove</button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {screen === "student" && currentStudent && (
-        <div style={styles.grid}>
-          <div style={styles.card}>
-            <h2>{currentStudent.name}'s Account</h2>
-            <div style={styles.bigBalance}>Approved Balance: {dollars(currentStudent.balance)}</div>
-            <div style={styles.pendingBalance}>Pending Change: {pendingChange >= 0 ? "+" : ""}{dollars(pendingChange)}</div>
-            <div style={styles.pendingBalance}>Pending Total: {dollars(currentStudent.balance + pendingChange)}</div>
-
-            <h3>Submit Request</h3>
-            <select style={styles.input} value={type} onChange={function(event) { setType(event.target.value); }}>
-              <option value="Add">Add</option>
-              <option value="Subtract">Subtract</option>
-            </select>
-            <input style={styles.input} type="number" value={amount} onChange={function(event) { setAmount(event.target.value); }} />
-            <select style={styles.input} value={reason} onChange={function(event) { setReason(event.target.value); }}>
-              <option value="Class job">Class job</option>
-              <option value="Showing work">Showing work</option>
-              <option value="Store purchase">Store purchase</option>
-              <option value="Bathroom break">Bathroom break</option>
-              <option value="Bonus">Bonus</option>
-            </select>
-            <button style={styles.primaryButton} onClick={submitStudentRequest}>Submit Pending Request</button>
-          </div>
-
-          <div style={styles.card}>
-            <h2>My Transactions</h2>
-            <TransactionTable transactions={studentTransactions} showActions={false} />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TransactionTable(props) {
-  const transactions = props.transactions;
-  const approveTransaction = props.approveTransaction;
-  const denyTransaction = props.denyTransaction;
-  const showActions = props.showActions;
-
-  if (!transactions || transactions.length === 0) {
-    return <p>No transactions yet.</p>;
-  }
-
-  return (
-    <table style={styles.table}>
-      <thead>
+      const rows = transactions.map(transaction => `
         <tr>
-          <th style={styles.th}>Student</th>
-          <th style={styles.th}>Type</th>
-          <th style={styles.th}>Amount</th>
-          <th style={styles.th}>Reason</th>
-          <th style={styles.th}>Source</th>
-          <th style={styles.th}>Status</th>
-          <th style={styles.th}>Action</th>
+          <td>${transaction.studentName}</td>
+          <td>${transaction.type}</td>
+          <td>${dollars(transaction.amount)}</td>
+          <td>${transaction.reason}</td>
+          <td>${transaction.source}</td>
+          <td>${transaction.status}</td>
+          <td>
+            ${showActions && transaction.status === "Pending"
+              ? `<button class="approve" onclick="approveTransaction(${transaction.id})">Approve</button>
+                 <button class="danger" onclick="denyTransaction(${transaction.id})">Deny</button>`
+              : "—"}
+          </td>
         </tr>
-      </thead>
-      <tbody>
-        {transactions.map(function(transaction) {
-          return (
-            <tr key={transaction.id}>
-              <td style={styles.td}>{transaction.studentName}</td>
-              <td style={styles.td}>{transaction.type}</td>
-              <td style={styles.td}>{dollars(transaction.amount)}</td>
-              <td style={styles.td}>{transaction.reason}</td>
-              <td style={styles.td}>{transaction.source}</td>
-              <td style={styles.td}>{transaction.status}</td>
-              <td style={styles.td}>
-                {showActions && transaction.status === "Pending" ? (
-                  <span>
-                    <button style={styles.approveButton} onClick={function() { approveTransaction(transaction.id); }}>Approve</button>
-                    <button style={styles.dangerButton} onClick={function() { denyTransaction(transaction.id); }}>Deny</button>
-                  </span>
-                ) : (
-                  <span>—</span>
-                )}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
-  );
-}
+      `).join("");
 
-const styles = {
-  page: {
-    minHeight: "100vh",
-    backgroundColor: "#f1f5f9",
-    padding: 24,
-    fontFamily: "Arial, sans-serif",
-    color: "#0f172a"
-  },
-  message: {
-    backgroundColor: "#e0f2fe",
-    padding: 12,
-    borderRadius: 10,
-    fontWeight: "bold"
-  },
-  buttonBar: {
-    display: "flex",
-    gap: 8,
-    flexWrap: "wrap",
-    marginBottom: 16
-  },
-  loginTabs: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 8,
-    backgroundColor: "#f8fafc",
-    padding: 8,
-    borderRadius: 12,
-    marginBottom: 16
-  },
-  loginTab: {
-    padding: "12px 14px",
-    borderRadius: 10,
-    border: "1px solid #cbd5e1",
-    backgroundColor: "white",
-    cursor: "pointer",
-    fontWeight: "bold"
-  },
-  activeLoginTab: {
-    padding: "12px 14px",
-    borderRadius: 10,
-    border: "0",
-    backgroundColor: "#0f172a",
-    color: "white",
-    cursor: "pointer",
-    fontWeight: "bold"
-  },
-  button: {
-    padding: "10px 12px",
-    borderRadius: 10,
-    border: "1px solid #cbd5e1",
-    backgroundColor: "white",
-    cursor: "pointer"
-  },
-  primaryButton: {
-    padding: "10px 12px",
-    borderRadius: 10,
-    border: "0",
-    backgroundColor: "#0f172a",
-    color: "white",
-    cursor: "pointer",
-    marginTop: 8
-  },
-  dangerButton: {
-    padding: "8px 10px",
-    borderRadius: 8,
-    border: "0",
-    backgroundColor: "#dc2626",
-    color: "white",
-    cursor: "pointer",
-    marginLeft: 6
-  },
-  approveButton: {
-    padding: "8px 10px",
-    borderRadius: 8,
-    border: "0",
-    backgroundColor: "#16a34a",
-    color: "white",
-    cursor: "pointer"
-  },
-  stats: {
-    display: "flex",
-    gap: 12,
-    flexWrap: "wrap",
-    marginBottom: 16
-  },
-  statBox: {
-    backgroundColor: "white",
-    padding: 14,
-    borderRadius: 12,
-    border: "1px solid #e2e8f0"
-  },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
-    gap: 16
-  },
-  card: {
-    backgroundColor: "white",
-    padding: 18,
-    borderRadius: 14,
-    border: "1px solid #e2e8f0",
-    overflowX: "auto"
-  },
-  input: {
-    display: "block",
-    width: "100%",
-    boxSizing: "border-box",
-    padding: 10,
-    marginBottom: 10,
-    borderRadius: 8,
-    border: "1px solid #cbd5e1"
-  },
-  table: {
-    width: "100%",
-    borderCollapse: "collapse",
-    minWidth: 700
-  },
-  th: {
-    textAlign: "left",
-    padding: 8,
-    backgroundColor: "#f8fafc",
-    borderBottom: "1px solid #e2e8f0"
-  },
-  td: {
-    padding: 8,
-    borderBottom: "1px solid #e2e8f0"
-  },
-  rosterRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 10,
-    border: "1px solid #e2e8f0",
-    borderRadius: 10,
-    marginBottom: 8
-  },
-  bigBalance: {
-    fontSize: 24,
-    fontWeight: "bold",
-    marginBottom: 10
-  },
-  pendingBalance: {
-    fontSize: 18,
-    marginBottom: 8
-  }
-};
+      return `
+        <table>
+          <thead>
+            <tr>
+              <th>Student</th>
+              <th>Type</th>
+              <th>Amount</th>
+              <th>Reason</th>
+              <th>Source</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function render() {
+      const student = currentStudent();
+      const totalCash = state.students.reduce((total, student) => total + student.balance, 0);
+      const pendingTransactions = state.transactions.filter(transaction => transaction.status === "Pending");
+      const studentTransactions = student
+        ? state.transactions.filter(transaction => transaction.studentId === student.id)
+        : [];
+
+      const pendingChange = studentTransactions.reduce((total, transaction) => {
+        if (transaction.status !== "Pending") return total;
+        return transaction.type === "Add" ? total + transaction.amount : total - transaction.amount;
+      }, 0);
+
+      const studentOptions = state.students.map(student =>
+        `<option value="${student.id}" ${Number(state.studentSelect) === student.id ? "selected" : ""}>${student.name}</option>`
+      ).join("");
+
+      let content = `
+        <h1>Mr. Morgan's Class Cash</h1>
+        <p class="message">${state.message}</p>
+
+        <div class="button-bar">
+          <button onclick="setState({ screen: 'login' })">Home/Login</button>
+          ${state.isTeacher ? `<button onclick="setState({ screen: 'teacher' })">Teacher Dashboard</button>` : ""}
+          ${state.isTeacher ? `<button onclick="setState({ screen: 'approvals' })">Approvals</button>` : ""}
+          ${state.isTeacher ? `<button onclick="setState({ screen: 'roster' })">Roster</button>` : ""}
+          ${state.loggedInStudentId ? `<button onclick="setState({ screen: 'student' })">Student View</button>` : ""}
+          <button onclick="logout()">Lock</button>
+          <button onclick="resetDemo()">Reset</button>
+        </div>
+
+        <div class="stats">
+          <div class="stat-box">Students: ${state.students.length}</div>
+          <div class="stat-box">Total Cash: ${dollars(totalCash)}</div>
+          <div class="stat-box">Pending: ${pendingTransactions.length}</div>
+        </div>
+      `;
+
+      if (state.screen === "login") {
+        content += `
+          <div class="card">
+            <div class="login-tabs">
+              <button class="${state.loginTab === "student" ? "active-tab" : "inactive-tab"}" onclick="setState({ loginTab: 'student' })">Student Login</button>
+              <button class="${state.loginTab === "teacher" ? "active-tab" : "inactive-tab"}" onclick="setState({ loginTab: 'teacher' })">Teacher Login</button>
+            </div>
+
+            ${state.loginTab === "student" ? `
+              <h2>Student Login</h2>
+              <select onchange="setState({ studentSelect: Number(this.value) })">${studentOptions}</select>
+              <input type="password" value="${state.studentPin}" oninput="setState({ studentPin: this.value })" placeholder="PIN / nine number" />
+              <button class="primary" onclick="loginStudent()">Login as Student</button>
+            ` : `
+              <h2>Teacher Login</h2>
+              <input type="password" value="${state.teacherInput}" oninput="setState({ teacherInput: this.value })" placeholder="Teacher password" />
+              <button class="primary" onclick="loginTeacher()">Login as Teacher</button>
+            `}
+          </div>
+        `;
+      }
+
+      if (state.screen === "teacher" && state.isTeacher) {
+        const targetOptions = `
+          <option value="whole" ${state.selectedStudent === "whole" ? "selected" : ""}>Whole Class</option>
+          ${state.students.map(student => `<option value="${student.id}" ${Number(state.selectedStudent) === student.id ? "selected" : ""}>${student.name}</option>`).join("")}
+        `;
+
+        content += `
+          <div class="grid">
+            <div class="card">
+              <h2>Add or Subtract Money</h2>
+              <select onchange="setState({ selectedStudent: this.value })">${targetOptions}</select>
+              <select onchange="setState({ type: this.value })">
+                <option value="Add" ${state.type === "Add" ? "selected" : ""}>Add</option>
+                <option value="Subtract" ${state.type === "Subtract" ? "selected" : ""}>Subtract</option>
+              </select>
+              <input type="number" value="${state.amount}" oninput="setState({ amount: this.value })" />
+              <select onchange="setState({ reason: this.value })">
+                ${["Weekly payday", "Class job", "Showing work", "Desk rent", "Bathroom break", "Store purchase", "Bonus"].map(reason =>
+                  `<option value="${reason}" ${state.reason === reason ? "selected" : ""}>${reason}</option>`
+                ).join("")}
+              </select>
+              <button class="primary" onclick="saveTeacherTransaction()">Save Approved Transaction</button>
+            </div>
+
+            <div class="card">
+              <h2>All Transactions</h2>
+              ${transactionTable(state.transactions, true)}
+            </div>
+          </div>
+        `;
+      }
+
+      if (state.screen === "approvals" && state.isTeacher) {
+        content += `
+          <div class="card">
+            <h2>Pending Approvals</h2>
+            ${transactionTable(pendingTransactions, true)}
+          </div>
+        `;
+      }
+
+      if (state.screen === "roster" && state.isTeacher) {
+        content += `
+          <div class="grid">
+            <div class="card">
+              <h2>Add Student</h2>
+              <input value="${state.newStudentName}" oninput="setState({ newStudentName: this.value })" placeholder="Student name" />
+              <input value="${state.newStudentPin}" oninput="setState({ newStudentPin: this.value })" placeholder="PIN / nine number" />
+              <input type="number" value="${state.newStudentBalance}" oninput="setState({ newStudentBalance: this.value })" placeholder="Starting balance" />
+              <button class="primary" onclick="addStudent()">Add Student</button>
+
+              <h2>Backup</h2>
+              <button onclick="exportBackup()">Export Backup</button>
+              <input type="file" accept=".json" onchange="importBackup(event)" />
+              <p class="small-note">This app saves to this browser using localStorage. Export backups often.</p>
+            </div>
+
+            <div class="card">
+              <h2>Roster</h2>
+              ${state.students.map(student => `
+                <div class="roster-row">
+                  <span>${student.name} — ${dollars(student.balance)} — PIN: ${student.pin}</span>
+                  <button class="danger" onclick="removeStudent(${student.id})">Remove</button>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        `;
+      }
+
+      if (state.screen === "student" && student) {
+        content += `
+          <div class="grid">
+            <div class="card">
+              <h2>${student.name}'s Account</h2>
+              <div class="big-balance">Approved Balance: ${dollars(student.balance)}</div>
+              <div class="pending-balance">Pending Change: ${pendingChange >= 0 ? "+" : ""}${dollars(pendingChange)}</div>
+              <div class="pending-balance">Pending Total: ${dollars(student.balance + pendingChange)}</div>
+
+              <h3>Submit Request</h3>
+              <select onchange="setState({ type: this.value })">
+                <option value="Add" ${state.type === "Add" ? "selected" : ""}>Add</option>
+                <option value="Subtract" ${state.type === "Subtract" ? "selected" : ""}>Subtract</option>
+              </select>
+              <input type="number" value="${state.amount}" oninput="setState({ amount: this.value })" />
+              <select onchange="setState({ reason: this.value })">
+                ${["Class job", "Showing work", "Store purchase", "Bathroom break", "Bonus"].map(reason =>
+                  `<option value="${reason}" ${state.reason === reason ? "selected" : ""}>${reason}</option>`
+                ).join("")}
+              </select>
+              <button class="primary" onclick="submitStudentRequest()">Submit Pending Request</button>
+            </div>
+
+            <div class="card">
+              <h2>My Transactions</h2>
+              ${transactionTable(studentTransactions, false)}
+            </div>
+          </div>
+        `;
+      }
+
+      document.getElementById("app").innerHTML = content;
+    }
+
+    loadData();
+    render();
+  </script>
+</body>
+</html>
