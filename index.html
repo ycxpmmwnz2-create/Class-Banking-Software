@@ -1109,7 +1109,8 @@
       data.settings.studentRequestsEnabled = document.getElementById("studentRequestsEnabled").checked;
       data.settings.studentAddRequestsEnabled = document.getElementById("studentAddRequestsEnabled").checked;
       data.settings.studentSubtractRequestsEnabled = document.getElementById("studentSubtractRequestsEnabled").checked;
-      data.settings.purchaseRequestsEnabled = document.getElementById("purchaseRequestsEnabled").checked;
+      const purchaseToggle = document.getElementById("purchaseRequestsEnabled");
+      if (purchaseToggle) data.settings.purchaseRequestsEnabled = purchaseToggle.checked;
       data.settings.requireTeacherApproval = document.getElementById("requireTeacherApproval").checked;
 
       const newReasons = reasonsText
@@ -1262,6 +1263,34 @@
       memoWrap.classList.toggle("visible", categorySelect.value === "Teacher's Choice");
     }
 
+    function studentCategoryOptions(type) {
+      const categories = type === "Add"
+        ? data.settings.addMoneyCategories
+        : data.settings.subtractMoneyCategories;
+
+      return categories
+        .filter(category => category !== "Teacher's Choice")
+        .map(category => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`)
+        .join("");
+    }
+
+    function setStudentTransactionMode(type) {
+      const typeInput = document.getElementById("studentRequestType");
+      const addButton = document.getElementById("studentAddModeButton");
+      const subtractButton = document.getElementById("studentSubtractModeButton");
+      const categorySelect = document.getElementById("studentRequestReason");
+      const submitButton = document.getElementById("studentRequestButton");
+
+      if (!typeInput || !addButton || !subtractButton || !categorySelect || !submitButton) return;
+
+      typeInput.value = type;
+      addButton.classList.toggle("active", type === "Add");
+      subtractButton.classList.toggle("active", type === "Subtract");
+      categorySelect.innerHTML = studentCategoryOptions(type);
+      submitButton.textContent = type === "Add" ? "Submit Add Money Request" : "Submit Payment";
+    }
+
+
 
     function transactionTable(transactions, showActions) {
       if (!transactions || transactions.length === 0) {
@@ -1337,7 +1366,7 @@
           <div class="button-bar no-print">
             ${isTeacher ? `<button onclick="setScreen('teacher')">Dashboard</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('approvals')">Approvals</button>` : ""}
-            ${isTeacher ? `<button onclick="setScreen('purchases')">Purchases</button>` : ""}
+            ${isTeacher ? `<button onclick="setScreen('purchases')">Payments</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('roster')">Roster</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('settings')">Settings</button>` : ""}
             ${loggedInStudentId ? `<button onclick="setScreen('student')">Student View</button>` : ""}
@@ -1350,7 +1379,7 @@
             <div class="stat-box">Class Cash: ${dollars(totalCash)}</div>
             <div class="stat-box">Students: ${data.students.length}</div>
             <div class="stat-box">Pending Credits: ${pendingTransactions.filter(t => t.type === "Add").length}</div>
-            <div class="stat-box">Purchases: ${purchaseTransactions.length}</div>
+            <div class="stat-box">Payments: ${data.transactions.filter(transaction => transaction.source === "Student" && transaction.type === "Subtract").length}</div>
             <div class="stat-box">Approved: ${approvedTransactions.length}</div>
           </div>
         ` : ""}
@@ -1582,14 +1611,6 @@
                 </div>
 
                 <div class="setting-row">
-                  <div class="setting-text">Students can submit purchases</div>
-                  <label class="switch">
-                    <input id="purchaseRequestsEnabled" type="checkbox" ${data.settings.purchaseRequestsEnabled ? "checked" : ""} />
-                    <span class="slider"></span>
-                  </label>
-                </div>
-
-                <div class="setting-row">
                   <div class="setting-text">Credits need teacher approval</div>
                   <label class="switch">
                     <input id="requireTeacherApproval" type="checkbox" ${data.settings.requireTeacherApproval ? "checked" : ""} />
@@ -1648,45 +1669,30 @@
               </div>
 
               <div class="card soft-card">
-              <h3>Purchase Request</h3>
-              ${student.frozen ? `
-                <div class="empty">This account is frozen. Purchases are not available.</div>
-              ` : !data.settings.purchaseRequestsEnabled ? `
-                <div class="empty">Purchase requests are currently turned off.</div>
-              ` : `
-                <div class="purchase-note">Choose what you want to buy. Payments are approved automatically and come out of your balance right away.</div>
-                <label for="purchaseCategory">Purchase choice</label>
-                <select id="purchaseCategory">${purchaseCategoryOptions("")}</select>
+                <h2>Add or Subtract Money</h2>
+                ${student.frozen ? `
+                  <div class="empty">This account is frozen. Money requests are not available.</div>
+                ` : !data.settings.studentRequestsEnabled ? `
+                  <div class="empty">Money requests are currently turned off.</div>
+                ` : `
+                  <div class="purchase-note">Choose whether you are adding money or paying money. Add-money requests need teacher approval. Payments subtract right away.</div>
 
-                <label for="purchaseMemo">Memo/details</label>
-                <input id="purchaseMemo" placeholder="Example: Takis, 2 tickets, or prize box" />
+                  <input id="studentRequestType" type="hidden" value="${data.settings.studentAddRequestsEnabled ? "Add" : "Subtract"}" />
 
-                <label for="purchaseAmount">Amount</label>
-                <input id="purchaseAmount" type="number" min="1" value="1" />
+                  <label>Transaction type</label>
+                  <div class="segmented-control">
+                    ${data.settings.studentAddRequestsEnabled ? `<button id="studentAddModeButton" class="segment-button active" onclick="setStudentTransactionMode('Add')">Add Money</button>` : ""}
+                    ${data.settings.studentSubtractRequestsEnabled ? `<button id="studentSubtractModeButton" class="segment-button ${!data.settings.studentAddRequestsEnabled ? "active" : ""}" onclick="setStudentTransactionMode('Subtract')">Subtract Money</button>` : ""}
+                  </div>
 
-                <button class="primary" onclick="submitPurchaseRequest()">Submit Purchase Request</button>
-              `}
+                  <label for="studentRequestReason">Category</label>
+                  <select id="studentRequestReason">${studentCategoryOptions(data.settings.studentAddRequestsEnabled ? "Add" : "Subtract")}</select>
 
-              <h3 style="margin-top: 24px;">Other Money Request</h3>
-              ${student.frozen ? `
-                <div class="empty">This account is frozen. Other money requests are not available.</div>
-              ` : !data.settings.studentRequestsEnabled ? `
-                <div class="empty">Other money requests are currently turned off.</div>
-              ` : `
-                <label for="studentRequestType">Type</label>
-                <select id="studentRequestType">
-                  ${data.settings.studentAddRequestsEnabled ? `<option value="Add">Add</option>` : ""}
-                  ${data.settings.studentSubtractRequestsEnabled ? `<option value="Subtract">Subtract</option>` : ""}
-                </select>
+                  <label for="studentRequestAmount">Amount</label>
+                  <input id="studentRequestAmount" type="number" min="1" value="1" />
 
-                <label for="studentRequestAmount">Amount</label>
-                <input id="studentRequestAmount" type="number" min="1" value="1" />
-
-                <label for="studentRequestReason">Reason</label>
-                <select id="studentRequestReason">${reasonOptions("")}</select>
-
-                <button class="primary" onclick="submitStudentRequest()">Submit Other Request</button>
-              `}
+                  <button id="studentRequestButton" class="primary" onclick="submitStudentRequest()">${data.settings.studentAddRequestsEnabled ? "Submit Add Money Request" : "Submit Payment"}</button>
+                `}
               </div>
             </div>
 
