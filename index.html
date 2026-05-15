@@ -592,6 +592,7 @@
     const defaultData = {
       students: [],
       transactions: [],
+      loginHistory: [],
       settings: defaultSettings,
       lastBackupAt: null
     };
@@ -613,6 +614,7 @@
           ? parsed.students.map(student => ({ ...student, frozen: Boolean(student.frozen) }))
           : [],
         transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
+        loginHistory: Array.isArray(parsed.loginHistory) ? parsed.loginHistory.slice(0, 10) : [],
         settings: {
           ...defaultSettings,
           ...(parsed.settings || {}),
@@ -690,6 +692,61 @@
       }
     }
 
+    function recordStudentLoginAttempt(student, result, note) {
+      const entry = {
+        id: Date.now(),
+        date: new Date().toLocaleString(),
+        studentId: student ? student.id : null,
+        studentName: student ? student.name : "Unknown student",
+        result,
+        note
+      };
+
+      data.loginHistory = [entry].concat(data.loginHistory || []).slice(0, 10);
+      saveData();
+    }
+
+    function clearLoginHistory() {
+      const confirmed = confirm("Clear student login history?");
+      if (!confirmed) return;
+
+      data.loginHistory = [];
+      saveData();
+      message = "Student login history cleared.";
+      render();
+    }
+
+    function loginHistoryTable() {
+      const history = data.loginHistory || [];
+
+      if (history.length === 0) {
+        return '<div class="empty">No student login history yet.</div>';
+      }
+
+      const rows = history.map(entry => `
+        <tr>
+          <td>${escapeHtml(entry.date)}</td>
+          <td>${escapeHtml(entry.studentName)}</td>
+          <td>${escapeHtml(entry.result)}</td>
+          <td>${escapeHtml(entry.note || "")}</td>
+        </tr>
+      `).join("");
+
+      return `
+        <table>
+          <thead>
+            <tr>
+              <th>Date/Time</th>
+              <th>Student</th>
+              <th>Result</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
     function loginTeacher() {
       const input = document.getElementById("teacherPassword").value;
       if (input === data.settings.teacherPassword) {
@@ -710,16 +767,21 @@
 
       if (student && student.pin === pin) {
         if (student.frozen) {
+          recordStudentLoginAttempt(student, "Blocked", "Account frozen");
           message = "This account is currently frozen. Please see Mr. Morgan.";
           render();
           return;
         }
 
+        recordStudentLoginAttempt(student, "Success", "Student logged in");
         isTeacher = false;
         loggedInStudentId = student.id;
         screen = "student";
         message = student.name + " is logged in.";
       } else {
+        if (student) {
+          recordStudentLoginAttempt(student, "Failed", "Incorrect PIN");
+        }
         message = "Wrong student PIN.";
       }
       render();
@@ -1210,6 +1272,7 @@
       const backup = {
         students: data.students,
         transactions: data.transactions,
+        loginHistory: data.loginHistory || [],
         settings: data.settings,
         exportedAt: data.lastBackupAt
       };
@@ -1241,6 +1304,7 @@
           data = normalizeData({
             students: imported.students,
             transactions: imported.transactions,
+            loginHistory: imported.loginHistory || data.loginHistory || [],
             settings: imported.settings || data.settings,
             lastBackupAt: imported.exportedAt || new Date().toISOString()
           });
@@ -1512,7 +1576,7 @@
             ${isTeacher ? `<button onclick="setScreen('purchases')">Payments</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('roster')">Roster</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('settings')">Settings</button>` : ""}
-            ${loggedInStudentId ? `<button onclick="setScreen('student')">Student View</button>` : ""}
+            
             <button onclick="logout()">Lock Screen</button>
           </div>
         ` : ""}
@@ -1787,6 +1851,11 @@
               <button onclick="exportBackup()">Export Backup</button>
               <label for="backupFileSettings" style="margin-top: 12px;">Import Backup</label>
               <input id="backupFileSettings" type="file" accept=".json" onchange="importBackup(event)" />
+
+              <h3>Student Login History</h3>
+              <div class="lock-note">Shows the last 10 student login attempts, including failed PIN attempts.</div>
+              ${loginHistoryTable()}
+              <button onclick="clearLoginHistory()">Clear Login History</button>
 
               <h3>Cleanup</h3>
               <button onclick="clearTransactions()">Clear Transaction History</button>
