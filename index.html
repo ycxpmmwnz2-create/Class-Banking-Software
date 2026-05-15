@@ -8,11 +8,11 @@
   
   <style>
     :root {
-      --bg: #e8f6f4;
-      --card: #eaf8f6;
+      --bg: #cdebe7;
+      --card: #dff3f0;
       --text: #12323a;
       --muted: #5f7780;
-      --line: #c8dfdf;
+      --line: #a9d3cf;
       --teal: #5ec7c2;
       --teal-dark: #238f8c;
       --mint: #b8ebd0;
@@ -35,9 +35,9 @@
       margin: 0;
       min-height: 100vh;
       background:
-        radial-gradient(circle at top left, rgba(94, 199, 194, 0.26), transparent 34%),
-        radial-gradient(circle at top right, rgba(199, 233, 249, 0.75), transparent 32%),
-        linear-gradient(180deg, #eefaf8 0%, var(--bg) 100%);
+        radial-gradient(circle at top left, rgba(94, 199, 194, 0.42), transparent 34%),
+        radial-gradient(circle at top right, rgba(163, 218, 218, 0.80), transparent 32%),
+        linear-gradient(180deg, #dff3f0 0%, var(--bg) 100%);
       padding: 24px;
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI Variable", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       color: var(--text);
@@ -121,7 +121,7 @@
     }
 
     .message {
-      background: rgba(232, 246, 244, 0.98);
+      background: rgba(211, 238, 233, 0.98);
       border: 1px solid rgba(216, 231, 236, 0.9);
       padding: 14px 16px;
       border-radius: var(--radius-md);
@@ -141,7 +141,7 @@
       padding: 11px 14px;
       border-radius: 999px;
       border: 1px solid var(--line);
-      background: #eaf8f6;
+      background: #dff3f0;
       cursor: pointer;
       font-weight: 800;
       color: var(--text);
@@ -152,7 +152,7 @@
     button:hover {
       transform: translateY(-1px);
       box-shadow: var(--shadow-soft);
-      background: #e0f3f1;
+      background: #d4eeea;
     }
 
     .primary {
@@ -205,7 +205,7 @@
     }
 
     .card {
-      background: #eaf8f6;
+      background: #dff3f0;
       padding: 20px;
       border-radius: var(--radius-lg);
       border: 1px solid rgba(216, 231, 236, 0.9);
@@ -215,7 +215,7 @@
     }
 
     .soft-card {
-      background: linear-gradient(135deg, #f7fdfc, #e2f4f2);
+      background: linear-gradient(135deg, #eaf8f6, #d3eee9);
     }
 
     input, select, textarea {
@@ -227,7 +227,7 @@
       border: 1px solid var(--line);
       font-size: 16px;
       font-family: inherit;
-      background: #eaf8f6;
+      background: #dff3f0;
       color: var(--text);
     }
 
@@ -317,6 +317,39 @@
       transform: translateX(22px);
     }
 
+
+    .segmented-control {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      background: rgba(243, 251, 250, 0.72);
+      border: 1px solid var(--line);
+      padding: 8px;
+      border-radius: 18px;
+      margin-bottom: 14px;
+    }
+
+    .segment-button {
+      border: 0;
+      box-shadow: none;
+      background: transparent;
+      color: var(--text);
+      border-radius: 14px;
+    }
+
+    .segment-button.active {
+      background: var(--teal-dark);
+      color: white;
+    }
+
+    .teacher-choice-memo {
+      display: none;
+    }
+
+    .teacher-choice-memo.visible {
+      display: block;
+    }
+
     .login-tabs {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -335,7 +368,7 @@
     }
 
     .inactive-tab {
-      background-color: #eaf8f6;
+      background-color: #dff3f0;
       font-weight: 900;
     }
 
@@ -399,7 +432,7 @@
     }
 
     .empty {
-      background-color: rgba(232, 246, 244, 0.92);
+      background-color: rgba(211, 238, 233, 0.94);
       border: 1px dashed #bdd2da;
       color: var(--muted);
     }
@@ -453,7 +486,7 @@
       border: 1px solid rgba(216, 231, 236, 0.9);
       border-radius: 18px;
       margin-bottom: 10px;
-      background: rgba(232, 246, 244, 0.94);
+      background: rgba(211, 238, 233, 0.96);
     }
 
     .activity-list {
@@ -462,7 +495,7 @@
     }
 
     .activity-item {
-      background: rgba(232, 246, 244, 0.92);
+      background: rgba(211, 238, 233, 0.94);
       border: 1px solid rgba(216, 231, 236, 0.82);
       border-radius: 16px;
       padding: 12px;
@@ -482,7 +515,7 @@
     .print-only { display: none; }
 
     @media print {
-      body { background: #eaf8f6; padding: 16px; }
+      body { background: #dff3f0; padding: 16px; }
       .no-print { display: none !important; }
       .print-only { display: block; }
       .card { border: none; padding: 0; box-shadow: none; }
@@ -535,6 +568,24 @@
         "School Store",
         "Road Runner Tickets",
         "Other"
+      ],
+      addMoneyCategories: [
+        "Homework",
+        "Class Job",
+        "Positive Consequence",
+        "Going Above and Beyond",
+        "Showing Work",
+        "Earned Class Cash in Specials",
+        "Teacher's Choice"
+      ],
+      subtractMoneyCategories: [
+        "Rent",
+        "Restroom",
+        "Class Store Purchase",
+        "Roadrunner Ticket Purchase",
+        "Negative Consequence",
+        "Bad Language (Swearing, Racial Slurs, Etc...)",
+        "Teacher's Choice"
       ]
     };
 
@@ -566,7 +617,9 @@
           ...defaultSettings,
           ...(parsed.settings || {}),
           reasons: Array.isArray(parsed.settings?.reasons) ? parsed.settings.reasons : defaultSettings.reasons,
-          purchaseCategories: Array.isArray(parsed.settings?.purchaseCategories) ? parsed.settings.purchaseCategories : defaultSettings.purchaseCategories
+          purchaseCategories: Array.isArray(parsed.settings?.purchaseCategories) ? parsed.settings.purchaseCategories : defaultSettings.purchaseCategories,
+          addMoneyCategories: Array.isArray(parsed.settings?.addMoneyCategories) ? parsed.settings.addMoneyCategories : defaultSettings.addMoneyCategories,
+          subtractMoneyCategories: Array.isArray(parsed.settings?.subtractMoneyCategories) ? parsed.settings.subtractMoneyCategories : defaultSettings.subtractMoneyCategories
         },
         lastBackupAt: parsed.lastBackupAt || null
       };
@@ -741,6 +794,8 @@
       const type = document.getElementById("transactionType").value;
       const amount = Number(document.getElementById("transactionAmount").value);
       const reason = document.getElementById("transactionReason").value;
+      const teacherMemoInput = document.getElementById("teacherChoiceMemo");
+      const teacherMemo = teacherMemoInput ? teacherMemoInput.value.trim() : "";
 
       if (!amount || amount <= 0) {
         showMessage("Enter an amount greater than 0.");
@@ -766,7 +821,7 @@
           type,
           amount,
           reason,
-          memo: "",
+          memo: teacherMemo,
           category: "",
           status: "Approved",
           source: "Teacher"
@@ -1170,6 +1225,44 @@
       ).join("");
     }
 
+    function categoryOptions(categories, selectedCategory) {
+      return categories.map(category =>
+        `<option value="${escapeHtml(category)}" ${selectedCategory === category ? "selected" : ""}>${escapeHtml(category)}</option>`
+      ).join("");
+    }
+
+    function setCustomTransactionMode(type) {
+      const typeInput = document.getElementById("transactionType");
+      const addButton = document.getElementById("addModeButton");
+      const subtractButton = document.getElementById("subtractModeButton");
+      const categorySelect = document.getElementById("transactionReason");
+      const submitButton = document.getElementById("customTransactionButton");
+
+      if (!typeInput || !addButton || !subtractButton || !categorySelect || !submitButton) return;
+
+      typeInput.value = type;
+      addButton.classList.toggle("active", type === "Add");
+      subtractButton.classList.toggle("active", type === "Subtract");
+
+      const categories = type === "Add"
+        ? data.settings.addMoneyCategories
+        : data.settings.subtractMoneyCategories;
+
+      categorySelect.innerHTML = categoryOptions(categories, "");
+      submitButton.textContent = type === "Add" ? "Add Money" : "Subtract Money";
+
+      toggleTeacherChoiceMemo();
+    }
+
+    function toggleTeacherChoiceMemo() {
+      const categorySelect = document.getElementById("transactionReason");
+      const memoWrap = document.getElementById("teacherChoiceMemoWrap");
+      if (!categorySelect || !memoWrap) return;
+
+      memoWrap.classList.toggle("visible", categorySelect.value === "Teacher's Choice");
+    }
+
+
     function transactionTable(transactions, showActions) {
       if (!transactions || transactions.length === 0) {
         return '<div class="empty">No transactions yet.</div>';
@@ -1329,29 +1422,36 @@
           <div class="grid">
             <div class="card">
               <h2>Custom Transaction</h2>
-              <div class="lock-note">Use this for whole-class payday, custom amounts, or reasons beyond the quick buttons.</div>
+              <div class="lock-note">Choose whether you are adding or subtracting money first. Teacher’s Choice gives you an optional memo box.</div>
               ${data.students.length === 0 ? `
                 <div class="empty">Add students on the Roster page first.</div>
               ` : `
+                <input id="transactionType" type="hidden" value="Add" />
+
+                <label>Transaction type</label>
+                <div class="segmented-control">
+                  <button id="addModeButton" class="segment-button active" onclick="setCustomTransactionMode('Add')">Add Money</button>
+                  <button id="subtractModeButton" class="segment-button" onclick="setCustomTransactionMode('Subtract')">Subtract Money</button>
+                </div>
+
                 <label for="selectedStudent">Student or whole class</label>
                 <select id="selectedStudent">
                   <option value="whole">Whole Class</option>
                   ${studentOptions}
                 </select>
 
-                <label for="transactionType">Type</label>
-                <select id="transactionType">
-                  <option value="Add">Add</option>
-                  <option value="Subtract">Subtract</option>
-                </select>
-
                 <label for="transactionAmount">Amount</label>
                 <input id="transactionAmount" type="number" min="1" value="1" />
 
-                <label for="transactionReason">Reason</label>
-                <select id="transactionReason">${reasonOptions("")}</select>
+                <label for="transactionReason">Category</label>
+                <select id="transactionReason" onchange="toggleTeacherChoiceMemo()">${categoryOptions(data.settings.addMoneyCategories, "")}</select>
 
-                <button class="primary" onclick="saveTeacherTransaction()">Save Approved Transaction</button>
+                <div id="teacherChoiceMemoWrap" class="teacher-choice-memo">
+                  <label for="teacherChoiceMemo">Teacher’s Choice memo</label>
+                  <input id="teacherChoiceMemo" placeholder="Optional reason or memo" />
+                </div>
+
+                <button id="customTransactionButton" class="primary" onclick="saveTeacherTransaction()">Add Money</button>
               `}
             </div>
 
