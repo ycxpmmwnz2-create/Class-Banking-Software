@@ -512,6 +512,57 @@
       font-weight: 700;
     }
 
+
+    .student-transaction-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .student-transaction-card {
+      background: rgba(243, 251, 250, 0.74);
+      border: 1px solid rgba(169, 211, 207, 0.82);
+      border-radius: 16px;
+      padding: 12px;
+    }
+
+    .student-transaction-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+
+    .student-transaction-title {
+      font-weight: 950;
+      font-size: 16px;
+      color: var(--text);
+    }
+
+    .student-transaction-amount {
+      font-weight: 950;
+      font-size: 18px;
+      white-space: nowrap;
+    }
+
+    .student-transaction-meta {
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 750;
+      line-height: 1.35;
+    }
+
+    .status-pill {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 900;
+      margin-left: 6px;
+      background: #dff3f0;
+      color: var(--teal-dark);
+    }
+
     .print-only { display: none; }
 
     @media print {
@@ -1557,6 +1608,31 @@
       `;
     }
 
+
+    function studentTransactionList(transactions) {
+      if (!transactions || transactions.length === 0) {
+        return '<div class="empty">No transactions yet.</div>';
+      }
+
+      return `
+        <div class="student-transaction-list">
+          ${transactions.map(transaction => `
+            <div class="student-transaction-card">
+              <div class="student-transaction-top">
+                <div class="student-transaction-title">${escapeHtml(transaction.reason || "Transaction")}</div>
+                <div class="student-transaction-amount">${transaction.type === "Add" ? "+" : "-"}${dollars(transaction.amount)}</div>
+              </div>
+              <div class="student-transaction-meta">
+                ${escapeHtml(transaction.type)} · ${escapeHtml(transaction.date || "")}
+                <span class="status-pill">${escapeHtml(transaction.status)}</span>
+              </div>
+              ${transaction.memo ? `<div class="student-transaction-meta">Memo: ${escapeHtml(transaction.memo)}</div>` : ""}
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
     function render() {
       const student = currentStudent();
       const totalCash = data.students.reduce((total, student) => total + Number(student.balance || 0), 0);
@@ -1957,7 +2033,7 @@
 
             <div class="card">
               <h2>My Transactions</h2>
-              ${transactionTable(studentTransactions, false)}
+              ${studentTransactionList(studentTransactions)}
             </div>
           </div>
         `;
