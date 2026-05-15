@@ -614,7 +614,7 @@
           ? parsed.students.map(student => ({ ...student, frozen: Boolean(student.frozen) }))
           : [],
         transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
-        loginHistory: Array.isArray(parsed.loginHistory) ? parsed.loginHistory.slice(0, 10) : [],
+        loginHistory: Array.isArray(parsed.loginHistory) ? parsed.loginHistory.slice(0, 500) : [],
         settings: {
           ...defaultSettings,
           ...(parsed.settings || {}),
@@ -702,12 +702,12 @@
         note
       };
 
-      data.loginHistory = [entry].concat(data.loginHistory || []).slice(0, 10);
+      data.loginHistory = [entry].concat(data.loginHistory || []).slice(0, 500);
       saveData();
     }
 
     function clearLoginHistory() {
-      const confirmed = confirm("Clear student login history?");
+      const confirmed = confirm("Clear all student login history?");
       if (!confirmed) return;
 
       data.loginHistory = [];
@@ -716,17 +716,32 @@
       render();
     }
 
-    function loginHistoryTable() {
-      const history = data.loginHistory || [];
+    function updateLoginHistoryView() {
+      const container = document.getElementById("studentLoginHistoryContainer");
+      if (!container) return;
+      container.innerHTML = loginHistoryTableForSelectedStudent();
+    }
+
+    function loginHistoryTableForSelectedStudent() {
+      const selectedStudentId = Number(document.getElementById("loginHistoryStudentSelect")?.value || 0);
+      const history = (data.loginHistory || [])
+        .filter(entry => Number(entry.studentId) === selectedStudentId)
+        .slice(0, 20);
+
+      const student = data.students.find(item => item.id === selectedStudentId);
+      const studentName = student ? student.name : "selected student";
+
+      if (!selectedStudentId) {
+        return '<div class="empty">Choose a student to view login history.</div>';
+      }
 
       if (history.length === 0) {
-        return '<div class="empty">No student login history yet.</div>';
+        return '<div class="empty">No login attempts recorded for ' + escapeHtml(studentName) + ' yet.</div>';
       }
 
       const rows = history.map(entry => `
         <tr>
           <td>${escapeHtml(entry.date)}</td>
-          <td>${escapeHtml(entry.studentName)}</td>
           <td>${escapeHtml(entry.result)}</td>
           <td>${escapeHtml(entry.note || "")}</td>
         </tr>
@@ -737,7 +752,6 @@
           <thead>
             <tr>
               <th>Date/Time</th>
-              <th>Student</th>
               <th>Result</th>
               <th>Note</th>
             </tr>
@@ -1853,9 +1867,21 @@
               <input id="backupFileSettings" type="file" accept=".json" onchange="importBackup(event)" />
 
               <h3>Student Login History</h3>
-              <div class="lock-note">Shows the last 10 student login attempts, including failed PIN attempts.</div>
-              ${loginHistoryTable()}
-              <button onclick="clearLoginHistory()">Clear Login History</button>
+              <div class="lock-note">Choose a student to see their last 20 login attempts, including successful logins, failed PIN attempts, and frozen account blocks.</div>
+
+              ${data.students.length === 0 ? `
+                <div class="empty">Add students before using login history.</div>
+              ` : `
+                <label for="loginHistoryStudentSelect">Student</label>
+                <select id="loginHistoryStudentSelect" onchange="updateLoginHistoryView()">
+                  ${data.students.map(student => `<option value="${student.id}">${escapeHtml(student.name)}</option>`).join("")}
+                </select>
+                <div id="studentLoginHistoryContainer">
+                  ${loginHistoryTableForSelectedStudent()}
+                </div>
+              `}
+
+              <button onclick="clearLoginHistory()">Clear All Login History</button>
 
               <h3>Cleanup</h3>
               <button onclick="clearTransactions()">Clear Transaction History</button>
