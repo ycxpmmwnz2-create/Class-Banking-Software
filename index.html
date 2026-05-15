@@ -680,6 +680,16 @@
       return data.students.find(student => student.id === loggedInStudentId);
     }
 
+    function handleLoginEnter(event, loginType) {
+      if (event.key !== "Enter") return;
+
+      if (loginType === "teacher") {
+        loginTeacher();
+      } else {
+        loginStudent();
+      }
+    }
+
     function loginTeacher() {
       const input = document.getElementById("teacherPassword").value;
       if (input === data.settings.teacherPassword) {
@@ -946,6 +956,37 @@
       data.transactions = [newTransaction].concat(data.transactions);
       saveData();
       message = "Purchase submitted and approved. Money has been subtracted.";
+      render();
+    }
+
+    function approveAllCreditRequests() {
+      const pendingCredits = data.transactions.filter(transaction =>
+        transaction.status === "Pending" && transaction.type === "Add"
+      );
+
+      if (pendingCredits.length === 0) {
+        showMessage("No pending credit requests to approve.");
+        return;
+      }
+
+      const confirmed = confirm("Approve all pending credit requests?");
+      if (!confirmed) return;
+
+      pendingCredits.forEach(transaction => {
+        changeStudentBalance(transaction.studentId, "Add", Number(transaction.amount));
+      });
+
+      const pendingCreditIds = new Set(pendingCredits.map(transaction => transaction.id));
+
+      data.transactions = data.transactions.map(transaction => {
+        if (pendingCreditIds.has(transaction.id)) {
+          return { ...transaction, status: "Approved" };
+        }
+        return transaction;
+      });
+
+      saveData();
+      message = pendingCredits.length + " credit request(s) approved.";
       render();
     }
 
@@ -1274,6 +1315,108 @@
         .join("");
     }
 
+    function submitStudentAddMoney() {
+      const student = currentStudent();
+      if (!student) return;
+
+      if (student.frozen) {
+        showMessage("This account is frozen. Please see Mr. Morgan.");
+        return;
+      }
+
+      if (!data.settings.studentAddRequestsEnabled) {
+        showMessage("Add Money is currently turned off.");
+        return;
+      }
+
+      const amount = Number(document.getElementById("studentAddAmount").value);
+      const reason = document.getElementById("studentAddReason").value;
+
+      if (!amount || amount <= 0) {
+        showMessage("Enter an amount greater than 0.");
+        return;
+      }
+
+      const newTransaction = {
+        id: Date.now(),
+        date: new Date().toLocaleString(),
+        studentId: student.id,
+        studentName: student.name,
+        type: "Add",
+        amount,
+        reason,
+        memo: "",
+        category: "",
+        status: "Pending",
+        source: "Student"
+      };
+
+      data.transactions = [newTransaction].concat(data.transactions);
+      saveData();
+      message = "Add Money submitted for teacher approval.";
+      render();
+    }
+
+    function submitStudentSubtractMoney() {
+      const student = currentStudent();
+      if (!student) return;
+
+      if (student.frozen) {
+        showMessage("This account is frozen. Please see Mr. Morgan.");
+        return;
+      }
+
+      if (!data.settings.studentSubtractRequestsEnabled) {
+        showMessage("Subtract Money is currently turned off.");
+        return;
+      }
+
+      const amount = Number(document.getElementById("studentSubtractAmount").value);
+      const reason = document.getElementById("studentSubtractReason").value;
+
+      if (!amount || amount <= 0) {
+        showMessage("Enter an amount greater than 0.");
+        return;
+      }
+
+      if (amount > Number(student.balance)) {
+        showMessage("That amount is more than your approved balance.");
+        return;
+      }
+
+      const newTransaction = {
+        id: Date.now(),
+        date: new Date().toLocaleString(),
+        studentId: student.id,
+        studentName: student.name,
+        type: "Subtract",
+        amount,
+        reason,
+        memo: "",
+        category: "",
+        status: "Approved",
+        source: "Student"
+      };
+
+      changeStudentBalance(student.id, "Subtract", amount);
+      data.transactions = [newTransaction].concat(data.transactions);
+      saveData();
+      message = "Subtract Money submitted. Money has been subtracted.";
+      render();
+    }
+
+
+    function studentCategoryOptions(type) {
+      const categories = type === "Add"
+        ? data.settings.addMoneyCategories
+        : data.settings.subtractMoneyCategories;
+
+      return categories
+        .filter(category => category !== "Teacher's Choice")
+        .map(category => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`)
+        .join("");
+    }
+
     function setStudentTransactionMode(type) {
       const typeInput = document.getElementById("studentRequestType");
       const addButton = document.getElementById("studentAddModeButton");
@@ -1379,7 +1522,7 @@
             <div class="stat-box">Class Cash: ${dollars(totalCash)}</div>
             <div class="stat-box">Students: ${data.students.length}</div>
             <div class="stat-box">Pending Credits: ${pendingTransactions.filter(t => t.type === "Add").length}</div>
-            <div class="stat-box">Payments: ${data.transactions.filter(transaction => transaction.source === "Student" && transaction.type === "Subtract").length}</div>
+            <div class="stat-box">Student Debits: ${data.transactions.filter(transaction => transaction.source === "Student" && transaction.type === "Subtract").length}</div>
             <div class="stat-box">Approved: ${approvedTransactions.length}</div>
           </div>
         ` : ""}
@@ -1396,7 +1539,7 @@
             ${loginTab === "teacher" ? `
               <h2>Teacher Login</h2>
               <label for="teacherPassword">Teacher password</label>
-              <input id="teacherPassword" type="password" placeholder="Teacher password" autocomplete="current-password" />
+              <input id="teacherPassword" type="password" placeholder="Teacher password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'teacher')" />
               <button class="primary" onclick="loginTeacher()">Login as Teacher</button>
             ` : `
               <h2>Student Login</h2>
@@ -1406,7 +1549,7 @@
                 <label for="studentSelect">Student</label>
                 <select id="studentSelect">${studentOptions}</select>
                 <label for="studentPin">PIN / password</label>
-                <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" />
+                <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'student')" />
                 <button class="primary" onclick="loginStudent()">Login as Student</button>
               `}
             `}
@@ -1493,10 +1636,18 @@
       }
 
       if (screen === "approvals" && isTeacher) {
+        const pendingCredits = data.transactions.filter(transaction =>
+          transaction.status === "Pending" && transaction.type === "Add"
+        );
+
         html += `
           <div class="card">
-            <h2>Pending Approvals</h2>
-            ${transactionTable(pendingTransactions, true)}
+            <h2>Pending Credit Approvals</h2>
+            <div class="lock-note">Add-money requests need teacher approval. You can approve them one at a time or approve all pending credits at once.</div>
+            ${pendingCredits.length > 0 ? `<button class="primary" onclick="approveAllCreditRequests()">Approve All Credits</button>` : ""}
+            <div style="margin-top: 14px;">
+              ${transactionTable(pendingCredits, true)}
+            </div>
           </div>
         `;
       }
@@ -1668,31 +1819,44 @@
               <div class="pending-balance">Pending Total: ${dollars(Number(student.balance) + pendingChange)}</div>
               </div>
 
-              <div class="card soft-card">
-                <h2>Add or Subtract Money</h2>
-                ${student.frozen ? `
-                  <div class="empty">This account is frozen. Money requests are not available.</div>
-                ` : !data.settings.studentRequestsEnabled ? `
-                  <div class="empty">Money requests are currently turned off.</div>
-                ` : `
-                  <div class="purchase-note">Choose whether you are adding money or paying money. Add-money requests need teacher approval. Payments subtract right away.</div>
+              <div class="grid">
+                <div class="card soft-card">
+                  <h2>Add Money</h2>
+                  ${student.frozen ? `
+                    <div class="empty">This account is frozen. Add Money is not available.</div>
+                  ` : !data.settings.studentAddRequestsEnabled ? `
+                    <div class="empty">Add Money is currently turned off.</div>
+                  ` : `
+                    <div class="purchase-note">Use this when you earned money. Mr. Morgan will approve it before it is added.</div>
 
-                  <input id="studentRequestType" type="hidden" value="${data.settings.studentAddRequestsEnabled ? "Add" : "Subtract"}" />
+                    <label for="studentAddReason">Reason</label>
+                    <select id="studentAddReason">${studentCategoryOptions("Add")}</select>
 
-                  <label>Transaction type</label>
-                  <div class="segmented-control">
-                    ${data.settings.studentAddRequestsEnabled ? `<button id="studentAddModeButton" class="segment-button active" onclick="setStudentTransactionMode('Add')">Add Money</button>` : ""}
-                    ${data.settings.studentSubtractRequestsEnabled ? `<button id="studentSubtractModeButton" class="segment-button ${!data.settings.studentAddRequestsEnabled ? "active" : ""}" onclick="setStudentTransactionMode('Subtract')">Subtract Money</button>` : ""}
-                  </div>
+                    <label for="studentAddAmount">Amount</label>
+                    <input id="studentAddAmount" type="number" min="1" value="1" />
 
-                  <label for="studentRequestReason">Category</label>
-                  <select id="studentRequestReason">${studentCategoryOptions(data.settings.studentAddRequestsEnabled ? "Add" : "Subtract")}</select>
+                    <button class="primary" onclick="submitStudentAddMoney()">Submit Add Money</button>
+                  `}
+                </div>
 
-                  <label for="studentRequestAmount">Amount</label>
-                  <input id="studentRequestAmount" type="number" min="1" value="1" />
+                <div class="card soft-card">
+                  <h2>Subtract Money</h2>
+                  ${student.frozen ? `
+                    <div class="empty">This account is frozen. Subtract Money is not available.</div>
+                  ` : !data.settings.studentSubtractRequestsEnabled ? `
+                    <div class="empty">Subtract Money is currently turned off.</div>
+                  ` : `
+                    <div class="purchase-note">Use this when you are paying money. It comes out of your balance right away.</div>
 
-                  <button id="studentRequestButton" class="primary" onclick="submitStudentRequest()">${data.settings.studentAddRequestsEnabled ? "Submit Add Money Request" : "Submit Payment"}</button>
-                `}
+                    <label for="studentSubtractReason">Reason</label>
+                    <select id="studentSubtractReason">${studentCategoryOptions("Subtract")}</select>
+
+                    <label for="studentSubtractAmount">Amount</label>
+                    <input id="studentSubtractAmount" type="number" min="1" value="1" />
+
+                    <button class="primary" onclick="submitStudentSubtractMoney()">Submit Subtract Money</button>
+                  `}
+                </div>
               </div>
             </div>
 
