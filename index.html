@@ -5,203 +5,414 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Mr. Morgan's Class Cash</title>
+  
   <style>
+    :root {
+      --bg: #e8f6f4;
+      --card: #eaf8f6;
+      --text: #12323a;
+      --muted: #5f7780;
+      --line: #c8dfdf;
+      --teal: #5ec7c2;
+      --teal-dark: #238f8c;
+      --mint: #b8ebd0;
+      --sky: #c7e9f9;
+      --coral: #ffb4a2;
+      --shadow: 0 16px 40px rgba(18, 50, 58, 0.10);
+      --shadow-soft: 0 8px 22px rgba(18, 50, 58, 0.08);
+      --radius-lg: 28px;
+      --radius-md: 18px;
+      --radius-sm: 12px;
+    }
+
     * { box-sizing: border-box; }
+    html {
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
     body {
       margin: 0;
       min-height: 100vh;
-      background-color: #f1f5f9;
+      background:
+        radial-gradient(circle at top left, rgba(94, 199, 194, 0.26), transparent 34%),
+        radial-gradient(circle at top right, rgba(199, 233, 249, 0.75), transparent 32%),
+        linear-gradient(180deg, #eefaf8 0%, var(--bg) 100%);
       padding: 24px;
-      font-family: Arial, sans-serif;
-      color: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI Variable", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
     }
-    h1 { margin-top: 0; margin-bottom: 8px; }
-    h2 { margin-top: 0; }
-    h3 { margin-bottom: 8px; }
+
+    h1, h2, h3 { letter-spacing: -0.03em; }
+    h1 { margin: 0; font-size: clamp(32px, 4vw, 54px); line-height: 1; }
+    h2 { margin: 0 0 14px; font-size: 25px; }
+    h3 { margin: 18px 0 10px; font-size: 17px; }
+
+    #app {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, rgba(94, 199, 194, 0.96), rgba(199, 233, 249, 0.94));
+      border: 1px solid rgba(255, 255, 255, 0.65);
+      border-radius: var(--radius-lg);
+      padding: 26px;
+      box-shadow: var(--shadow);
+      margin-bottom: 18px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 230px;
+      height: 230px;
+      right: -70px;
+      top: -90px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.36);
+    }
+
+    .hero-content {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 1.2fr auto;
+      gap: 20px;
+      align-items: center;
+    }
+
+    .tagline {
+      margin: 10px 0 0;
+      font-size: 18px;
+      font-weight: 800;
+      color: rgba(18, 50, 58, 0.78);
+    }
+
+    .hero-badge {
+      background: rgba(255, 255, 255, 0.62);
+      border: 1px solid rgba(255, 255, 255, 0.72);
+      border-radius: 999px;
+      padding: 12px 16px;
+      font-weight: 900;
+      color: var(--teal-dark);
+      box-shadow: var(--shadow-soft);
+      white-space: nowrap;
+    }
+
     .message {
-      background-color: #e0f2fe;
-      padding: 12px;
-      border-radius: 10px;
-      font-weight: bold;
+      background: rgba(232, 246, 244, 0.98);
+      border: 1px solid rgba(216, 231, 236, 0.9);
+      padding: 14px 16px;
+      border-radius: var(--radius-md);
+      font-weight: 800;
       margin-bottom: 16px;
+      box-shadow: var(--shadow-soft);
     }
+
     .button-bar, .stats {
       display: flex;
-      gap: 8px;
+      gap: 10px;
       flex-wrap: wrap;
-      margin-bottom: 16px;
+      margin-bottom: 18px;
     }
+
     button {
-      padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid #cbd5e1;
-      background-color: white;
+      padding: 11px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #eaf8f6;
       cursor: pointer;
-      font-weight: 600;
+      font-weight: 800;
+      color: var(--text);
+      box-shadow: 0 3px 10px rgba(18, 50, 58, 0.05);
+      transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
     }
-    button:hover { background-color: #f8fafc; }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-soft);
+      background: #e0f3f1;
+    }
+
     .primary {
       border: 0;
-      background-color: #0f172a;
+      background: var(--teal-dark);
       color: white;
-      margin-top: 8px;
+      margin-top: 6px;
     }
-    .primary:hover { background-color: #1e293b; }
+
     .danger {
       border: 0;
-      background-color: #dc2626;
-      color: white;
+      background: #fee2e2;
+      color: #991b1b;
       margin-left: 6px;
     }
-    .danger:hover { background-color: #b91c1c; }
+
     .approve {
       border: 0;
-      background-color: #16a34a;
-      color: white;
+      background: #dcfce7;
+      color: #166534;
     }
-    .approve:hover { background-color: #15803d; }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(140px, 1fr));
+      gap: 12px;
+    }
+
     .stat-box {
-      background-color: white;
-      padding: 14px;
-      border-radius: 12px;
-      border: 1px solid #e2e8f0;
-      font-weight: 700;
+      background: var(--card);
+      border: 1px solid rgba(216, 231, 236, 0.9);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      box-shadow: var(--shadow-soft);
+      font-weight: 950;
+      font-size: 20px;
     }
+
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
       gap: 16px;
     }
-    .card {
-      background-color: white;
-      padding: 18px;
-      border-radius: 14px;
-      border: 1px solid #e2e8f0;
-      overflow-x: auto;
+
+    .wide-grid {
+      display: grid;
+      grid-template-columns: minmax(340px, 0.9fr) minmax(440px, 1.4fr);
+      gap: 16px;
+      margin-bottom: 16px;
     }
+
+    .card {
+      background: #eaf8f6;
+      padding: 20px;
+      border-radius: var(--radius-lg);
+      border: 1px solid rgba(216, 231, 236, 0.9);
+      box-shadow: var(--shadow-soft);
+      overflow-x: auto;
+      backdrop-filter: blur(10px);
+    }
+
+    .soft-card {
+      background: linear-gradient(135deg, #f7fdfc, #e2f4f2);
+    }
+
     input, select, textarea {
       display: block;
       width: 100%;
-      padding: 10px;
-      margin-bottom: 10px;
-      border-radius: 8px;
-      border: 1px solid #cbd5e1;
+      padding: 12px;
+      margin-bottom: 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--line);
       font-size: 16px;
-      font-family: Arial, sans-serif;
+      font-family: inherit;
+      background: #eaf8f6;
+      color: var(--text);
     }
-    textarea { min-height: 120px; }
+
+    input:focus, select:focus, textarea:focus {
+      outline: 3px solid rgba(94, 199, 194, .25);
+      border-color: var(--teal);
+    }
+
+    textarea { min-height: 130px; resize: vertical; }
+
     label {
       display: block;
-      font-weight: 700;
-      margin-bottom: 4px;
+      font-weight: 900;
+      margin-bottom: 6px;
+      color: #29464e;
     }
+
     .login-tabs {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 8px;
-      background-color: #f8fafc;
+      background-color: rgba(244, 248, 251, 0.82);
       padding: 8px;
-      border-radius: 12px;
+      border-radius: 18px;
       margin-bottom: 16px;
     }
+
     .active-tab {
       border: 0;
-      background-color: #0f172a;
+      background: var(--teal-dark);
       color: white;
-      font-weight: bold;
+      font-weight: 900;
     }
+
     .inactive-tab {
-      background-color: white;
-      font-weight: bold;
+      background-color: #eaf8f6;
+      font-weight: 900;
     }
+
+    .quick-cash-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin: 10px 0;
+    }
+
+    .quick-btn {
+      border: 0;
+      border-radius: 18px;
+      font-size: 22px;
+      padding: 18px 8px;
+      color: var(--text);
+      background: var(--mint);
+    }
+
+    .quick-btn.subtract {
+      background: var(--coral);
+      color: var(--text);
+    }
+
+    .balance-card {
+      background: linear-gradient(135deg, rgba(94, 199, 194, 0.96), rgba(199, 233, 249, 0.94));
+      border: 1px solid rgba(255,255,255,.75);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      box-shadow: var(--shadow-soft);
+      margin-bottom: 16px;
+    }
+
+    .big-balance {
+      font-size: clamp(42px, 8vw, 70px);
+      font-weight: 950;
+      letter-spacing: -0.07em;
+      margin: 8px 0;
+    }
+
+    .pending-balance {
+      font-size: 18px;
+      margin-bottom: 8px;
+      font-weight: 800;
+      color: rgba(18, 50, 58, 0.76);
+    }
+
+    .small-note {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 8px;
+      line-height: 1.35;
+    }
+
+    .empty, .lock-note, .purchase-note, .backup-reminder {
+      padding: 14px;
+      border-radius: var(--radius-md);
+      font-weight: 800;
+      margin-bottom: 12px;
+      border: 1px solid rgba(216, 231, 236, 0.9);
+    }
+
+    .empty {
+      background-color: rgba(232, 246, 244, 0.92);
+      border: 1px dashed #bdd2da;
+      color: var(--muted);
+    }
+
+    .lock-note {
+      background-color: #ecfeff;
+      color: #164e63;
+    }
+
+    .purchase-note {
+      background-color: #f0fdf4;
+      color: #14532d;
+    }
+
+    .backup-reminder {
+      background-color: #fffbeb;
+      color: #78350f;
+    }
+
     table {
       width: 100%;
       border-collapse: collapse;
-      min-width: 820px;
+      min-width: 860px;
+      overflow: hidden;
+      border-radius: 16px;
     }
+
     th {
       text-align: left;
-      padding: 8px;
-      background-color: #f8fafc;
-      border-bottom: 1px solid #e2e8f0;
+      padding: 10px;
+      background-color: rgba(199, 233, 249, 0.55);
+      color: #29464e;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
     }
+
     td {
-      padding: 8px;
-      border-bottom: 1px solid #e2e8f0;
+      padding: 10px;
+      border-bottom: 1px solid rgba(216, 231, 236, 0.82);
       vertical-align: top;
+      font-weight: 650;
     }
+
     .roster-row {
       display: grid;
       grid-template-columns: 1.2fr 0.8fr 0.7fr auto;
       gap: 8px;
       align-items: center;
-      padding: 10px;
-      border: 1px solid #e2e8f0;
-      border-radius: 10px;
-      margin-bottom: 8px;
-    }
-    .big-balance {
-      font-size: 28px;
-      font-weight: bold;
+      padding: 12px;
+      border: 1px solid rgba(216, 231, 236, 0.9);
+      border-radius: 18px;
       margin-bottom: 10px;
+      background: rgba(232, 246, 244, 0.94);
     }
-    .pending-balance {
-      font-size: 18px;
-      margin-bottom: 8px;
+
+    .activity-list {
+      display: grid;
+      gap: 10px;
     }
-    .small-note {
-      font-size: 13px;
-      color: #475569;
-      margin-top: 8px;
-      line-height: 1.35;
-    }
-    .empty {
-      padding: 18px;
-      border-radius: 12px;
-      background-color: #f8fafc;
-      border: 1px dashed #cbd5e1;
-      color: #475569;
-    }
-    .backup-reminder {
-      background-color: #fef3c7;
-      border: 1px solid #f59e0b;
-      color: #78350f;
+
+    .activity-item {
+      background: rgba(232, 246, 244, 0.92);
+      border: 1px solid rgba(216, 231, 236, 0.82);
+      border-radius: 16px;
       padding: 12px;
-      border-radius: 10px;
-      font-weight: 700;
-      margin-bottom: 12px;
     }
-    .lock-note {
-      background-color: #ecfeff;
-      border: 1px solid #06b6d4;
-      color: #164e63;
-      padding: 12px;
-      border-radius: 10px;
-      font-weight: 700;
-      margin-bottom: 12px;
+
+    .activity-title {
+      font-weight: 950;
+      margin-bottom: 4px;
     }
-    .purchase-note {
-      background-color: #f0fdf4;
-      border: 1px solid #22c55e;
-      color: #14532d;
-      padding: 12px;
-      border-radius: 10px;
+
+    .activity-sub {
+      color: var(--muted);
+      font-size: 14px;
       font-weight: 700;
-      margin-bottom: 12px;
     }
+
     .print-only { display: none; }
+
     @media print {
-      body { background: white; padding: 16px; }
+      body { background: #eaf8f6; padding: 16px; }
       .no-print { display: none !important; }
       .print-only { display: block; }
-      .card { border: none; padding: 0; }
+      .card { border: none; padding: 0; box-shadow: none; }
       table { min-width: 0; font-size: 14px; }
       th, td { border: 1px solid #999; }
     }
+
+    @media (max-width: 1000px) {
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .wide-grid { grid-template-columns: 1fr; }
+      .hero-content { grid-template-columns: 1fr; }
+    }
+
     @media (max-width: 700px) {
       body { padding: 12px; }
+      .hero { padding: 20px; }
+      .stats { grid-template-columns: 1fr; }
       .roster-row { grid-template-columns: 1fr; }
-      .danger { margin-left: 0; }
+      .danger { margin-left: 0; margin-top: 6px; }
+      .quick-cash-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -246,7 +457,7 @@
     let loginTab = "teacher";
     let isTeacher = false;
     let loggedInStudentId = null;
-    let message = "Log in as teacher to add students and set up your class bank.";
+    let message = "Positive Vibes Only — choose teacher or student login.";
 
     function cloneDefault() {
       return JSON.parse(JSON.stringify(defaultData));
@@ -254,7 +465,9 @@
 
     function normalizeData(parsed) {
       return {
-        students: Array.isArray(parsed.students) ? parsed.students : [],
+        students: Array.isArray(parsed.students)
+          ? parsed.students.map(student => ({ ...student, frozen: Boolean(student.frozen) }))
+          : [],
         transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
         settings: {
           ...defaultSettings,
@@ -340,6 +553,12 @@
       const student = data.students.find(item => item.id === studentId);
 
       if (student && student.pin === pin) {
+        if (student.frozen) {
+          message = "This account is currently frozen. Please see Mr. Morgan.";
+          render();
+          return;
+        }
+
         isTeacher = false;
         loggedInStudentId = student.id;
         screen = "student";
@@ -367,6 +586,61 @@
           : Number(student.balance) - transactionAmount;
         return { ...student, balance: newBalance };
       });
+    }
+
+    function quickCash(type, amount) {
+      const select = document.getElementById("quickStudent");
+      if (!select) {
+        showMessage("Choose a student first.");
+        return;
+      }
+
+      const studentId = Number(select.value);
+      const student = data.students.find(item => item.id === studentId);
+
+      if (!student) {
+        showMessage("Choose a student first.");
+        return;
+      }
+
+      changeStudentBalance(student.id, type, amount);
+
+      const transaction = {
+        id: Date.now(),
+        date: new Date().toLocaleString(),
+        studentId: student.id,
+        studentName: student.name,
+        type,
+        amount,
+        reason: type === "Add" ? "Quick Cash" : "Classroom Expense",
+        memo: "$" + amount + " quick button",
+        category: "",
+        status: "Approved",
+        source: "Teacher"
+      };
+
+      data.transactions = [transaction].concat(data.transactions);
+      saveData();
+      message = student.name + " " + (type === "Add" ? "received " : "paid ") + dollars(amount) + ".";
+      render();
+    }
+
+    function recentActivity() {
+      const recent = data.transactions.slice(0, 6);
+      if (recent.length === 0) {
+        return '<div class="empty">No activity yet. Once money starts moving, recent activity will show here.</div>';
+      }
+
+      return `
+        <div class="activity-list">
+          ${recent.map(item => `
+            <div class="activity-item">
+              <div class="activity-title">${escapeHtml(item.studentName)} — ${escapeHtml(item.type)} ${dollars(item.amount)}</div>
+              <div class="activity-sub">${escapeHtml(item.reason)}${item.memo ? " · " + escapeHtml(item.memo) : ""} · ${escapeHtml(item.status)}</div>
+            </div>
+          `).join("")}
+        </div>
+      `;
     }
 
     function saveTeacherTransaction() {
@@ -416,6 +690,11 @@
       const student = currentStudent();
       if (!student) return;
 
+      if (student.frozen) {
+        showMessage("This account is frozen. Please see Mr. Morgan.");
+        return;
+      }
+
       if (!data.settings.studentRequestsEnabled) {
         showMessage("Student requests are currently turned off.");
         return;
@@ -440,6 +719,13 @@
         return;
       }
 
+      if (type === "Subtract" && amount > Number(student.balance)) {
+        showMessage("That payment is more than your approved balance.");
+        return;
+      }
+
+      const shouldBePending = type === "Add";
+
       const newTransaction = {
         id: Date.now(),
         date: new Date().toLocaleString(),
@@ -450,25 +736,30 @@
         reason,
         memo: "",
         category: "",
-        status: data.settings.requireTeacherApproval ? "Pending" : "Approved",
+        status: shouldBePending ? "Pending" : "Approved",
         source: "Student"
       };
 
-      if (!data.settings.requireTeacherApproval) {
+      if (!shouldBePending) {
         changeStudentBalance(student.id, type, amount);
       }
 
       data.transactions = [newTransaction].concat(data.transactions);
       saveData();
-      message = data.settings.requireTeacherApproval
-        ? "Request submitted for teacher approval."
-        : "Request submitted and automatically approved.";
+      message = shouldBePending
+        ? "Credit request submitted for teacher approval."
+        : "Payment submitted and approved.";
       render();
     }
 
     function submitPurchaseRequest() {
       const student = currentStudent();
       if (!student) return;
+
+      if (student.frozen) {
+        showMessage("This account is frozen. Please see Mr. Morgan.");
+        return;
+      }
 
       if (!data.settings.purchaseRequestsEnabled) {
         showMessage("Purchase requests are currently turned off.");
@@ -489,8 +780,6 @@
         return;
       }
 
-      const reason = "Purchase: " + category;
-
       const newTransaction = {
         id: Date.now(),
         date: new Date().toLocaleString(),
@@ -498,16 +787,17 @@
         studentName: student.name,
         type: "Subtract",
         amount,
-        reason,
+        reason: "Purchase: " + category,
         memo,
         category,
-        status: "Pending",
+        status: "Approved",
         source: "Student Purchase"
       };
 
+      changeStudentBalance(student.id, "Subtract", amount);
       data.transactions = [newTransaction].concat(data.transactions);
       saveData();
-      message = "Purchase request submitted for teacher approval.";
+      message = "Purchase submitted and approved. Money has been subtracted.";
       render();
     }
 
@@ -575,7 +865,8 @@
         id: maxId + 1,
         name,
         pin,
-        balance: Number.isFinite(startingBalance) ? startingBalance : 0
+        balance: Number.isFinite(startingBalance) ? startingBalance : 0,
+        frozen: false
       };
 
       data.students.push(newStudent);
@@ -600,7 +891,8 @@
           ...student,
           name,
           pin,
-          balance: Number.isFinite(balance) ? balance : 0
+          balance: Number.isFinite(balance) ? balance : 0,
+          frozen: Boolean(student.frozen)
         };
       });
 
@@ -625,6 +917,29 @@
       if (loggedInStudentId === studentId) loggedInStudentId = null;
       saveData();
       message = student.name + " removed.";
+      render();
+    }
+
+    function toggleFreezeStudent(studentId) {
+      const student = data.students.find(s => s.id === studentId);
+      if (!student) return;
+
+      const shouldFreeze = !student.frozen;
+      const confirmed = confirm((shouldFreeze ? "Freeze " : "Unfreeze ") + student.name + "'s account?");
+      if (!confirmed) return;
+
+      data.students = data.students.map(item => {
+        if (item.id !== studentId) return item;
+        return { ...item, frozen: shouldFreeze };
+      });
+
+      if (shouldFreeze && loggedInStudentId === studentId) {
+        loggedInStudentId = null;
+        screen = "login";
+      }
+
+      saveData();
+      message = student.name + "'s account is now " + (shouldFreeze ? "frozen." : "unfrozen.");
       render();
     }
 
@@ -817,32 +1132,44 @@
       ).join("");
 
       let html = `
-        <h1>Mr. Morgan's Class Cash</h1>
-        <p class="message">${escapeHtml(message)}</p>
+        <section class="hero">
+          <div class="hero-content">
+            <div>
+              <h1>Mr. Morgan's Class Cash</h1>
+              <p class="tagline">Positive Vibes Only · Classroom Banking</p>
+            </div>
+            <div class="hero-badge">Morgan Bank: Fast, Simple and Student Friendly</div>
+          </div>
+        </section>
 
-        <div class="button-bar no-print">
-          <button onclick="setScreen('login')">Home/Login</button>
-          ${isTeacher ? `<button onclick="setScreen('teacher')">Teacher Dashboard</button>` : ""}
-          ${isTeacher ? `<button onclick="setScreen('approvals')">Approvals</button>` : ""}
-          ${isTeacher ? `<button onclick="setScreen('purchases')">Purchases</button>` : ""}
-          ${isTeacher ? `<button onclick="setScreen('roster')">Roster</button>` : ""}
-          ${isTeacher ? `<button onclick="setScreen('settings')">Settings</button>` : ""}
-          ${loggedInStudentId ? `<button onclick="setScreen('student')">Student View</button>` : ""}
-          <button onclick="logout()">Lock</button>
-        </div>
+        ${(screen !== "login") ? `<p class="message">${escapeHtml(message)}</p>` : ""}
 
-        <div class="stats no-print">
-          <div class="stat-box">Students: ${data.students.length}</div>
-          <div class="stat-box">Total Cash: ${dollars(totalCash)}</div>
-          <div class="stat-box">Pending: ${pendingTransactions.length}</div>
-          <div class="stat-box">Purchases: ${purchaseTransactions.length}</div>
-          <div class="stat-box">Approved Transactions: ${approvedTransactions.length}</div>
-        </div>
+        ${(isTeacher || loggedInStudentId) ? `
+          <div class="button-bar no-print">
+            ${isTeacher ? `<button onclick="setScreen('teacher')">Teacher Dashboard</button>` : ""}
+            ${isTeacher ? `<button onclick="setScreen('approvals')">Approvals</button>` : ""}
+            ${isTeacher ? `<button onclick="setScreen('purchases')">Purchases</button>` : ""}
+            ${isTeacher ? `<button onclick="setScreen('roster')">Roster</button>` : ""}
+            ${isTeacher ? `<button onclick="setScreen('settings')">Settings</button>` : ""}
+            ${loggedInStudentId ? `<button onclick="setScreen('student')">Student View</button>` : ""}
+            <button onclick="logout()">Lock Screen</button>
+          </div>
+        ` : ""}
+
+        ${isTeacher ? `
+          <div class="stats no-print">
+            <div class="stat-box">Class Cash: ${dollars(totalCash)}</div>
+            <div class="stat-box">Students: ${data.students.length}</div>
+            <div class="stat-box">Pending Credits: ${pendingTransactions.filter(t => t.type === "Add").length}</div>
+            <div class="stat-box">Purchases: ${purchaseTransactions.length}</div>
+            <div class="stat-box">Approved: ${approvedTransactions.length}</div>
+          </div>
+        ` : ""}
       `;
 
       if (screen === "login") {
         html += `
-          <div class="card">
+          <div class="card soft-card">
             <div class="login-tabs">
               <button class="${loginTab === "teacher" ? "active-tab" : "inactive-tab"}" onclick="setLoginTab('teacher')">Teacher Login</button>
               <button class="${loginTab === "student" ? "active-tab" : "inactive-tab"}" onclick="setLoginTab('student')">Student Login</button>
@@ -856,7 +1183,7 @@
             ` : `
               <h2>Student Login</h2>
               ${data.students.length === 0 ? `
-                <div class="empty">No students have been added yet. Log in as teacher and add your roster.</div>
+                <div class="empty">Student login is not available yet.</div>
               ` : `
                 <label for="studentSelect">Student</label>
                 <select id="studentSelect">${studentOptions}</select>
@@ -871,10 +1198,42 @@
 
       if (screen === "teacher" && isTeacher) {
         html += `
+          <div class="wide-grid">
+            <div class="card soft-card">
+              <h2>Quick Cash</h2>
+              <div class="lock-note">Choose a student, then tap one button. Built for classroom speed.</div>
+              ${data.students.length === 0 ? `
+                <div class="empty">Add students on the Roster page first.</div>
+              ` : `
+                <label for="quickStudent">Student</label>
+                <select id="quickStudent">${studentOptions}</select>
+
+                <h3>Add Money</h3>
+                <div class="quick-cash-grid">
+                  <button class="quick-btn" onclick="quickCash('Add', 1)">+$1</button>
+                  <button class="quick-btn" onclick="quickCash('Add', 5)">+$5</button>
+                  <button class="quick-btn" onclick="quickCash('Add', 10)">+$10</button>
+                </div>
+
+                <h3>Subtract Money</h3>
+                <div class="quick-cash-grid">
+                  <button class="quick-btn subtract" onclick="quickCash('Subtract', 1)">-$1</button>
+                  <button class="quick-btn subtract" onclick="quickCash('Subtract', 5)">-$5</button>
+                  <button class="quick-btn subtract" onclick="quickCash('Subtract', 10)">-$10</button>
+                </div>
+              `}
+            </div>
+
+            <div class="card">
+              <h2>Recent Activity</h2>
+              ${recentActivity()}
+            </div>
+          </div>
+
           <div class="grid">
             <div class="card">
-              <h2>Add or Subtract Money</h2>
-              <div class="lock-note">Teacher transactions are approved immediately. Student requests stay pending unless changed in Settings.</div>
+              <h2>Custom Transaction</h2>
+              <div class="lock-note">Use this for whole-class payday, custom amounts, or reasons beyond the quick buttons.</div>
               ${data.students.length === 0 ? `
                 <div class="empty">Add students on the Roster page first.</div>
               ` : `
@@ -927,8 +1286,8 @@
               ${transactionTable(pendingPurchases, true)}
             </div>
             <div class="card">
-              <h2>All Purchase History</h2>
-              ${transactionTable(purchaseTransactions, false)}
+              <h2>Pending Credit Requests</h2>
+              ${transactionTable(data.transactions.filter(transaction => transaction.status === "Pending" && transaction.type === "Add"), true)}
             </div>
           </div>
         `;
@@ -937,7 +1296,7 @@
       if (screen === "roster" && isTeacher) {
         html += `
           <div class="grid">
-            <div class="card no-print">
+            <div class="card no-print soft-card">
               <h2>Add Student</h2>
               <label for="newStudentName">Student name</label>
               <input id="newStudentName" placeholder="Example: Alex" />
@@ -973,7 +1332,11 @@
                   <input id="pin-${student.id}" value="${escapeHtml(student.pin)}" />
                   <input id="balance-${student.id}" type="number" value="${student.balance}" />
                   <div class="no-print">
+                    <div class="small-note" style="margin-bottom: 8px; font-weight: 900;">
+                      Status: ${student.frozen ? "Frozen" : "Active"}
+                    </div>
                     <button onclick="updateStudent(${student.id})">Save</button>
+                    <button onclick="toggleFreezeStudent(${student.id})">${student.frozen ? "Unfreeze" : "Freeze"}</button>
                     <button class="danger" onclick="removeStudent(${student.id})">Remove</button>
                   </div>
                 </div>
@@ -1001,7 +1364,7 @@
               <label><input id="studentAddRequestsEnabled" type="checkbox" ${data.settings.studentAddRequestsEnabled ? "checked" : ""} /> Students can request money added</label>
               <label><input id="studentSubtractRequestsEnabled" type="checkbox" ${data.settings.studentSubtractRequestsEnabled ? "checked" : ""} /> Students can request money spent/subtracted</label>
               <label><input id="purchaseRequestsEnabled" type="checkbox" ${data.settings.purchaseRequestsEnabled ? "checked" : ""} /> Students can submit purchase requests</label>
-              <label><input id="requireTeacherApproval" type="checkbox" ${data.settings.requireTeacherApproval ? "checked" : ""} /> General student add/subtract requests require teacher approval</label>
+              <label><input id="requireTeacherApproval" type="checkbox" ${data.settings.requireTeacherApproval ? "checked" : ""} /> Add-money requests require teacher approval</label>
 
               <h3>General Transaction Reasons</h3>
               <label for="reasonList">One reason per line</label>
@@ -1014,7 +1377,7 @@
               <button class="primary" onclick="saveSettings()">Save Settings</button>
             </div>
 
-            <div class="card">
+            <div class="card soft-card">
               <h2>Backup and Reset Tools</h2>
               <div class="backup-reminder">${escapeHtml(backupText())}</div>
               <button onclick="exportBackup()">Export Backup</button>
@@ -1043,17 +1406,23 @@
 
         html += `
           <div class="grid">
-            <div class="card">
-              <h2>${escapeHtml(student.name)}'s Account</h2>
-              <div class="big-balance">Approved Balance: ${dollars(student.balance)}</div>
-              <div class="pending-balance">Pending Change: ${pendingChange >= 0 ? "+" : ""}${dollars(pendingChange)}</div>
+            <div>
+              <div class="balance-card">
+                <h2>${escapeHtml(student.name)}'s Account</h2>
+                ${student.frozen ? `<div class="note backup-reminder">This account is currently frozen. Please see Mr. Morgan.</div>` : ""}
+                <div class="big-balance">${dollars(student.balance)}</div>
+              <div class="pending-balance">Pending Credit/Debit Change: ${pendingChange >= 0 ? "+" : ""}${dollars(pendingChange)}</div>
               <div class="pending-balance">Pending Total: ${dollars(Number(student.balance) + pendingChange)}</div>
+              </div>
 
+              <div class="card soft-card">
               <h3>Purchase Request</h3>
-              ${!data.settings.purchaseRequestsEnabled ? `
+              ${student.frozen ? `
+                <div class="empty">This account is frozen. Purchases are not available.</div>
+              ` : !data.settings.purchaseRequestsEnabled ? `
                 <div class="empty">Purchase requests are currently turned off.</div>
               ` : `
-                <div class="purchase-note">Choose what you want to buy. Mr. Morgan must approve it before the money comes out.</div>
+                <div class="purchase-note">Choose what you want to buy. Payments are approved automatically and come out of your balance right away.</div>
                 <label for="purchaseCategory">Purchase choice</label>
                 <select id="purchaseCategory">${purchaseCategoryOptions("")}</select>
 
@@ -1067,7 +1436,9 @@
               `}
 
               <h3 style="margin-top: 24px;">Other Money Request</h3>
-              ${!data.settings.studentRequestsEnabled ? `
+              ${student.frozen ? `
+                <div class="empty">This account is frozen. Other money requests are not available.</div>
+              ` : !data.settings.studentRequestsEnabled ? `
                 <div class="empty">Other money requests are currently turned off.</div>
               ` : `
                 <label for="studentRequestType">Type</label>
@@ -1084,6 +1455,7 @@
 
                 <button class="primary" onclick="submitStudentRequest()">Submit Other Request</button>
               `}
+              </div>
             </div>
 
             <div class="card">
