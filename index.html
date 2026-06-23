@@ -595,10 +595,9 @@
 </head>
 <body>
   <div id="app"></div>
-
   <script>
-    const STORAGE_KEY = "mrMorganClassCashDataV5";
 
+    const STORAGE_KEY = "mrMorganClassCashDataV5";
     const defaultSettings = {
       teacherPassword: "Morgan123",
       studentRequestsEnabled: true,
@@ -1432,7 +1431,6 @@
 
       memoWrap.classList.toggle("visible", categorySelect.value === "Teacher's Choice");
     }
-
     function studentCategoryOptions(type) {
       const categories = type === "Add"
         ? data.settings.addMoneyCategories
@@ -1535,16 +1533,8 @@
     }
 
 
-    function studentCategoryOptions(type) {
-      const categories = type === "Add"
-        ? data.settings.addMoneyCategories
-        : data.settings.subtractMoneyCategories;
-
-      return categories
-        .filter(category => category !== "Teacher's Choice")
-        .map(category => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`)
-        .join("");
-    }
+ 
+    
 
     function setStudentTransactionMode(type) {
       const typeInput = document.getElementById("studentRequestType");
@@ -1579,12 +1569,12 @@
           <td>${escapeHtml(transaction.memo || "")}</td>
           <td>${escapeHtml(transaction.source)}</td>
           <td>${escapeHtml(transaction.status)}</td>
-          <td>
-            ${showActions && transaction.status === "Pending"
-              ? `<button class="approve" onclick="approveTransaction(${transaction.id})">Approve</button>
-                 <button class="danger" onclick="denyTransaction(${transaction.id})">Deny</button>`
-              : "—"}
-          </td>
+<td>
+          ${showActions && transaction.status === "Pending"
+    ? '<button class="approve" onclick="approveTransaction(' + transaction.id + ')">Approve</button>' +
+      '<button class="danger" onclick="denyTransaction(' + transaction.id + ')">Deny</button>'
+    : "—"}
+</td>
         </tr>
       `).join("");
 
@@ -1865,9 +1855,9 @@
                     <div class="small-note" style="margin-bottom: 8px; font-weight: 900;">
                       Status: ${student.frozen ? "Frozen" : "Active"}
                     </div>
-                    <button onclick="updateStudent(${student.id})">Save</button>
-                    <button onclick="toggleFreezeStudent(${student.id})">${student.frozen ? "Unfreeze" : "Freeze"}</button>
-                    <button class="danger" onclick="removeStudent(${student.id})">Remove</button>
+    <button onclick="updateStudent(' + student.id + ')">Save</button>
+<button onclick="toggleFreezeStudent(' + student.id + ')">' + (student.frozen ? "Unfreeze" : "Freeze") + '</button>
+<button class="danger" onclick="removeStudent(' + student.id + ')">Remove</button>
                   </div>
                 </div>
               `).join("")}
