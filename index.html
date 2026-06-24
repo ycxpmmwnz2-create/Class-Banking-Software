@@ -595,8 +595,9 @@
 </head>
 <body>
   <div id="app"></div>
-  <script>
-
+  <script type="module">
+import { db } from "./src/firebase/firebase.js";
+import { doc, setDoc, getDoc } from "firebase/firestore";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const defaultSettings = {
       teacherPassword: "Morgan123",
@@ -687,9 +688,16 @@
       }
     }
 
-    function saveData() {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    }
+  async function saveData() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+
+  try {
+    await setDoc(doc(db, "morganBank", "classroomData"), data);
+    console.log("Saved to Firestore");
+  } catch (error) {
+    console.error("Firestore save failed:", error);
+  }
+}
 
     function dollars(amount) {
       return "$" + Number(amount || 0).toLocaleString();
