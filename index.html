@@ -1863,9 +1863,9 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
                     <div class="small-note" style="margin-bottom: 8px; font-weight: 900;">
                       Status: ${student.frozen ? "Frozen" : "Active"}
                     </div>
-    <button onclick="updateStudent(' + student.id + ')">Save</button>
-<button onclick="toggleFreezeStudent(' + student.id + ')">' + (student.frozen ? "Unfreeze" : "Freeze") + '</button>
-<button class="danger" onclick="removeStudent(' + student.id + ')">Remove</button>
+                                    <button onclick="updateStudent(${student.id})">Save</button>
+<button onclick="toggleFreezeStudent(${student.id})">${student.frozen ? "Unfreeze" : "Freeze"}</button>
+<button class="danger" onclick="removeStudent(${student.id})">Remove</button>
                   </div>
                 </div>
               `).join("")}
@@ -2041,6 +2041,13 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
     }
 
     render();
+    window.loginTeacher = loginTeacher;
+window.handleLoginEnter = handleLoginEnter;
+window.loginStudent = loginStudent;
+window.setScreen = setScreen;
+window.addStudent = addStudent;
+window.removeStudent = removeStudent;
+window.toggleFreezeStudent = toggleFreezeStudent;
   </script>
 </body>
 </html>
