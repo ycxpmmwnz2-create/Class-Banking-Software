@@ -1922,15 +1922,16 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
                 </div>
               </div>
 
-              <h3>General Transaction Reasons</h3>
-              <label for="reasonList">One reason per line</label>
-              <textarea id="reasonList">${escapeHtml(data.settings.reasons.join("\\n"))}</textarea>
+<h3>General Transaction Reasons</h3>
+<div class="small-note">
+  Current reasons: ${data.settings.reasons.join(", ")}
+</div>
 
-              <h3>Purchase Choices</h3>
-              <label for="purchaseCategoryList">One purchase choice per line</label>
-              <textarea id="purchaseCategoryList">${escapeHtml(data.settings.purchaseCategories.join("\\n"))}</textarea>
-
-              <button class="primary" onclick="saveSettings()">Save Settings</button>
+<h3>Purchase Choices</h3>
+<div class="small-note">
+  Current purchase choices: ${data.settings.purchaseCategories.join(", ")}
+</div>
+<button class="primary" onclick="setScreen('editSettingsLists')">Manage Lists</button>
             </div>
 
             <div class="card soft-card">
