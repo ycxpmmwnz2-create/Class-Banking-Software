@@ -1265,8 +1265,19 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
       message = student.name + "'s account is now " + (shouldFreeze ? "frozen." : "unfrozen.");
       render();
     }
+function saveSettingsLists() {
+  const reasonsText = document.getElementById("reasonList").value;
+  const categoriesText = document.getElementById("purchaseCategoryList").value;
 
-    function saveSettings() {
+data.settings.reasons = reasonsText.split("\n").map(line => line.trim()).filter(Boolean);
+data.settings.purchaseCategories = categoriesText.split("\n").map(line => line.trim()).filter(Boolean);
+
+  saveData();
+  message = "Lists saved.";
+  screen = "settings";
+  render();
+}
+    function saveSettings()  {
       const currentPassword = document.getElementById("currentTeacherPassword").value;
       const newPassword = document.getElementById("newTeacherPassword").value.trim();
       const reasonsText = document.getElementById("reasonList").value;
@@ -1970,7 +1981,27 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
           </div>
         `;
       }
+if (screen === "editSettingsLists" && isTeacher) {
+  html += `
+    <div class="card soft-card">
+      <h2>Manage Lists</h2>
+      <p class="small-note">Edit one item per line. These lists control the choices that appear in transaction menus.</p>
 
+      <h3>General Transaction Reasons</h3>
+      <label for="reasonList">One reason per line</label>
+      <textarea id="reasonList">${escapeHtml(data.settings.reasons.join("\n"))}</textarea>
+
+      <h3>Purchase Choices</h3>
+      <label for="purchaseCategoryList">One purchase choice per line</label>
+      <textarea id="purchaseCategoryList">${escapeHtml(data.settings.purchaseCategories.join("\n"))}</textarea>
+
+      <div class="row" style="gap: 10px; margin-top: 18px;">
+      <button class="primary" onclick="saveSettingsLists()">Save Lists</button>
+        <button onclick="setScreen('settings')">Cancel</button>
+      </div>
+    </div>
+  `;
+}
       if (screen === "student" && student) {
         const studentTransactions = data.transactions.filter(transaction => transaction.studentId === student.id);
         const pendingChange = studentTransactions.reduce((total, transaction) => {
@@ -2060,6 +2091,8 @@ window.submitStudentSubtractMoney = submitStudentSubtractMoney;
 window.approveAllCreditRequests = approveAllCreditRequests;
 window.approveTransaction = approveTransaction;
 window.toggleTeacherChoiceMemo = toggleTeacherChoiceMemo;
+window.saveSettings = saveSettings;
+window.saveSettingsLists = saveSettingsLists;
   </script>
 </body>
 </html>
