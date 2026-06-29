@@ -1782,6 +1782,10 @@ ${data.students.length === 0 ? `
     <input id="transactionType" type="hidden" value="Add" />
 
     <label>Transaction type</label>
+    <div class="segmented-control">
+      <button id="addModeButton" class="segment-button active" onclick="setCustomTransactionMode('Add')">Add Money</button>
+      <button id="subtractModeButton" class="segment-button" onclick="setCustomTransactionMode('Subtract')">Subtract Money</button>
+    </div>
 <label for="transactionTarget">Who gets this transaction?</label>
 <select id="transactionTarget" onchange="setTransactionTarget(this.value)">
   <option value="selected" ${transactionTarget === "selected" ? "selected" : ""}>Selected Students</option>
