@@ -182,3 +182,164 @@
     border-right-color: var(--border);
   }
 }
+
+.student-check-list {
+  margin-top: 10px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(35, 143, 140, 0.35);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.student-check-list summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.student-check-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.student-check-item input {
+  width: auto;
+  margin: 0;
+}
+.student-check-list {
+  margin-top: 10px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(35, 143, 140, 0.35);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.student-check-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.student-check-item input {
+  width: auto;
+  margin: 0;
+}
+.student-check-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.student-check-item {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  align-items: center;
+  justify-content: start;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.student-check-item input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+.student-check-list {
+  grid-column: 1 / -1;
+}
+
+.student-check-item {
+  width: 100%;
+  max-width: 300px;
+}
+.card .student-check-list {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.card .student-check-item {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  max-width: none;
+}
+
+.card .student-check-item input {
+  width: 18px;
+  height: 18px;
+  margin-right: 10px;
+  flex: 0 0 auto;
+}
+.transaction-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.transaction-form label {
+  margin-top: 4px;
+}
+
+.transaction-form select,
+.transaction-form input,
+.transaction-form button {
+  width: 100%;
+}
+
+.transaction-form .segmented-control {
+  width: 100%;
+}
+
+.transaction-form .student-check-list {
+  width: 100%;
+}
+
+.transaction-form .student-check-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.transaction-form .student-check-item input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+.card .transaction-form {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+}
+
+.card .transaction-form > * {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+.card .transaction-form .student-check-list {
+  display: block !important;
+}
+
+.card .transaction-form .student-check-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+}
+
+.card .transaction-form .student-check-item input {
+  width: 18px !important;
+  height: 18px !important;
+  margin: 0 !important;
+  flex: 0 0 auto !important;
+}
+
+.card .transaction-form button.primary {
+  width: 100% !important;
+}

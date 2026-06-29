@@ -720,12 +720,29 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#039;");
     }
-
+let messageTimeout;
     function showMessage(text) {
-      message = text;
-      render();
-    }
+  message = text;
+  render();
 
+  clearTimeout(messageTimeout);
+
+  messageTimeout = setTimeout(() => {
+    message = "";
+    render();
+  }, 3000);
+}
+let transactionTarget = "selected";
+
+function setTransactionTarget(value) {
+  transactionTarget = value;
+  render();
+}
+function toggleStudentDropdown() {
+  const menu = document.getElementById("studentDropdown");
+  if (!menu) return;
+  menu.classList.toggle("open");
+}
     function setScreen(newScreen) {
       screen = newScreen;
       render();
@@ -934,7 +951,7 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
     }
 
     function saveTeacherTransaction() {
-      const selectedStudent = document.getElementById("selectedStudent").value;
+      const transactionTarget = document.getElementById("transactionTarget").value;
       const type = document.getElementById("transactionType").value;
       const amount = Number(document.getElementById("transactionAmount").value);
       const reason = document.getElementById("transactionReason").value;
@@ -946,12 +963,15 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
         return;
       }
 
-      const targetStudents = selectedStudent === "whole"
-        ? data.students
-        : data.students.filter(student => student.id === Number(selectedStudent));
+      const selectedStudentIds = Array.from(document.querySelectorAll(".student-check:checked"))
+  .map(input => Number(input.value));
+
+const targetStudents = transactionTarget === "whole"
+  ? data.students
+  : data.students.filter(student => selectedStudentIds.includes(student.id));
 
       if (targetStudents.length === 0) {
-        showMessage("Add students first.");
+        showMessage("Choose at least one student.");
         return;
       }
 
@@ -966,7 +986,7 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
           amount,
           reason,
           memo: teacherMemo,
-          category: "",
+          category: reason,
           status: "Approved",
           source: "Teacher"
         };
@@ -1266,12 +1286,13 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
       render();
     }
 function saveSettingsLists() {
-  const reasonsText = document.getElementById("reasonList").value;
-  const categoriesText = document.getElementById("purchaseCategoryList").value;
-
-data.settings.reasons = reasonsText.split("\n").map(line => line.trim()).filter(Boolean);
+const addMoneyText = document.getElementById("addMoneyCategoryList").value;
+const subtractMoneyText = document.getElementById("subtractMoneyCategoryList").value;
+const categoriesText = document.getElementById("purchaseCategoryList").value;
+ 
 data.settings.purchaseCategories = categoriesText.split("\n").map(line => line.trim()).filter(Boolean);
-
+data.settings.addMoneyCategories = addMoneyText.split("\n").map(line => line.trim()).filter(Boolean);
+data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line => line.trim()).filter(Boolean);
   saveData();
   message = "Lists saved.";
   screen = "settings";
@@ -1364,13 +1385,11 @@ data.settings.purchaseCategories = categoriesText.split("\n").map(line => line.t
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = "class-bank-backup.json";
-      link.click();
+      link.download = `morgan-bank-backup-${new Date().toISOString().slice(0, 10)}.json`;
+link.click();
       URL.revokeObjectURL(url);
-      message = "Backup exported.";
-      render();
-    }
-
+      showMessage("Backup exported.");
+      }
     function importBackup(event) {
       const file = event.target.files[0];
       if (!file) return;
@@ -1391,23 +1410,19 @@ data.settings.purchaseCategories = categoriesText.split("\n").map(line => line.t
             settings: imported.settings || data.settings,
             lastBackupAt: imported.exportedAt || new Date().toISOString()
           });
-
-          saveData();
-          message = "Backup imported.";
-          render();
+        saveData();
+        showMessage("Backup imported.");
         } catch {
           alert("Could not import that file.");
         }
       };
       reader.readAsText(file);
     }
-
     function reasonOptions(selectedReason) {
       return data.settings.reasons.map(reason =>
         `<option value="${escapeHtml(reason)}" ${selectedReason === reason ? "selected" : ""}>${escapeHtml(reason)}</option>`
       ).join("");
     }
-
     function purchaseCategoryOptions(selectedCategory) {
       return data.settings.purchaseCategories.map(category =>
         `<option value="${escapeHtml(category)}" ${selectedCategory === category ? "selected" : ""}>${escapeHtml(category)}</option>`
@@ -1706,6 +1721,7 @@ data.settings.purchaseCategories = categoriesText.split("\n").map(line => line.t
               <button class="primary" onclick="loginTeacher()">Login as Teacher</button>
             ` : `
               <h2>Student Login</h2>
+              ${message ? `<div class="backup-reminder">${escapeHtml(message)}</div>` : ""}
               ${data.students.length === 0 ? `
                 <div class="empty">Student login is not available yet.</div>
               ` : `
@@ -1756,38 +1772,51 @@ data.settings.purchaseCategories = categoriesText.split("\n").map(line => line.t
 
           <div class="grid">
             <div class="card">
-              <h2>Custom Transaction</h2>
-              <div class="lock-note">Choose whether you are adding or subtracting money first. Teacher’s Choice gives you an optional memo box.</div>
-              ${data.students.length === 0 ? `
-                <div class="empty">Add students on the Roster page first.</div>
-              ` : `
-                <input id="transactionType" type="hidden" value="Add" />
+ <h2>Custom Transaction</h2>
+<div class="lock-note">Choose whether you are adding or subtracting money first. Teacher’s Choice gives you an optional memo box.</div>
 
-                <label>Transaction type</label>
-                <div class="segmented-control">
-                  <button id="addModeButton" class="segment-button active" onclick="setCustomTransactionMode('Add')">Add Money</button>
-                  <button id="subtractModeButton" class="segment-button" onclick="setCustomTransactionMode('Subtract')">Subtract Money</button>
-                </div>
+${data.students.length === 0 ? `
+  <div class="empty">Add students on the Roster page first.</div>
+` : `
+<div class="transaction-form" style="display: flex; flex-direction: column; gap: 12px;">
+    <input id="transactionType" type="hidden" value="Add" />
 
-                <label for="selectedStudent">Student or whole class</label>
-                <select id="selectedStudent">
-                  <option value="whole">Whole Class</option>
-                  ${studentOptions}
-                </select>
+    <label>Transaction type</label>
+<label for="transactionTarget">Who gets this transaction?</label>
+<select id="transactionTarget" onchange="setTransactionTarget(this.value)">
+  <option value="selected" ${transactionTarget === "selected" ? "selected" : ""}>Selected Students</option>
+  <option value="whole" ${transactionTarget === "whole" ? "selected" : ""}>Whole Class</option>
+</select>
 
-                <label for="transactionAmount">Amount</label>
-                <input id="transactionAmount" type="number" min="1" value="1" />
+${transactionTarget !== "whole" ? `
+  <div class="student-check-list full-row" style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
+    ${data.students.map(student => `
+      <label class="student-check-item" style="display: flex; align-items: center; gap: 10px; width: 100%;">
+        <input
+          type="checkbox"
+          class="student-check"
+          value="${student.id}"
+          style="width: 18px; height: 18px; margin: 0;" />
+        <span>${escapeHtml(student.name)}</span>
+      </label>
+    `).join("")}
+  </div>
+` : ""}
 
-                <label for="transactionReason">Category</label>
-                <select id="transactionReason" onchange="toggleTeacherChoiceMemo()">${categoryOptions(data.settings.addMoneyCategories, "")}</select>
+    <label for="transactionAmount">Amount</label>
+    <input id="transactionAmount" type="number" min="1" value="1" />
 
-                <div id="teacherChoiceMemoWrap" class="teacher-choice-memo">
-                  <label for="teacherChoiceMemo">Teacher’s Choice memo</label>
-                  <input id="teacherChoiceMemo" placeholder="Optional reason or memo" />
-                </div>
+    <label for="transactionReason">Category</label>
+    <select id="transactionReason" onchange="toggleTeacherChoiceMemo()">${categoryOptions(data.settings.addMoneyCategories, "Homework")}</select>
 
-                <button id="customTransactionButton" class="primary" onclick="saveTeacherTransaction()">Add Money</button>
-              `}
+    <div id="teacherChoiceMemoWrap" class="teacher-choice-memo full-row">
+      <label for="teacherChoiceMemo">Teacher’s Choice memo</label>
+      <input id="teacherChoiceMemo" placeholder="Optional reason or memo" />
+    </div>
+
+    <button id="customTransactionButton" class="primary full-row" onclick="saveTeacherTransaction()">Add Money</button>
+  </div>
+`}
             </div>
 
             <div class="card">
@@ -1987,13 +2016,17 @@ if (screen === "editSettingsLists" && isTeacher) {
       <h2>Manage Lists</h2>
       <p class="small-note">Edit one item per line. These lists control the choices that appear in transaction menus.</p>
 
-      <h3>General Transaction Reasons</h3>
-      <label for="reasonList">One reason per line</label>
-      <textarea id="reasonList">${escapeHtml(data.settings.reasons.join("\n"))}</textarea>
+      <h3>Add Money Categories</h3>
+<label for="addMoneyCategoryList">One add-money category per line</label>
+<textarea id="addMoneyCategoryList">${escapeHtml(data.settings.addMoneyCategories.join("\n"))}</textarea>
 
-      <h3>Purchase Choices</h3>
-      <label for="purchaseCategoryList">One purchase choice per line</label>
-      <textarea id="purchaseCategoryList">${escapeHtml(data.settings.purchaseCategories.join("\n"))}</textarea>
+<h3>Subtract Money Categories</h3>
+<label for="subtractMoneyCategoryList">One subtract-money category per line</label>
+<textarea id="subtractMoneyCategoryList">${escapeHtml(data.settings.subtractMoneyCategories.join("\n"))}</textarea>
+
+<h3>Purchase Choices</h3>
+<label for="purchaseCategoryList">One purchase choice per line</label>
+<textarea id="purchaseCategoryList">${escapeHtml(data.settings.purchaseCategories.join("\n"))}</textarea>
 
       <div class="row" style="gap: 10px; margin-top: 18px;">
       <button class="primary" onclick="saveSettingsLists()">Save Lists</button>
@@ -2077,11 +2110,14 @@ if (screen === "editSettingsLists" && isTeacher) {
 window.handleLoginEnter = handleLoginEnter;
 window.loginStudent = loginStudent;
 window.setScreen = setScreen;
+window.render = render;
 window.addStudent = addStudent;
 window.removeStudent = removeStudent;
 window.toggleFreezeStudent = toggleFreezeStudent;
 window.saveTeacherTransaction = saveTeacherTransaction;
 window.setCustomTransactionMode = setCustomTransactionMode;
+window.toggleStudentDropdown = toggleStudentDropdown;
+window.setTransactionTarget = setTransactionTarget;
 window.quickCash = quickCash;
 window.logout = logout;
 window.setLoginTab = setLoginTab;
@@ -2093,6 +2129,8 @@ window.approveTransaction = approveTransaction;
 window.toggleTeacherChoiceMemo = toggleTeacherChoiceMemo;
 window.saveSettings = saveSettings;
 window.saveSettingsLists = saveSettingsLists;
+window.exportBackup = exportBackup;
+window.importBackup = importBackup;
   </script>
 </body>
 </html>
