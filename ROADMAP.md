@@ -3,8 +3,8 @@
 ## Version 1.0 (Current Goal)
 
 ### Highest Priority
-- [ ] Transaction filters
-- [ ] Dashboard insights
+- [x] Transaction filters
+- [x] Dashboard insights
 - [ ] Better mobile layout
 - [ ] First-time teacher setup
 - [ ] Final classroom testing
