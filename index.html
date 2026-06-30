@@ -805,6 +805,65 @@ function filteredTeacherTransactions() {
     return true;
   });
 }
+function exportTransactionsCsv(scope) {
+  if (!isTeacher) return;
+
+  const today = new Date().toDateString();
+  const transactions = scope === "today"
+    ? data.transactions.filter(transaction => new Date(transaction.date).toDateString() === today)
+    : scope === "current"
+      ? filteredTeacherTransactions()
+      : data.transactions;
+
+  if (transactions.length === 0) {
+    showMessage("No transactions to export.");
+    return;
+  }
+
+  const csvCell = value => {
+    let text = String(value ?? "");
+    if (/^[=+\-@]/.test(text)) text = "'" + text;
+    return `"${text.replaceAll('"', '""')}"`;
+  };
+
+  const headers = [
+    "Date",
+    "Time",
+    "Student",
+    "Type",
+    "Amount",
+    "Category/Reason",
+    "Status",
+    "Created By",
+    "Memo/Note"
+  ];
+
+  const rows = transactions.map(transaction => {
+    const timestamp = new Date(transaction.date);
+    const hasValidTimestamp = !Number.isNaN(timestamp.getTime());
+
+    return [
+      hasValidTimestamp ? timestamp.toLocaleDateString() : transaction.date || "",
+      hasValidTimestamp ? timestamp.toLocaleTimeString() : "",
+      transaction.studentName,
+      transaction.type,
+      transaction.amount,
+      transaction.category || transaction.reason,
+      transaction.status,
+      transaction.source,
+      transaction.memo || transaction.note || ""
+    ].map(csvCell).join(",");
+  });
+
+  const csv = "\uFEFF" + [headers.map(csvCell).join(","), ...rows].join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `morgan-bank-transactions-${scope}-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 function toggleStudentDropdown() {
   const menu = document.getElementById("studentDropdown");
   if (!menu) return;
@@ -1936,6 +1995,11 @@ ${transactionTarget !== "whole" ? `
                   ` : ""}
                 </select>
               </div>
+              <div class="button-bar no-print" style="margin-bottom: 12px;">
+                <button onclick="exportTransactionsCsv('all')">Export All Transactions</button>
+                <button onclick="exportTransactionsCsv('today')">Export Today's Transactions</button>
+                <button onclick="exportTransactionsCsv('current')">Export Current Filter</button>
+              </div>
               ${transactionTable(filteredTeacherTransactions().slice(0, 25), true)}
             </div>
           </div>
@@ -2300,6 +2364,7 @@ window.setCustomTransactionMode = setCustomTransactionMode;
 window.toggleStudentDropdown = toggleStudentDropdown;
 window.setTransactionTarget = setTransactionTarget;
 window.setTeacherTransactionFilter = setTeacherTransactionFilter;
+window.exportTransactionsCsv = exportTransactionsCsv;
 window.quickCash = quickCash;
 window.logout = logout;
 window.setLoginTab = setLoginTab;
