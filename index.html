@@ -750,10 +750,31 @@ let messageTimeout;
   }, 3000);
 }
 let transactionTarget = "selected";
+let teacherTransactionFilter = "all";
 
 function setTransactionTarget(value) {
   transactionTarget = value;
   render();
+}
+function setTeacherTransactionFilter(value) {
+  if (!isTeacher) return;
+  teacherTransactionFilter = value;
+  render();
+}
+function filteredTeacherTransactions() {
+  const today = new Date().toDateString();
+
+  if (teacherTransactionFilter === "pending") {
+    const pendingTransactions = data.transactions.filter(transaction => transaction.status === "Pending");
+    return pendingTransactions.length > 0 ? pendingTransactions : data.transactions;
+  }
+
+  return data.transactions.filter(transaction => {
+    if (teacherTransactionFilter === "credits") return transaction.type === "Add";
+    if (teacherTransactionFilter === "debits") return transaction.type === "Subtract";
+    if (teacherTransactionFilter === "today") return new Date(transaction.date).toDateString() === today;
+    return true;
+  });
 }
 function toggleStudentDropdown() {
   const menu = document.getElementById("studentDropdown");
@@ -1849,7 +1870,19 @@ ${transactionTarget !== "whole" ? `
 
             <div class="card">
               <h2>Recent Transactions</h2>
-              ${transactionTable(data.transactions.slice(0, 25), true)}
+              <div class="no-print" style="max-width: 280px;">
+                <label for="teacherTransactionFilter">Filter transactions</label>
+                <select id="teacherTransactionFilter" onchange="setTeacherTransactionFilter(this.value)">
+                  <option value="all" ${teacherTransactionFilter === "all" ? "selected" : ""}>All transactions</option>
+                  <option value="credits" ${teacherTransactionFilter === "credits" ? "selected" : ""}>Credits / Add Money</option>
+                  <option value="debits" ${teacherTransactionFilter === "debits" ? "selected" : ""}>Debits / Subtract Money</option>
+                  <option value="today" ${teacherTransactionFilter === "today" ? "selected" : ""}>Today only</option>
+                  ${data.transactions.some(transaction => transaction.status === "Pending") ? `
+                    <option value="pending" ${teacherTransactionFilter === "pending" ? "selected" : ""}>Pending only</option>
+                  ` : ""}
+                </select>
+              </div>
+              ${transactionTable(filteredTeacherTransactions().slice(0, 25), true)}
             </div>
           </div>
         `;
@@ -2202,6 +2235,7 @@ window.saveTeacherTransaction = saveTeacherTransaction;
 window.setCustomTransactionMode = setCustomTransactionMode;
 window.toggleStudentDropdown = toggleStudentDropdown;
 window.setTransactionTarget = setTransactionTarget;
+window.setTeacherTransactionFilter = setTeacherTransactionFilter;
 window.quickCash = quickCash;
 window.logout = logout;
 window.setLoginTab = setLoginTab;
