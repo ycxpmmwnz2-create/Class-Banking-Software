@@ -191,6 +191,33 @@
       font-size: 20px;
     }
 
+    .dashboard-insights {
+      padding: 14px 16px;
+      margin-bottom: 12px;
+    }
+
+    .dashboard-insights h2 {
+      margin-bottom: 10px;
+      font-size: 20px;
+    }
+
+    .dashboard-insights .stats {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 0;
+    }
+
+    .dashboard-insights .stat-box {
+      display: flex;
+      align-items: center;
+      min-height: 54px;
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      box-shadow: 0 3px 10px rgba(18, 50, 58, 0.05);
+      font-size: 15px;
+      line-height: 1.25;
+    }
+
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
@@ -576,6 +603,7 @@
 
     @media (max-width: 1000px) {
       .stats { grid-template-columns: repeat(2, 1fr); }
+      .dashboard-insights .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .wide-grid { grid-template-columns: 1fr; }
       .hero-content { grid-template-columns: 1fr; }
     }
@@ -587,6 +615,7 @@
       .brand-mark { width: 40px; height: 40px; }
       .brand-name { font-size: 18px; }
       .stats { grid-template-columns: 1fr; }
+      .dashboard-insights .stats { grid-template-columns: 1fr; }
       .roster-row { grid-template-columns: 1fr; }
       .danger { margin-left: 0; margin-top: 6px; }
       .quick-cash-grid { grid-template-columns: 1fr; }
@@ -1785,14 +1814,15 @@ link.click();
 
       if (screen === "teacher" && isTeacher) {
         html += `
-          <div class="card no-print" style="margin-bottom: 16px;">
+          <div class="card no-print dashboard-insights">
             <h2>Dashboard Insights</h2>
-            <div class="stats" style="margin-bottom: 0;">
+            <div class="stats">
               <div class="stat-box">Class Cash: ${dollars(totalCash)}</div>
               <div class="stat-box">Students: ${data.students.length}</div>
               <div class="stat-box">Pending Credits: ${pendingTransactions.filter(t => t.type === "Add").length}</div>
               <div class="stat-box">Student Debits: ${data.transactions.filter(transaction => transaction.source === "Student" && transaction.type === "Subtract").length}</div>
               <div class="stat-box">Approved: ${approvedTransactions.length}</div>
+              <div class="stat-box">Frozen Accounts: ${frozenAccountCount}</div>
               <div class="stat-box">
                 Highest Balance: ${highestBalanceStudent
                   ? `${escapeHtml(highestBalanceStudent.name)} — ${dollars(highestBalanceStudent.balance)}`
@@ -1803,7 +1833,6 @@ link.click();
                   ? `${escapeHtml(lowestBalanceStudent.name)} — ${dollars(lowestBalanceStudent.balance)}`
                   : "No students"}
               </div>
-              <div class="stat-box">Frozen Accounts: ${frozenAccountCount}</div>
               <div class="stat-box">Transactions Today: ${transactionsToday}</div>
             </div>
           </div>
