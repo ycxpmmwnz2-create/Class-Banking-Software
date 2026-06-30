@@ -49,6 +49,8 @@
     h3 { margin: 18px 0 10px; font-size: 17px; }
 
     #app {
+      width: 100%;
+      min-width: 0;
       max-width: 1400px;
       margin: 0 auto;
     }
@@ -231,13 +233,22 @@
       margin-bottom: 16px;
     }
 
+    .grid > *,
+    .wide-grid > * {
+      min-width: 0;
+    }
+
     .card {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
       background: #dff3f0;
       padding: 20px;
       border-radius: var(--radius-lg);
       border: 1px solid rgba(216, 231, 236, 0.9);
       box-shadow: var(--shadow-soft);
       overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
       backdrop-filter: blur(10px);
     }
 
@@ -604,21 +615,109 @@
     @media (max-width: 1000px) {
       .stats { grid-template-columns: repeat(2, 1fr); }
       .dashboard-insights .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid { grid-template-columns: minmax(0, 1fr); }
       .wide-grid { grid-template-columns: 1fr; }
       .hero-content { grid-template-columns: 1fr; }
+      .roster-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .roster-row .no-print {
+        grid-column: 1 / -1;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .roster-row .no-print .small-note { flex-basis: 100%; }
+      .roster-row .no-print button {
+        flex: 1 1 120px;
+        margin: 0;
+      }
     }
 
     @media (max-width: 700px) {
+      html, body {
+        max-width: 100%;
+        overflow-x: hidden;
+      }
+
       body { padding: 12px; }
-      .hero { padding: 20px; }
+      h1 { font-size: 30px; }
+      h2 { font-size: 21px; margin-bottom: 10px; }
+      .hero {
+        padding: 16px;
+        margin-bottom: 12px;
+        border-radius: 20px;
+      }
+      .hero-content { gap: 12px; }
+      .hero-badge {
+        white-space: normal;
+        text-align: center;
+      }
       .center-logo { width: min(300px, 86vw); }
       .brand-mark { width: 40px; height: 40px; }
       .brand-name { font-size: 18px; }
+      .button-bar {
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .button-bar > button {
+        flex: 1 1 calc(50% - 4px);
+        min-height: 44px;
+      }
+      .transaction-export-buttons > button { flex-basis: 100%; }
+      .grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 12px;
+      }
+      .wide-grid {
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .card {
+        padding: 14px;
+        border-radius: 20px;
+      }
       .stats { grid-template-columns: 1fr; }
       .dashboard-insights .stats { grid-template-columns: 1fr; }
-      .roster-row { grid-template-columns: 1fr; }
+      .dashboard-insights { padding: 12px; }
+      .dashboard-insights .stat-box { min-height: 48px; }
+      .quick-cash-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .quick-btn {
+        min-height: 54px;
+        padding: 12px 4px;
+        font-size: 19px;
+      }
+      .roster-row {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 6px;
+        padding: 10px;
+      }
+      .roster-row input { margin-bottom: 4px; }
+      .roster-row .no-print button {
+        flex: 1 1 calc(50% - 3px);
+        margin: 0;
+      }
+      .transaction-filter-controls,
+      .profile-navigation {
+        width: 100%;
+        max-width: none !important;
+      }
+      .profile-navigation button { width: 100%; }
+      .student-profile-card .balance-card {
+        padding: 18px;
+        border-radius: 20px;
+      }
+      .student-profile-card .stat-box {
+        padding: 12px;
+        font-size: 16px;
+      }
+      .student-transaction-top {
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      table { min-width: 720px; }
       .danger { margin-left: 0; margin-top: 6px; }
-      .quick-cash-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -1983,7 +2082,7 @@ ${transactionTarget !== "whole" ? `
 
             <div class="card">
               <h2>Recent Transactions</h2>
-              <div class="no-print" style="max-width: 280px;">
+              <div class="no-print transaction-filter-controls" style="max-width: 280px;">
                 <label for="teacherTransactionFilter">Filter transactions</label>
                 <select id="teacherTransactionFilter" onchange="setTeacherTransactionFilter(this.value)">
                   <option value="all" ${teacherTransactionFilter === "all" ? "selected" : ""}>All transactions</option>
@@ -1995,7 +2094,7 @@ ${transactionTarget !== "whole" ? `
                   ` : ""}
                 </select>
               </div>
-              <div class="button-bar no-print" style="margin-bottom: 12px;">
+              <div class="button-bar no-print transaction-export-buttons" style="margin-bottom: 12px;">
                 <button onclick="exportTransactionsCsv('all')">Export All Transactions</button>
                 <button onclick="exportTransactionsCsv('today')">Export Today's Transactions</button>
                 <button onclick="exportTransactionsCsv('current')">Export Current Filter</button>
@@ -2111,8 +2210,8 @@ ${transactionTarget !== "whole" ? `
         const mostRecentTransaction = profileTransactions[0];
 
         html += profileStudent ? `
-          <div class="card">
-            <div class="no-print" style="max-width: 360px;">
+          <div class="card student-profile-card">
+            <div class="no-print profile-navigation" style="max-width: 360px;">
               <button onclick="setScreen('roster')">Back to Roster</button>
               <label for="profileStudentSelect" style="margin-top: 12px;">Student profile</label>
               <select id="profileStudentSelect" onchange="viewStudentProfile(this.value)">
