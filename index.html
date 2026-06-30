@@ -1708,6 +1708,17 @@ link.click();
       const pendingTransactions = data.transactions.filter(transaction => transaction.status === "Pending");
       const approvedTransactions = data.transactions.filter(transaction => transaction.status === "Approved");
       const purchaseTransactions = data.transactions.filter(transaction => transaction.source === "Student Purchase");
+      const highestBalanceStudent = data.students.reduce((highest, current) =>
+        !highest || Number(current.balance || 0) > Number(highest.balance || 0) ? current : highest
+      , null);
+      const lowestBalanceStudent = data.students.reduce((lowest, current) =>
+        !lowest || Number(current.balance || 0) < Number(lowest.balance || 0) ? current : lowest
+      , null);
+      const frozenAccountCount = data.students.filter(student => student.frozen).length;
+      const today = new Date().toDateString();
+      const transactionsToday = data.transactions.filter(transaction =>
+        new Date(transaction.date).toDateString() === today
+      ).length;
       const studentOptions = data.students.map(student =>
         `<option value="${student.id}">${escapeHtml(student.name)}</option>`
       ).join("");
@@ -1783,6 +1794,25 @@ link.click();
 
       if (screen === "teacher" && isTeacher) {
         html += `
+          <div class="card no-print" style="margin-bottom: 16px;">
+            <h2>Dashboard Insights</h2>
+            <div class="stats" style="margin-bottom: 0;">
+              <div class="stat-box">
+                Highest Balance: ${highestBalanceStudent
+                  ? `${escapeHtml(highestBalanceStudent.name)} — ${dollars(highestBalanceStudent.balance)}`
+                  : "No students"}
+              </div>
+              <div class="stat-box">
+                Lowest Balance: ${lowestBalanceStudent
+                  ? `${escapeHtml(lowestBalanceStudent.name)} — ${dollars(lowestBalanceStudent.balance)}`
+                  : "No students"}
+              </div>
+              <div class="stat-box">Frozen Accounts: ${frozenAccountCount}</div>
+              <div class="stat-box">Transactions Today: ${transactionsToday}</div>
+              <div class="stat-box">Total Class Money: ${dollars(totalCash)}</div>
+            </div>
+          </div>
+
           <div class="wide-grid">
             <div class="card soft-card">
               <h2>Quick Cash</h2>
