@@ -21,6 +21,10 @@
 - Credit Count
 - Debit Count
 - Most Recent Transaction
+- Transaction CSV exports
+- Export all transactions
+- Export today's transactions
+- Export current filtered transactions
 
 ## 🚧 Next Features
 - Transaction filters (credits/debits/search)
