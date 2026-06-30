@@ -721,6 +721,13 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
       window.print();
     }
 
+    function filterRoster(searchTerm) {
+      const normalizedSearch = searchTerm.trim().toLowerCase();
+      document.querySelectorAll("[data-roster-student-name]").forEach(row => {
+        row.style.display = row.dataset.rosterStudentName.includes(normalizedSearch) ? "" : "none";
+      });
+    }
+
     function escapeHtml(value) {
       return String(value ?? "")
         .replaceAll("&", "&amp;")
@@ -1905,10 +1912,14 @@ ${transactionTarget !== "whole" ? `
                 <p>Generated from the classroom banking app.</p>
               </div>
               <h2>Roster</h2>
+              <div class="no-print">
+                <label for="rosterSearch">Search students</label>
+                <input id="rosterSearch" type="search" placeholder="Search by name" oninput="filterRoster(this.value)" />
+              </div>
               ${data.students.length === 0 ? `
                 <div class="empty">No students yet. Add your first student on the left.</div>
               ` : data.students.map(student => `
-                <div class="roster-row">
+                <div class="roster-row" data-roster-student-name="${escapeHtml(student.name.toLowerCase())}">
                   <input id="name-${student.id}" value="${escapeHtml(student.name)}" />
                   <input id="pin-${student.id}" value="${escapeHtml(student.pin)}" />
                   <input id="balance-${student.id}" type="number" value="${student.balance}" />
@@ -2150,6 +2161,7 @@ window.clearTransactions = clearTransactions;
 window.resetBalancesToZero = resetBalancesToZero;
 window.resetEverything = resetEverything;
 window.printRoster = printRoster;
+window.filterRoster = filterRoster;
 window.toggleTeacherChoiceMemo = toggleTeacherChoiceMemo;
 window.saveSettings = saveSettings;
 window.saveSettingsLists = saveSettingsLists;
