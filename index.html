@@ -724,11 +724,11 @@
 <body>
   <div id="app"></div>
   <script type="module">
-import { db } from "./src/firebase/firebase.js";
+import { auth, db } from "./src/firebase/firebase.js";
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { doc, setDoc, getDoc } from "firebase/firestore";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const defaultSettings = {
-      teacherPassword: "Morgan123",
       studentRequestsEnabled: true,
       studentAddRequestsEnabled: true,
       studentSubtractRequestsEnabled: true,
@@ -1068,17 +1068,23 @@ function toggleStudentDropdown() {
       `;
     }
 
-    function loginTeacher() {
-      const input = document.getElementById("teacherPassword").value;
-      if (input === data.settings.teacherPassword) {
-        isTeacher = true;
-        loggedInStudentId = null;
-        screen = "teacher";
-        message = "Teacher dashboard unlocked.";
-      } else {
-        message = "Wrong teacher password.";
+    async function loginTeacher() {
+      const email = document.getElementById("teacherEmail").value.trim();
+      const password = document.getElementById("teacherPassword").value;
+
+      if (!email || !password) {
+        message = "Enter the teacher email and password.";
+        render();
+        return;
       }
-      render();
+
+      try {
+        await signInWithEmailAndPassword(auth, email, password);
+      } catch (error) {
+        console.error("Teacher sign-in failed:", error);
+        message = "Wrong teacher email or password.";
+        render();
+      }
     }
 
     function loginStudent() {
@@ -1108,7 +1114,17 @@ function toggleStudentDropdown() {
       render();
     }
 
-    function logout() {
+    async function logout() {
+      if (isTeacher && auth.currentUser) {
+        try {
+          await signOut(auth);
+        } catch (error) {
+          console.error("Teacher sign-out failed:", error);
+          showMessage("Could not sign out. Please try again.");
+          return;
+        }
+      }
+
       isTeacher = false;
       loggedInStudentId = null;
       screen = "login";
@@ -1531,19 +1547,8 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
   render();
 }
     function saveSettings()  {
-      const currentPassword = document.getElementById("currentTeacherPassword").value;
-      const newPassword = document.getElementById("newTeacherPassword").value.trim();
       const reasonsText = document.getElementById("reasonList").value;
       const categoriesText = document.getElementById("purchaseCategoryList").value;
-
-      if (newPassword && currentPassword !== data.settings.teacherPassword) {
-        showMessage("Current password is incorrect. Teacher password was not changed.");
-        return;
-      }
-
-      if (newPassword) {
-        data.settings.teacherPassword = newPassword;
-      }
 
       data.settings.studentRequestsEnabled = document.getElementById("studentRequestsEnabled").checked;
       data.settings.studentAddRequestsEnabled = document.getElementById("studentAddRequestsEnabled").checked;
@@ -1950,6 +1955,9 @@ link.click();
 
             ${loginTab === "teacher" ? `
               <h2>Teacher Login</h2>
+              ${message ? `<div class="backup-reminder">${escapeHtml(message)}</div>` : ""}
+              <label for="teacherEmail">Teacher email</label>
+              <input id="teacherEmail" type="email" placeholder="Teacher email" autocomplete="username" onkeydown="handleLoginEnter(event, 'teacher')" />
               <label for="teacherPassword">Teacher password</label>
               <input id="teacherPassword" type="password" placeholder="Teacher password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'teacher')" />
               <button class="primary" onclick="loginTeacher()">Login as Teacher</button>
@@ -2260,13 +2268,6 @@ ${transactionTarget !== "whole" ? `
             <div class="card">
               <h2>Teacher Settings</h2>
 
-              <h3>Change Teacher Password</h3>
-              <label for="currentTeacherPassword">Current password</label>
-              <input id="currentTeacherPassword" type="password" placeholder="Only needed if changing password" />
-
-              <label for="newTeacherPassword">New password</label>
-              <input id="newTeacherPassword" type="password" placeholder="Leave blank to keep current" />
-
               <h3>Student Permissions</h3>
               <div class="settings-list">
                 <div class="setting-row">
@@ -2445,8 +2446,22 @@ if (screen === "editSettingsLists" && isTeacher) {
       document.getElementById("app").innerHTML = html;
     }
 
-    loadData().then(loadedData => {
-      data = loadedData;
+    let hasLoadedData = false;
+    onAuthStateChanged(auth, async user => {
+      if (!hasLoadedData) {
+        data = await loadData();
+        hasLoadedData = true;
+      }
+
+      isTeacher = Boolean(user);
+      if (user) {
+        loggedInStudentId = null;
+        screen = "teacher";
+        message = "Teacher dashboard unlocked.";
+      } else if (!loggedInStudentId) {
+        screen = "login";
+      }
+
       render();
     });
     window.loginTeacher = loginTeacher;
