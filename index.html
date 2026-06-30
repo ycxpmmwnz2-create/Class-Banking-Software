@@ -653,6 +653,7 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
     let loginTab = "teacher";
     let isTeacher = false;
     let loggedInStudentId = null;
+    let teacherProfileStudentId = null;
     let message = "Positive Vibes Only — choose teacher or student login.";
 
     function cloneDefault() {
@@ -761,6 +762,13 @@ function toggleStudentDropdown() {
 }
     function setScreen(newScreen) {
       screen = newScreen;
+      render();
+    }
+
+    function viewStudentProfile(studentId) {
+      if (!isTeacher) return;
+      teacherProfileStudentId = Number(studentId);
+      screen = "studentProfile";
       render();
     }
 
@@ -1927,6 +1935,7 @@ ${transactionTarget !== "whole" ? `
                     <div class="small-note" style="margin-bottom: 8px; font-weight: 900;">
                       Status: ${student.frozen ? "Frozen" : "Active"}
                     </div>
+                    <button onclick="viewStudentProfile(${student.id})">View</button>
                                     <button onclick="updateStudent(${student.id})">Save</button>
 <button onclick="toggleFreezeStudent(${student.id})">${student.frozen ? "Unfreeze" : "Freeze"}</button>
 <button class="danger" onclick="removeStudent(${student.id})">Remove</button>
@@ -1934,6 +1943,33 @@ ${transactionTarget !== "whole" ? `
                 </div>
               `).join("")}
             </div>
+          </div>
+        `;
+      }
+
+      if (screen === "studentProfile" && isTeacher) {
+        const profileStudent = data.students.find(student => student.id === teacherProfileStudentId);
+
+        html += profileStudent ? `
+          <div class="card">
+            <button class="no-print" onclick="setScreen('roster')">Back to Roster</button>
+            <div class="balance-card" style="margin-top: 14px;">
+              <h2>${escapeHtml(profileStudent.name)}</h2>
+              <div class="big-balance">${dollars(profileStudent.balance)}</div>
+              <p><strong>PIN:</strong> ${escapeHtml(profileStudent.pin)}</p>
+              <p><strong>Status:</strong> ${profileStudent.frozen ? "Frozen" : "Active"}</p>
+            </div>
+
+            <h2>Transaction History</h2>
+            ${transactionTable(
+              data.transactions.filter(transaction => transaction.studentId === profileStudent.id),
+              false
+            )}
+          </div>
+        ` : `
+          <div class="card">
+            <div class="empty">This student is no longer on the roster.</div>
+            <button onclick="setScreen('roster')">Back to Roster</button>
           </div>
         `;
       }
@@ -2137,6 +2173,7 @@ if (screen === "editSettingsLists" && isTeacher) {
 window.handleLoginEnter = handleLoginEnter;
 window.loginStudent = loginStudent;
 window.setScreen = setScreen;
+window.viewStudentProfile = viewStudentProfile;
 window.render = render;
 window.addStudent = addStudent;
 window.removeStudent = removeStudent;
