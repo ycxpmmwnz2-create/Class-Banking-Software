@@ -2048,7 +2048,17 @@ ${transactionTarget !== "whole" ? `
 
         html += profileStudent ? `
           <div class="card">
-            <button class="no-print" onclick="setScreen('roster')">Back to Roster</button>
+            <div class="no-print" style="max-width: 360px;">
+              <button onclick="setScreen('roster')">Back to Roster</button>
+              <label for="profileStudentSelect" style="margin-top: 12px;">Student profile</label>
+              <select id="profileStudentSelect" onchange="viewStudentProfile(this.value)">
+                ${data.students.map(student => `
+                  <option value="${student.id}" ${student.id === profileStudent.id ? "selected" : ""}>
+                    ${escapeHtml(student.name)}
+                  </option>
+                `).join("")}
+              </select>
+            </div>
             <div class="balance-card" style="margin-top: 14px;">
               <h2>${escapeHtml(profileStudent.name)}</h2>
               <div class="big-balance">${dollars(profileStudent.balance)}</div>
