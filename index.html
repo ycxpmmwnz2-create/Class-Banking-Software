@@ -1949,6 +1949,15 @@ ${transactionTarget !== "whole" ? `
 
       if (screen === "studentProfile" && isTeacher) {
         const profileStudent = data.students.find(student => student.id === teacherProfileStudentId);
+        const profileTransactions = profileStudent
+          ? data.transactions.filter(transaction => transaction.studentId === profileStudent.id)
+          : [];
+        const approvedProfileTransactions = profileTransactions.filter(transaction => transaction.status === "Approved");
+        const profileCredits = approvedProfileTransactions.filter(transaction => transaction.type === "Add");
+        const profileDebits = approvedProfileTransactions.filter(transaction => transaction.type === "Subtract");
+        const totalEarned = profileCredits.reduce((total, transaction) => total + Number(transaction.amount || 0), 0);
+        const totalSpent = profileDebits.reduce((total, transaction) => total + Number(transaction.amount || 0), 0);
+        const mostRecentTransaction = profileTransactions[0];
 
         html += profileStudent ? `
           <div class="card">
@@ -1960,11 +1969,22 @@ ${transactionTarget !== "whole" ? `
               <p><strong>Status:</strong> ${profileStudent.frozen ? "Frozen" : "Active"}</p>
             </div>
 
+            <h2>Lifetime Summary</h2>
+            <div class="stats">
+              <div class="stat-box">Total Earned: ${dollars(totalEarned)}</div>
+              <div class="stat-box">Total Spent: ${dollars(totalSpent)}</div>
+              <div class="stat-box">Number of Credits: ${profileCredits.length}</div>
+              <div class="stat-box">Number of Debits: ${profileDebits.length}</div>
+              ${mostRecentTransaction ? `
+                <div class="stat-box">
+                  Most Recent: ${escapeHtml(mostRecentTransaction.type)} ${dollars(mostRecentTransaction.amount)}
+                  <div class="small-note">${escapeHtml(mostRecentTransaction.date || "")}</div>
+                </div>
+              ` : ""}
+            </div>
+
             <h2>Transaction History</h2>
-            ${transactionTable(
-              data.transactions.filter(transaction => transaction.studentId === profileStudent.id),
-              false
-            )}
+            ${transactionTable(profileTransactions, false)}
           </div>
         ` : `
           <div class="card">
