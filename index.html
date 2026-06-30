@@ -648,7 +648,7 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
       lastBackupAt: null
     };
 
-    let data = loadData();
+    let data = cloneDefault();
     let screen = "login";
     let loginTab = "teacher";
     let isTeacher = false;
@@ -678,7 +678,16 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
       };
     }
 
-    function loadData() {
+    async function loadData() {
+      try {
+        const snapshot = await getDoc(doc(db, "morganBank", "classroomData"));
+        if (snapshot.exists()) {
+          return normalizeData(snapshot.data());
+        }
+      } catch (error) {
+        console.error("Firestore load failed:", error);
+      }
+
       const saved = localStorage.getItem(STORAGE_KEY);
       if (!saved) return cloneDefault();
       try {
@@ -2109,7 +2118,10 @@ if (screen === "editSettingsLists" && isTeacher) {
       document.getElementById("app").innerHTML = html;
     }
 
-    render();
+    loadData().then(loadedData => {
+      data = loadedData;
+      render();
+    });
     window.loginTeacher = loginTeacher;
 window.handleLoginEnter = handleLoginEnter;
 window.loginStudent = loginStudent;
