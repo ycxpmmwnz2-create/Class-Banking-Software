@@ -6,7 +6,7 @@
 - [x] Transaction filters
 - [x] Dashboard insights
 - [x] Student profile quick navigation
-- [ ] Better mobile layout
+- [x] Better mobile layout
 - [ ] First-time teacher setup
 - [ ] Final classroom testing
 - [ ] Security review

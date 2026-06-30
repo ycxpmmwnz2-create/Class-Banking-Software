@@ -25,6 +25,7 @@
 - Export all transactions
 - Export today's transactions
 - Export current filtered transactions
+- Better mobile layout
 
 ## 🚧 Next Features
 - Transaction filters (credits/debits/search)
