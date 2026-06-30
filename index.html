@@ -1751,15 +1751,6 @@ link.click();
           </div>
         ` : ""}
 
-        ${isTeacher ? `
-          <div class="stats no-print">
-            <div class="stat-box">Class Cash: ${dollars(totalCash)}</div>
-            <div class="stat-box">Students: ${data.students.length}</div>
-            <div class="stat-box">Pending Credits: ${pendingTransactions.filter(t => t.type === "Add").length}</div>
-            <div class="stat-box">Student Debits: ${data.transactions.filter(transaction => transaction.source === "Student" && transaction.type === "Subtract").length}</div>
-            <div class="stat-box">Approved: ${approvedTransactions.length}</div>
-          </div>
-        ` : ""}
       `;
 
       if (screen === "login") {
@@ -1797,6 +1788,11 @@ link.click();
           <div class="card no-print" style="margin-bottom: 16px;">
             <h2>Dashboard Insights</h2>
             <div class="stats" style="margin-bottom: 0;">
+              <div class="stat-box">Class Cash: ${dollars(totalCash)}</div>
+              <div class="stat-box">Students: ${data.students.length}</div>
+              <div class="stat-box">Pending Credits: ${pendingTransactions.filter(t => t.type === "Add").length}</div>
+              <div class="stat-box">Student Debits: ${data.transactions.filter(transaction => transaction.source === "Student" && transaction.type === "Subtract").length}</div>
+              <div class="stat-box">Approved: ${approvedTransactions.length}</div>
               <div class="stat-box">
                 Highest Balance: ${highestBalanceStudent
                   ? `${escapeHtml(highestBalanceStudent.name)} — ${dollars(highestBalanceStudent.balance)}`
@@ -1809,7 +1805,6 @@ link.click();
               </div>
               <div class="stat-box">Frozen Accounts: ${frozenAccountCount}</div>
               <div class="stat-box">Transactions Today: ${transactionsToday}</div>
-              <div class="stat-box">Total Class Money: ${dollars(totalCash)}</div>
             </div>
           </div>
 
