@@ -785,6 +785,14 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
     let teacherProfileStudentId = null;
     let message = "";
 
+    function requireTeacher() {
+      const hasTeacherAccess = isTeacher && auth.currentUser?.uid === TEACHER_UID;
+      if (!hasTeacherAccess) {
+        console.warn("Teacher authentication required.");
+      }
+      return hasTeacherAccess;
+    }
+
     function cloneDefault() {
       return JSON.parse(JSON.stringify(defaultData));
     }
@@ -848,10 +856,12 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
     }
 
     function printRoster() {
+      if (!requireTeacher()) return;
       window.print();
     }
 
     function filterRoster(searchTerm) {
+      if (!requireTeacher()) return;
       const normalizedSearch = searchTerm.trim().toLowerCase();
       document.querySelectorAll("[data-roster-student-name]").forEach(row => {
         row.style.display = row.dataset.rosterStudentName.includes(normalizedSearch) ? "" : "none";
@@ -882,11 +892,12 @@ let transactionTarget = "selected";
 let teacherTransactionFilter = "all";
 
 function setTransactionTarget(value) {
+  if (!requireTeacher()) return;
   transactionTarget = value;
   render();
 }
 function setTeacherTransactionFilter(value) {
-  if (!isTeacher) return;
+  if (!requireTeacher()) return;
   teacherTransactionFilter = value;
   render();
 }
@@ -906,7 +917,7 @@ function filteredTeacherTransactions() {
   });
 }
 function exportTransactionsCsv(scope) {
-  if (!isTeacher) return;
+  if (!requireTeacher()) return;
 
   const today = new Date().toDateString();
   const transactions = scope === "today"
@@ -965,6 +976,7 @@ function exportTransactionsCsv(scope) {
   URL.revokeObjectURL(url);
 }
 function toggleStudentDropdown() {
+  if (!requireTeacher()) return;
   const menu = document.getElementById("studentDropdown");
   if (!menu) return;
   menu.classList.toggle("open");
@@ -975,7 +987,7 @@ function toggleStudentDropdown() {
     }
 
     function viewStudentProfile(studentId) {
-      if (!isTeacher) return;
+      if (!requireTeacher()) return;
       teacherProfileStudentId = Number(studentId);
       screen = "studentProfile";
       render();
@@ -1015,6 +1027,7 @@ function toggleStudentDropdown() {
     }
 
     function clearLoginHistory() {
+      if (!requireTeacher()) return;
       const confirmed = confirm("Clear all student login history?");
       if (!confirmed) return;
 
@@ -1025,6 +1038,7 @@ function toggleStudentDropdown() {
     }
 
     function updateLoginHistoryView() {
+      if (!requireTeacher()) return;
       const container = document.getElementById("studentLoginHistoryContainer");
       if (!container) return;
       container.innerHTML = loginHistoryTableForSelectedStudent();
@@ -1145,6 +1159,7 @@ function toggleStudentDropdown() {
     }
 
     function quickCash(type, amount) {
+      if (!requireTeacher()) return;
       const select = document.getElementById("quickStudent");
       if (!select) {
         showMessage("Choose a student first.");
@@ -1200,6 +1215,7 @@ function toggleStudentDropdown() {
     }
 
     function saveTeacherTransaction() {
+      if (!requireTeacher()) return;
       const transactionTarget = document.getElementById("transactionTarget").value;
       const type = document.getElementById("transactionType").value;
       const amount = Number(document.getElementById("transactionAmount").value);
@@ -1363,6 +1379,7 @@ const targetStudents = transactionTarget === "whole"
     }
 
     function approveAllCreditRequests() {
+      if (!requireTeacher()) return;
       const pendingCredits = data.transactions.filter(transaction =>
         transaction.status === "Pending" && transaction.type === "Add"
       );
@@ -1394,6 +1411,7 @@ const targetStudents = transactionTarget === "whole"
     }
 
     function approveTransaction(transactionId) {
+      if (!requireTeacher()) return;
       const transaction = data.transactions.find(item => item.id === transactionId);
       if (!transaction || transaction.status !== "Pending") return;
 
@@ -1421,6 +1439,7 @@ const targetStudents = transactionTarget === "whole"
     }
 
     function denyTransaction(transactionId) {
+      if (!requireTeacher()) return;
       data.transactions = data.transactions.map(item => {
         if (item.id === transactionId) return { ...item, status: "Denied" };
         return item;
@@ -1432,6 +1451,7 @@ const targetStudents = transactionTarget === "whole"
     }
 
     function addStudent() {
+      if (!requireTeacher()) return;
       const name = document.getElementById("newStudentName").value.trim();
       const pin = document.getElementById("newStudentPin").value.trim();
       const balanceInput = document.getElementById("newStudentBalance").value;
@@ -1468,6 +1488,7 @@ const targetStudents = transactionTarget === "whole"
     }
 
     function updateStudent(studentId) {
+      if (!requireTeacher()) return;
       const name = document.getElementById("name-" + studentId).value.trim();
       const pin = document.getElementById("pin-" + studentId).value.trim();
       const balance = Number(document.getElementById("balance-" + studentId).value);
@@ -1499,6 +1520,7 @@ const targetStudents = transactionTarget === "whole"
     }
 
     function removeStudent(studentId) {
+      if (!requireTeacher()) return;
       const student = data.students.find(s => s.id === studentId);
       if (!student) return;
 
@@ -1513,6 +1535,7 @@ const targetStudents = transactionTarget === "whole"
     }
 
     function toggleFreezeStudent(studentId) {
+      if (!requireTeacher()) return;
       const student = data.students.find(s => s.id === studentId);
       if (!student) return;
 
@@ -1535,6 +1558,7 @@ const targetStudents = transactionTarget === "whole"
       render();
     }
 function saveSettingsLists() {
+if (!requireTeacher()) return;
 const addMoneyText = document.getElementById("addMoneyCategoryList").value;
 const subtractMoneyText = document.getElementById("subtractMoneyCategoryList").value;
 const categoriesText = document.getElementById("purchaseCategoryList").value;
@@ -1548,6 +1572,7 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
   render();
 }
     function saveSettings()  {
+      if (!requireTeacher()) return;
       const reasonsText = document.getElementById("reasonList").value;
       const categoriesText = document.getElementById("purchaseCategoryList").value;
 
@@ -1577,6 +1602,7 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
     }
 
     function clearTransactions() {
+      if (!requireTeacher()) return;
       const confirmed = confirm("Clear all transaction history? Balances will stay the same.");
       if (!confirmed) return;
       data.transactions = [];
@@ -1586,6 +1612,7 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
     }
 
     function resetBalancesToZero() {
+      if (!requireTeacher()) return;
       const confirmed = confirm("Reset every student balance to $0? Transaction history will stay.");
       if (!confirmed) return;
       data.students = data.students.map(student => ({ ...student, balance: 0 }));
@@ -1595,6 +1622,7 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
     }
 
     function resetEverything() {
+      if (!requireTeacher()) return;
       const confirmed = confirm("Reset EVERYTHING? This will erase students, balances, PINs, settings, and transactions from this browser.");
       if (!confirmed) return;
       data = cloneDefault();
@@ -1608,6 +1636,7 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
     }
 
     function exportBackup() {
+      if (!requireTeacher()) return;
       data.lastBackupAt = new Date().toISOString();
       saveData();
 
@@ -1629,11 +1658,14 @@ link.click();
       showMessage("Backup exported.");
       }
     function importBackup(event) {
+      if (!requireTeacher()) return;
       const file = event.target.files[0];
       if (!file) return;
 
       const reader = new FileReader();
       reader.onload = function(e) {
+        if (!requireTeacher()) return;
+
         try {
           const imported = JSON.parse(e.target.result);
           if (!Array.isArray(imported.students) || !Array.isArray(imported.transactions)) {
@@ -1674,6 +1706,7 @@ link.click();
     }
 
     function setCustomTransactionMode(type) {
+      if (!requireTeacher()) return;
       const typeInput = document.getElementById("transactionType");
       const addButton = document.getElementById("addModeButton");
       const subtractButton = document.getElementById("subtractModeButton");
@@ -1697,6 +1730,7 @@ link.click();
     }
 
     function toggleTeacherChoiceMemo() {
+      if (!requireTeacher()) return;
       const categorySelect = document.getElementById("transactionReason");
       const memoWrap = document.getElementById("teacherChoiceMemoWrap");
       if (!categorySelect || !memoWrap) return;
