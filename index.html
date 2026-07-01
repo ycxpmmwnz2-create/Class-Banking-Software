@@ -728,6 +728,7 @@ import { auth, db } from "./src/firebase/firebase.js";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { doc, setDoc, getDoc } from "firebase/firestore";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
+    const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
     const defaultSettings = {
       studentRequestsEnabled: true,
       studentAddRequestsEnabled: true,
@@ -2447,19 +2448,34 @@ if (screen === "editSettingsLists" && isTeacher) {
     }
 
     let hasLoadedData = false;
+    let authStateVersion = 0;
     onAuthStateChanged(auth, async user => {
-      if (!hasLoadedData) {
-        data = await loadData();
-        hasLoadedData = true;
-      }
+      const currentAuthStateVersion = ++authStateVersion;
+      const isAuthenticatedTeacher = user?.uid === TEACHER_UID;
+      isTeacher = false;
 
-      isTeacher = Boolean(user);
-      if (user) {
+      if (isAuthenticatedTeacher) {
+        const loadedData = await loadData();
+        if (currentAuthStateVersion !== authStateVersion) return;
+
+        data = loadedData;
+        hasLoadedData = true;
+        isTeacher = true;
         loggedInStudentId = null;
         screen = "teacher";
         message = "Teacher dashboard unlocked.";
-      } else if (!loggedInStudentId) {
-        screen = "login";
+      } else {
+        if (!hasLoadedData) {
+          const loadedData = await loadData();
+          if (currentAuthStateVersion !== authStateVersion) return;
+
+          data = loadedData;
+          hasLoadedData = true;
+        }
+
+        if (!loggedInStudentId) {
+          screen = "login";
+        }
       }
 
       render();
