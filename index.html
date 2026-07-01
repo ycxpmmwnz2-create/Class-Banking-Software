@@ -727,7 +727,7 @@
 import { auth, db, functions } from "./src/firebase/firebase.js";
 import { getApps, initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInWithCustomToken, signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { doc, setDoc, getDoc } from "firebase/firestore";
+import { doc, getDoc, getFirestore, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
@@ -796,6 +796,27 @@ import { httpsCallable } from "firebase/functions";
     }
 
     // TEMPORARY DEV TEST: remove with the teacher dashboard test card below.
+    async function createSecureStudentTestDocument() {
+      if (!requireTeacher()) return;
+
+      const status = document.getElementById("secureStudentLoginTestStatus");
+      if (status) status.textContent = "Creating test student document...";
+
+      try {
+        await setDoc(doc(db, "classrooms", "morgan", "students", "test-student"), {
+          name: "Secure Login Test Student",
+          balance: 0,
+          frozen: false
+        });
+        if (status) {
+          status.textContent = "Test document created. Run the secure student login test.";
+        }
+      } catch (error) {
+        console.error("Could not create secure student test document:", error);
+        if (status) status.textContent = `Could not create test document: ${error.message}`;
+      }
+    }
+
     async function testSecureStudentLogin() {
       if (!requireTeacher()) return;
 
@@ -834,10 +855,36 @@ import { httpsCallable } from "firebase/functions";
           && claims.studentId === "test-student";
 
         console.log("Secure student login test claims:", claims);
+        if (!claimsMatch) {
+          throw new Error(`Custom claims did not match: ${JSON.stringify(claims)}`);
+        }
+
+        const testDb = getFirestore(testApp);
+        const ownDocument = await getDoc(
+          doc(testDb, "classrooms", "morgan", "students", "test-student")
+        );
+        if (!ownDocument.exists()) {
+          throw new Error("The test student document does not exist. Create it first.");
+        }
+
+        let otherStudentReadDenied = false;
+        try {
+          await getDoc(
+            doc(testDb, "classrooms", "morgan", "students", "other-test-student")
+          );
+        } catch (error) {
+          otherStudentReadDenied = error.code === "permission-denied";
+          if (!otherStudentReadDenied) throw error;
+        }
+
+        if (!otherStudentReadDenied) {
+          throw new Error("Security test failed: another student's document was readable.");
+        }
+
+        console.log("Secure student own-document read:", ownDocument.data());
+        console.log("Secure student cross-document read correctly denied.");
         if (status) {
-          status.textContent = claimsMatch
-            ? "Success — role: student · classroomId: morgan · studentId: test-student"
-            : `Signed in, but claims did not match: ${JSON.stringify(claims)}`;
+          status.textContent = "Success — own document readable · other student denied · role: student · classroomId: morgan · studentId: test-student";
         }
       } catch (error) {
         console.error("Secure student login test failed:", error);
@@ -2102,7 +2149,8 @@ link.click();
           <!-- TEMPORARY DEV TEST: remove with testSecureStudentLogin(). -->
           <div class="card soft-card no-print">
             <h2>Secure Student Login Test</h2>
-            <div class="lock-note">Developer-only test for the temporary custom-token student.</div>
+            <div class="lock-note">Temporary developer-only test. Deploy the test rules, create the dummy document once, then run the login test.</div>
+            <button onclick="createSecureStudentTestDocument()">Create Test Student Document</button>
             <button id="secureStudentLoginTestButton" onclick="testSecureStudentLogin()">Test Secure Student Login</button>
             <div id="secureStudentLoginTestStatus" class="backup-reminder" style="margin-top: 12px;">Not tested yet.</div>
           </div>
@@ -2601,6 +2649,7 @@ window.exportTransactionsCsv = exportTransactionsCsv;
 window.quickCash = quickCash;
 window.logout = logout;
 window.setLoginTab = setLoginTab;
+window.createSecureStudentTestDocument = createSecureStudentTestDocument;
 window.testSecureStudentLogin = testSecureStudentLogin;
 
 window.submitStudentAddMoney = submitStudentAddMoney;
