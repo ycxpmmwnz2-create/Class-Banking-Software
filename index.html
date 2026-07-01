@@ -724,9 +724,11 @@
 <body>
   <div id="app"></div>
   <script type="module">
-import { auth, db } from "./src/firebase/firebase.js";
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { auth, db, functions } from "./src/firebase/firebase.js";
+import { getApps, initializeApp } from "firebase/app";
+import { getAuth, onAuthStateChanged, signInWithCustomToken, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { doc, setDoc, getDoc } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
     const defaultSettings = {
@@ -791,6 +793,65 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
         console.warn("Teacher authentication required.");
       }
       return hasTeacherAccess;
+    }
+
+    // TEMPORARY DEV TEST: remove with the teacher dashboard test card below.
+    async function testSecureStudentLogin() {
+      if (!requireTeacher()) return;
+
+      const status = document.getElementById("secureStudentLoginTestStatus");
+      const button = document.getElementById("secureStudentLoginTestButton");
+      if (status) status.textContent = "Testing secure student login...";
+      if (button) button.disabled = true;
+
+      let testAuth = null;
+
+      try {
+        const studentPinLogin = httpsCallable(functions, "studentPinLogin");
+        const response = await studentPinLogin({
+          loginId: "test-student",
+          pin: "7391"
+        });
+
+        if (typeof response.data?.token !== "string") {
+          throw new Error("The function did not return a custom token.");
+        }
+
+        const testAppName = "secureStudentLoginTest";
+        const testApp = getApps().find(app => app.name === testAppName)
+          || initializeApp(auth.app.options, testAppName);
+        testAuth = getAuth(testApp);
+
+        const credential = await signInWithCustomToken(testAuth, response.data.token);
+        const tokenResult = await credential.user.getIdTokenResult();
+        const claims = {
+          role: tokenResult.claims.role,
+          classroomId: tokenResult.claims.classroomId,
+          studentId: tokenResult.claims.studentId
+        };
+        const claimsMatch = claims.role === "student"
+          && claims.classroomId === "morgan"
+          && claims.studentId === "test-student";
+
+        console.log("Secure student login test claims:", claims);
+        if (status) {
+          status.textContent = claimsMatch
+            ? "Success — role: student · classroomId: morgan · studentId: test-student"
+            : `Signed in, but claims did not match: ${JSON.stringify(claims)}`;
+        }
+      } catch (error) {
+        console.error("Secure student login test failed:", error);
+        if (status) status.textContent = `Test failed: ${error.message}`;
+      } finally {
+        if (testAuth?.currentUser) {
+          try {
+            await signOut(testAuth);
+          } catch (error) {
+            console.warn("Could not clean up secure student test session:", error);
+          }
+        }
+        if (button) button.disabled = false;
+      }
     }
 
     function cloneDefault() {
@@ -2038,6 +2099,14 @@ link.click();
             </div>
           </div>
 
+          <!-- TEMPORARY DEV TEST: remove with testSecureStudentLogin(). -->
+          <div class="card soft-card no-print">
+            <h2>Secure Student Login Test</h2>
+            <div class="lock-note">Developer-only test for the temporary custom-token student.</div>
+            <button id="secureStudentLoginTestButton" onclick="testSecureStudentLogin()">Test Secure Student Login</button>
+            <div id="secureStudentLoginTestStatus" class="backup-reminder" style="margin-top: 12px;">Not tested yet.</div>
+          </div>
+
           <div class="wide-grid">
             <div class="card soft-card">
               <h2>Quick Cash</h2>
@@ -2532,6 +2601,7 @@ window.exportTransactionsCsv = exportTransactionsCsv;
 window.quickCash = quickCash;
 window.logout = logout;
 window.setLoginTab = setLoginTab;
+window.testSecureStudentLogin = testSecureStudentLogin;
 
 window.submitStudentAddMoney = submitStudentAddMoney;
 window.submitStudentSubtractMoney = submitStudentSubtractMoney;
