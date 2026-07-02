@@ -725,9 +725,8 @@
   <div id="app"></div>
   <script type="module">
 import { auth, db, functions } from "./src/firebase/firebase.js";
-import { getApps, initializeApp } from "firebase/app";
-import { getAuth, onAuthStateChanged, signInWithCustomToken, signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { doc, getDoc, getFirestore, setDoc } from "firebase/firestore";
+import { onAuthStateChanged, signInWithCustomToken, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { doc, getDoc, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
@@ -795,112 +794,6 @@ import { httpsCallable } from "firebase/functions";
       return hasTeacherAccess;
     }
 
-    // TEMPORARY DEV TEST: remove with the teacher dashboard test card below.
-    async function createSecureStudentTestDocument() {
-      if (!requireTeacher()) return;
-
-      const status = document.getElementById("secureStudentLoginTestStatus");
-      if (status) status.textContent = "Creating test student document...";
-
-      try {
-        await setDoc(doc(db, "classrooms", "morgan", "students", "test-student"), {
-          name: "Secure Login Test Student",
-          balance: 0,
-          frozen: false
-        });
-        if (status) {
-          status.textContent = "Test document created. Run the secure student login test.";
-        }
-      } catch (error) {
-        console.error("Could not create secure student test document:", error);
-        if (status) status.textContent = `Could not create test document: ${error.message}`;
-      }
-    }
-
-    async function testSecureStudentLogin() {
-      if (!requireTeacher()) return;
-
-      const status = document.getElementById("secureStudentLoginTestStatus");
-      const button = document.getElementById("secureStudentLoginTestButton");
-      if (status) status.textContent = "Testing secure student login...";
-      if (button) button.disabled = true;
-
-      let testAuth = null;
-
-      try {
-        const studentPinLogin = httpsCallable(functions, "studentPinLogin");
-        const response = await studentPinLogin({
-          loginId: "test-student",
-          pin: "7391"
-        });
-
-        if (typeof response.data?.token !== "string") {
-          throw new Error("The function did not return a custom token.");
-        }
-
-        const testAppName = "secureStudentLoginTest";
-        const testApp = getApps().find(app => app.name === testAppName)
-          || initializeApp(auth.app.options, testAppName);
-        testAuth = getAuth(testApp);
-
-        const credential = await signInWithCustomToken(testAuth, response.data.token);
-        const tokenResult = await credential.user.getIdTokenResult();
-        const claims = {
-          role: tokenResult.claims.role,
-          classroomId: tokenResult.claims.classroomId,
-          studentId: tokenResult.claims.studentId
-        };
-        const claimsMatch = claims.role === "student"
-          && claims.classroomId === "morgan"
-          && claims.studentId === "test-student";
-
-        console.log("Secure student login test claims:", claims);
-        if (!claimsMatch) {
-          throw new Error(`Custom claims did not match: ${JSON.stringify(claims)}`);
-        }
-
-        const testDb = getFirestore(testApp);
-        const ownDocument = await getDoc(
-          doc(testDb, "classrooms", "morgan", "students", "test-student")
-        );
-        if (!ownDocument.exists()) {
-          throw new Error("The test student document does not exist. Create it first.");
-        }
-
-        let otherStudentReadDenied = false;
-        try {
-          await getDoc(
-            doc(testDb, "classrooms", "morgan", "students", "other-test-student")
-          );
-        } catch (error) {
-          otherStudentReadDenied = error.code === "permission-denied";
-          if (!otherStudentReadDenied) throw error;
-        }
-
-        if (!otherStudentReadDenied) {
-          throw new Error("Security test failed: another student's document was readable.");
-        }
-
-        console.log("Secure student own-document read:", ownDocument.data());
-        console.log("Secure student cross-document read correctly denied.");
-        if (status) {
-          status.textContent = "Success — own document readable · other student denied · role: student · classroomId: morgan · studentId: test-student";
-        }
-      } catch (error) {
-        console.error("Secure student login test failed:", error);
-        if (status) status.textContent = `Test failed: ${error.message}`;
-      } finally {
-        if (testAuth?.currentUser) {
-          try {
-            await signOut(testAuth);
-          } catch (error) {
-            console.warn("Could not clean up secure student test session:", error);
-          }
-        }
-        if (button) button.disabled = false;
-      }
-    }
-
     function cloneDefault() {
       return JSON.parse(JSON.stringify(defaultData));
     }
@@ -921,6 +814,19 @@ import { httpsCallable } from "firebase/functions";
           subtractMoneyCategories: Array.isArray(parsed.settings?.subtractMoneyCategories) ? parsed.settings.subtractMoneyCategories : defaultSettings.subtractMoneyCategories
         },
         lastBackupAt: parsed.lastBackupAt || null
+      };
+    }
+
+    function dataForSecureStudent(studentId, profile) {
+      return {
+        ...cloneDefault(),
+        students: [{
+          id: studentId,
+          name: typeof profile.name === "string" ? profile.name : "Student",
+          balance: Number(profile.balance || 0),
+          frozen: Boolean(profile.frozen)
+        }],
+        transactions: Array.isArray(profile.transactions) ? profile.transactions : []
       };
     }
 
@@ -1210,39 +1116,43 @@ function toggleStudentDropdown() {
       }
     }
 
-    function loginStudent() {
-      const studentId = Number(document.getElementById("studentSelect").value);
+    async function loginStudent() {
+      const loginId = document.getElementById("studentLoginId").value.trim();
       const pin = document.getElementById("studentPin").value;
-      const student = data.students.find(item => item.id === studentId);
 
-      if (student && student.pin === pin) {
-        if (student.frozen) {
-          recordStudentLoginAttempt(student, "Blocked", "Account frozen");
-          message = "This account is currently frozen. Please see Mr. Morgan.";
-          render();
-          return;
-        }
-
-        recordStudentLoginAttempt(student, "Success", "Student logged in");
-        isTeacher = false;
-        loggedInStudentId = student.id;
-        screen = "student";
-        message = student.name + " is logged in.";
-      } else {
-        if (student) {
-          recordStudentLoginAttempt(student, "Failed", "Incorrect PIN");
-        }
-        message = "Wrong student PIN.";
+      if (!loginId || !pin) {
+        message = "Enter your student login ID and PIN.";
+        render();
+        return;
       }
+
+      message = "Signing in...";
       render();
+
+      try {
+        const studentPinLogin = httpsCallable(functions, "studentPinLogin");
+        const response = await studentPinLogin({ loginId, pin });
+
+        if (typeof response.data?.token !== "string") {
+          throw new Error("The login service did not return a token.");
+        }
+
+        await signInWithCustomToken(auth, response.data.token);
+      } catch (error) {
+        console.error("Student sign-in failed:", error);
+        message = error.code === "functions/unauthenticated"
+          ? "Wrong student login ID or PIN."
+          : "Student login is unavailable. Please try again.";
+        render();
+      }
     }
 
     async function logout() {
-      if (isTeacher && auth.currentUser) {
+      if (auth.currentUser) {
         try {
           await signOut(auth);
         } catch (error) {
-          console.error("Teacher sign-out failed:", error);
+          console.error("Sign-out failed:", error);
           showMessage("Could not sign out. Please try again.");
           return;
         }
@@ -2107,15 +2017,11 @@ link.click();
             ` : `
               <h2>Student Login</h2>
               ${message ? `<div class="backup-reminder">${escapeHtml(message)}</div>` : ""}
-              ${data.students.length === 0 ? `
-                <div class="empty">Student login is not available yet.</div>
-              ` : `
-                <label for="studentSelect">Student</label>
-                <select id="studentSelect">${studentOptions}</select>
-                <label for="studentPin">PIN / password</label>
-                <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'student')" />
-                <button class="primary" onclick="loginStudent()">Login as Student</button>
-              `}
+              <label for="studentLoginId">Student login ID</label>
+              <input id="studentLoginId" placeholder="Student login ID" autocomplete="username" onkeydown="handleLoginEnter(event, 'student')" />
+              <label for="studentPin">PIN / password</label>
+              <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'student')" />
+              <button class="primary" onclick="loginStudent()">Login as Student</button>
             `}
           </div>
         `;
@@ -2144,15 +2050,6 @@ link.click();
               </div>
               <div class="stat-box">Transactions Today: ${transactionsToday}</div>
             </div>
-          </div>
-
-          <!-- TEMPORARY DEV TEST: remove with testSecureStudentLogin(). -->
-          <div class="card soft-card no-print">
-            <h2>Secure Student Login Test</h2>
-            <div class="lock-note">Temporary developer-only test. Deploy the test rules, create the dummy document once, then run the login test.</div>
-            <button onclick="createSecureStudentTestDocument()">Create Test Student Document</button>
-            <button id="secureStudentLoginTestButton" onclick="testSecureStudentLogin()">Test Secure Student Login</button>
-            <div id="secureStudentLoginTestStatus" class="backup-reminder" style="margin-top: 12px;">Not tested yet.</div>
           </div>
 
           <div class="wide-grid">
@@ -2598,35 +2495,60 @@ if (screen === "editSettingsLists" && isTeacher) {
       document.getElementById("app").innerHTML = html;
     }
 
-    let hasLoadedData = false;
     let authStateVersion = 0;
     onAuthStateChanged(auth, async user => {
       const currentAuthStateVersion = ++authStateVersion;
       const isAuthenticatedTeacher = user?.uid === TEACHER_UID;
       isTeacher = false;
+      loggedInStudentId = null;
 
       if (isAuthenticatedTeacher) {
         const loadedData = await loadData();
         if (currentAuthStateVersion !== authStateVersion) return;
 
         data = loadedData;
-        hasLoadedData = true;
         isTeacher = true;
-        loggedInStudentId = null;
         screen = "teacher";
         message = "Teacher dashboard unlocked.";
-      } else {
-        if (!hasLoadedData) {
-          const loadedData = await loadData();
+      } else if (user) {
+        try {
+          const tokenResult = await user.getIdTokenResult();
+          const { role, classroomId, studentId } = tokenResult.claims;
+          const isSecureStudent = role === "student"
+            && classroomId === "morgan"
+            && typeof studentId === "string";
+
+          if (!isSecureStudent) {
+            message = "This account cannot access Morgan Bank.";
+            await signOut(auth);
+            return;
+          }
+
+          const studentSnapshot = await getDoc(
+            doc(db, "classrooms", classroomId, "students", studentId)
+          );
           if (currentAuthStateVersion !== authStateVersion) return;
 
-          data = loadedData;
-          hasLoadedData = true;
-        }
+          if (!studentSnapshot.exists()) {
+            message = "Your student account is not available. Please see Mr. Morgan.";
+            await signOut(auth);
+            return;
+          }
 
-        if (!loggedInStudentId) {
-          screen = "login";
+          data = dataForSecureStudent(studentId, studentSnapshot.data());
+          loggedInStudentId = studentId;
+          loginTab = "student";
+          screen = "student";
+          message = `${currentStudent().name} is logged in.`;
+        } catch (error) {
+          console.error("Secure student profile load failed:", error);
+          message = "Could not load your student account. Please try again.";
+          await signOut(auth);
+          return;
         }
+      } else {
+        data = cloneDefault();
+        screen = "login";
       }
 
       render();
@@ -2649,8 +2571,6 @@ window.exportTransactionsCsv = exportTransactionsCsv;
 window.quickCash = quickCash;
 window.logout = logout;
 window.setLoginTab = setLoginTab;
-window.createSecureStudentTestDocument = createSecureStudentTestDocument;
-window.testSecureStudentLogin = testSecureStudentLogin;
 window.submitStudentAddMoney = submitStudentAddMoney;
 window.submitStudentSubtractMoney = submitStudentSubtractMoney;
 window.approveAllCreditRequests = approveAllCreditRequests;
