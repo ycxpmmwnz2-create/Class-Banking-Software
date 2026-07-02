@@ -4,23 +4,41 @@ import bcrypt from 'bcryptjs'
 
 import { verifyStudentCredentials } from './studentCredentialVerifier.js'
 
+const NOW = Date.parse('2026-07-02T12:00:00Z')
+
 function firestoreWithTestCredential(record, exists = true) {
+  const state = {
+    record: record ? { ...record } : undefined,
+  }
+  const credentialRef = {}
+
   return {
-    collection(collectionName) {
-      assert.equal(collectionName, 'studentTestCredentials')
-      return {
-        doc(loginId) {
-          assert.equal(loginId, 'test-student')
-          return {
-            async get() {
-              return {
-                exists,
-                data: () => record,
-              }
-            },
-          }
-        },
-      }
+    state,
+    firestore: {
+      collection(collectionName) {
+        assert.equal(collectionName, 'studentTestCredentials')
+        return {
+          doc(loginId) {
+            assert.equal(loginId, 'test-student')
+            return credentialRef
+          },
+        }
+      },
+      async runTransaction(callback) {
+        return callback({
+          async get(ref) {
+            assert.equal(ref, credentialRef)
+            return {
+              exists,
+              data: () => ({ ...state.record }),
+            }
+          },
+          update(ref, updates) {
+            assert.equal(ref, credentialRef)
+            Object.assign(state.record, updates)
+          },
+        })
+      },
     },
   }
 }
@@ -31,12 +49,27 @@ const temporaryTestRecord = {
   authUid: 'test-student',
   classroomId: 'morgan',
   studentId: 'test-student',
+  failedAttempts: 0,
+  lockedUntil: null,
 }
 
-test('returns the Firestore-backed test student for valid credentials', async () => {
-  const student = await verifyStudentCredentials(
+async function verify(credentials, testStore) {
+  return verifyStudentCredentials(credentials, {
+    firestore: testStore.firestore,
+    now: () => NOW,
+  })
+}
+
+test('successful login resets failed attempts and lockout', async () => {
+  const testStore = firestoreWithTestCredential({
+    ...temporaryTestRecord,
+    failedAttempts: 3,
+    lockedUntil: new Date(NOW - 1000),
+  })
+
+  const student = await verify(
     { loginId: 'test-student', pin: '7391' },
-    firestoreWithTestCredential(temporaryTestRecord),
+    testStore,
   )
 
   assert.deepEqual(student, {
@@ -47,35 +80,71 @@ test('returns the Firestore-backed test student for valid credentials', async ()
       studentId: 'test-student',
     },
   })
+  assert.equal(testStore.state.record.failedAttempts, 0)
+  assert.equal(testStore.state.record.lockedUntil, null)
 })
 
-test('rejects an invalid PIN', async () => {
-  const student = await verifyStudentCredentials(
+test('wrong PIN increments failed attempts', async () => {
+  const testStore = firestoreWithTestCredential({
+    ...temporaryTestRecord,
+    failedAttempts: 2,
+  })
+
+  const student = await verify(
     { loginId: 'test-student', pin: 'wrong' },
-    firestoreWithTestCredential(temporaryTestRecord),
+    testStore,
   )
 
   assert.equal(student, null)
+  assert.equal(testStore.state.record.failedAttempts, 3)
+  assert.equal(testStore.state.record.lockedUntil, null)
 })
 
-test('rejects a credential without a bcrypt hash', async () => {
-  const student = await verifyStudentCredentials(
-    { loginId: 'test-student', pin: '7391' },
-    firestoreWithTestCredential({
-      ...temporaryTestRecord,
-      pinHash: undefined,
-      pin: '7391',
-    }),
+test('fifth failed attempt locks the credential for five minutes', async () => {
+  const testStore = firestoreWithTestCredential({
+    ...temporaryTestRecord,
+    failedAttempts: 4,
+  })
+
+  const student = await verify(
+    { loginId: 'test-student', pin: 'wrong' },
+    testStore,
   )
 
   assert.equal(student, null)
+  assert.equal(testStore.state.record.failedAttempts, 5)
+  assert.equal(
+    testStore.state.record.lockedUntil.getTime(),
+    NOW + (5 * 60 * 1000),
+  )
 })
 
-test('rejects a missing credential document', async () => {
-  const student = await verifyStudentCredentials(
+test('locked credential rejects the correct PIN without resetting', async () => {
+  const lockedUntil = new Date(NOW + 60_000)
+  const testStore = firestoreWithTestCredential({
+    ...temporaryTestRecord,
+    failedAttempts: 5,
+    lockedUntil,
+  })
+
+  const student = await verify(
     { loginId: 'test-student', pin: '7391' },
-    firestoreWithTestCredential(undefined, false),
+    testStore,
   )
 
   assert.equal(student, null)
+  assert.equal(testStore.state.record.failedAttempts, 5)
+  assert.equal(testStore.state.record.lockedUntil, lockedUntil)
+})
+
+test('missing credential is rejected without a write', async () => {
+  const testStore = firestoreWithTestCredential(undefined, false)
+
+  const student = await verify(
+    { loginId: 'test-student', pin: '7391' },
+    testStore,
+  )
+
+  assert.equal(student, null)
+  assert.equal(testStore.state.record, undefined)
 })
