@@ -9,13 +9,28 @@ const NOW = Date.parse('2026-07-02T12:00:00Z')
 function firestoreWithTestCredential(record, exists = true) {
   const state = {
     record: record ? { ...record } : undefined,
+    logs: [],
   }
   const credentialRef = {}
+  const logRef = {
+    async set(log) {
+      state.logs.push(log)
+    },
+  }
 
   return {
     state,
     firestore: {
       collection(collectionName) {
+        if (collectionName === 'studentAuthLogs') {
+          return {
+            doc(logId) {
+              assert.equal(logId, undefined)
+              return logRef
+            },
+          }
+        }
+
         assert.equal(collectionName, 'studentTestCredentials')
         return {
           doc(loginId) {
@@ -36,6 +51,10 @@ function firestoreWithTestCredential(record, exists = true) {
           update(ref, updates) {
             assert.equal(ref, credentialRef)
             Object.assign(state.record, updates)
+          },
+          set(ref, log) {
+            assert.equal(ref, logRef)
+            state.logs.push(log)
           },
         })
       },
@@ -60,6 +79,16 @@ async function verify(credentials, testStore) {
   })
 }
 
+function assertSafeLog(log, expected) {
+  assert.deepEqual(log, {
+    loginId: 'test-student',
+    timestamp: new Date(NOW),
+    ...expected,
+  })
+  assert.equal('pin' in log, false)
+  assert.equal('pinHash' in log, false)
+}
+
 test('successful login resets failed attempts and lockout', async () => {
   const testStore = firestoreWithTestCredential({
     ...temporaryTestRecord,
@@ -82,6 +111,13 @@ test('successful login resets failed attempts and lockout', async () => {
   })
   assert.equal(testStore.state.record.failedAttempts, 0)
   assert.equal(testStore.state.record.lockedUntil, null)
+  assert.equal(testStore.state.logs.length, 1)
+  assertSafeLog(testStore.state.logs[0], {
+    success: true,
+    reason: 'success',
+    classroomId: 'morgan',
+    studentId: 'test-student',
+  })
 })
 
 test('wrong PIN increments failed attempts', async () => {
@@ -98,6 +134,13 @@ test('wrong PIN increments failed attempts', async () => {
   assert.equal(student, null)
   assert.equal(testStore.state.record.failedAttempts, 3)
   assert.equal(testStore.state.record.lockedUntil, null)
+  assert.equal(testStore.state.logs.length, 1)
+  assertSafeLog(testStore.state.logs[0], {
+    success: false,
+    reason: 'invalid_credentials',
+    classroomId: 'morgan',
+    studentId: 'test-student',
+  })
 })
 
 test('fifth failed attempt locks the credential for five minutes', async () => {
@@ -117,6 +160,13 @@ test('fifth failed attempt locks the credential for five minutes', async () => {
     testStore.state.record.lockedUntil.getTime(),
     NOW + (5 * 60 * 1000),
   )
+  assert.equal(testStore.state.logs.length, 1)
+  assertSafeLog(testStore.state.logs[0], {
+    success: false,
+    reason: 'invalid_credentials',
+    classroomId: 'morgan',
+    studentId: 'test-student',
+  })
 })
 
 test('locked credential rejects the correct PIN without resetting', async () => {
@@ -135,9 +185,16 @@ test('locked credential rejects the correct PIN without resetting', async () => 
   assert.equal(student, null)
   assert.equal(testStore.state.record.failedAttempts, 5)
   assert.equal(testStore.state.record.lockedUntil, lockedUntil)
+  assert.equal(testStore.state.logs.length, 1)
+  assertSafeLog(testStore.state.logs[0], {
+    success: false,
+    reason: 'locked',
+    classroomId: 'morgan',
+    studentId: 'test-student',
+  })
 })
 
-test('missing credential is rejected without a write', async () => {
+test('missing credential is rejected and logged without credential changes', async () => {
   const testStore = firestoreWithTestCredential(undefined, false)
 
   const student = await verify(
@@ -147,4 +204,26 @@ test('missing credential is rejected without a write', async () => {
 
   assert.equal(student, null)
   assert.equal(testStore.state.record, undefined)
+  assert.equal(testStore.state.logs.length, 1)
+  assertSafeLog(testStore.state.logs[0], {
+    success: false,
+    reason: 'invalid_credentials',
+  })
+})
+
+test('malformed credentials receive a generic audit log', async () => {
+  const testStore = firestoreWithTestCredential(undefined, false)
+
+  const student = await verify(
+    { loginId: undefined, pin: undefined },
+    testStore,
+  )
+
+  assert.equal(student, null)
+  assert.deepEqual(testStore.state.logs, [{
+    loginId: '',
+    success: false,
+    reason: 'invalid_credentials',
+    timestamp: new Date(NOW),
+  }])
 })

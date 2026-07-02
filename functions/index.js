@@ -11,13 +11,6 @@ if (getApps().length === 0) {
 export const studentPinLogin = onCall(async (request) => {
   const { loginId, pin } = request.data ?? {}
 
-  if (typeof loginId !== 'string' || typeof pin !== 'string') {
-    throw new HttpsError(
-      'invalid-argument',
-      'A student login ID and PIN are required.',
-    )
-  }
-
   const student = await verifyStudentCredentials({ loginId, pin })
 
   if (!student) {
