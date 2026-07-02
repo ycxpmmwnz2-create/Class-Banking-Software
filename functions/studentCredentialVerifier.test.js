@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import bcrypt from 'bcryptjs'
 
 import { verifyStudentCredentials } from './studentCredentialVerifier.js'
 
@@ -25,7 +26,7 @@ function firestoreWithTestCredential(record, exists = true) {
 }
 
 const temporaryTestRecord = {
-  pin: '7391',
+  pinHash: await bcrypt.hash('7391', 4),
   active: true,
   authUid: 'test-student',
   classroomId: 'morgan',
@@ -52,6 +53,19 @@ test('rejects an invalid PIN', async () => {
   const student = await verifyStudentCredentials(
     { loginId: 'test-student', pin: 'wrong' },
     firestoreWithTestCredential(temporaryTestRecord),
+  )
+
+  assert.equal(student, null)
+})
+
+test('rejects a credential without a bcrypt hash', async () => {
+  const student = await verifyStudentCredentials(
+    { loginId: 'test-student', pin: '7391' },
+    firestoreWithTestCredential({
+      ...temporaryTestRecord,
+      pinHash: undefined,
+      pin: '7391',
+    }),
   )
 
   assert.equal(student, null)

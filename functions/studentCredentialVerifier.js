@@ -1,12 +1,20 @@
 import { getFirestore } from 'firebase-admin/firestore'
+import bcrypt from 'bcryptjs'
 
 const TEMPORARY_CREDENTIAL_COLLECTION = 'studentTestCredentials'
 
-// TEMPORARY PLAINTEXT COMPARISON.
-// Replace only this function with bcrypt/Argon2 verification once PIN hashes
-// are stored instead of test PINs.
-function verifyTemporaryPin(submittedPin, storedPin) {
-  return typeof storedPin === 'string' && submittedPin === storedPin
+// PIN verification stays isolated here so the hashing strategy can be upgraded
+// without changing credential lookup or custom-token creation.
+async function verifyHashedPin(submittedPin, storedHash) {
+  if (typeof storedHash !== 'string') {
+    return false
+  }
+
+  try {
+    return await bcrypt.compare(submittedPin, storedHash)
+  } catch {
+    return false
+  }
 }
 
 export async function verifyStudentCredentials(
@@ -34,7 +42,7 @@ export async function verifyStudentCredentials(
     && typeof record.classroomId === 'string'
     && typeof record.studentId === 'string'
 
-  if (!hasValidIdentity || !verifyTemporaryPin(pin, record.pin)) {
+  if (!hasValidIdentity || !await verifyHashedPin(pin, record.pinHash)) {
     return null
   }
 
