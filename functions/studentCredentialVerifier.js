@@ -1,7 +1,7 @@
 import { getFirestore } from 'firebase-admin/firestore'
 import bcrypt from 'bcryptjs'
 
-const TEMPORARY_CREDENTIAL_COLLECTION = 'studentTestCredentials'
+const STUDENT_CREDENTIAL_COLLECTION = 'studentCredentials'
 const AUTH_LOG_COLLECTION = 'studentAuthLogs'
 const MAX_FAILED_ATTEMPTS = 5
 const LOCKOUT_DURATION_MS = 5 * 60 * 1000
@@ -58,18 +58,19 @@ export async function verifyStudentCredentials(
   } = {},
 ) {
   const attemptTime = now()
-  const loggedLoginId = typeof loginId === 'string' ? loginId : ''
+  const normalizedLoginId = typeof loginId === 'string'
+    ? loginId.trim().toLowerCase()
+    : ''
   const logRef = firestore.collection(AUTH_LOG_COLLECTION).doc()
 
   if (
-    typeof loginId !== 'string'
-    || !loginId
-    || loginId.includes('/')
+    !normalizedLoginId
+    || normalizedLoginId.includes('/')
     || typeof pin !== 'string'
     || !pin
   ) {
     await logRef.set(authenticationLog({
-      loginId: loggedLoginId,
+      loginId: normalizedLoginId,
       success: false,
       reason: 'invalid_credentials',
       timestamp: attemptTime,
@@ -77,11 +78,11 @@ export async function verifyStudentCredentials(
     return null
   }
 
-  // TEMPORARY TEST-ONLY collection. The Admin SDK reads this server-side;
-  // client Firestore rules intentionally grant no access to it.
+  // The Admin SDK reads production credentials server-side. Client Firestore
+  // rules intentionally grant no access to this collection.
   const credentialRef = firestore
-    .collection(TEMPORARY_CREDENTIAL_COLLECTION)
-    .doc(loginId)
+    .collection(STUDENT_CREDENTIAL_COLLECTION)
+    .doc(normalizedLoginId)
 
   return firestore.runTransaction(async transaction => {
     const snapshot = await transaction.get(credentialRef)
@@ -91,7 +92,7 @@ export async function verifyStudentCredentials(
       // whether a credential document exists.
       await verifyHashedPin(pin, DUMMY_PIN_HASH)
       transaction.set(logRef, authenticationLog({
-        loginId,
+        loginId: normalizedLoginId,
         success: false,
         reason: 'invalid_credentials',
         timestamp: attemptTime,
@@ -115,7 +116,7 @@ export async function verifyStudentCredentials(
 
     if (!hasValidIdentity) {
       transaction.set(logRef, authenticationLog({
-        loginId,
+        loginId: normalizedLoginId,
         success: false,
         reason: 'invalid_credentials',
         timestamp: attemptTime,
@@ -126,7 +127,7 @@ export async function verifyStudentCredentials(
 
     if (isLocked) {
       transaction.set(logRef, authenticationLog({
-        loginId,
+        loginId: normalizedLoginId,
         success: false,
         reason: 'locked',
         timestamp: attemptTime,
@@ -149,7 +150,7 @@ export async function verifyStudentCredentials(
           : null,
       })
       transaction.set(logRef, authenticationLog({
-        loginId,
+        loginId: normalizedLoginId,
         success: false,
         reason: 'invalid_credentials',
         timestamp: attemptTime,
@@ -164,7 +165,7 @@ export async function verifyStudentCredentials(
       lockedUntil: null,
     })
     transaction.set(logRef, authenticationLog({
-      loginId,
+      loginId: normalizedLoginId,
       success: true,
       reason: 'success',
       timestamp: attemptTime,

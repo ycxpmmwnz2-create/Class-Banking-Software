@@ -31,7 +31,7 @@ function firestoreWithTestCredential(record, exists = true) {
           }
         }
 
-        assert.equal(collectionName, 'studentTestCredentials')
+        assert.equal(collectionName, 'studentCredentials')
         return {
           doc(loginId) {
             assert.equal(loginId, 'test-student')
@@ -111,6 +111,24 @@ test('successful login resets failed attempts and lockout', async () => {
   })
   assert.equal(testStore.state.record.failedAttempts, 0)
   assert.equal(testStore.state.record.lockedUntil, null)
+  assert.equal(testStore.state.logs.length, 1)
+  assertSafeLog(testStore.state.logs[0], {
+    success: true,
+    reason: 'success',
+    classroomId: 'morgan',
+    studentId: 'test-student',
+  })
+})
+
+test('normalizes uppercase and whitespace in the login ID', async () => {
+  const testStore = firestoreWithTestCredential(temporaryTestRecord)
+
+  const student = await verify(
+    { loginId: '  TEST-STUDENT  ', pin: '7391' },
+    testStore,
+  )
+
+  assert.equal(student?.claims.studentId, 'test-student')
   assert.equal(testStore.state.logs.length, 1)
   assertSafeLog(testStore.state.logs[0], {
     success: true,
