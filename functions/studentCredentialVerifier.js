@@ -1,22 +1,40 @@
-// TEMPORARY IN-MEMORY RECORD.
-// Replace this map with a server-side student-record lookup and hashed PIN
-// verification before connecting the real student login screen.
-const temporaryStudentRecords = new Map([
-  [
-    'test-student',
-    {
-      pin: '7391',
-      authUid: 'test-student',
-      classroomId: 'morgan',
-      studentId: 'test-student',
-    },
-  ],
-])
+import { getFirestore } from 'firebase-admin/firestore'
 
-export async function verifyStudentCredentials({ loginId, pin }) {
-  const record = temporaryStudentRecords.get(loginId)
+const TEMPORARY_CREDENTIAL_COLLECTION = 'studentTestCredentials'
 
-  if (!record || record.pin !== pin) {
+// TEMPORARY PLAINTEXT COMPARISON.
+// Replace only this function with bcrypt/Argon2 verification once PIN hashes
+// are stored instead of test PINs.
+function verifyTemporaryPin(submittedPin, storedPin) {
+  return typeof storedPin === 'string' && submittedPin === storedPin
+}
+
+export async function verifyStudentCredentials(
+  { loginId, pin },
+  firestore = getFirestore(),
+) {
+  if (!loginId || loginId.includes('/') || !pin) {
+    return null
+  }
+
+  // TEMPORARY TEST-ONLY collection. The Admin SDK reads this server-side;
+  // client Firestore rules intentionally grant no access to it.
+  const snapshot = await firestore
+    .collection(TEMPORARY_CREDENTIAL_COLLECTION)
+    .doc(loginId)
+    .get()
+
+  if (!snapshot.exists) {
+    return null
+  }
+
+  const record = snapshot.data()
+  const hasValidIdentity = record?.active === true
+    && typeof record.authUid === 'string'
+    && typeof record.classroomId === 'string'
+    && typeof record.studentId === 'string'
+
+  if (!hasValidIdentity || !verifyTemporaryPin(pin, record.pin)) {
     return null
   }
 
