@@ -785,6 +785,8 @@ import { httpsCallable } from "firebase/functions";
     let loggedInStudentId = null;
     let teacherProfileStudentId = null;
     let message = "";
+    let studentLoginIdDraft = "";
+    let studentLoginPending = false;
 
     function requireTeacher() {
       const hasTeacherAccess = isTeacher && auth.currentUser?.uid === TEACHER_UID;
@@ -1117,15 +1119,25 @@ function toggleStudentDropdown() {
     }
 
     async function loginStudent() {
+      if (studentLoginPending) return;
+
       const loginId = document.getElementById("studentLoginId").value.trim();
       const pin = document.getElementById("studentPin").value;
+      studentLoginIdDraft = loginId;
 
-      if (!loginId || !pin) {
-        message = "Enter your student login ID and PIN.";
+      if (!loginId) {
+        message = "Enter your student login ID.";
         render();
         return;
       }
 
+      if (!pin) {
+        message = "Enter your PIN.";
+        render();
+        return;
+      }
+
+      studentLoginPending = true;
       message = "Signing in...";
       render();
 
@@ -1138,12 +1150,17 @@ function toggleStudentDropdown() {
         }
 
         await signInWithCustomToken(auth, response.data.token);
+        studentLoginIdDraft = "";
       } catch (error) {
         console.error("Student sign-in failed:", error);
         message = error.code === "functions/unauthenticated"
           ? "Wrong student login ID or PIN."
           : "Student login is unavailable. Please try again.";
-        render();
+      } finally {
+        studentLoginPending = false;
+        if (screen === "login") {
+          render();
+        }
       }
     }
 
@@ -2016,12 +2033,12 @@ link.click();
               <button class="primary" onclick="loginTeacher()">Login as Teacher</button>
             ` : `
               <h2>Student Login</h2>
-              ${message ? `<div class="backup-reminder">${escapeHtml(message)}</div>` : ""}
+              ${message ? `<div class="backup-reminder" role="status" aria-live="polite">${escapeHtml(message)}</div>` : ""}
               <label for="studentLoginId">Student login ID</label>
-              <input id="studentLoginId" placeholder="Student login ID" autocomplete="username" onkeydown="handleLoginEnter(event, 'student')" />
+              <input id="studentLoginId" value="${escapeHtml(studentLoginIdDraft)}" placeholder="Student login ID" autocomplete="username" autocapitalize="none" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
               <label for="studentPin">PIN / password</label>
-              <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'student')" />
-              <button class="primary" onclick="loginStudent()">Login as Student</button>
+              <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
+              <button class="primary" onclick="loginStudent()" ${studentLoginPending ? "disabled" : ""}>${studentLoginPending ? "Signing in..." : "Login as Student"}</button>
             `}
           </div>
         `;
