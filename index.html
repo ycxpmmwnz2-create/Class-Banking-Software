@@ -859,7 +859,6 @@ import { httpsCallable } from "firebase/functions";
 
   try {
     await setDoc(doc(db, "morganBank", "classroomData"), data);
-    console.log("Saved to Firestore");
   } catch (error) {
     console.error("Firestore save failed:", error);
   }
