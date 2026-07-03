@@ -726,7 +726,7 @@
   <script type="module">
 import { auth, db, functions } from "./src/firebase/firebase.js";
 import { onAuthStateChanged, signInWithCustomToken, signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
@@ -787,6 +787,9 @@ import { httpsCallable } from "firebase/functions";
     let message = "";
     let studentLoginIdDraft = "";
     let studentLoginPending = false;
+    let studentAuthLogs = [];
+    let studentAuthLogsLoading = false;
+    let studentAuthLogsError = "";
 
     function requireTeacher() {
       const hasTeacherAccess = isTeacher && auth.currentUser?.uid === TEACHER_UID;
@@ -997,6 +1000,79 @@ function toggleStudentDropdown() {
   if (!menu) return;
   menu.classList.toggle("open");
 }
+    async function openStudentAuthLogs() {
+      if (!requireTeacher()) return;
+
+      screen = "studentAuthLogs";
+      studentAuthLogsLoading = true;
+      studentAuthLogsError = "";
+      render();
+
+      try {
+        const snapshot = await getDocs(query(
+          collection(db, "studentAuthLogs"),
+          orderBy("timestamp", "desc"),
+          limit(25)
+        ));
+        studentAuthLogs = snapshot.docs.map(logDocument => logDocument.data());
+      } catch (error) {
+        console.error("Student auth log load failed:", error);
+        studentAuthLogs = [];
+        studentAuthLogsError = "Could not load student auth logs.";
+      } finally {
+        studentAuthLogsLoading = false;
+        render();
+      }
+    }
+
+    function studentAuthLogTimestamp(timestamp) {
+      const date = typeof timestamp?.toDate === "function"
+        ? timestamp.toDate()
+        : null;
+      return date && !Number.isNaN(date.getTime())
+        ? date.toLocaleString()
+        : "Unknown";
+    }
+
+    function studentAuthLogTable() {
+      if (studentAuthLogsLoading) {
+        return '<div class="empty">Loading recent login attempts...</div>';
+      }
+
+      if (studentAuthLogsError) {
+        return `<div class="empty">${escapeHtml(studentAuthLogsError)}</div>`;
+      }
+
+      if (studentAuthLogs.length === 0) {
+        return '<div class="empty">No student authentication attempts have been logged yet.</div>';
+      }
+
+      const rows = studentAuthLogs.map(log => `
+        <tr>
+          <td>${escapeHtml(studentAuthLogTimestamp(log.timestamp))}</td>
+          <td>${escapeHtml(log.loginId || "Unknown")}</td>
+          <td>${log.success === true ? "Success" : "Failure"}</td>
+          <td>${escapeHtml(log.reason || "Unknown")}</td>
+          <td>${escapeHtml(log.studentId || "—")}</td>
+        </tr>
+      `).join("");
+
+      return `
+        <table>
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Login ID</th>
+              <th>Result</th>
+              <th>Reason</th>
+              <th>Student ID</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
     function setScreen(newScreen) {
       screen = newScreen;
       render();
@@ -2008,6 +2084,7 @@ link.click();
             ${isTeacher ? `<button onclick="setScreen('purchases')">Payments</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('roster')">Roster</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('settings')">Settings</button>` : ""}
+            ${isTeacher ? `<button onclick="openStudentAuthLogs()">Student Auth Logs</button>` : ""}
             
             <button onclick="logout()">Log Out</button>
           </div>
@@ -2417,6 +2494,16 @@ ${transactionTarget !== "whole" ? `
           </div>
         `;
       }
+      if (screen === "studentAuthLogs" && isTeacher) {
+        html += `
+          <div class="card">
+            <h2>Student Auth Logs</h2>
+            <p class="small-note">Most recent 25 server-recorded student login attempts.</p>
+            ${studentAuthLogTable()}
+            <button onclick="openStudentAuthLogs()" ${studentAuthLogsLoading ? "disabled" : ""}>Refresh</button>
+          </div>
+        `;
+      }
 if (screen === "editSettingsLists" && isTeacher) {
   html += `
     <div class="card soft-card">
@@ -2518,6 +2605,9 @@ if (screen === "editSettingsLists" && isTeacher) {
       const isAuthenticatedTeacher = user?.uid === TEACHER_UID;
       isTeacher = false;
       loggedInStudentId = null;
+      studentAuthLogs = [];
+      studentAuthLogsError = "";
+      studentAuthLogsLoading = false;
 
       if (isAuthenticatedTeacher) {
         const loadedData = await loadData();
@@ -2573,6 +2663,7 @@ if (screen === "editSettingsLists" && isTeacher) {
     window.loginTeacher = loginTeacher;
 window.handleLoginEnter = handleLoginEnter;
 window.loginStudent = loginStudent;
+window.openStudentAuthLogs = openStudentAuthLogs;
 window.setScreen = setScreen;
 window.viewStudentProfile = viewStudentProfile;
 window.render = render;

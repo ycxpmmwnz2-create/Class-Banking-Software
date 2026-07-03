@@ -22,6 +22,10 @@ service cloud.firestore {
       allow read, write: if isTeacher();
     }
 
+    match /studentAuthLogs/{logId} {
+      allow read: if isTeacher();
+    }
+
     // TEMPORARY TEST-ONLY access. Remove after the secure student flow is proven.
     match /classrooms/morgan/students/test-student {
       allow read: if isTestStudent();
