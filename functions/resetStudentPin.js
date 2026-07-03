@@ -11,7 +11,7 @@ function requireTeacher(auth) {
     throw new HttpsError('unauthenticated', 'Teacher authentication required.')
   }
 
-  if (auth.uid !== TEACHER_UID || auth.token?.role !== 'teacher') {
+  if (auth.uid !== TEACHER_UID) {
     throw new HttpsError('permission-denied', 'Teacher access required.')
   }
 }

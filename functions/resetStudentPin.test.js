@@ -6,7 +6,7 @@ import { resetStudentPinForTeacher } from './resetStudentPin.js'
 
 const TEACHER_AUTH = {
   uid: 'YkYUzIzy0aW7roolM1VaLcIJPuN2',
-  token: { role: 'teacher' },
+  token: {},
 }
 const TIMESTAMP = { serverTimestamp: true }
 
@@ -79,13 +79,7 @@ test('requires an authenticated teacher', async () => {
   )
 })
 
-test('requires the teacher role and trusted teacher UID', async () => {
-  await assertHttpsError(
-    resetStudentPinForTeacher(request({
-      auth: { uid: TEACHER_AUTH.uid, token: {} },
-    })),
-    'permission-denied',
-  )
+test('requires the trusted teacher UID', async () => {
   await assertHttpsError(
     resetStudentPinForTeacher(request({
       auth: { uid: 'another-user', token: { role: 'teacher' } },
