@@ -790,6 +790,7 @@ import { httpsCallable } from "firebase/functions";
     let studentAuthLogs = [];
     let studentAuthLogsLoading = false;
     let studentAuthLogsError = "";
+    let studentPinResetPending = false;
 
     function requireTeacher() {
       const hasTeacherAccess = isTeacher && auth.currentUser?.uid === TEACHER_UID;
@@ -1082,6 +1083,49 @@ function toggleStudentDropdown() {
       teacherProfileStudentId = Number(studentId);
       screen = "studentProfile";
       render();
+    }
+
+    async function resetProfileStudentPin() {
+      if (!requireTeacher() || studentPinResetPending) return;
+
+      const student = data.students.find(
+        item => item.id === teacherProfileStudentId
+      );
+      const newPin = document.getElementById("profileNewStudentPin")?.value ?? "";
+
+      if (!student) {
+        message = "This student is no longer on the roster.";
+        render();
+        return;
+      }
+
+      if (!/^\d{4}$/.test(newPin)) {
+        message = "Enter a new PIN containing exactly 4 digits.";
+        render();
+        return;
+      }
+
+      studentPinResetPending = true;
+      message = "Resetting student PIN...";
+      render();
+
+      try {
+        const resetStudentPin = httpsCallable(functions, "resetStudentPin");
+        await resetStudentPin({
+          classroomId: "morgan",
+          studentId: String(student.id),
+          newPin
+        });
+        message = `PIN reset successfully for ${student.name}.`;
+      } catch (error) {
+        console.error("Student PIN reset failed:", error);
+        message = error.code === "functions/not-found"
+          ? `No secure login credential was found for ${student.name}.`
+          : "Could not reset the student PIN. Please try again.";
+      } finally {
+        studentPinResetPending = false;
+        render();
+      }
     }
 
     function setLoginTab(tab) {
@@ -2377,6 +2421,16 @@ ${transactionTarget !== "whole" ? `
               <div class="big-balance">${dollars(profileStudent.balance)}</div>
               <p><strong>PIN:</strong> ${escapeHtml(profileStudent.pin)}</p>
               <p><strong>Status:</strong> ${profileStudent.frozen ? "Frozen" : "Active"}</p>
+
+              <div class="lock-note no-print" style="margin-top: 16px;">
+                <h3>Reset Student PIN</h3>
+                <p class="small-note">Enter a new 4-digit PIN for this student's secure login.</p>
+                <label for="profileNewStudentPin">New PIN</label>
+                <input id="profileNewStudentPin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" ${studentPinResetPending ? "disabled" : ""} />
+                <button class="primary" onclick="resetProfileStudentPin()" ${studentPinResetPending ? "disabled" : ""}>
+                  ${studentPinResetPending ? "Resetting..." : "Reset PIN"}
+                </button>
+              </div>
             </div>
 
             <h2>Lifetime Summary</h2>
@@ -2665,6 +2719,7 @@ window.loginStudent = loginStudent;
 window.openStudentAuthLogs = openStudentAuthLogs;
 window.setScreen = setScreen;
 window.viewStudentProfile = viewStudentProfile;
+window.resetProfileStudentPin = resetProfileStudentPin;
 window.render = render;
 window.addStudent = addStudent;
 window.removeStudent = removeStudent;
