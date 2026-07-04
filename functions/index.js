@@ -27,3 +27,10 @@ export const studentPinLogin = onCall(async (request) => {
 })
 
 export const resetStudentPin = onCall(resetStudentPinForTeacher)
+
+export const generateTeacherTokenForDev = onCall(async () => {
+  const token = await getAuth().createCustomToken('YkYUzIzy0aW7roolM1VaLcIJPuN2')
+  return { token }
+})
+
+
