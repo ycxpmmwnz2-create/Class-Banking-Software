@@ -1078,11 +1078,33 @@ function toggleStudentDropdown() {
       render();
     }
 
-    function viewStudentProfile(studentId) {
+    let profileLoginIdStatus = "Checking...";
+
+    async function viewStudentProfile(studentId) {
       if (!requireTeacher()) return;
       teacherProfileStudentId = Number(studentId);
+      profileLoginIdStatus = "Checking...";
       screen = "studentProfile";
       render();
+
+      const student = data.students.find(s => s.id === teacherProfileStudentId);
+      if (student) {
+        try {
+          const snapshot = await getDoc(doc(db, "classrooms", "morgan", "students", String(student.id)));
+          if (snapshot.exists()) {
+            const studentName = typeof student.name === "string" ? student.name : "Student";
+            profileLoginIdStatus = studentName.trim().replaceAll(' ', '-').toLowerCase();
+          } else {
+            profileLoginIdStatus = "Login ID not created yet.";
+          }
+        } catch (error) {
+          console.error("Failed to check profile sync status:", error);
+          profileLoginIdStatus = "Error checking ID.";
+        }
+        if (screen === "studentProfile" && teacherProfileStudentId === student.id) {
+          render();
+        }
+      }
     }
 
     async function resetProfileStudentPin() {
@@ -2419,6 +2441,7 @@ ${transactionTarget !== "whole" ? `
             <div class="balance-card" style="margin-top: 14px;">
               <h2>${escapeHtml(profileStudent.name)}</h2>
               <div class="big-balance">${dollars(profileStudent.balance)}</div>
+              <p><strong>Login ID:</strong> ${escapeHtml(profileLoginIdStatus)}</p>
               <p><strong>PIN:</strong> ${escapeHtml(profileStudent.pin)}</p>
               <p><strong>Status:</strong> ${profileStudent.frozen ? "Frozen" : "Active"}</p>
 

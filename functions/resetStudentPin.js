@@ -68,6 +68,7 @@ export async function resetStudentPinForTeacher(
 
   await credentialsSnapshot.docs[0].ref.update({
     pinHash,
+    active: true,
     pinUpdatedAt: timestamp,
     failedAttempts: 0,
     lockedUntil: null,

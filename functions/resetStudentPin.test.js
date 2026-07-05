@@ -163,6 +163,7 @@ test('hashes the PIN at cost 12 and updates only PIN state', async () => {
 
   const updates = testStore.state.updates[0].updates
   assert.deepEqual(Object.keys(updates).sort(), [
+    'active',
     'failedAttempts',
     'lockedUntil',
     'pinHash',
@@ -171,6 +172,7 @@ test('hashes the PIN at cost 12 and updates only PIN state', async () => {
   ])
   assert.equal(await bcrypt.compare('7391', updates.pinHash), true)
   assert.equal(bcrypt.getRounds(updates.pinHash), 12)
+  assert.equal(updates.active, true)
   assert.equal(updates.failedAttempts, 0)
   assert.equal(updates.lockedUntil, null)
   assert.equal(updates.pinUpdatedAt, TIMESTAMP)
