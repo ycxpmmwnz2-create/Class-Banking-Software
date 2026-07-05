@@ -4,6 +4,7 @@ import { HttpsError, onCall } from 'firebase-functions/v2/https'
 
 import { resetStudentPinForTeacher } from './resetStudentPin.js'
 import { verifyStudentCredentials } from './studentCredentialVerifier.js'
+import { syncStudentProfiles as syncStudentProfilesHandler } from './syncStudentProfiles.js'
 
 if (getApps().length === 0) {
   initializeApp()
@@ -33,4 +34,4 @@ export const generateTeacherTokenForDev = onCall(async () => {
   return { token }
 })
 
-
+export const syncStudentProfiles = syncStudentProfilesHandler

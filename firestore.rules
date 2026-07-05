@@ -7,11 +7,11 @@ service cloud.firestore {
         && request.auth.uid == "YkYUzIzy0aW7roolM1VaLcIJPuN2";
     }
 
-    function isTestStudent() {
+    function isStudent(classroomId, studentId) {
       return request.auth != null
         && request.auth.token.role == "student"
-        && request.auth.token.classroomId == "morgan"
-        && request.auth.token.studentId == "test-student";
+        && request.auth.token.classroomId == classroomId
+        && request.auth.token.studentId == studentId;
     }
 
     match /morganBank/{document=**} {
@@ -26,9 +26,8 @@ service cloud.firestore {
       allow read: if isTeacher();
     }
 
-    // TEMPORARY TEST-ONLY access. Remove after the secure student flow is proven.
-    match /classrooms/morgan/students/test-student {
-      allow read: if isTestStudent();
+    match /classrooms/{classroomId}/students/{studentId} {
+      allow read: if isStudent(classroomId, studentId);
     }
   }
 }
