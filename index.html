@@ -519,12 +519,16 @@
       display: grid;
       grid-template-columns: 1.2fr 0.8fr 0.7fr auto;
       gap: 8px;
-      align-items: center;
+      align-items: flex-end;
       padding: 12px;
       border: 1px solid rgba(216, 231, 236, 0.9);
       border-radius: 18px;
       margin-bottom: 10px;
       background: rgba(211, 238, 233, 0.96);
+    }
+    
+    .roster-row input {
+      margin-bottom: 0;
     }
 
     .activity-list {
@@ -2474,9 +2478,18 @@ ${transactionTarget !== "whole" ? `
                 <div class="empty">No students yet. Add your first student on the left.</div>
               ` : data.students.map(student => `
                 <div class="roster-row" data-roster-student-name="${escapeHtml(student.name.toLowerCase())}">
-                  <input id="name-${student.id}" value="${escapeHtml(student.name)}" />
-                  <input id="pin-${student.id}" value="${escapeHtml(student.pin)}" />
-                  <input id="balance-${student.id}" type="number" value="${student.balance}" />
+                  <div>
+                    <label for="name-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Student Name</label>
+                    <input id="name-${student.id}" value="${escapeHtml(student.name)}" />
+                  </div>
+                  <div>
+                    <label for="pin-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">PIN</label>
+                    <input id="pin-${student.id}" value="${escapeHtml(student.pin)}" />
+                  </div>
+                  <div>
+                    <label for="balance-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Balance</label>
+                    <input id="balance-${student.id}" type="number" value="${student.balance}" />
+                  </div>
                   <div class="no-print">
                     <div class="small-note" style="margin-bottom: 8px; font-weight: 900;">
                       Status: ${student.frozen ? "Frozen" : "Active"}
