@@ -32,14 +32,23 @@ export const syncStudentProfiles = onDocumentWritten(
       .get()
 
     const existingCredsByStudentId = new Map()
+    const existingCredsByLoginId = new Map()
     const usedLoginIds = new Set()
     credentialsSnapshot.docs.forEach(doc => {
       const docData = doc.data()
       usedLoginIds.add(doc.id)
+      existingCredsByLoginId.set(doc.id, { id: doc.id, ...docData })
       if (docData.studentId) {
         existingCredsByStudentId.set(String(docData.studentId), { id: doc.id, ...docData })
       }
     })
+
+    const claimedCredIds = new Set()
+    for (const student of students) {
+      if (student.id != null && existingCredsByStudentId.has(String(student.id))) {
+        claimedCredIds.add(existingCredsByStudentId.get(String(student.id)).id)
+      }
+    }
 
     const defaultPinHash = await bcrypt.hash('1234', 12)
     const activeStudentIds = new Set()
@@ -50,6 +59,7 @@ export const syncStudentProfiles = onDocumentWritten(
       const studentIdStr = String(student.id)
       activeStudentIds.add(studentIdStr)
       const studentName = typeof student.name === 'string' ? student.name : 'Student'
+      const baseLoginId = studentName.trim().replaceAll(' ', '-').toLowerCase()
 
       // A. Write to classrooms/morgan/students/{studentId}
       const studentDocRef = firestore
@@ -67,16 +77,39 @@ export const syncStudentProfiles = onDocumentWritten(
       })
 
       // B. Ensure credential exists and is active
-      const existingCred = existingCredsByStudentId.get(studentIdStr)
+      let existingCred = existingCredsByStudentId.get(studentIdStr)
+      let credentialUpdates = null
+
+      // Fallback: Data healing for legacy credentials mapped to the wrong studentId
+      if (!existingCred) {
+        const fallbackCred = existingCredsByLoginId.get(baseLoginId)
+        if (fallbackCred && !claimedCredIds.has(fallbackCred.id)) {
+          existingCred = fallbackCred
+          claimedCredIds.add(existingCred.id)
+          
+          credentialUpdates = {
+            studentId: studentIdStr,
+            updatedAt: FieldValue.serverTimestamp()
+          }
+          
+          // Update in-memory mapping so it's not marked inactive later
+          existingCredsByStudentId.set(studentIdStr, existingCred)
+          if (fallbackCred.studentId) {
+            existingCredsByStudentId.delete(String(fallbackCred.studentId))
+          }
+        }
+      }
+
       if (existingCred) {
         if (!existingCred.active) {
-          batch.update(firestore.collection('studentCredentials').doc(existingCred.id), {
-            active: true,
-            updatedAt: FieldValue.serverTimestamp()
-          })
+          credentialUpdates = credentialUpdates || {}
+          credentialUpdates.active = true
+          credentialUpdates.updatedAt = FieldValue.serverTimestamp()
+        }
+        if (credentialUpdates) {
+          batch.update(firestore.collection('studentCredentials').doc(existingCred.id), credentialUpdates)
         }
       } else {
-        const baseLoginId = studentName.trim().replaceAll(' ', '-').toLowerCase()
         let loginId = baseLoginId
         let suffixCounter = 2
         

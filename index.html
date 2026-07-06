@@ -1697,6 +1697,51 @@ const targetStudents = transactionTarget === "whole"
       render();
     }
 
+    async function bulkActivateStudents() {
+      if (!requireTeacher()) return;
+      const checkboxes = document.querySelectorAll(".bulk-activate-check:checked");
+      if (checkboxes.length === 0) {
+        alert("Please select at least one inactive student.");
+        return;
+      }
+
+      const newPin = document.getElementById("bulkActivatePin")?.value ?? "";
+      if (!/^\d{4}$/.test(newPin)) {
+        alert("PIN must be exactly 4 digits.");
+        return;
+      }
+
+      message = `Activating ${checkboxes.length} accounts...`;
+      render();
+
+      const resetStudentPin = httpsCallable(functions, "resetStudentPin");
+      let successCount = 0;
+      let failCount = 0;
+
+      for (const cb of checkboxes) {
+        const studentId = cb.value;
+        const student = data.students.find(s => String(s.id) === studentId);
+        if (student) {
+          try {
+            await resetStudentPin({
+              classroomId: "morgan",
+              studentId: String(student.id),
+              newPin
+            });
+            student.credentialActive = true;
+            successCount++;
+          } catch (error) {
+            console.error("Failed to activate student", student.name, error);
+            failCount++;
+          }
+        }
+      }
+
+      saveData();
+      message = `Bulk activation complete. ${successCount} succeeded, ${failCount} failed.`;
+      render();
+    }
+
     function toggleStudentFrozen(studentId) {
       if (!requireTeacher()) return;
       const name = document.getElementById("name-" + studentId).value.trim();
@@ -2611,9 +2656,17 @@ ${transactionTarget !== "whole" ? `
           <div class="grid">
             <div class="card">
               <h2>Student Credentials</h2>
+
+              <div class="bulk-activate-controls" style="margin-bottom: 16px; padding: 12px; background: rgba(0,0,0,0.05); border-radius: 8px;">
+                <label for="bulkActivatePin" style="font-weight: bold; margin-right: 8px;">Bulk Set PIN:</label>
+                <input id="bulkActivatePin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" style="width: 80px; display: inline-block; margin-right: 12px;" placeholder="1234" />
+                <button class="primary" onclick="bulkActivateStudents()">Activate Selected</button>
+              </div>
+
               <table class="transaction-table" style="width: 100%; text-align: left;">
                 <thead>
                   <tr>
+                    <th style="width: 40px;"></th>
                     <th>Student Name</th>
                     <th>Login ID</th>
                     <th>Status</th>
@@ -2626,6 +2679,9 @@ ${transactionTarget !== "whole" ? `
                     const isActive = student.credentialActive === true;
                     return `
                       <tr>
+                        <td>
+                          <input type="checkbox" class="bulk-activate-check" value="${student.id}" style="width:16px; height:16px; cursor:pointer;" />
+                        </td>
                         <td>${escapeHtml(student.name)}</td>
                         <td><code>${escapeHtml(loginId)}</code></td>
                         <td>
@@ -2634,7 +2690,9 @@ ${transactionTarget !== "whole" ? `
                           </span>
                         </td>
                         <td>
-                          ${!isActive ? `<button class="primary" style="padding: 4px 8px; font-size: 0.8rem;" onclick="activateStudent('${student.id}')">Activate / Set PIN</button>` : ""}
+                          <button class="primary" style="padding: 4px 8px; font-size: 0.8rem;" onclick="activateStudent('${student.id}')">
+                            ${isActive ? "Reset PIN" : "Activate / Set PIN"}
+                          </button>
                         </td>
                       </tr>
                     `;
@@ -2818,6 +2876,8 @@ window.openStudentAuthLogs = openStudentAuthLogs;
 window.setScreen = setScreen;
 window.viewStudentProfile = viewStudentProfile;
 window.resetProfileStudentPin = resetProfileStudentPin;
+window.activateStudent = activateStudent;
+window.bulkActivateStudents = bulkActivateStudents;
 window.render = render;
 window.addStudent = addStudent;
 window.removeStudent = removeStudent;
