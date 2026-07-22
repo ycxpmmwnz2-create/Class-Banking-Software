@@ -729,7 +729,7 @@
   <div id="app"></div>
   <script type="module">
 import { auth, db, functions } from "./src/firebase/firebase.js";
-import { onAuthStateChanged, signInWithCustomToken, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { browserSessionPersistence, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
@@ -1257,6 +1257,7 @@ function toggleStudentDropdown() {
       }
 
       try {
+        await setPersistence(auth, browserSessionPersistence);
         await signInWithEmailAndPassword(auth, email, password);
       } catch (error) {
         console.error("Teacher sign-in failed:", error);
