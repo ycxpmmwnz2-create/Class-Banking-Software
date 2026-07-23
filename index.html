@@ -729,7 +729,7 @@
   <div id="app"></div>
   <script type="module">
 import { auth, db, functions } from "./src/firebase/firebase.js";
-import { browserSessionPersistence, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { browserSessionPersistence, GoogleAuthProvider, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
@@ -1264,6 +1264,46 @@ function toggleStudentDropdown() {
         message = "Wrong teacher email or password.";
         render();
       }
+    }
+
+    async function loginTeacherWithGoogle() {
+      try {
+        await setPersistence(auth, browserSessionPersistence);
+        const provider = new GoogleAuthProvider();
+        provider.setCustomParameters({
+          prompt: "select_account"
+        });
+        await signInWithPopup(auth, provider);
+      } catch (error) {
+        console.error("Teacher Google sign-in failed:", error);
+        message = error.code === "auth/account-exists-with-different-credential"
+          ? "This Google account isn't linked yet. Sign in with your teacher email and password, then use \"Link Google Account\" in Settings."
+          : "Google sign-in failed. Please try again.";
+        render();
+      }
+    }
+
+    async function linkGoogleAccount() {
+      if (!requireTeacher()) return;
+
+      try {
+        const provider = new GoogleAuthProvider();
+        provider.setCustomParameters({
+          prompt: "select_account"
+        });
+        await linkWithPopup(auth.currentUser, provider);
+        message = "Google account linked. You can now sign in with Google.";
+      } catch (error) {
+        console.error("Google account linking failed:", error);
+        if (error.code === "auth/provider-already-linked") {
+          message = "This Google account is already linked.";
+        } else if (error.code === "auth/credential-already-in-use") {
+          message = "That Google account is already linked to a different account. See Mr. Morgan.";
+        } else {
+          message = "Could not link Google account. Please try again.";
+        }
+      }
+      render();
     }
 
     async function loginStudent() {
@@ -2258,6 +2298,7 @@ link.click();
               <label for="teacherPassword">Teacher password</label>
               <input id="teacherPassword" type="password" placeholder="Teacher password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'teacher')" />
               <button class="primary" onclick="loginTeacher()">Login as Teacher</button>
+              <button onclick="loginTeacherWithGoogle()">Sign in with Google</button>
             ` : `
               <h2>Student Login</h2>
               ${message ? `<div class="backup-reminder" role="status" aria-live="polite">${escapeHtml(message)}</div>` : ""}
@@ -2626,6 +2667,10 @@ ${transactionTarget !== "whole" ? `
   Current purchase choices: ${data.settings.purchaseCategories.join(", ")}
 </div>
 <button class="primary" onclick="setScreen('editSettingsLists')">Manage Lists</button>
+
+              <h3>Account Sign-In</h3>
+              <div class="small-note">Link your Google account to sign in without a password.</div>
+              <button onclick="linkGoogleAccount()">Link Google Account</button>
             </div>
 
             <div class="card soft-card">
@@ -2884,6 +2929,8 @@ if (screen === "editSettingsLists" && isTeacher) {
       render();
     });
     window.loginTeacher = loginTeacher;
+window.loginTeacherWithGoogle = loginTeacherWithGoogle;
+window.linkGoogleAccount = linkGoogleAccount;
 window.handleLoginEnter = handleLoginEnter;
 window.loginStudent = loginStudent;
 window.openStudentAuthLogs = openStudentAuthLogs;
