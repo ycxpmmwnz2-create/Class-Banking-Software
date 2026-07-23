@@ -461,6 +461,28 @@
       line-height: 1.35;
     }
 
+    .link-button {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 4px 2px;
+      border: 0;
+      background: none;
+      box-shadow: none;
+      color: var(--teal-dark);
+      font-weight: 600;
+      font-size: 13px;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      cursor: pointer;
+    }
+
+    .link-button:hover {
+      transform: none;
+      box-shadow: none;
+      background: none;
+      color: var(--text);
+    }
+
     .empty, .lock-note, .purchase-note, .backup-reminder {
       padding: 14px;
       border-radius: var(--radius-md);
@@ -785,6 +807,7 @@ import { httpsCallable } from "firebase/functions";
     let data = cloneDefault();
     let screen = "login";
     let loginTab = "teacher";
+    let showTeacherPasswordLogin = false;
     let isTeacher = false;
     let loggedInStudentId = null;
     let teacherProfileStudentId = null;
@@ -1158,6 +1181,11 @@ function toggleStudentDropdown() {
 
     function setLoginTab(tab) {
       loginTab = tab;
+      render();
+    }
+
+    function toggleTeacherPasswordLogin() {
+      showTeacherPasswordLogin = !showTeacherPasswordLogin;
       render();
     }
 
@@ -2293,12 +2321,21 @@ link.click();
             ${loginTab === "teacher" ? `
               <h2>Teacher Login</h2>
               ${message ? `<div class="backup-reminder">${escapeHtml(message)}</div>` : ""}
-              <label for="teacherEmail">Teacher email</label>
-              <input id="teacherEmail" type="email" placeholder="Teacher email" autocomplete="username" onkeydown="handleLoginEnter(event, 'teacher')" />
-              <label for="teacherPassword">Teacher password</label>
-              <input id="teacherPassword" type="password" placeholder="Teacher password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'teacher')" />
-              <button class="primary" onclick="loginTeacher()">Login as Teacher</button>
-              <button onclick="loginTeacherWithGoogle()">Sign in with Google</button>
+              <button class="primary" onclick="loginTeacherWithGoogle()">Continue with Google</button>
+              <button
+                type="button"
+                class="link-button"
+                onclick="toggleTeacherPasswordLogin()"
+                aria-expanded="${showTeacherPasswordLogin ? "true" : "false"}"
+                aria-controls="teacherPasswordLogin"
+              >${showTeacherPasswordLogin ? "Hide email and password login" : "Use email and password instead"}</button>
+              <div id="teacherPasswordLogin" ${showTeacherPasswordLogin ? "" : "hidden"}>
+                <label for="teacherEmail">Teacher email</label>
+                <input id="teacherEmail" type="email" placeholder="Teacher email" autocomplete="username" onkeydown="handleLoginEnter(event, 'teacher')" />
+                <label for="teacherPassword">Teacher password</label>
+                <input id="teacherPassword" type="password" placeholder="Teacher password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'teacher')" />
+                <button class="primary" onclick="loginTeacher()">Login as Teacher</button>
+              </div>
             ` : `
               <h2>Student Login</h2>
               ${message ? `<div class="backup-reminder" role="status" aria-live="polite">${escapeHtml(message)}</div>` : ""}
@@ -2952,6 +2989,7 @@ window.exportTransactionsCsv = exportTransactionsCsv;
 window.quickCash = quickCash;
 window.logout = logout;
 window.setLoginTab = setLoginTab;
+window.toggleTeacherPasswordLogin = toggleTeacherPasswordLogin;
 window.submitStudentAddMoney = submitStudentAddMoney;
 window.submitStudentSubtractMoney = submitStudentSubtractMoney;
 window.approveAllCreditRequests = approveAllCreditRequests;
