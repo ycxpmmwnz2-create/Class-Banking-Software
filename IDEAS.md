@@ -34,4 +34,6 @@ Do not implement anything from this file unless I explicitly ask.
 
 ## Future Versions
 
-(None)
+- Multi-teacher support
+- Per-teacher classroom data isolation
+- Teacher onboarding using Google accounts

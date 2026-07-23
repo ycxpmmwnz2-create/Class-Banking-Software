@@ -1,10 +1,16 @@
 # Morgan Bank
 
-Current Version: 1.0.0
+Current Version: 1.1.0
 
 Status: Production
 
 Released: July 2026
+
+## Version 1.1 Highlights
+
+- Google Sign-In for the existing teacher account
+- Email/password login remains available as a fallback
+- Multi-teacher classroom isolation deferred to a future release
 
 ## Version 1.0 Highlights
 
