@@ -827,6 +827,23 @@ import { httpsCallable } from "firebase/functions";
       return hasTeacherAccess;
     }
 
+    // Phase 1B: additive wiring for the new teachers/classrooms foundation.
+    // Only the existing authorized teacher may provision. The client has no
+    // read access to the new `teachers` collection (no Firestore rule grants
+    // it, and rules are not being changed in this phase), so the existence
+    // check and the provisioning itself both happen server-side inside the
+    // idempotent ensureTeacherClassroom callable. Nothing here affects
+    // morganBank/classroomData, `data`, `screen`, or `message`.
+    async function ensureTeacherClassroomProfile(uid) {
+      if (uid !== TEACHER_UID) return;
+      try {
+        const ensureTeacherClassroom = httpsCallable(functions, "ensureTeacherClassroom");
+        await ensureTeacherClassroom();
+      } catch (error) {
+        console.error("Teacher/classroom provisioning check failed:", error);
+      }
+    }
+
     function cloneDefault() {
       return JSON.parse(JSON.stringify(defaultData));
     }
@@ -2922,6 +2939,7 @@ if (screen === "editSettingsLists" && isTeacher) {
         isTeacher = true;
         screen = "teacher";
         message = "Teacher dashboard unlocked.";
+        void ensureTeacherClassroomProfile(user.uid);
       } else if (user) {
         try {
           const tokenResult = await user.getIdTokenResult();
