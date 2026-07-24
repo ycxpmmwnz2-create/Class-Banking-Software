@@ -699,9 +699,15 @@ creation.
 > migration, `ensureTeacherProfile`/`createClassroom` as already-built
 > functions, `photoURL`/`lastLoginAt`/disabled-status as current schema)
 > that contradicted this section. Those have all been corrected in place
-> throughout the document — this note exists so the history isn't lost, not
-> because any of those statements are still live. Everything below is the
-> current, authoritative Phase 2A design.
+> throughout the document. After implementation Items 2–4, independent
+> Gemini and Claude reviews identified one further Item 5 integration gap:
+> native Firestore `Timestamp` values require an explicit, lossless,
+> collision-safe canonical encoding before hashing or JSON-manifest
+> persistence. The normative encoding clarification below closes that gap
+> without changing the existing checksum domains or canonical manifest-slot
+> identity. This note exists so the history isn't lost, not because any of
+> the superseded statements are still live. Everything below is the current,
+> authoritative Phase 2A design.
 
 Goal: zero data loss, zero downtime for the existing classroom, and a
 rehearsed, restart-safe, reversible cutover, with the tooling and rehearsal
@@ -1153,6 +1159,129 @@ On write or restart:
   `settings`/`lastBackupAt`/credential `classroomId`, or restart recovery
   becomes unreachable by construction.
 
+#### Canonical Firestore-value encoding (normative Item 5 clarification)
+
+The checksum domains above are unchanged, but some values inside those
+domains are native Firestore `Timestamp` instances rather than JSON values.
+Snapshot `updateTime` preconditions are also `Timestamp` instances. The
+strict JSON-only behavior already established by `canonicalState.js` must
+remain strict: passing a raw `Timestamp` (or any other class instance) to
+`serializeCanonicalState` or `hashCanonicalState` continues to fail rather
+than relying on an SDK object's incidental enumerable/private fields.
+
+Item 5 therefore makes a **purely additive** change in the existing
+`canonicalState.js` module. It adds recursive
+`encodeCanonicalFirestoreValue(value)` and
+`decodeCanonicalFirestoreValue(value)` exports; it does not add a new codec
+module and does not change the behavior or output of
+`serializeCanonicalState`/`hashCanonicalState`. Code hashing a
+Firestore-derived value uses
+`hashCanonicalState(encodeCanonicalFirestoreValue(value))`. Importing the
+Firestore SDK's `Timestamp` value class for recognition and reconstruction
+does not initialize a client, read Firestore, or write Firestore, so this
+remains within `canonicalState.js`'s no-Firestore-access boundary.
+
+The encoding is a versioned, recursive tagged union. JSON primitives remain
+primitives, while every container and Timestamp is represented by one exact
+wrapper shape:
+
+```jsonc
+// ordinary Firestore map (entries are sorted by field name)
+{
+  "$phase2aFirestoreValue": {
+    "version": 1,
+    "type": "map",
+    "entries": [["fieldName", "<recursively encoded value>"]]
+  }
+}
+
+// ordinary Firestore array (element order is preserved)
+{
+  "$phase2aFirestoreValue": {
+    "version": 1,
+    "type": "array",
+    "values": ["<recursively encoded value>"]
+  }
+}
+
+// Firestore Timestamp
+{
+  "$phase2aFirestoreValue": {
+    "version": 1,
+    "type": "timestamp",
+    "seconds": -1,
+    "nanoseconds": 999999999
+  }
+}
+```
+
+This is deliberately not a single tag added only to Timestamp-shaped
+objects. Because **every** ordinary map and array is wrapped, a legitimate
+Firestore map containing keys such as `$phase2aFirestoreValue`, `type`,
+`seconds`, or `nanoseconds` cannot collide with or be decoded as a Timestamp;
+those keys remain entries inside the map wrapper. The decoder accepts only
+the exact version-1 shapes, rejects unknown or extra wrapper fields, rejects
+duplicate/out-of-order map entries, and reconstructs maps, arrays, and
+Timestamps without prototype pollution or implicit coercion.
+
+Timestamp encoding and decoding use only the SDK's public `seconds` and
+`nanoseconds` values. `seconds` must be a safe integer from -62,135,596,800
+through 253,402,300,799; `nanoseconds` must be an integer from 0 through
+999,999,999. Decoding reconstructs a genuine SDK `Timestamp` from that exact
+pair so an update-time precondition survives a manifest write/read/restart
+with nanosecond precision. `toMillis()`, `Date`, ISO strings, private
+`_seconds`/`_nanoseconds` fields, and direct `JSON.stringify(Timestamp)` are
+not valid canonical representations because they are lossy or rely on SDK
+implementation details.
+
+The encoder remains fail-closed for values outside this Phase 2A data
+contract: unsupported Firestore-native classes, arbitrary class instances,
+accessors, symbol keys, cycles, sparse arrays, `undefined`, `BigInt`,
+non-finite numbers, and negative zero are rejected before a checksum or
+manifest can be accepted. No `toJSON()` hook or other implicit conversion is
+called. Map entries use the same deterministic string ordering as the
+existing canonical JSON serializer; arrays retain their source order.
+
+This representation rule does **not** change which values belong to a hash:
+
+- The legacy immutable-source checksum still includes the entire legacy
+  `morganBank/classroomData` document and every original flat
+  `studentAuthLogs` source document. It does not exclude legacy
+  `settings`/`lastBackupAt`; those source documents are never mutated.
+- Only the foundation-invariant checksum excludes the destination
+  classroom's `settings`/`lastBackupAt`, and only each credential invariant
+  hash excludes that credential's `classroomId`, exactly as specified above.
+- Classroom before/after hashes and the ordered plan checksum retain their
+  existing domains. Any Firestore-derived value within those domains is
+  recursively encoded before canonical hashing.
+
+Any Firestore-derived value persisted in the manifest — including an
+`updateTimePrecondition` and any allowed rollback-preimage value — is stored
+in this encoded JSON form. On manifest read, `manifest.js` first validates
+the manifest schema and the exact encoded wrapper structure, then decodes a
+value only at the boundary that requires its native form. In particular, the
+later writer decodes an update-time precondition back to a genuine
+`Timestamp`; it never substitutes a millisecond or string approximation.
+Credential-secret restrictions remain unchanged: encoding support is not
+permission to persist a complete credential body, `pinHash`, a PIN, a token,
+or any other secret.
+
+Item 5 tests must cover all of the following:
+
+- exact encode → canonical JSON → JSON parse → decode round trips for epoch,
+  negative seconds, zero nanoseconds, and 999,999,999 nanoseconds, verified
+  with the SDK's Timestamp equality semantics;
+- nested maps/arrays and an ordinary map containing every reserved/tag-like
+  key, proving it cannot collide with a Timestamp wrapper;
+- rejection of malformed/unknown wrappers and every unsupported value
+  category listed above;
+- continued rejection of a raw, unencoded Timestamp by the existing
+  JSON-only serializer/hash functions;
+- unchanged canonical JSON/hash output for existing JSON inputs and unchanged
+  `manifestSlot.js` filename derivation; and
+- an atomic manifest write/read/restart round trip containing an encoded
+  update-time precondition, proving exact seconds/nanoseconds recovery.
+
 #### Versioned manifest schema
 
 The manifest is a single JSON document stored in a **canonical,
@@ -1230,7 +1359,14 @@ required content, not a literal schema-validator spec):
       "expectedBeforeHash": "<hash, or explicit 'absent' for create ops>",
       "expectedAfterHash": "<hash>",
       "rollbackPreimage": { "...limited non-secret fields, see below..." },
-      "updateTimePrecondition": "<precondition token, when applicable>",
+      "updateTimePrecondition": {
+        "$phase2aFirestoreValue": {
+          "version": 1,
+          "type": "timestamp",
+          "seconds": 0,
+          "nanoseconds": 0
+        }
+      }, // exact preflight value when applicable; otherwise null
       "state": "planned" | "skipped_identical" | "in_flight" | "committed" | "verified" | "failed" | "indeterminate",
       "batchId": "<owning batch id>",
       "error": { "code": "...", "message": "..." }  // present only on failed/indeterminate, never includes secrets
@@ -1312,8 +1448,9 @@ operations), `expectedAfterHash`, its limited non-secret `rollbackPreimage`
 where applicable (classroom root: prior `settings`/`lastBackupAt`;
 credential: path + old/new `classroomId` + invariant hash — never a full
 credential body), `updateTimePrecondition` where applicable (classroom-root
-and credential updates), `state`, `batchId`, and `error` metadata without
-secrets when in a failed/indeterminate state.
+and credential updates, stored as the canonical encoded Timestamp defined
+above), `state`, `batchId`, and `error` metadata without secrets when in a
+failed/indeterminate state.
 
 **Credential manifest entries never contain**: complete credential bodies,
 `pinHash`, PINs, tokens, or any local credential material — only path,
@@ -1338,9 +1475,11 @@ manifest for an unresolved run.
 
 #### Manifest durability procedure
 
-1. Serialize the manifest as canonical JSON (stable key ordering, so two
-   writes of logically-identical state produce byte-identical output —
-   useful for tests, not a functional requirement of Firestore itself).
+1. Validate that every Firestore-derived manifest value is already in the
+   canonical encoded form above, then serialize the manifest as canonical
+   JSON (stable key ordering, so two writes of logically-identical state
+   produce byte-identical output — useful for tests, not a functional
+   requirement of Firestore itself).
 2. Write to a uniquely-named temporary file in the **same directory** as the
    canonical manifest slot (the fixed `functions/phase2/.state/` directory
    resolved from the module location, not the caller's working directory;
@@ -1837,7 +1976,9 @@ functions/phase2/
   cli.js                             — argument parsing only; allowlists teacher/project/write and rejects
                                         --manifest plus every state-directory/filename override; no Firestore access
   firestoreDocumentId.js             — shared document-ID validation (students/transactions/login-history)
-  canonicalState.js                  — canonical JSON serialization + hashing (checksums, invariant hashes)
+  canonicalState.js                  — canonical JSON serialization + hashing (checksums, invariant hashes),
+                                        plus the recursive, collision-safe, lossless Firestore Timestamp
+                                        value encoding owned by the normative Item 5 clarification
   manifestSlot.js                    — owns migration ID/schema version and module-anchored .state directory;
                                         deterministically derives/displays the non-overridable canonical slot
                                         from emulator project ID + teacher UID, independent of process.cwd()
@@ -1846,7 +1987,8 @@ functions/phase2/
   projection.js                      — pure functions: legacy record -> destination body (student allowlist, credential/log transforms)
   destinationPreflight.js            — reads + classifies every destination per "Preflight classification"; builds the ordered operation plan
   reconciliation.js                  — dry-run and write-run reconciliation checks
-  manifest.js                        — versioned manifest read/write in the canonical slot, atomic durability,
+  manifest.js                        — versioned manifest read/write in the canonical slot, strict validation
+                                        of encoded Firestore-derived preconditions/preimages, atomic durability,
                                         monotonic writePhaseStarted, and state-machine/recovery transitions
   batchWriter.js                     — the ONLY module that may perform migration DESTINATION writes (see invariant below)
   migrateClassroomData.js            — orchestrates: derive and inspect the canonical slot FIRST; recover/block
@@ -1938,9 +2080,13 @@ implementation is separately authorized, the recommended sequence is:
    Firestore access, still no writer.
 4. `projection.js` and `reconciliation.js`, with tests, exercised against
    fixtures rather than a live emulator where practical.
-5. `manifest.js` (versioned schema, canonical-slot durable writes, monotonic
-   `writePhaseStarted`, and state machine), with crash/restart-simulation
-   tests.
+5. Additive `canonicalState.js`/`canonicalState.test.js` Firestore-value
+   encoding from the normative Item 5 clarification above — without changing
+   the existing JSON-only serializer/hash outputs or `manifestSlot.js`
+   filenames — plus `manifest.js` (versioned schema, canonical-slot durable
+   writes, monotonic `writePhaseStarted`, strict encoded-value validation,
+   and state machine), with exact Timestamp-round-trip and
+   crash/restart-simulation tests. No new codec module is added.
 6. `destinationPreflight.js` (complete preflight classification), with
    tests — still no writer module exists yet.
 7. `batchWriter.js` (create/update preconditions, operation/size ceilings,
