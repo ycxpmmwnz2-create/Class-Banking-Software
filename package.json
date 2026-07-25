@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "test:functions": "npm --prefix functions test",
     "test:rules": "firebase emulators:exec --project morgan-bank --only firestore \"node --test tests/firestore\"",
+    "test:migration": "firebase emulators:exec --project morgan-bank-migration-rehearsal --only firestore \"node --test 'tests/migration/*.test.js'\"",
     "test:all": "npm run test:functions && npm run test:rules"
   },
   "dependencies": {
