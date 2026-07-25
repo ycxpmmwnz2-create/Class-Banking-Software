@@ -11,6 +11,9 @@
     "test:functions": "npm --prefix functions test",
     "test:rules": "firebase emulators:exec --project morgan-bank --only firestore \"node --test 'tests/firestore/*.test.js'\"",
     "test:migration": "firebase emulators:exec --project morgan-bank-migration-rehearsal --only firestore \"node --test 'tests/migration/*.test.js'\"",
+    "test:phase2b:server:gate-off": "FIREBASE_CLI_DISABLE_UPDATE_CHECK=true firebase emulators:exec --project morgan-bank-phase2b-server-off-test --only auth,functions,firestore \"PHASE2B_EMULATOR_TEST_MODE=gate-off node --test tests/phase2b/functions-auth.emulator.test.js\"",
+    "test:phase2b:server:gate-on": "FIREBASE_CLI_DISABLE_UPDATE_CHECK=true MULTI_TEACHER_V2_ENABLED=true firebase emulators:exec --project morgan-bank-phase2b-server-test --only auth,functions,firestore \"PHASE2B_EMULATOR_TEST_MODE=gate-on MULTI_TEACHER_V2_ENABLED=true node --test tests/phase2b/functions-auth.emulator.test.js\"",
+    "test:phase2b:server": "npm run test:phase2b:server:gate-off && npm run test:phase2b:server:gate-on",
     "test:all": "npm run test:functions && npm run test:rules"
   },
   "dependencies": {
