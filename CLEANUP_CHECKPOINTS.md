@@ -25,6 +25,23 @@ Cleanup checkpoints require review; they do not authorize automatic code deletio
 - Clean up documentation and operational runbooks.
 - Run final repository-wide lint, build, unit tests, and emulator tests.
 
+## Open verification follow-ups
+
+### Phase 2B server-emulator cleanup latency
+
+- Revisit during Phase 2B Item 11 readiness verification.
+- In `tests/phase2b/functions-auth.emulator.test.js`, the negative V2 sync
+  cases for a disabled teacher and an inconsistent reciprocal ownership link
+  each take roughly 60–70 seconds while the Firestore emulator releases a
+  transaction lock after the deliberately rejected trigger is terminated.
+- This is currently a performance nuisance, not a correctness failure: the
+  complete server suite passed repeatedly with 9 gate-off and 56 gate-on
+  tests.
+- Tighten the cleanup only if the suite becomes flaky or exceeds the CI time
+  budget. Preserve the real-trigger denial assertions, bounded cleanup, and
+  fail-closed behavior; do not replace them with sleeps, skipped cleanup, or
+  unit-only mocks merely to shorten the run.
+
 ## Cleanup method
 
 - Inventory first.
