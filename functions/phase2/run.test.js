@@ -7,16 +7,23 @@ import fs from 'node:fs'
 
 import { Timestamp } from 'firebase-admin/firestore'
 
-import { runMain, EXIT_CODES, classifyErrorToExitCode } from './run.js'
 import { deriveCanonicalManifestSlot } from './manifestSlot.js'
 import { CliArgumentError } from './cli.js'
-import { EmulatorEnvironmentError } from './emulatorEnvironment.js'
 import { FoundationValidationError } from './foundationValidator.js'
-import { DestinationPreflightError } from './destinationPreflight.js'
-import { ManifestError } from './manifest.js'
-import { BatchWriterError } from './batchWriter.js'
+import {
+  DestinationPreflightError,
+  DESTINATION_PREFLIGHT_ERROR_CATEGORIES,
+} from './destinationPreflight.js'
+import { ManifestError, MANIFEST_ERROR_CATEGORIES } from './manifest.js'
+import {
+  BatchWriterError,
+  BATCH_WRITER_ERROR_CATEGORIES,
+} from './batchWriter.js'
 import { ReconciliationError } from './reconciliation.js'
 import { MigrateClassroomDataError, MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES } from './migrateClassroomData.js'
+
+const { runMain, EXIT_CODES, classifyErrorToExitCode } = await import('./run.js')
+const { EmulatorEnvironmentError } = await import('./emulatorEnvironment.js')
 
 const PROJECT_ID = 'cli-test-project-id'
 const CLASSROOM_ID = 'cli-test-classroom'
@@ -238,7 +245,20 @@ test('CLI classifies errors into distinct exit codes correctly', () => {
   assert.equal(classifyErrorToExitCode(new EmulatorEnvironmentError('MISSING', 'test')), EXIT_CODES.VALIDATION_FAILURE)
   assert.equal(classifyErrorToExitCode(new FoundationValidationError('MISSING', 'test')), EXIT_CODES.VALIDATION_FAILURE)
 
-  assert.equal(classifyErrorToExitCode(new DestinationPreflightError('CONFLICT', 'test')), EXIT_CODES.PREFLIGHT_CONFLICT)
+  assert.equal(
+    classifyErrorToExitCode(new DestinationPreflightError(
+      DESTINATION_PREFLIGHT_ERROR_CATEGORIES.DIVERGENT_DESTINATIONS,
+      'test',
+    )),
+    EXIT_CODES.PREFLIGHT_CONFLICT,
+  )
+  assert.equal(
+    classifyErrorToExitCode(new DestinationPreflightError(
+      DESTINATION_PREFLIGHT_ERROR_CATEGORIES.INVALID_SNAPSHOT,
+      'test',
+    )),
+    EXIT_CODES.VALIDATION_FAILURE,
+  )
   assert.equal(classifyErrorToExitCode(new MigrateClassroomDataError(MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.PREFLIGHT_CONFLICT, 'test')), EXIT_CODES.PREFLIGHT_CONFLICT)
   assert.equal(classifyErrorToExitCode(new MigrateClassroomDataError(MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.RECOVERY_DIVERGENT, 'test')), EXIT_CODES.PREFLIGHT_CONFLICT)
 
@@ -247,6 +267,22 @@ test('CLI classifies errors into distinct exit codes correctly', () => {
 
   assert.equal(classifyErrorToExitCode(new BatchWriterError('WRITE_FAIL', 'test')), EXIT_CODES.WRITE_FAILURE)
   assert.equal(classifyErrorToExitCode(new MigrateClassroomDataError(MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.WRITE_FAILED, 'test')), EXIT_CODES.WRITE_FAILURE)
+
+  for (const category of [
+    BATCH_WRITER_ERROR_CATEGORIES.COMMIT_INDETERMINATE,
+    BATCH_WRITER_ERROR_CATEGORIES.MANIFEST_PERSISTENCE_INDETERMINATE,
+    BATCH_WRITER_ERROR_CATEGORIES.VERIFICATION_INDETERMINATE,
+  ]) {
+    assert.equal(
+      classifyErrorToExitCode(new BatchWriterError(category, 'test')),
+      EXIT_CODES.INDETERMINATE_RECOVERY_REQUIRED,
+    )
+  }
+
+  assert.equal(
+    classifyErrorToExitCode(new ManifestError(MANIFEST_ERROR_CATEGORIES.WRITE_FAILED, 'test')),
+    EXIT_CODES.WRITE_FAILURE,
+  )
 
   assert.equal(classifyErrorToExitCode(new ReconciliationError('RECON_FAIL', 'test')), EXIT_CODES.RECONCILIATION_FAILURE)
   assert.equal(classifyErrorToExitCode(new MigrateClassroomDataError(MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.RECONCILIATION_FAILED, 'test')), EXIT_CODES.RECONCILIATION_FAILURE)
@@ -289,14 +325,86 @@ test('runMain displays canonical manifest path and succeeds on valid dry run', a
 })
 
 test('runMain rejects override flags before accessing Firestore', async () => {
-  const logger = mockLogger()
+  for (const override of [
+    '--manifest',
+    '--state-dir',
+    '--manifest-dir',
+    '--manifest-file',
+    '--manifest-filename',
+  ]) {
+    const logger = mockLogger()
+    let firestoreAccesses = 0
 
-  const { exitCode, error } = await runMain(
-    ['--teacher-uid', 'run-test-teacher-3', '--project-id', PROJECT_ID, '--manifest', '/tmp/override.json'],
-    { logger },
-  )
+    const { exitCode, error } = await runMain(
+      ['--teacher-uid', 'run-test-teacher-3', '--project-id', PROJECT_ID, override, '/tmp/override.json'],
+      {
+        logger,
+        firestoreFactory() {
+          firestoreAccesses += 1
+          return fakeFirestore()
+        },
+      },
+    )
 
-  assert.equal(exitCode, EXIT_CODES.VALIDATION_FAILURE)
-  assert.ok(error instanceof CliArgumentError)
-  assert.equal(error.category, 'unsupported-override')
+    assert.equal(exitCode, EXIT_CODES.VALIDATION_FAILURE)
+    assert.ok(error instanceof CliArgumentError)
+    assert.equal(error.category, 'unsupported-override')
+    assert.equal(firestoreAccesses, 0)
+  }
+})
+
+test('runMain returns every distinct operational exit path', async () => {
+  const cases = [
+    [
+      new MigrateClassroomDataError(
+        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.PREFLIGHT_CONFLICT,
+        'preflight',
+      ),
+      EXIT_CODES.PREFLIGHT_CONFLICT,
+    ],
+    [
+      new MigrateClassroomDataError(
+        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.STALE_MANIFEST_DRIFT,
+        'stale',
+      ),
+      EXIT_CODES.STALE_MANIFEST_MISMATCH,
+    ],
+    [
+      new MigrateClassroomDataError(
+        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.WRITE_FAILED,
+        'clear write failure',
+      ),
+      EXIT_CODES.WRITE_FAILURE,
+    ],
+    [
+      new MigrateClassroomDataError(
+        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.INDETERMINATE_RECOVERY_REQUIRED,
+        'uncertain write outcome',
+      ),
+      EXIT_CODES.INDETERMINATE_RECOVERY_REQUIRED,
+    ],
+    [
+      new MigrateClassroomDataError(
+        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.RECONCILIATION_FAILED,
+        'reconciliation',
+      ),
+      EXIT_CODES.RECONCILIATION_FAILURE,
+    ],
+  ]
+
+  for (const [injectedError, expectedExitCode] of cases) {
+    const result = await runMain(
+      ['--teacher-uid', 'run-test-exit-paths', '--project-id', PROJECT_ID],
+      {
+        logger: mockLogger(),
+        firestore: fakeFirestore(),
+        async migrateClassroomData() {
+          throw injectedError
+        },
+      },
+    )
+
+    assert.equal(result.exitCode, expectedExitCode)
+    assert.equal(result.error, injectedError)
+  }
 })

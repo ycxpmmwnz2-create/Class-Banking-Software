@@ -18,17 +18,27 @@ import {
 import { readLegacySources } from './sourceReader.js'
 import { validateTeacherClassroomFoundation } from './foundationValidator.js'
 import { buildMigrationProjection, LEGACY_CLASSROOM_ID } from './projection.js'
-import { buildDestinationPreflight, DestinationPreflightError } from './destinationPreflight.js'
+import {
+  buildDestinationPreflight,
+  DestinationPreflightError,
+  DESTINATION_PREFLIGHT_ERROR_CATEGORIES,
+} from './destinationPreflight.js'
 import { reconcileDryRun, reconcileWriteRun } from './reconciliation.js'
-import { writeMigrationBatches } from './batchWriter.js'
+import {
+  writeMigrationBatches,
+  BatchWriterError,
+  BATCH_WRITER_ERROR_CATEGORIES,
+} from './batchWriter.js'
 import { hashCanonicalState, encodeCanonicalFirestoreValue } from './canonicalState.js'
 
 export const MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES = Object.freeze({
   INVALID_ARGUMENT: 'invalid-argument',
   CREDENTIAL_CLASSROOM_ID_INVALID: 'credential-classroom-id-invalid',
+  RETAINED_PLAN_REQUIRED: 'retained-plan-required',
   PREFLIGHT_CONFLICT: 'preflight-conflict',
   STALE_MANIFEST_DRIFT: 'stale-manifest-drift',
   RECOVERY_DIVERGENT: 'recovery-divergent',
+  INDETERMINATE_RECOVERY_REQUIRED: 'indeterminate-recovery-required',
   RECONCILIATION_FAILED: 'reconciliation-failed',
   WRITE_FAILED: 'write-failed',
 })
@@ -51,6 +61,22 @@ function getTimestamp(clock) {
   if (!clock) return new Date().toISOString()
   const val = clock()
   return typeof val === 'string' ? val : val.toISOString()
+}
+
+function getNextTimestamp(manifest, clock) {
+  const sampled = getTimestamp(clock)
+  const sampledMilliseconds = Date.parse(sampled)
+  const previousMilliseconds = Date.parse(manifest.updatedAt)
+
+  if (!Number.isFinite(sampledMilliseconds) ||
+      !Number.isFinite(previousMilliseconds)) {
+    return sampled
+  }
+
+  return new Date(Math.max(
+    sampledMilliseconds,
+    previousMilliseconds + 1,
+  )).toISOString()
 }
 
 function validateOptions(options) {
@@ -94,10 +120,10 @@ function validateOptions(options) {
   return { firestore, teacherUid, projectId, write, clock, pageSize }
 }
 
-function validateRawCredentials(studentCredentials, classroomId) {
+function validateRawCredentials(studentCredentials) {
   for (const credential of studentCredentials) {
     const credClassroomId = credential?.data?.classroomId
-    if (credClassroomId !== LEGACY_CLASSROOM_ID && credClassroomId !== classroomId) {
+    if (credClassroomId !== LEGACY_CLASSROOM_ID) {
       fail(
         MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.CREDENTIAL_CLASSROOM_ID_INVALID,
         `Raw credential document ${credential.path} has classroomId "${credClassroomId}", expected "${LEGACY_CLASSROOM_ID}".`,
@@ -107,15 +133,12 @@ function validateRawCredentials(studentCredentials, classroomId) {
   }
 }
 
-function normalizeSourceForProjection(source, classroomId) {
+function normalizeRetainedSourceForProjection(source) {
   const normalizedCredentials = source.studentCredentials.map(envelope => {
-    if (envelope.data?.classroomId === classroomId) {
-      return {
-        ...envelope,
-        data: { ...envelope.data, classroomId: LEGACY_CLASSROOM_ID },
-      }
+    return {
+      ...envelope,
+      data: { ...envelope.data, classroomId: LEGACY_CLASSROOM_ID },
     }
-    return envelope
   })
   return {
     ...source,
@@ -123,7 +146,7 @@ function normalizeSourceForProjection(source, classroomId) {
   }
 }
 
-function calculateChecksums(source, foundation, preflight, projection) {
+function calculateChecksums(source, foundation, planChecksum, projection) {
   const immutableSourceChecksum = hashCanonicalState({
     classroomData: encodeCanonicalFirestoreValue(source.classroomData),
     studentAuthLogs: encodeCanonicalFirestoreValue(source.studentAuthLogs),
@@ -144,12 +167,11 @@ function calculateChecksums(source, foundation, preflight, projection) {
     },
   })
 
-  const planChecksum = preflight.planChecksum
-
   const credentialInvariantHashes = Object.freeze(
     Object.fromEntries(
       projection.studentCredentials.map(cred => {
-        const { classroomId, ...invariantData } = cred.data
+        const invariantData = { ...cred.data }
+        delete invariantData.classroomId
         return [cred.path, hashCanonicalState(encodeCanonicalFirestoreValue(invariantData))]
       }),
     ),
@@ -161,6 +183,211 @@ function calculateChecksums(source, foundation, preflight, projection) {
     planChecksum,
     credentialInvariantHashes,
   })
+}
+
+function expectedChecksumsFromManifest(manifest) {
+  const credentialInvariantHashes = Object.freeze(Object.fromEntries(
+    manifest.operations
+      .filter(operation => operation.type ===
+        MANIFEST_OPERATION_TYPES.CREDENTIAL_CLASSROOM_UPDATE)
+      .map(operation => [
+        operation.path,
+        operation.rollbackPreimage.invariantHash,
+      ]),
+  ))
+
+  return Object.freeze({
+    immutableSourceChecksum: manifest.immutableSourceChecksum,
+    foundationInvariantChecksum: manifest.foundationInvariantChecksum,
+    planChecksum: manifest.planChecksum,
+    credentialInvariantHashes,
+  })
+}
+
+function assertManifestChecksums(
+  manifest,
+  foundation,
+  currentChecksums,
+  { includeCredentials = true } = {},
+) {
+  const expectedChecksums = expectedChecksumsFromManifest(manifest)
+  const checksumMismatch =
+    manifest.classroomId !== foundation.classroomId ||
+    expectedChecksums.immutableSourceChecksum !==
+      currentChecksums.immutableSourceChecksum ||
+    expectedChecksums.foundationInvariantChecksum !==
+      currentChecksums.foundationInvariantChecksum ||
+    (includeCredentials && !isDeepStrictEqual(
+      expectedChecksums.credentialInvariantHashes,
+      currentChecksums.credentialInvariantHashes,
+    ))
+
+  if (checksumMismatch) {
+    fail(
+      MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.STALE_MANIFEST_DRIFT,
+      'Retained manifest identity or checksum does not match current state.',
+      {
+        expectedClassroomId: manifest.classroomId,
+        actualClassroomId: foundation.classroomId,
+        expectedSourceChecksum: expectedChecksums.immutableSourceChecksum,
+        actualSourceChecksum: currentChecksums.immutableSourceChecksum,
+        expectedFoundationChecksum:
+          expectedChecksums.foundationInvariantChecksum,
+        actualFoundationChecksum:
+          currentChecksums.foundationInvariantChecksum,
+      },
+    )
+  }
+
+  return expectedChecksums
+}
+
+function expectedPlannedBatches(preflight) {
+  const operationById = new Map(preflight.operations.map(operation => [
+    operation.operationId,
+    operation,
+  ]))
+
+  return preflight.batches.map(batch => ({
+    ...batch,
+    state: batch.operationIds.every(operationId =>
+      operationById.get(operationId).state ===
+        MANIFEST_OPERATION_STATES.SKIPPED_IDENTICAL)
+      ? MANIFEST_BATCH_STATES.VERIFIED
+      : MANIFEST_BATCH_STATES.PENDING,
+  }))
+}
+
+function assertRetainedPlannedManifest(
+  manifest,
+  foundation,
+  preflight,
+  currentChecksums,
+) {
+  assertManifestChecksums(manifest, foundation, currentChecksums)
+
+  const retainedPlanMatches =
+    manifest.planChecksum === currentChecksums.planChecksum &&
+    isDeepStrictEqual(manifest.operations, preflight.operations) &&
+    isDeepStrictEqual(manifest.batches, expectedPlannedBatches(preflight)) &&
+    isDeepStrictEqual(
+      manifest.orphanedCredentialPaths,
+      preflight.orphanedCredentialPaths,
+    )
+
+  if (!retainedPlanMatches) {
+    fail(
+      MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.STALE_MANIFEST_DRIFT,
+      'Retained planned manifest does not match the current destination plan.',
+      {
+        expectedPlanChecksum: manifest.planChecksum,
+        actualPlanChecksum: currentChecksums.planChecksum,
+      },
+    )
+  }
+}
+
+function projectedAfterOperations(projection) {
+  const entries = [{
+    type: MANIFEST_OPERATION_TYPES.CLASSROOM_FIELD_UPDATE,
+    path: projection.classroom.path,
+    data: projection.classroom.data,
+  }]
+
+  for (const collection of [
+    'students',
+    'transactions',
+    'loginHistory',
+    'studentAuthLogs',
+  ]) {
+    for (const entry of projection[collection]) {
+      entries.push({
+        type: MANIFEST_OPERATION_TYPES.CREATE,
+        path: entry.path,
+        data: entry.data,
+      })
+    }
+  }
+
+  for (const entry of projection.studentCredentials) {
+    entries.push({
+      type: MANIFEST_OPERATION_TYPES.CREDENTIAL_CLASSROOM_UPDATE,
+      path: entry.path,
+      data: entry.data,
+    })
+  }
+
+  return new Map(entries.map(entry => [entry.path, {
+    type: entry.type,
+    expectedAfterHash: hashCanonicalState(
+      encodeCanonicalFirestoreValue(entry.data),
+    ),
+  }]))
+}
+
+function operationPlanChecksum(operations) {
+  return hashCanonicalState(operations.map(operation => ({
+    type: operation.type,
+    path: operation.path,
+    expectedBeforeHash: operation.expectedBeforeHash,
+    expectedAfterHash: operation.expectedAfterHash,
+  })))
+}
+
+function assertRetainedProjection(manifest, projection) {
+  const projected = projectedAfterOperations(projection)
+  const matches =
+    manifest.planChecksum === operationPlanChecksum(manifest.operations) &&
+    projected.size === manifest.operations.length &&
+    manifest.operations.every(operation => {
+      const expected = projected.get(operation.path)
+      return expected?.type === operation.type &&
+        expected.expectedAfterHash === operation.expectedAfterHash
+    }) &&
+    isDeepStrictEqual(
+      manifest.orphanedCredentialPaths,
+      projection.orphanedCredentialPaths,
+    )
+
+  if (!matches) {
+    fail(
+      MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.STALE_MANIFEST_DRIFT,
+      'Current source projection does not match the retained operation plan.',
+    )
+  }
+}
+
+async function buildPreflightOrFail({ firestore, foundation, projection }) {
+  try {
+    return await buildDestinationPreflight({
+      firestore,
+      foundation,
+      projection,
+    })
+  } catch (error) {
+    if (error instanceof DestinationPreflightError &&
+        error.category ===
+          DESTINATION_PREFLIGHT_ERROR_CATEGORIES.DIVERGENT_DESTINATIONS) {
+      fail(
+        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.PREFLIGHT_CONFLICT,
+        error.message,
+        { error },
+        error,
+      )
+    }
+    throw error
+  }
+}
+
+async function persistRecoveryManifest(candidate) {
+  try {
+    return await writeCanonicalManifest(candidate)
+  } catch {
+    fail(
+      MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.INDETERMINATE_RECOVERY_REQUIRED,
+      'Restart recovery state could not be durably persisted; recovery remains required.',
+    )
+  }
 }
 
 async function readActualFirestoreState(firestore, foundation, projection) {
@@ -211,7 +438,22 @@ async function readActualFirestoreState(firestore, foundation, projection) {
   }
 }
 
-async function recoverBatches({ firestore, manifest, foundation, projection, clock }) {
+function recoveryDocumentData(operation, data) {
+  if (operation.type !== MANIFEST_OPERATION_TYPES.CLASSROOM_FIELD_UPDATE) {
+    return data
+  }
+
+  const fields = {}
+  if (Object.hasOwn(data, 'settings')) {
+    fields.settings = data.settings
+  }
+  if (Object.hasOwn(data, 'lastBackupAt')) {
+    fields.lastBackupAt = data.lastBackupAt
+  }
+  return fields
+}
+
+async function recoverBatches({ firestore, manifest, clock }) {
   let currentManifest = manifest
   const unverifiedBatchIds = listRecoveryBatchIds(currentManifest)
 
@@ -231,7 +473,9 @@ async function recoverBatches({ firestore, manifest, foundation, projection, clo
           opStates.push({ op, state: 'divergent', snap: null })
         }
       } else {
-        const hash = hashCanonicalState(encodeCanonicalFirestoreValue(snap.data()))
+        const hash = hashCanonicalState(encodeCanonicalFirestoreValue(
+          recoveryDocumentData(op, snap.data()),
+        ))
         if (hash === op.expectedAfterHash) {
           opStates.push({ op, state: 'after-state', snap })
         } else if (hash === op.expectedBeforeHash) {
@@ -245,7 +489,7 @@ async function recoverBatches({ firestore, manifest, foundation, projection, clo
     const isDivergent = opStates.some(item => item.state === 'divergent')
     const allAfter = opStates.every(item => item.state === 'after-state')
     const allBefore = opStates.every(item => item.state === 'before-state')
-    const updatedAt = getTimestamp(clock)
+    const updatedAt = getNextTimestamp(currentManifest, clock)
 
     if (isDivergent) {
       const divergentOpIds = opStates.filter(item => item.state === 'divergent').map(item => item.op.operationId)
@@ -256,7 +500,7 @@ async function recoverBatches({ firestore, manifest, foundation, projection, clo
         error: { code: 'DIVERGENT_RECOVERY_STATE', message: 'Divergent state detected during recovery.' },
         updatedAt,
       })
-      await writeCanonicalManifest(failedManifest)
+      await persistRecoveryManifest(failedManifest)
       fail(
         MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.RECOVERY_DIVERGENT,
         `Divergent destination state detected in batch ${batchId} during restart recovery.`,
@@ -268,7 +512,7 @@ async function recoverBatches({ firestore, manifest, foundation, projection, clo
         batchId,
         updatedAt,
       })
-      currentManifest = await writeCanonicalManifest(verifiedManifest)
+      currentManifest = await persistRecoveryManifest(verifiedManifest)
     } else if (allBefore) {
       const freshUpdateTimePreconditions = {}
       for (const item of opStates) {
@@ -282,7 +526,8 @@ async function recoverBatches({ firestore, manifest, foundation, projection, clo
         freshUpdateTimePreconditions,
         updatedAt,
       })
-      currentManifest = await writeCanonicalManifest(resetManifest)
+      currentManifest = await persistRecoveryManifest(resetManifest)
+      break
     } else {
       const beforeOperationIds = opStates.filter(item => item.state === 'before-state').map(item => item.op.operationId)
       const afterOperationIds = opStates.filter(item => item.state === 'after-state').map(item => item.op.operationId)
@@ -300,7 +545,8 @@ async function recoverBatches({ firestore, manifest, foundation, projection, clo
         freshUpdateTimePreconditions,
         updatedAt,
       })
-      currentManifest = await writeCanonicalManifest(mixedManifest)
+      currentManifest = await persistRecoveryManifest(mixedManifest)
+      break
     }
   }
 
@@ -311,35 +557,42 @@ export async function migrateClassroomData(options) {
   const { firestore, teacherUid, projectId, write, clock, pageSize } = validateOptions(options)
   const identity = { emulatorProjectId: projectId, teacherUid }
 
-  // Canonical-slot-first derivation and inspection
   const slot = deriveCanonicalManifestSlot(identity)
   let manifest = await readCanonicalManifest(identity)
+  let source
+  let foundation
+  let projection
+  let observedChecksums
+  let recoveringWriteStartedManifest = false
 
   if (manifest === null || (manifest.runState === MANIFEST_RUN_STATES.FAILED && !manifest.writePhaseStarted)) {
-    // Brand new run OR replacement of failed dry-run manifest (writePhaseStarted === false)
-    const rawSource = await readLegacySources({ firestore, pageSize })
-    const foundation = await validateTeacherClassroomFoundation({ firestore, teacherUid })
-    validateRawCredentials(rawSource.studentCredentials, foundation.classroomId)
-    const source = normalizeSourceForProjection(rawSource, foundation.classroomId)
-
-    const projection = buildMigrationProjection({ classroomId: foundation.classroomId, ...source })
-
-    let preflight
-    try {
-      preflight = await buildDestinationPreflight({ firestore, foundation, projection })
-    } catch (error) {
-      if (error instanceof DestinationPreflightError) {
-        fail(
-          MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.PREFLIGHT_CONFLICT,
-          error.message,
-          { error },
-          error,
-        )
-      }
-      throw error
+    if (write) {
+      fail(
+        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.RETAINED_PLAN_REQUIRED,
+        'Write mode requires a successful retained dry-run manifest in the canonical slot.',
+        { canonicalPath: slot.manifestPath },
+      )
     }
 
-    const expectedChecksums = calculateChecksums(source, foundation, preflight, projection)
+    const rawSource = await readLegacySources({ firestore, pageSize })
+    foundation = await validateTeacherClassroomFoundation({ firestore, teacherUid })
+    validateRawCredentials(rawSource.studentCredentials)
+    source = rawSource
+    projection = buildMigrationProjection({
+      classroomId: foundation.classroomId,
+      ...source,
+    })
+    const preflight = await buildPreflightOrFail({
+      firestore,
+      foundation,
+      projection,
+    })
+    const expectedChecksums = calculateChecksums(
+      source,
+      foundation,
+      preflight.planChecksum,
+      projection,
+    )
     const reconciliationSummary = reconcileDryRun({
       source,
       foundation,
@@ -367,73 +620,50 @@ export async function migrateClassroomData(options) {
 
     manifest = await writeCanonicalManifest(planned)
 
-    if (!write) {
-      return Object.freeze({
-        mode: MANIFEST_MODES.DRY_RUN,
-        canonicalPath: slot.manifestPath,
-        manifest,
-        preflight,
-        reconciliationSummary,
-        writesApplied: 0,
-      })
-    }
+    return Object.freeze({
+      mode: MANIFEST_MODES.DRY_RUN,
+      canonicalPath: slot.manifestPath,
+      manifest,
+      preflight,
+      reconciliationSummary,
+      writesApplied: 0,
+    })
   } else if (manifest.runState === MANIFEST_RUN_STATES.PLANNED && !manifest.writePhaseStarted) {
-    // Retained valid planned manifest
     const rawSource = await readLegacySources({ firestore, pageSize })
-    const foundation = await validateTeacherClassroomFoundation({ firestore, teacherUid })
-    validateRawCredentials(rawSource.studentCredentials, foundation.classroomId)
-    const source = normalizeSourceForProjection(rawSource, foundation.classroomId)
+    foundation = await validateTeacherClassroomFoundation({ firestore, teacherUid })
+    validateRawCredentials(rawSource.studentCredentials)
+    source = rawSource
+    projection = buildMigrationProjection({
+      classroomId: foundation.classroomId,
+      ...source,
+    })
+    const preflight = await buildPreflightOrFail({
+      firestore,
+      foundation,
+      projection,
+    })
+    observedChecksums = calculateChecksums(
+      source,
+      foundation,
+      preflight.planChecksum,
+      projection,
+    )
+    assertRetainedPlannedManifest(
+      manifest,
+      foundation,
+      preflight,
+      observedChecksums,
+    )
 
-    const projection = buildMigrationProjection({ classroomId: foundation.classroomId, ...source })
-
-    let preflight
-    try {
-      preflight = await buildDestinationPreflight({ firestore, foundation, projection })
-    } catch (error) {
-      if (error instanceof DestinationPreflightError) {
-        fail(
-          MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.PREFLIGHT_CONFLICT,
-          error.message,
-          { error },
-          error,
-        )
-      }
-      throw error
-    }
-
-    const currentChecksums = calculateChecksums(source, foundation, preflight, projection)
-
-    if (
-      manifest.classroomId !== foundation.classroomId ||
-      manifest.immutableSourceChecksum !== currentChecksums.immutableSourceChecksum ||
-      manifest.foundationInvariantChecksum !== currentChecksums.foundationInvariantChecksum ||
-      manifest.planChecksum !== currentChecksums.planChecksum
-    ) {
-      fail(
-        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.STALE_MANIFEST_DRIFT,
-        'Retained planned manifest identity, checksum, or plan mismatch with current state.',
-        {
-          expectedClassroomId: manifest.classroomId,
-          actualClassroomId: foundation.classroomId,
-          expectedSourceChecksum: manifest.immutableSourceChecksum,
-          actualSourceChecksum: currentChecksums.immutableSourceChecksum,
-          expectedFoundationChecksum: manifest.foundationInvariantChecksum,
-          actualFoundationChecksum: currentChecksums.foundationInvariantChecksum,
-          expectedPlanChecksum: manifest.planChecksum,
-          actualPlanChecksum: currentChecksums.planChecksum,
-        },
-      )
-    }
+    const reconciliationSummary = reconcileDryRun({
+      source,
+      foundation,
+      projection,
+      expectedChecksums: expectedChecksumsFromManifest(manifest),
+      observedChecksums,
+    })
 
     if (!write) {
-      const reconciliationSummary = reconcileDryRun({
-        source,
-        foundation,
-        projection,
-        expectedChecksums: currentChecksums,
-        observedChecksums: currentChecksums,
-      })
-
       return Object.freeze({
         mode: MANIFEST_MODES.DRY_RUN,
         canonicalPath: slot.manifestPath,
@@ -449,39 +679,50 @@ export async function migrateClassroomData(options) {
     MANIFEST_RUN_STATES.FAILED,
     MANIFEST_RUN_STATES.INDETERMINATE,
   ].includes(manifest.runState)) {
-    // Retained write-phase started restart recovery
+    recoveringWriteStartedManifest = true
     const rawSource = await readLegacySources({ firestore, pageSize })
-    const foundation = await validateTeacherClassroomFoundation({ firestore, teacherUid })
-    const source = normalizeSourceForProjection(rawSource, foundation.classroomId)
-    const projection = buildMigrationProjection({ classroomId: foundation.classroomId, ...source })
-    const preflight = await buildDestinationPreflight({ firestore, foundation, projection })
-    const currentChecksums = calculateChecksums(source, foundation, preflight, projection)
+    foundation = await validateTeacherClassroomFoundation({ firestore, teacherUid })
+    source = normalizeRetainedSourceForProjection(rawSource)
+    projection = buildMigrationProjection({
+      classroomId: foundation.classroomId,
+      ...source,
+    })
+    observedChecksums = calculateChecksums(
+      source,
+      foundation,
+      manifest.planChecksum,
+      projection,
+    )
+    assertManifestChecksums(
+      manifest,
+      foundation,
+      observedChecksums,
+      { includeCredentials: false },
+    )
 
-    if (
-      manifest.immutableSourceChecksum !== currentChecksums.immutableSourceChecksum ||
-      manifest.foundationInvariantChecksum !== currentChecksums.foundationInvariantChecksum
-    ) {
-      fail(
-        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.STALE_MANIFEST_DRIFT,
-        'Retained write-started manifest immutable source or foundation invariant checksum mismatch.',
-        {
-          expectedSourceChecksum: manifest.immutableSourceChecksum,
-          actualSourceChecksum: currentChecksums.immutableSourceChecksum,
-          expectedFoundationChecksum: manifest.foundationInvariantChecksum,
-          actualFoundationChecksum: currentChecksums.foundationInvariantChecksum,
-        },
-      )
-    }
-
-    manifest = await recoverBatches({ firestore, manifest, foundation, projection, clock })
+    manifest = await recoverBatches({ firestore, manifest, clock })
+    assertRetainedProjection(manifest, projection)
+    assertManifestChecksums(manifest, foundation, observedChecksums)
   } else if (manifest.runState === MANIFEST_RUN_STATES.COMPLETED) {
-    // Completed manifest is read-only reverification
     const rawSource = await readLegacySources({ firestore, pageSize })
-    const foundation = await validateTeacherClassroomFoundation({ firestore, teacherUid })
-    const source = normalizeSourceForProjection(rawSource, foundation.classroomId)
-    const projection = buildMigrationProjection({ classroomId: foundation.classroomId, ...source })
-    const preflight = await buildDestinationPreflight({ firestore, foundation, projection })
-    const currentChecksums = calculateChecksums(source, foundation, preflight, projection)
+    foundation = await validateTeacherClassroomFoundation({ firestore, teacherUid })
+    source = normalizeRetainedSourceForProjection(rawSource)
+    projection = buildMigrationProjection({
+      classroomId: foundation.classroomId,
+      ...source,
+    })
+    observedChecksums = calculateChecksums(
+      source,
+      foundation,
+      manifest.planChecksum,
+      projection,
+    )
+    assertRetainedProjection(manifest, projection)
+    const expectedChecksums = assertManifestChecksums(
+      manifest,
+      foundation,
+      observedChecksums,
+    )
 
     const actual = await readActualFirestoreState(firestore, foundation, projection)
 
@@ -489,8 +730,8 @@ export async function migrateClassroomData(options) {
       source,
       foundation,
       projection,
-      expectedChecksums: currentChecksums,
-      observedChecksums: currentChecksums,
+      expectedChecksums,
+      observedChecksums,
       actual,
     })
 
@@ -502,29 +743,86 @@ export async function migrateClassroomData(options) {
       writesApplied: 0,
       reverified: true,
     })
+  } else {
+    fail(
+      MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.STALE_MANIFEST_DRIFT,
+      'The retained manifest lifecycle cannot be safely continued.',
+    )
   }
 
-  // Execute write mode if required
-  if (write) {
-    // Verify source and foundation checksums immediately before first write batch
-    const rawSource = await readLegacySources({ firestore, pageSize })
-    const foundation = await validateTeacherClassroomFoundation({ firestore, teacherUid })
-    const source = normalizeSourceForProjection(rawSource, foundation.classroomId)
-    const projection = buildMigrationProjection({ classroomId: foundation.classroomId, ...source })
-    const preflight = await buildDestinationPreflight({ firestore, foundation, projection })
-    const currentChecksums = calculateChecksums(source, foundation, preflight, projection)
+  if (recoveringWriteStartedManifest) {
+    const pendingRecoveryWrites = manifest.operations.some(operation =>
+      operation.state === MANIFEST_OPERATION_STATES.PLANNED)
 
-    if (
-      manifest.immutableSourceChecksum !== currentChecksums.immutableSourceChecksum ||
-      manifest.foundationInvariantChecksum !== currentChecksums.foundationInvariantChecksum
-    ) {
+    if (!write && pendingRecoveryWrites) {
       fail(
-        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.STALE_MANIFEST_DRIFT,
-        'Checksum mismatch immediately before write execution.',
+        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.INDETERMINATE_RECOVERY_REQUIRED,
+        'Restart recovery found operations that require --write to retry safely.',
+        { canonicalPath: slot.manifestPath },
       )
     }
+  }
 
-    // Call batchWriter
+  if (write) {
+    const rawSource = await readLegacySources({ firestore, pageSize })
+    foundation = await validateTeacherClassroomFoundation({ firestore, teacherUid })
+
+    if (recoveringWriteStartedManifest) {
+      source = normalizeRetainedSourceForProjection(rawSource)
+      projection = buildMigrationProjection({
+        classroomId: foundation.classroomId,
+        ...source,
+      })
+      observedChecksums = calculateChecksums(
+        source,
+        foundation,
+        manifest.planChecksum,
+        projection,
+      )
+      assertManifestChecksums(
+        manifest,
+        foundation,
+        observedChecksums,
+        { includeCredentials: false },
+      )
+      manifest = await recoverBatches({ firestore, manifest, clock })
+      assertRetainedProjection(manifest, projection)
+      assertManifestChecksums(manifest, foundation, observedChecksums)
+    } else {
+      validateRawCredentials(rawSource.studentCredentials)
+      source = rawSource
+      projection = buildMigrationProjection({
+        classroomId: foundation.classroomId,
+        ...source,
+      })
+      const preflight = await buildPreflightOrFail({
+        firestore,
+        foundation,
+        projection,
+      })
+      observedChecksums = calculateChecksums(
+        source,
+        foundation,
+        preflight.planChecksum,
+        projection,
+      )
+      assertRetainedPlannedManifest(
+        manifest,
+        foundation,
+        preflight,
+        observedChecksums,
+      )
+    }
+  }
+
+  const writesToApply = manifest.operations.filter(operation =>
+    operation.state === MANIFEST_OPERATION_STATES.PLANNED).length
+
+  if (write && (
+    manifest.runState === MANIFEST_RUN_STATES.PLANNED ||
+    manifest.runState === MANIFEST_RUN_STATES.WRITING ||
+    writesToApply > 0
+  )) {
     try {
       manifest = await writeMigrationBatches({
         firestore,
@@ -534,72 +832,106 @@ export async function migrateClassroomData(options) {
         clock,
       })
     } catch (error) {
+      const indeterminateCategories = new Set([
+        BATCH_WRITER_ERROR_CATEGORIES.COMMIT_INDETERMINATE,
+        BATCH_WRITER_ERROR_CATEGORIES.MANIFEST_PERSISTENCE_INDETERMINATE,
+        BATCH_WRITER_ERROR_CATEGORIES.VERIFICATION_INDETERMINATE,
+      ])
+
+      if (error instanceof BatchWriterError &&
+          indeterminateCategories.has(error.category)) {
+        fail(
+          MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.INDETERMINATE_RECOVERY_REQUIRED,
+          'A migration write outcome is uncertain; restart recovery is required.',
+          { batchId: error.details?.batchId },
+        )
+      }
+
       fail(
         MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.WRITE_FAILED,
-        `Write migration batches failed: ${error.message}`,
+        'Migration batch execution failed clearly; the retained manifest must be recovered before retrying.',
         {},
         error,
       )
     }
+  }
 
-    const updatedAt = getTimestamp(clock)
-
-    // Transition to verification
+  if (manifest.runState !== MANIFEST_RUN_STATES.VERIFYING) {
     manifest = transitionManifest(manifest, {
       type: MANIFEST_TRANSITIONS.START_VERIFICATION,
-      updatedAt,
+      updatedAt: getNextTimestamp(manifest, clock),
     })
-    manifest = await writeCanonicalManifest(manifest)
-
-    // Re-read actual post-write state and run write reconciliation
-    const actual = await readActualFirestoreState(firestore, foundation, projection)
-
-    let reconciliationSummary
     try {
-      reconciliationSummary = reconcileWriteRun({
-        source,
-        foundation,
-        projection,
-        expectedChecksums: currentChecksums,
-        observedChecksums: currentChecksums,
-        actual,
-      })
-    } catch (error) {
-      const failedManifest = transitionManifest(manifest, {
-        type: MANIFEST_TRANSITIONS.RECORD_RECONCILIATION_FAILURE,
-        error: { code: 'RECONCILIATION_FAILED', message: error.message },
-        updatedAt: getTimestamp(clock),
-      })
-      await writeCanonicalManifest(failedManifest)
+      manifest = await writeCanonicalManifest(manifest)
+    } catch {
       fail(
-        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.RECONCILIATION_FAILED,
-        `Write-run reconciliation failed: ${error.message}`,
-        { error },
-        error,
+        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.INDETERMINATE_RECOVERY_REQUIRED,
+        'Post-write verification state could not be durably persisted; restart recovery is required.',
+      )
+    }
+  }
+
+  let actual
+  try {
+    actual = await readActualFirestoreState(firestore, foundation, projection)
+  } catch {
+    fail(
+      MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.INDETERMINATE_RECOVERY_REQUIRED,
+      'Post-write Firestore state could not be read safely; restart recovery is required.',
+    )
+  }
+
+  let reconciliationSummary
+  try {
+    reconciliationSummary = reconcileWriteRun({
+      source,
+      foundation,
+      projection,
+      expectedChecksums: expectedChecksumsFromManifest(manifest),
+      observedChecksums,
+      actual,
+    })
+  } catch (error) {
+    const failedManifest = transitionManifest(manifest, {
+      type: MANIFEST_TRANSITIONS.FAIL,
+      updatedAt: getNextTimestamp(manifest, clock),
+    })
+    try {
+      await writeCanonicalManifest(failedManifest)
+    } catch {
+      fail(
+        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.INDETERMINATE_RECOVERY_REQUIRED,
+        'Reconciliation failed and its retained manifest state could not be durably persisted; restart recovery is required.',
       )
     }
 
-    // Transition to completed
-    manifest = transitionManifest(manifest, {
-      type: MANIFEST_TRANSITIONS.COMPLETE,
-      reconciliationSummary,
-      updatedAt: getTimestamp(clock),
-    })
-    manifest = await writeCanonicalManifest(manifest)
+    fail(
+      MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.RECONCILIATION_FAILED,
+      `Write-run reconciliation failed: ${error.message}`,
+      { error },
+      error,
+    )
+  }
 
-    return Object.freeze({
-      mode: MANIFEST_MODES.WRITE,
-      canonicalPath: slot.manifestPath,
-      manifest,
-      reconciliationSummary,
-      writesApplied: manifest.operations.length,
-    })
+  manifest = transitionManifest(manifest, {
+    type: MANIFEST_TRANSITIONS.COMPLETE,
+    reconciliationSummary,
+    updatedAt: getNextTimestamp(manifest, clock),
+  })
+  try {
+    manifest = await writeCanonicalManifest(manifest)
+  } catch {
+    fail(
+      MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.INDETERMINATE_RECOVERY_REQUIRED,
+      'Completion could not be durably persisted; restart recovery is required.',
+    )
   }
 
   return Object.freeze({
-    mode: MANIFEST_MODES.DRY_RUN,
+    mode: write ? MANIFEST_MODES.WRITE : MANIFEST_MODES.DRY_RUN,
     canonicalPath: slot.manifestPath,
     manifest,
-    writesApplied: 0,
+    reconciliationSummary,
+    writesApplied: write ? writesToApply : 0,
   })
 }

@@ -26,6 +26,14 @@ function cleanManifestFile(teacherUid) {
   }
 }
 
+function rewriteManifestFile(teacherUid, mutate) {
+  const slot = deriveCanonicalManifestSlot({ emulatorProjectId: PROJECT_ID, teacherUid })
+  const manifest = JSON.parse(fs.readFileSync(slot.manifestPath, 'utf8'))
+  mutate(manifest)
+  fs.writeFileSync(slot.manifestPath, serializeCanonicalState(manifest))
+  return slot
+}
+
 function envelope(collection, id, data, second = 10) {
   return {
     id,
@@ -141,15 +149,20 @@ class FakeQuery {
 function fakeFirestore(initialDocs = {}) {
   const docs = new Map(Object.entries(initialDocs))
   const writeHistory = []
+  const readHistory = []
 
   const self = {
     docsMap: docs,
     writeHistory,
+    readHistory,
+    commitCount: 0,
+    throwAfterCommitNumber: null,
     doc(path) {
       return {
         id: path.split('/').pop(),
         path,
         async get() {
+          readHistory.push(path)
           if (!docs.has(path)) {
             return { exists: false, id: path.split('/').pop(), ref: self.doc(path), data: () => undefined }
           }
@@ -189,6 +202,7 @@ function fakeFirestore(initialDocs = {}) {
           batchWrites.push({ type: 'update', ref: docRef, data, options })
         },
         async commit() {
+          self.commitCount += 1
           for (const op of batchWrites) {
             if (op.type === 'create') {
               await op.ref.set(op.data)
@@ -198,12 +212,33 @@ function fakeFirestore(initialDocs = {}) {
               await op.ref.update(op.data)
             }
           }
+
+          if (self.throwAfterCommitNumber === self.commitCount) {
+            self.throwAfterCommitNumber = null
+            throw new Error('simulated timeout after an uncertain commit')
+          }
         },
       }
     },
   }
 
   return self
+}
+
+async function completeMigration(db, teacherUid) {
+  await migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: false,
+  })
+
+  return migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: true,
+  })
 }
 
 function buildFirestoreMap(fix) {
@@ -239,6 +274,7 @@ test('canonical slot inspected before fresh source planning and dry run makes ze
   assert.equal(result.writesApplied, 0)
   assert.equal(result.manifest.mode, MANIFEST_MODES.DRY_RUN)
   assert.equal(result.manifest.writePhaseStarted, false)
+  assert.equal(db.writeHistory.length, 0)
 
   assert.ok(fs.existsSync(slot.manifestPath))
 
@@ -277,6 +313,57 @@ test('write mode consumes retained planned manifest', async () => {
   assert.equal(writeResult.manifest.runState, 'completed')
   assert.equal(writeResult.manifest.writePhaseStarted, true)
   assert.equal(writeResult.writesApplied, 3)
+})
+
+test('orchestration advances manifest timestamps with a deterministic clock', async () => {
+  const teacherUid = 'teacher-fixed-clock-1'
+  cleanManifestFile(teacherUid)
+  const fix = fixtureData(teacherUid)
+  const db = fakeFirestore(buildFirestoreMap(fix))
+  const clock = () => '2026-01-01T00:00:00.000Z'
+
+  await migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: false,
+    clock,
+  })
+  const result = await migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: true,
+    clock,
+  })
+
+  assert.equal(result.manifest.runState, 'completed')
+  assert.ok(result.manifest.updatedAt > result.manifest.createdAt)
+})
+
+test('write mode refuses to create and execute a brand-new plan', async () => {
+  const teacherUid = 'teacher-write-needs-plan-1'
+  cleanManifestFile(teacherUid)
+  const fix = fixtureData(teacherUid)
+  const db = fakeFirestore(buildFirestoreMap(fix))
+  const slot = deriveCanonicalManifestSlot({ emulatorProjectId: PROJECT_ID, teacherUid })
+
+  await assert.rejects(
+    migrateClassroomData({
+      firestore: db,
+      teacherUid,
+      projectId: PROJECT_ID,
+      write: true,
+    }),
+    error => {
+      assert.ok(error instanceof MigrateClassroomDataError)
+      assert.equal(error.category, 'retained-plan-required')
+      return true
+    },
+  )
+
+  assert.equal(db.writeHistory.length, 0)
+  assert.equal(fs.existsSync(slot.manifestPath), false)
 })
 
 test('planned-manifest drift blocks execution', async () => {
@@ -398,13 +485,7 @@ test('writePhaseStarted:true state is never replaced by fresh planning', async (
   const fix = fixtureData(teacherUid)
   const db = fakeFirestore(buildFirestoreMap(fix))
 
-  // Execute write mode
-  const writeResult = await migrateClassroomData({
-    firestore: db,
-    teacherUid,
-    projectId: PROJECT_ID,
-    write: true,
-  })
+  const writeResult = await completeMigration(db, teacherUid)
 
   assert.equal(writeResult.manifest.writePhaseStarted, true)
 
@@ -425,13 +506,7 @@ test('completed manifests are read-only reverification', async () => {
   const fix = fixtureData(teacherUid)
   const db = fakeFirestore(buildFirestoreMap(fix))
 
-  // Complete a write run
-  await migrateClassroomData({
-    firestore: db,
-    teacherUid,
-    projectId: PROJECT_ID,
-    write: true,
-  })
+  await completeMigration(db, teacherUid)
 
   // Run again with write: false
   const reverifyResult = await migrateClassroomData({
@@ -444,6 +519,317 @@ test('completed manifests are read-only reverification', async () => {
   assert.equal(reverifyResult.reverified, true)
   assert.equal(reverifyResult.manifest.runState, 'completed')
   assert.equal(reverifyResult.writesApplied, 0)
+
+  const writesBeforeWriteModeReverification = db.writeHistory.length
+  const writeModeReverification = await migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: true,
+  })
+
+  assert.equal(writeModeReverification.reverified, true)
+  assert.equal(writeModeReverification.writesApplied, 0)
+  assert.equal(db.writeHistory.length, writesBeforeWriteModeReverification)
+})
+
+test('completed manifest reverification blocks retained checksum drift', async () => {
+  const teacherUid = 'teacher-completed-drift-1'
+  cleanManifestFile(teacherUid)
+  const fix = fixtureData(teacherUid)
+  const db = fakeFirestore(buildFirestoreMap(fix))
+
+  await completeMigration(db, teacherUid)
+  db.docsMap.get(`teachers/${teacherUid}`).data.displayName = 'Changed after completion'
+
+  await assert.rejects(
+    migrateClassroomData({
+      firestore: db,
+      teacherUid,
+      projectId: PROJECT_ID,
+      write: true,
+    }),
+    error => {
+      assert.ok(error instanceof MigrateClassroomDataError)
+      assert.equal(error.category, MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.STALE_MANIFEST_DRIFT)
+      return true
+    },
+  )
+})
+
+test('credential after-state recovery uses retained hashes without rerunning new-run validation', async () => {
+  const teacherUid = 'teacher-recover-credential-1'
+  cleanManifestFile(teacherUid)
+  const fix = fixtureData(teacherUid)
+  const db = fakeFirestore(buildFirestoreMap(fix))
+
+  await migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: false,
+  })
+  db.throwAfterCommitNumber = 3
+
+  await assert.rejects(
+    migrateClassroomData({
+      firestore: db,
+      teacherUid,
+      projectId: PROJECT_ID,
+      write: true,
+    }),
+    error => {
+      assert.ok(error instanceof MigrateClassroomDataError)
+      assert.equal(error.category, 'indeterminate-recovery-required')
+      return true
+    },
+  )
+
+  assert.equal(
+    db.docsMap.get('studentCredentials/s1-login').data.classroomId,
+    CLASSROOM_ID,
+  )
+
+  const recovered = await migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: true,
+  })
+
+  assert.equal(recovered.manifest.runState, 'completed')
+  assert.equal(recovered.writesApplied, 0)
+})
+
+test('recovery classifies classroom fields against retained field-only hashes', async () => {
+  const teacherUid = 'teacher-recover-classroom-1'
+  cleanManifestFile(teacherUid)
+  const fix = fixtureData(teacherUid)
+  const db = fakeFirestore(buildFirestoreMap(fix))
+
+  await migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: false,
+  })
+  db.throwAfterCommitNumber = 1
+
+  await assert.rejects(
+    migrateClassroomData({
+      firestore: db,
+      teacherUid,
+      projectId: PROJECT_ID,
+      write: true,
+    }),
+  )
+
+  const recovered = await migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: true,
+  })
+
+  assert.equal(recovered.manifest.runState, 'completed')
+})
+
+test('write-started recovery handles null inFlightBatchId lifecycles without destination writes', async () => {
+  for (const runState of ['verifying', 'failed', 'indeterminate']) {
+    const teacherUid = `teacher-null-inflight-${runState}`
+    cleanManifestFile(teacherUid)
+    const fix = fixtureData(teacherUid)
+    const db = fakeFirestore(buildFirestoreMap(fix))
+
+    await completeMigration(db, teacherUid)
+    rewriteManifestFile(teacherUid, manifest => {
+      manifest.runState = runState
+      manifest.inFlightBatchId = null
+      manifest.reconciliationSummary = null
+    })
+    const writesBeforeRecovery = db.writeHistory.length
+
+    const recovered = await migrateClassroomData({
+      firestore: db,
+      teacherUid,
+      projectId: PROJECT_ID,
+      write: true,
+    })
+
+    assert.equal(recovered.manifest.runState, 'completed')
+    assert.equal(recovered.writesApplied, 0)
+    assert.equal(db.writeHistory.length, writesBeforeRecovery)
+  }
+})
+
+test('mixed recovery retries only before-state operations', async () => {
+  const teacherUid = 'teacher-recover-mixed-1'
+  cleanManifestFile(teacherUid)
+  const fix = fixtureData(teacherUid)
+  const db = fakeFirestore(buildFirestoreMap(fix))
+  await completeMigration(db, teacherUid)
+
+  const studentPath = `classrooms/${CLASSROOM_ID}/students/s1`
+  db.docsMap.delete(studentPath)
+  rewriteManifestFile(teacherUid, manifest => {
+    const batchId = 'batch-000001'
+    const error = {
+      code: 'SIMULATED_UNCERTAIN_BATCH',
+      message: 'Synthetic mixed recovery state.',
+    }
+    manifest.runState = 'indeterminate'
+    manifest.inFlightBatchId = batchId
+    manifest.reconciliationSummary = null
+    manifest.batches = [{
+      batchId,
+      state: 'indeterminate',
+      operationIds: manifest.operations.map(operation => operation.operationId),
+    }]
+    manifest.operations = manifest.operations.map(operation => ({
+      ...operation,
+      batchId,
+      state: 'indeterminate',
+      error,
+    }))
+  })
+  const writesBeforeRecovery = db.writeHistory.length
+
+  const recovered = await migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: true,
+  })
+
+  const recoveryWrites = db.writeHistory.slice(writesBeforeRecovery)
+  assert.deepEqual(recoveryWrites.map(write => write.path), [studentPath])
+  assert.equal(recovered.writesApplied, 1)
+  assert.equal(recovered.manifest.runState, 'completed')
+})
+
+test('divergent recovery blocks before inspecting later batches', async () => {
+  const teacherUid = 'teacher-recover-divergent-1'
+  cleanManifestFile(teacherUid)
+  const fix = fixtureData(teacherUid)
+  const db = fakeFirestore(buildFirestoreMap(fix))
+
+  await migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: false,
+  })
+  db.throwAfterCommitNumber = 1
+  await assert.rejects(migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: true,
+  }))
+
+  db.docsMap.get(`classrooms/${CLASSROOM_ID}`).data.settings = {
+    currencyName: 'Divergent',
+  }
+  db.readHistory.length = 0
+  const laterStudentPath = `classrooms/${CLASSROOM_ID}/students/s1`
+
+  await assert.rejects(
+    migrateClassroomData({
+      firestore: db,
+      teacherUid,
+      projectId: PROJECT_ID,
+      write: true,
+    }),
+    error => {
+      assert.ok(error instanceof MigrateClassroomDataError)
+      assert.equal(error.category, MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.RECOVERY_DIVERGENT)
+      return true
+    },
+  )
+
+  assert.ok(!db.readHistory.includes(laterStudentPath))
+})
+
+test('unexpected credential classroomId is divergent retained-hash recovery state', async () => {
+  const teacherUid = 'teacher-recover-credential-divergent-1'
+  cleanManifestFile(teacherUid)
+  const fix = fixtureData(teacherUid)
+  const db = fakeFirestore(buildFirestoreMap(fix))
+
+  await migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: false,
+  })
+  db.throwAfterCommitNumber = 3
+  await assert.rejects(migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: true,
+  }))
+  db.docsMap.get('studentCredentials/s1-login').data.classroomId = 'unexpected-classroom'
+
+  await assert.rejects(
+    migrateClassroomData({
+      firestore: db,
+      teacherUid,
+      projectId: PROJECT_ID,
+      write: true,
+    }),
+    error => {
+      assert.ok(error instanceof MigrateClassroomDataError)
+      assert.equal(error.category, MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.RECOVERY_DIVERGENT)
+      return true
+    },
+  )
+})
+
+test('reconciliation failure is durably failed and later reverified with null inFlightBatchId', async () => {
+  const teacherUid = 'teacher-reconciliation-recovery-1'
+  cleanManifestFile(teacherUid)
+  const fix = fixtureData(teacherUid)
+  const db = fakeFirestore(buildFirestoreMap(fix))
+  await completeMigration(db, teacherUid)
+
+  rewriteManifestFile(teacherUid, manifest => {
+    manifest.runState = 'verifying'
+    manifest.reconciliationSummary = null
+  })
+  const studentPath = `classrooms/${CLASSROOM_ID}/students/s1`
+  db.docsMap.get(studentPath).data.balance = 999
+
+  await assert.rejects(
+    migrateClassroomData({
+      firestore: db,
+      teacherUid,
+      projectId: PROJECT_ID,
+      write: true,
+    }),
+    error => {
+      assert.ok(error instanceof MigrateClassroomDataError)
+      assert.equal(error.category, MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.RECONCILIATION_FAILED)
+      return true
+    },
+  )
+
+  const failed = JSON.parse(fs.readFileSync(
+    deriveCanonicalManifestSlot({ emulatorProjectId: PROJECT_ID, teacherUid }).manifestPath,
+    'utf8',
+  ))
+  assert.equal(failed.runState, 'failed')
+  assert.equal(failed.inFlightBatchId, null)
+
+  db.docsMap.get(studentPath).data.balance = 10
+  const recovered = await migrateClassroomData({
+    firestore: db,
+    teacherUid,
+    projectId: PROJECT_ID,
+    write: true,
+  })
+  assert.equal(recovered.manifest.runState, 'completed')
+  assert.equal(recovered.writesApplied, 0)
 })
 
 test('no secret credential leakage in manifest or error output', async () => {

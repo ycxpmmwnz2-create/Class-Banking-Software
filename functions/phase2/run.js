@@ -14,9 +14,15 @@ import {
 import { FoundationValidationError } from './foundationValidator.js'
 import { SourceReaderError } from './sourceReader.js'
 import { ProjectionError } from './projection.js'
-import { DestinationPreflightError } from './destinationPreflight.js'
+import {
+  DestinationPreflightError,
+  DESTINATION_PREFLIGHT_ERROR_CATEGORIES,
+} from './destinationPreflight.js'
 import { ReconciliationError } from './reconciliation.js'
-import { BatchWriterError } from './batchWriter.js'
+import {
+  BatchWriterError,
+  BATCH_WRITER_ERROR_CATEGORIES,
+} from './batchWriter.js'
 import { ManifestError, MANIFEST_ERROR_CATEGORIES } from './manifest.js'
 
 export const EXIT_CODES = Object.freeze({
@@ -44,7 +50,9 @@ export function classifyErrorToExitCode(error) {
   }
 
   if (
-    error instanceof DestinationPreflightError ||
+    (error instanceof DestinationPreflightError &&
+      error.category ===
+        DESTINATION_PREFLIGHT_ERROR_CATEGORIES.DIVERGENT_DESTINATIONS) ||
     (error instanceof MigrateClassroomDataError &&
       (error.category === MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.PREFLIGHT_CONFLICT ||
        error.category === MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.RECOVERY_DIVERGENT))
@@ -55,9 +63,30 @@ export function classifyErrorToExitCode(error) {
   if (
     error instanceof ManifestError ||
     (error instanceof MigrateClassroomDataError &&
-      error.category === MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.STALE_MANIFEST_DRIFT)
+      (error.category === MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.STALE_MANIFEST_DRIFT ||
+       error.category === MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.RETAINED_PLAN_REQUIRED))
   ) {
+    if (error instanceof ManifestError &&
+        error.category === MANIFEST_ERROR_CATEGORIES.WRITE_FAILED) {
+      return EXIT_CODES.WRITE_FAILURE
+    }
     return EXIT_CODES.STALE_MANIFEST_MISMATCH
+  }
+
+  const indeterminateBatchCategories = new Set([
+    BATCH_WRITER_ERROR_CATEGORIES.COMMIT_INDETERMINATE,
+    BATCH_WRITER_ERROR_CATEGORIES.MANIFEST_PERSISTENCE_INDETERMINATE,
+    BATCH_WRITER_ERROR_CATEGORIES.VERIFICATION_INDETERMINATE,
+  ])
+
+  if (
+    (error instanceof BatchWriterError &&
+      indeterminateBatchCategories.has(error.category)) ||
+    (error instanceof MigrateClassroomDataError &&
+      error.category ===
+        MIGRATE_CLASSROOM_DATA_ERROR_CATEGORIES.INDETERMINATE_RECOVERY_REQUIRED)
+  ) {
+    return EXIT_CODES.INDETERMINATE_RECOVERY_REQUIRED
   }
 
   if (
@@ -87,8 +116,9 @@ function getOrCreateFirestore(projectId) {
 }
 
 export async function runMain(argv = process.argv.slice(2), dependencies = {}) {
-  const logger = dependencies.logger ?? console
+  const logger = dependencies.logger ?? globalThis.console
   const firestoreFactory = dependencies.firestoreFactory ?? getOrCreateFirestore
+  const migrate = dependencies.migrateClassroomData ?? migrateClassroomData
 
   try {
     // Emulator environment check MUST run first
@@ -104,7 +134,7 @@ export async function runMain(argv = process.argv.slice(2), dependencies = {}) {
 
     const firestore = dependencies.firestore ?? firestoreFactory(parsed.projectId)
 
-    const result = await migrateClassroomData({
+    const result = await migrate({
       firestore,
       teacherUid: parsed.teacherUid,
       projectId: parsed.projectId,
