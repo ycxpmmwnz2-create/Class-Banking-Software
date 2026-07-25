@@ -1,7 +1,7 @@
-// Phase 0 baseline tests for the CURRENT (v1.1) production firestore.rules.
+// Baseline tests for the CURRENT checked-in (v1.1) firestore.rules.
 //
 // These tests intentionally exercise today's authorization model exactly as
-// deployed — a single hardcoded teacher UID and a flat, non-classroom-scoped
+// checked in — a single hardcoded teacher UID and a flat, non-classroom-scoped
 // studentAuthLogs collection — so that any future rules change (Phase 2+)
 // can be diffed against a known-good baseline. Nothing here changes rules
 // behavior; it only pins it down with automated coverage that didn't exist
@@ -25,6 +25,7 @@ const CLASSROOM_ID = 'morgan'
 const STUDENT_ID = '1'
 const OTHER_STUDENT_ID = '2'
 const OTHER_CLASSROOM_ID = 'other-classroom'
+const GENERATED_CLASSROOM_ID = 'phase1-generated-classroom'
 
 let testEnv
 
@@ -76,6 +77,17 @@ async function seedBaselineData() {
       failedAttempts: 0,
       lockedUntil: null,
     })
+    await db.doc(`teachers/${TEACHER_UID}`).set({
+      uid: TEACHER_UID,
+      classroomId: GENERATED_CLASSROOM_ID,
+      status: 'active',
+    })
+    await db.doc(`classrooms/${GENERATED_CLASSROOM_ID}`).set({
+      ownerUid: TEACHER_UID,
+      name: 'Phase 1 Classroom',
+      version: 1,
+      settings: {},
+    })
   })
 }
 
@@ -117,6 +129,33 @@ describe('Teacher (existing hardcoded TEACHER_UID)', () => {
     const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
     await assertSucceeds(db.doc('studentAuthLogs/log-1').get())
   })
+
+  test('cannot read the Phase 1 teacher document', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertFails(db.doc(`teachers/${TEACHER_UID}`).get())
+  })
+
+  test('cannot write the Phase 1 teacher document', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertFails(
+      db.doc(`teachers/${TEACHER_UID}`).set({ status: 'active' }, { merge: true }),
+    )
+  })
+
+  test('can read the generated Phase 1 classroom root', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertSucceeds(db.doc(`classrooms/${GENERATED_CLASSROOM_ID}`).get())
+  })
+
+  test('can write the generated Phase 1 classroom root', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertSucceeds(
+      db.doc(`classrooms/${GENERATED_CLASSROOM_ID}`).set(
+        { settings: { currencyName: 'Class Cash' } },
+        { merge: true },
+      ),
+    )
+  })
 })
 
 describe('Unauthorized authenticated user (not the teacher, not a student token)', () => {
@@ -156,6 +195,20 @@ describe('Unauthorized authenticated user (not the teacher, not a student token)
   test('cannot read studentCredentials', async () => {
     const db = testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore()
     await assertFails(db.doc('studentCredentials/test-student').get())
+  })
+
+  test('cannot read or write the Phase 1 teacher document', async () => {
+    const db = testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore()
+    const teacher = db.doc(`teachers/${TEACHER_UID}`)
+    await assertFails(teacher.get())
+    await assertFails(teacher.set({ status: 'active' }, { merge: true }))
+  })
+
+  test('cannot read or write the generated Phase 1 classroom root', async () => {
+    const db = testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore()
+    const classroom = db.doc(`classrooms/${GENERATED_CLASSROOM_ID}`)
+    await assertFails(classroom.get())
+    await assertFails(classroom.set({ settings: {} }, { merge: true }))
   })
 })
 
@@ -247,6 +300,28 @@ describe('Student (custom-token claims: role/classroomId/studentId)', () => {
     })
     await assertFails(db.doc('studentCredentials/test-student').get())
   })
+
+  test('cannot read or write the Phase 1 teacher document', async () => {
+    const db = studentContext('student-auth-uid', {
+      role: 'student',
+      classroomId: GENERATED_CLASSROOM_ID,
+      studentId: STUDENT_ID,
+    })
+    const teacher = db.doc(`teachers/${TEACHER_UID}`)
+    await assertFails(teacher.get())
+    await assertFails(teacher.set({ status: 'active' }, { merge: true }))
+  })
+
+  test('cannot read or write the generated Phase 1 classroom root', async () => {
+    const db = studentContext('student-auth-uid', {
+      role: 'student',
+      classroomId: GENERATED_CLASSROOM_ID,
+      studentId: STUDENT_ID,
+    })
+    const classroom = db.doc(`classrooms/${GENERATED_CLASSROOM_ID}`)
+    await assertFails(classroom.get())
+    await assertFails(classroom.set({ settings: {} }, { merge: true }))
+  })
 })
 
 describe('Unauthenticated user', () => {
@@ -286,5 +361,19 @@ describe('Unauthenticated user', () => {
   test('cannot read studentCredentials', async () => {
     const db = testEnv.unauthenticatedContext().firestore()
     await assertFails(db.doc('studentCredentials/test-student').get())
+  })
+
+  test('cannot read or write the Phase 1 teacher document', async () => {
+    const db = testEnv.unauthenticatedContext().firestore()
+    const teacher = db.doc(`teachers/${TEACHER_UID}`)
+    await assertFails(teacher.get())
+    await assertFails(teacher.set({ status: 'active' }, { merge: true }))
+  })
+
+  test('cannot read or write the generated Phase 1 classroom root', async () => {
+    const db = testEnv.unauthenticatedContext().firestore()
+    const classroom = db.doc(`classrooms/${GENERATED_CLASSROOM_ID}`)
+    await assertFails(classroom.get())
+    await assertFails(classroom.set({ settings: {} }, { merge: true }))
   })
 })
