@@ -4,108 +4,191 @@ import {
   verifyStudentCredentialV2,
   studentPinLoginV2CallableHandler,
   StudentVerifierError,
+  STUDENT_LOGIN_OUTCOMES,
 } from './studentCredentialVerifier.js'
 import { deriveDeterministicStudentAuthUid } from './scopedCredentialProjection.js'
+import { formatClassroomCode } from './identityNormalization.js'
 
-function createMockFirestore(initialDocs = {}) {
+const CLASS_A_CODE = '23456789'
+const CLASS_B_CODE = '3456789A'
+const DUMMY_PIN_HASH =
+  '$2b$10$Ds5wfuAE9LT3Xe4vdygSMu1VUq0m8830nB5uQauQ0105kP4WDUR.a'
+
+function clone(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
+}
+
+/**
+ * Firestore double that enforces the Admin SDK transaction rules the real
+ * backend enforces and the Cycle 2 mocks did not:
+ *
+ * - a transaction read after the transaction's first write throws, exactly as
+ *   `Transaction.get()` does against real Firestore;
+ * - writes stay buffered until commit, so a retried callback cannot observe
+ *   its own discarded writes;
+ * - `abortAttempts` replays the callback like a contention (ABORTED) retry so
+ *   side effects that must happen once can be counted;
+ * - `update` on a missing document fails, as it does in production.
+ */
+function createMockFirestore(initialDocs = {}, { abortAttempts = 0 } = {}) {
   const store = new Map()
-
   for (const [path, data] of Object.entries(initialDocs)) {
-    store.set(path, JSON.parse(JSON.stringify(data)))
+    store.set(path, clone(data))
   }
 
-  function getDocRef(path) {
+  let autoIdCounter = 0
+  let transactionAttempts = 0
+  const attemptOperations = []
+
+  function docRef(path) {
+    return { path, id: path.split('/').pop() }
+  }
+
+  function collectionRef(collectionPath) {
     return {
-      path,
-      id: path.split('/').pop(),
+      path: collectionPath,
+      doc(id) {
+        autoIdCounter += 1
+        return docRef(`${collectionPath}/${id ?? `auto_${autoIdCounter}`}`)
+      },
     }
   }
 
   return {
     store,
-    doc(path) {
-      return getDocRef(path)
+    attemptOperations,
+    get transactionAttempts() {
+      return transactionAttempts
     },
-    collection(collPath) {
-      return {
-        path: collPath,
-        doc(id) {
-          const autoId = id || `auto_${Math.random().toString(36).slice(2)}`
-          return getDocRef(`${collPath}/${autoId}`)
-        },
-      }
-    },
+    doc: docRef,
+    collection: collectionRef,
     async runTransaction(updateFunction) {
-      const transactionStore = new Map()
-      for (const [p, d] of store.entries()) {
-        transactionStore.set(p, JSON.parse(JSON.stringify(d)))
-      }
+      for (;;) {
+        transactionAttempts += 1
+        const operations = []
+        const writes = []
+        let hasWritten = false
 
-      const writtenDocs = new Map()
+        const transaction = {
+          async get(refOrPath) {
+            const path = typeof refOrPath === 'string' ? refOrPath : refOrPath.path
+            if (hasWritten) {
+              throw new Error(
+                'Firestore transactions require all reads to be executed before all writes.',
+              )
+            }
+            operations.push({ kind: 'read', path })
+            const data = store.get(path)
+            return {
+              exists: data !== undefined,
+              id: path.split('/').pop(),
+              ref: docRef(path),
+              data: () => clone(data),
+            }
+          },
+          set(refOrPath, data) {
+            const path = typeof refOrPath === 'string' ? refOrPath : refOrPath.path
+            hasWritten = true
+            operations.push({ kind: 'set', path })
+            writes.push({ kind: 'set', path, data: clone(data) })
+          },
+          update(refOrPath, data) {
+            const path = typeof refOrPath === 'string' ? refOrPath : refOrPath.path
+            hasWritten = true
+            operations.push({ kind: 'update', path })
+            writes.push({ kind: 'update', path, data: clone(data) })
+          },
+        }
 
-      const transaction = {
-        async get(docRef) {
-          const path = typeof docRef === 'string' ? docRef : docRef.path
-          const data = transactionStore.get(path)
-          return {
-            exists: data !== undefined,
-            data: () => (data !== undefined ? JSON.parse(JSON.stringify(data)) : undefined),
-            id: path.split('/').pop(),
+        const result = await updateFunction(transaction)
+        attemptOperations.push(operations)
+
+        if (transactionAttempts <= abortAttempts) {
+          // Buffered writes are discarded, mirroring an aborted transaction.
+          continue
+        }
+
+        for (const write of writes) {
+          if (write.kind === 'set') {
+            store.set(write.path, write.data)
+            continue
           }
-        },
-        set(docRef, data) {
-          const path = typeof docRef === 'string' ? docRef : docRef.path
-          writtenDocs.set(path, JSON.parse(JSON.stringify(data)))
-          transactionStore.set(path, JSON.parse(JSON.stringify(data)))
-        },
-        update(docRef, data) {
-          const path = typeof docRef === 'string' ? docRef : docRef.path
-          const existing = transactionStore.get(path) || {}
-          const merged = { ...existing, ...data }
-          writtenDocs.set(path, JSON.parse(JSON.stringify(merged)))
-          transactionStore.set(path, JSON.parse(JSON.stringify(merged)))
-        },
+          if (!store.has(write.path)) {
+            throw new Error(`NOT_FOUND: no document to update at ${write.path}`)
+          }
+          store.set(write.path, { ...store.get(write.path), ...write.data })
+        }
+        return result
       }
-
-      const result = await updateFunction(transaction)
-
-      // Commit changes to main store
-      for (const [p, d] of transactionStore.entries()) {
-        store.set(p, d)
-      }
-
-      return result
     },
   }
 }
 
+function tokenFactory() {
+  const calls = []
+  return {
+    calls,
+    createCustomToken: async (uid, claims) => {
+      calls.push({ uid, claims })
+      return `token_for_${uid}_${claims.studentId}`
+    },
+  }
+}
 
+function classroomFixture(classroomId, teacherUid, code) {
+  return {
+    [`classroomLoginCodes/${code}`]: { status: 'active', classroomId },
+    [`classrooms/${classroomId}`]: {
+      ownerUid: teacherUid,
+      studentLoginCode: formatClassroomCode(code),
+    },
+    [`teachers/${teacherUid}`]: {
+      uid: teacherUid,
+      classroomId,
+      status: 'active',
+    },
+  }
+}
+
+function credentialFixture(classroomId, loginId, studentId, overrides = {}) {
+  return {
+    [`classrooms/${classroomId}/studentCredentials/${loginId}`]: {
+      loginId,
+      classroomId,
+      studentId,
+      authUid: deriveDeterministicStudentAuthUid(classroomId, studentId),
+      schemaVersion: 1,
+      active: true,
+      pinHash: '$2b$10$storedhash',
+      failedAttempts: 0,
+      lockedUntil: null,
+      ...overrides,
+    },
+  }
+}
+
+function logEntries(firestore, prefix) {
+  return Array.from(firestore.store.entries())
+    .filter(([path]) => path.startsWith(prefix))
+    .map(([path, data]) => ({ path, data }))
+}
 
 test('successful student verification: exact claims, authUid, and token output', async () => {
   const authUidA = deriveDeterministicStudentAuthUid('classA', 'stu123')
   const initialDocs = {
-    'classroomLoginCodes/23456789': { status: 'active', classroomId: 'classA' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
-    'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA/studentCredentials/alex-smith': {
-      active: true,
-      classroomId: 'classA',
-      studentId: 'stu123',
-      authUid: authUidA,
-      schemaVersion: 1,
-      pinHash: '$2b$10$validhash',
-    },
+    ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    ...credentialFixture('classA', 'alex-smith', 'stu123'),
   }
 
   const firestore = createMockFirestore(initialDocs)
-  const mockCreateToken = async (uid, claims) => `token_for_${uid}_${claims.studentId}`
+  const factory = tokenFactory()
 
   const result = await verifyStudentCredentialV2(
     { classroomCode: '2345-6789', loginId: 'alex-smith', pin: '1234' },
     {
       firestore,
       verifyPin: async () => true,
-      createCustomToken: mockCreateToken,
+      createCustomToken: factory.createCustomToken,
     },
   )
 
@@ -116,6 +199,7 @@ test('successful student verification: exact claims, authUid, and token output',
     studentId: 'stu123',
   })
   assert.equal(result.token, `token_for_${authUidA}_stu123`)
+  assert.equal(factory.calls.length, 1)
 
   // Verify callable adapter returns only { token }
   const callableResult = await studentPinLoginV2CallableHandler(
@@ -124,7 +208,7 @@ test('successful student verification: exact claims, authUid, and token output',
     {
       firestore,
       verifyPin: async () => true,
-      createCustomToken: mockCreateToken,
+      createCustomToken: factory.createCustomToken,
     },
   )
 
@@ -136,35 +220,23 @@ test('same login ID succeeds independently in A and B only with matching code', 
   const authUidB = deriveDeterministicStudentAuthUid('classB', 'stu_b')
 
   const initialDocs = {
-    'classroomLoginCodes/23456789': { status: 'active', classroomId: 'classA' },
-    'classroomLoginCodes/3456789A': { status: 'active', classroomId: 'classB' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
-    'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classB': { ownerUid: 'teacherB' },
-    'teachers/teacherB': { uid: 'teacherB', classroomId: 'classB', status: 'active' },
-    'classrooms/classA/studentCredentials/alex-smith': {
-      active: true,
-      classroomId: 'classA',
-      studentId: 'stu_a',
-      authUid: authUidA,
-      schemaVersion: 1,
-      pinHash: 'hashA',
-    },
-    'classrooms/classB/studentCredentials/alex-smith': {
-      active: true,
-      classroomId: 'classB',
-      studentId: 'stu_b',
-      authUid: authUidB,
-      schemaVersion: 1,
-      pinHash: 'hashB',
-    },
+    ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    ...classroomFixture('classB', 'teacherB', CLASS_B_CODE),
+    ...credentialFixture('classA', 'alex-smith', 'stu_a', { pinHash: 'hashA' }),
+    ...credentialFixture('classB', 'alex-smith', 'stu_b', { pinHash: 'hashB' }),
   }
 
   const firestore = createMockFirestore(initialDocs)
+  const factory = tokenFactory()
+  const dependencies = {
+    firestore,
+    verifyPin: async () => true,
+    createCustomToken: factory.createCustomToken,
+  }
 
   const resA = await verifyStudentCredentialV2(
     { classroomCode: '2345-6789', loginId: 'alex-smith', pin: '1234' },
-    { firestore, verifyPin: async () => true },
+    dependencies,
   )
   assert.equal(resA.claims.classroomId, 'classA')
   assert.equal(resA.claims.studentId, 'stu_a')
@@ -172,12 +244,18 @@ test('same login ID succeeds independently in A and B only with matching code', 
 
   const resB = await verifyStudentCredentialV2(
     { classroomCode: '3456-789A', loginId: 'alex-smith', pin: '1234' },
-    { firestore, verifyPin: async () => true },
+    dependencies,
   )
   assert.equal(resB.claims.classroomId, 'classB')
   assert.equal(resB.claims.studentId, 'stu_b')
   assert.equal(resB.authUid, authUidB)
   assert.notEqual(resA.authUid, resB.authUid)
+
+  // Cross-classroom writes never happen: each attempt logged only in its own
+  // scoped collection.
+  assert.equal(logEntries(firestore, 'studentAuthLogs/classA/logs/').length, 1)
+  assert.equal(logEntries(firestore, 'studentAuthLogs/classB/logs/').length, 1)
+  assert.equal(logEntries(firestore, 'studentAuthUnresolvedLogs/').length, 0)
 })
 
 test('same studentId in A and B creates distinct auth UIDs', () => {
@@ -186,36 +264,123 @@ test('same studentId in A and B creates distinct auth UIDs', () => {
   assert.notEqual(uidA, uidB)
 })
 
-test('error indistinguishability: all failure modes return generic unauthenticated error', async () => {
-  const authUid = deriveDeterministicStudentAuthUid('classA', 'stu1')
-  const baseDocs = {
-    'classroomLoginCodes/23456789': { status: 'active', classroomId: 'classA' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
-    'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA/studentCredentials/alex-smith': {
-      active: true,
-      classroomId: 'classA',
-      studentId: 'stu1',
-      authUid,
-      schemaVersion: 1,
-      pinHash: 'hash',
+test('every transaction read precedes the first transaction write in all paths', async () => {
+  const initialDocs = {
+    ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    ...credentialFixture('classA', 'alex-smith', 'stu1'),
+  }
+
+  const requests = [
+    { desc: 'success', req: { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: '1234' }, verify: async () => true },
+    { desc: 'wrong pin', req: { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: '0000' }, verify: async () => false },
+    { desc: 'unknown login', req: { classroomCode: CLASS_A_CODE, loginId: 'nobody', pin: '1234' }, verify: async () => false },
+    { desc: 'unknown code', req: { classroomCode: 'FFFFFFFF', loginId: 'alex-smith', pin: '1234' }, verify: async () => false },
+    { desc: 'malformed code', req: { classroomCode: 'nope', loginId: 'alex-smith', pin: '1234' }, verify: async () => false },
+    { desc: 'malformed shape', req: { classroomCode: CLASS_A_CODE, loginId: 'alex-smith' }, verify: async () => false },
+  ]
+
+  for (const { desc, req, verify } of requests) {
+    const firestore = createMockFirestore(initialDocs)
+    const factory = tokenFactory()
+    try {
+      await verifyStudentCredentialV2(req, {
+        firestore,
+        verifyPin: verify,
+        createCustomToken: factory.createCustomToken,
+      })
+    } catch (error) {
+      assert.ok(
+        error instanceof StudentVerifierError,
+        `${desc}: unexpected error ${error?.message}`,
+      )
+    }
+
+    for (const operations of firestore.attemptOperations) {
+      const firstWriteIndex = operations.findIndex(op => op.kind !== 'read')
+      const lastReadIndex = operations.reduce(
+        (last, op, index) => (op.kind === 'read' ? index : last),
+        -1,
+      )
+      if (firstWriteIndex !== -1) {
+        assert.ok(
+          lastReadIndex < firstWriteIndex,
+          `${desc}: read at ${lastReadIndex} follows first write at ${firstWriteIndex}`,
+        )
+      }
+    }
+  }
+})
+
+test('custom token is created once after commit, never inside a retried transaction', async () => {
+  const initialDocs = {
+    ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    ...credentialFixture('classA', 'alex-smith', 'stu1'),
+  }
+
+  // Two aborted attempts before the committing one.
+  const firestore = createMockFirestore(initialDocs, { abortAttempts: 2 })
+  const factory = tokenFactory()
+
+  const result = await verifyStudentCredentialV2(
+    { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: '1234' },
+    {
+      firestore,
+      verifyPin: async () => true,
+      createCustomToken: factory.createCustomToken,
     },
+  )
+
+  assert.equal(firestore.transactionAttempts, 3)
+  assert.equal(factory.calls.length, 1)
+  assert.equal(result.token, `token_for_${result.authUid}_stu1`)
+
+  // Only the committed attempt's writes are visible.
+  assert.equal(logEntries(firestore, 'studentAuthLogs/classA/logs/').length, 1)
+
+  // A failed login creates no token at all.
+  const failing = createMockFirestore(initialDocs)
+  const failingFactory = tokenFactory()
+  await assert.rejects(
+    () =>
+      verifyStudentCredentialV2(
+        { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: '0000' },
+        {
+          firestore: failing,
+          verifyPin: async () => false,
+          createCustomToken: failingFactory.createCustomToken,
+        },
+      ),
+    StudentVerifierError,
+  )
+  assert.equal(failingFactory.calls.length, 0)
+})
+
+test('error indistinguishability: all failure modes return generic unauthenticated error', async () => {
+  const baseDocs = {
+    ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    ...credentialFixture('classA', 'alex-smith', 'stu1', { pinHash: 'hash' }),
   }
 
   const failureRequests = [
     { desc: 'malformed code', req: { classroomCode: 'bad', loginId: 'alex-smith', pin: '1234' } },
     { desc: 'unknown code', req: { classroomCode: 'FFFFFFFF', loginId: 'alex-smith', pin: '1234' } },
-    { desc: 'missing login', req: { classroomCode: '23456789', loginId: 'nonexistent', pin: '1234' } },
-    { desc: 'wrong pin', req: { classroomCode: '23456789', loginId: 'alex-smith', pin: '0000' }, customVerify: async () => false },
+    { desc: 'missing login', req: { classroomCode: CLASS_A_CODE, loginId: 'nonexistent', pin: '1234' } },
+    { desc: 'malformed login', req: { classroomCode: CLASS_A_CODE, loginId: '--bad--', pin: '1234' } },
+    { desc: 'unknown field', req: { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: '1234', extra: 'x' } },
+    { desc: 'missing pin', req: { classroomCode: CLASS_A_CODE, loginId: 'alex-smith' } },
+    { desc: 'non-object request', req: 'not-an-object' },
+    { desc: 'wrong pin', req: { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: '0000' }, customVerify: async () => false },
   ]
 
   for (const { desc, req, customVerify } of failureRequests) {
     const firestore = createMockFirestore(baseDocs)
+    const factory = tokenFactory()
     await assert.rejects(
       async () =>
         verifyStudentCredentialV2(req, {
           firestore,
           verifyPin: customVerify || (async () => false),
+          createCustomToken: factory.createCustomToken,
         }),
       (err) => {
         assert.ok(err instanceof StudentVerifierError, `Failed on ${desc}`)
@@ -228,56 +393,73 @@ test('error indistinguishability: all failure modes return generic unauthenticat
   }
 })
 
-test('dummy hash timing defense is exercised on missing credential or unresolved code', async () => {
-  const firestore = createMockFirestore()
-
-  let dummyCallCount = 0
-  const verifyPin = async (pin, hash) => {
-    if (hash === '$2b$10$Ds5wfuAE9LT3Xe4vdygSMu1VUq0m8830nB5uQauQ0105kP4WDUR.a') {
-      dummyCallCount += 1
-    }
-    return false
+test('dummy hash timing defense runs exactly once per attempt', async () => {
+  const initialDocs = {
+    ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    ...credentialFixture('classA', 'alex-smith', 'stu1', { pinHash: 'storedhash' }),
   }
 
-  await assert.rejects(
-    () =>
-      verifyStudentCredentialV2(
-        { classroomCode: '23456789', loginId: 'missing', pin: '1234' },
-        { firestore, verifyPin },
-      ),
-    StudentVerifierError,
-  )
+  const cases = [
+    { desc: 'unresolved code', req: { classroomCode: CLASS_A_CODE, loginId: 'missing', pin: '1234' }, matches: false, expectDummy: 1, expectStored: 0 },
+    { desc: 'malformed request', req: { classroomCode: 'bad', loginId: 'alex', pin: '1234' }, matches: false, expectDummy: 1, expectStored: 0 },
+    { desc: 'wrong pin', req: { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: '0000' }, matches: false, expectDummy: 0, expectStored: 1 },
+  ]
 
-  assert.equal(dummyCallCount, 1)
+  for (const { desc, req, matches, expectDummy, expectStored } of cases) {
+    const firestore = createMockFirestore(initialDocs)
+    const factory = tokenFactory()
+    let dummyCalls = 0
+    let storedCalls = 0
+    const verifyPin = async (pin, hash) => {
+      if (hash === DUMMY_PIN_HASH) {
+        dummyCalls += 1
+      } else {
+        storedCalls += 1
+      }
+      return matches
+    }
+
+    await assert.rejects(
+      () =>
+        verifyStudentCredentialV2(req, {
+          firestore,
+          verifyPin,
+          createCustomToken: factory.createCustomToken,
+        }),
+      StudentVerifierError,
+      `Failed on ${desc}`,
+    )
+
+    assert.equal(dummyCalls, expectDummy, `${desc}: dummy compare count`)
+    assert.equal(storedCalls, expectStored, `${desc}: stored compare count`)
+  }
 })
 
 test('five-attempt credential lock boundary and expired lock reset', async () => {
-  const authUid = deriveDeterministicStudentAuthUid('classA', 'stu1')
   const initialDocs = {
-    'classroomLoginCodes/23456789': { status: 'active', classroomId: 'classA' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
-    'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA/studentCredentials/alex-smith': {
-      active: true,
-      classroomId: 'classA',
-      studentId: 'stu1',
-      authUid,
-      schemaVersion: 1,
+    ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    ...credentialFixture('classA', 'alex-smith', 'stu1', {
       pinHash: 'hash',
       failedAttempts: 4,
       lockedUntil: null,
-    },
+    }),
   }
 
   const firestore = createMockFirestore(initialDocs)
+  const factory = tokenFactory()
   let currentTime = 1000000
 
   // 5th failed attempt -> locks credential
   await assert.rejects(
     () =>
       verifyStudentCredentialV2(
-        { classroomCode: '23456789', loginId: 'alex-smith', pin: 'wrong' },
-        { firestore, verifyPin: async () => false, now: () => currentTime },
+        { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'wrong' },
+        {
+          firestore,
+          verifyPin: async () => false,
+          now: () => currentTime,
+          createCustomToken: factory.createCustomToken,
+        },
       ),
     StudentVerifierError,
   )
@@ -286,21 +468,33 @@ test('five-attempt credential lock boundary and expired lock reset', async () =>
   assert.equal(lockedCred.failedAttempts, 5)
   assert.equal(lockedCred.lockedUntil, currentTime + 5 * 60 * 1000)
 
-  // 6th attempt while locked -> rejects as locked
+  // 6th attempt while locked -> rejects as locked without touching the counter
   await assert.rejects(
     () =>
       verifyStudentCredentialV2(
-        { classroomCode: '23456789', loginId: 'alex-smith', pin: 'wrong' },
-        { firestore, verifyPin: async () => false, now: () => currentTime + 1000 },
+        { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'wrong' },
+        {
+          firestore,
+          verifyPin: async () => false,
+          now: () => currentTime + 1000,
+          createCustomToken: factory.createCustomToken,
+        },
       ),
     StudentVerifierError,
   )
+  const stillLocked = firestore.store.get('classrooms/classA/studentCredentials/alex-smith')
+  assert.equal(stillLocked.failedAttempts, 5)
 
   // Fast forward past lockout duration (5 mins) -> expired lock allows attempt
   currentTime += 6 * 60 * 1000
   const successRes = await verifyStudentCredentialV2(
-    { classroomCode: '23456789', loginId: 'alex-smith', pin: 'correct' },
-    { firestore, verifyPin: async () => true, now: () => currentTime },
+    { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'correct' },
+    {
+      firestore,
+      verifyPin: async () => true,
+      now: () => currentTime,
+      createCustomToken: factory.createCustomToken,
+    },
   )
   assert.ok(successRes)
 
@@ -310,177 +504,441 @@ test('five-attempt credential lock boundary and expired lock reset', async () =>
 })
 
 test('ten-attempt throttle boundary and window reset', async () => {
-  const authUid = deriveDeterministicStudentAuthUid('classA', 'stu1')
   const initialDocs = {
-    'classroomLoginCodes/23456789': { status: 'active', classroomId: 'classA' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
-    'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA/studentCredentials/alex-smith': {
-      active: true,
-      classroomId: 'classA',
-      studentId: 'stu1',
-      authUid,
-      schemaVersion: 1,
-      pinHash: 'hash',
-    },
+    ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    ...credentialFixture('classA', 'alex-smith', 'stu1', { pinHash: 'hash' }),
   }
 
   const firestore = createMockFirestore(initialDocs)
+  const factory = tokenFactory()
   let currentTime = 1000000
 
-  // Execute 9 failed attempts
-  for (let i = 0; i < 9; i += 1) {
+  // Ten failed attempts fill the rolling window.
+  for (let i = 0; i < 10; i += 1) {
     await assert.rejects(
       () =>
         verifyStudentCredentialV2(
-          { classroomCode: '23456789', loginId: 'alex-smith', pin: 'wrong' },
-          { firestore, verifyPin: async () => false, now: () => currentTime },
+          { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'wrong' },
+          {
+            firestore,
+            verifyPin: async () => false,
+            now: () => currentTime,
+            createCustomToken: factory.createCustomToken,
+          },
         ),
       StudentVerifierError,
     )
   }
 
-  // 10th attempt succeeds throttle check (reaches 10 entries)
+  const throttleDocs = logEntries(firestore, 'studentLoginThrottle/')
+  assert.equal(throttleDocs.length, 1)
+  assert.equal(throttleDocs[0].data.attempts.length, 10)
+
+  // 11th attempt within 5 minutes -> rejected at the throttle, even with the
+  // correct PIN, and the bucket does not grow further.
   await assert.rejects(
     () =>
       verifyStudentCredentialV2(
-        { classroomCode: '23456789', loginId: 'alex-smith', pin: 'wrong' },
-        { firestore, verifyPin: async () => false, now: () => currentTime },
+        { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'correct' },
+        {
+          firestore,
+          verifyPin: async () => true,
+          now: () => currentTime + 1000,
+          createCustomToken: factory.createCustomToken,
+        },
       ),
     StudentVerifierError,
   )
-
-  // 11th attempt within 5 minutes -> rejected at throttle check
-  await assert.rejects(
-    () =>
-      verifyStudentCredentialV2(
-        { classroomCode: '23456789', loginId: 'alex-smith', pin: 'correct' },
-        { firestore, verifyPin: async () => true, now: () => currentTime + 1000 },
-      ),
-    StudentVerifierError,
+  assert.equal(factory.calls.length, 0)
+  assert.equal(
+    logEntries(firestore, 'studentLoginThrottle/')[0].data.attempts.length,
+    10,
   )
 
   // Fast forward past 5-minute throttle window -> reset allows successful login
   currentTime += 6 * 60 * 1000
   const successRes = await verifyStudentCredentialV2(
-    { classroomCode: '23456789', loginId: 'alex-smith', pin: 'correct' },
-    { firestore, verifyPin: async () => true, now: () => currentTime },
+    { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'correct' },
+    {
+      firestore,
+      verifyPin: async () => true,
+      now: () => currentTime,
+      createCustomToken: factory.createCustomToken,
+    },
   )
   assert.ok(successRes)
+  assert.equal(
+    logEntries(firestore, 'studentLoginThrottle/')[0].data.attempts.length,
+    1,
+  )
 })
 
-test('resolved versus unresolved log paths and redacted bodies', async () => {
-  const authUid = deriveDeterministicStudentAuthUid('classA', 'stu1')
-  const initialDocs = {
-    'classroomLoginCodes/23456789': { status: 'active', classroomId: 'classA' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
-    'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA/studentCredentials/alex-smith': {
-      active: true,
-      classroomId: 'classA',
-      studentId: 'stu1',
-      authUid,
-      schemaVersion: 1,
-      pinHash: 'hash',
+test('repeated malformed and unknown-code attempts reach the digest throttle', async () => {
+  const scenarios = [
+    {
+      desc: 'malformed classroom code',
+      req: { classroomCode: 'not-a-code', loginId: 'alex-smith', pin: '1234' },
     },
+    {
+      desc: 'malformed request shape',
+      req: { classroomCode: CLASS_A_CODE, loginId: 'alex-smith' },
+    },
+    {
+      desc: 'unknown but well-formed code',
+      req: { classroomCode: 'FFFFFFFF', loginId: 'alex-smith', pin: '1234' },
+    },
+  ]
+
+  for (const { desc, req } of scenarios) {
+    const firestore = createMockFirestore(
+      classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    )
+    const factory = tokenFactory()
+    const dependencies = {
+      firestore,
+      verifyPin: async () => false,
+      now: () => 5000,
+      createCustomToken: factory.createCustomToken,
+    }
+
+    for (let i = 0; i < 10; i += 1) {
+      await assert.rejects(
+        () => verifyStudentCredentialV2(req, dependencies),
+        StudentVerifierError,
+        `${desc}: attempt ${i + 1}`,
+      )
+    }
+
+    const throttleDocs = logEntries(firestore, 'studentLoginThrottle/')
+    assert.equal(throttleDocs.length, 1, `${desc}: one throttle bucket`)
+    assert.equal(throttleDocs[0].data.attempts.length, 10, `${desc}: ten counted`)
+    assert.match(throttleDocs[0].path, /^studentLoginThrottle\/[a-f0-9]{64}$/)
+
+    // The 11th attempt is rejected by the throttle itself.
+    await assert.rejects(
+      () => verifyStudentCredentialV2(req, dependencies),
+      StudentVerifierError,
+    )
+
+    const throttledLogs = logEntries(firestore, 'studentAuthUnresolvedLogs/')
+      .filter(entry => entry.data.outcome === STUDENT_LOGIN_OUTCOMES.THROTTLED)
+    assert.equal(throttledLogs.length, 1, `${desc}: throttled outcome logged`)
+  }
+})
+
+test('throttled attempt for a known classroom uses the scoped log path', async () => {
+  const initialDocs = {
+    ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    ...credentialFixture('classA', 'alex-smith', 'stu1', { pinHash: 'hash' }),
   }
 
   const firestore = createMockFirestore(initialDocs)
+  const factory = tokenFactory()
+  const dependencies = {
+    firestore,
+    verifyPin: async () => false,
+    now: () => 7000,
+    createCustomToken: factory.createCustomToken,
+  }
+  const request = { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'wrong' }
+
+  for (let i = 0; i < 11; i += 1) {
+    await assert.rejects(
+      () => verifyStudentCredentialV2(request, dependencies),
+      StudentVerifierError,
+    )
+  }
+
+  const scopedLogs = logEntries(firestore, 'studentAuthLogs/classA/logs/')
+  const throttled = scopedLogs.filter(
+    entry => entry.data.outcome === STUDENT_LOGIN_OUTCOMES.THROTTLED,
+  )
+  assert.equal(throttled.length, 1)
+  assert.equal(throttled[0].data.studentId, undefined)
+  assert.equal(logEntries(firestore, 'studentAuthUnresolvedLogs/').length, 0)
+})
+
+test('resolved versus unresolved log paths and redacted bodies', async () => {
+  const initialDocs = {
+    ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    ...credentialFixture('classA', 'alex-smith', 'stu1', { pinHash: 'hash' }),
+  }
+
+  const firestore = createMockFirestore(initialDocs)
+  const factory = tokenFactory()
 
   // Unresolved code log
   await assert.rejects(
     () =>
       verifyStudentCredentialV2(
-        { classroomCode: 'FFFFFFFF', loginId: 'alex-smith', pin: '1234' },
-        { firestore, verifyPin: async () => false },
+        { classroomCode: 'FFFFFFFF', loginId: 'alex-smith', pin: 'secret-pin' },
+        { firestore, verifyPin: async () => false, createCustomToken: factory.createCustomToken },
       ),
     StudentVerifierError,
   )
 
-  // Check unresolved logs store
-  const unresolvedLogs = Array.from(firestore.store.entries()).filter(([k]) =>
-    k.startsWith('studentAuthUnresolvedLogs/'),
-  )
-  assert.ok(unresolvedLogs.length > 0)
-  const logData = unresolvedLogs[0][1]
-  assert.equal(logData.rawCode, undefined)
-  assert.equal(logData.pin, undefined)
-  assert.equal(logData.loginId, undefined)
+  const unresolvedLogs = logEntries(firestore, 'studentAuthUnresolvedLogs/')
+  assert.equal(unresolvedLogs.length, 1)
+  const logData = unresolvedLogs[0].data
+  assert.equal(logData.studentId, undefined)
   assert.ok(typeof logData.identifierDigest === 'string')
 
   // Resolved log
   await verifyStudentCredentialV2(
-    { classroomCode: '23456789', loginId: 'alex-smith', pin: '1234' },
-    { firestore, verifyPin: async () => true },
+    { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'secret-pin' },
+    { firestore, verifyPin: async () => true, createCustomToken: factory.createCustomToken },
   )
 
-  const resolvedLogs = Array.from(firestore.store.entries()).filter(([k]) =>
-    k.startsWith('studentAuthLogs/classA/logs/'),
-  )
-  assert.ok(resolvedLogs.length > 0)
-  const resLogData = resolvedLogs[0][1]
-  assert.equal(resLogData.studentId, 'stu1')
-  assert.equal(resLogData.success, true)
-  assert.equal(resLogData.pin, undefined)
-  assert.equal(resLogData.pinHash, undefined)
+  const resolvedLogs = logEntries(firestore, 'studentAuthLogs/classA/logs/')
+  assert.equal(resolvedLogs.length, 1)
+  assert.equal(resolvedLogs[0].data.studentId, 'stu1')
+  assert.equal(resolvedLogs[0].data.success, true)
+
+  // No raw identifier or secret in any throttle/log document ID or body.
+  const auditedPrefixes = [
+    'studentAuthLogs/',
+    'studentAuthUnresolvedLogs/',
+    'studentLoginThrottle/',
+  ]
+  const forbidden = ['secret-pin', 'alex-smith', 'FFFFFFFF', CLASS_A_CODE, '2345-6789', 'hash']
+  for (const prefix of auditedPrefixes) {
+    for (const { path, data } of logEntries(firestore, prefix)) {
+      const serialized = `${path} ${JSON.stringify(data)}`
+      for (const secret of forbidden) {
+        assert.ok(
+          !serialized.includes(secret),
+          `${prefix} entry leaked ${secret}: ${serialized}`,
+        )
+      }
+    }
+  }
 })
 
-test('forged credential data, schemaVersion, or authUid fails validation', async () => {
-  const authUid = deriveDeterministicStudentAuthUid('classA', 'stu1')
+test('forged credential identity fails closed for every mismatched field', async () => {
+  const validAuthUid = deriveDeterministicStudentAuthUid('classA', 'stu1')
 
   const forgedCases = [
-    { desc: 'forged classroomId', cred: { active: true, classroomId: 'classB', studentId: 'stu1', authUid, schemaVersion: 1 } },
-    { desc: 'forged authUid', cred: { active: true, classroomId: 'classA', studentId: 'stu1', authUid: 'forged_uid', schemaVersion: 1 } },
-    { desc: 'unsupported schemaVersion', cred: { active: true, classroomId: 'classA', studentId: 'stu1', authUid, schemaVersion: 99 } },
-    { desc: 'inactive credential', cred: { active: false, classroomId: 'classA', studentId: 'stu1', authUid, schemaVersion: 1 } },
+    { desc: 'forged classroomId', overrides: { classroomId: 'classB' } },
+    { desc: 'forged authUid', overrides: { authUid: 'forged_uid' } },
+    { desc: 'missing authUid', overrides: { authUid: undefined } },
+    { desc: 'authUid of another student', overrides: { authUid: deriveDeterministicStudentAuthUid('classA', 'stu2') } },
+    { desc: 'unsupported schemaVersion', overrides: { schemaVersion: 99 } },
+    { desc: 'missing schemaVersion', overrides: { schemaVersion: undefined } },
+    { desc: 'inactive credential', overrides: { active: false } },
+    { desc: 'missing studentId', overrides: { studentId: undefined, authUid: validAuthUid } },
+    { desc: 'malformed studentId', overrides: { studentId: 'bad/student' } },
+    { desc: 'forged body loginId', overrides: { loginId: 'someone-else' } },
+    { desc: 'missing pinHash', overrides: { pinHash: undefined } },
+    { desc: 'non-string pinHash', overrides: { pinHash: 12345 } },
+    { desc: 'empty pinHash', overrides: { pinHash: '' } },
   ]
 
-  for (const { desc, cred } of forgedCases) {
+  for (const { desc, overrides } of forgedCases) {
+    const credentials = credentialFixture('classA', 'alex-smith', 'stu1')
+    const credPath = 'classrooms/classA/studentCredentials/alex-smith'
+    credentials[credPath] = { ...credentials[credPath], ...overrides }
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined) {
+        delete credentials[credPath][key]
+      }
+    }
+
     const firestore = createMockFirestore({
-      'classroomLoginCodes/23456789': { status: 'active', classroomId: 'classA' },
-      'classrooms/classA': { ownerUid: 'teacherA' },
-      'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-      'classrooms/classA/studentCredentials/alex-smith': cred,
+      ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+      ...credentials,
     })
+    const factory = tokenFactory()
 
     await assert.rejects(
       () =>
         verifyStudentCredentialV2(
-          { classroomCode: '23456789', loginId: 'alex-smith', pin: '1234' },
-          { firestore, verifyPin: async () => true },
+          { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: '1234' },
+          {
+            firestore,
+            // A permissive verifier proves the identity checks, not the PIN
+            // comparison, are what reject these credentials.
+            verifyPin: async () => true,
+            createCustomToken: factory.createCustomToken,
+          },
         ),
       (err) => err instanceof StudentVerifierError,
       `Failed on ${desc}`,
     )
+    assert.equal(factory.calls.length, 0, `${desc}: token must not be created`)
+  }
+})
+
+test('forged or inactive classroom code index cannot resolve a tenant', async () => {
+  const validDocs = {
+    ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    ...classroomFixture('classB', 'teacherB', CLASS_B_CODE),
+    ...credentialFixture('classA', 'alex-smith', 'stu1'),
+  }
+
+  const cases = [
+    {
+      desc: 'code index pointing at a classroom that names another code',
+      docs: {
+        ...validDocs,
+        [`classroomLoginCodes/${CLASS_A_CODE}`]: { status: 'active', classroomId: 'classB' },
+      },
+    },
+    {
+      desc: 'revoked code index',
+      docs: {
+        ...validDocs,
+        [`classroomLoginCodes/${CLASS_A_CODE}`]: { status: 'revoked', classroomId: 'classA' },
+      },
+    },
+    {
+      desc: 'classroom root missing its login code',
+      docs: {
+        ...validDocs,
+        'classrooms/classA': { ownerUid: 'teacherA' },
+      },
+    },
+    {
+      desc: 'classroom root naming a different code',
+      docs: {
+        ...validDocs,
+        'classrooms/classA': {
+          ownerUid: 'teacherA',
+          studentLoginCode: formatClassroomCode(CLASS_B_CODE),
+        },
+      },
+    },
+    {
+      desc: 'malformed indexed classroom ID',
+      docs: {
+        ...validDocs,
+        [`classroomLoginCodes/${CLASS_A_CODE}`]: { status: 'active', classroomId: 'bad/class' },
+      },
+    },
+  ]
+
+  for (const { desc, docs } of cases) {
+    const firestore = createMockFirestore(docs)
+    const factory = tokenFactory()
+    await assert.rejects(
+      () =>
+        verifyStudentCredentialV2(
+          { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: '1234' },
+          { firestore, verifyPin: async () => true, createCustomToken: factory.createCustomToken },
+        ),
+      (err) => err instanceof StudentVerifierError,
+      `Failed on ${desc}`,
+    )
+
+    // A code that never resolved a valid tenant must not write into any
+    // classroom's scoped log space.
+    assert.equal(
+      logEntries(firestore, 'studentAuthLogs/').length,
+      0,
+      `${desc}: wrote a scoped log for an unresolved code`,
+    )
+    assert.equal(logEntries(firestore, 'studentAuthUnresolvedLogs/').length, 1, desc)
   }
 })
 
 test('disabled or reciprocal mismatch teacher foundation rejected', async () => {
-  const authUid = deriveDeterministicStudentAuthUid('classA', 'stu1')
+  const cases = [
+    {
+      desc: 'disabled teacher',
+      teacher: { uid: 'teacherA', classroomId: 'classA', status: 'disabled' },
+    },
+    {
+      desc: 'missing status',
+      teacher: { uid: 'teacherA', classroomId: 'classA' },
+    },
+    {
+      desc: 'teacher classroom mismatch',
+      teacher: { uid: 'teacherA', classroomId: 'classB', status: 'active' },
+    },
+    {
+      desc: 'teacher uid mismatch',
+      teacher: { uid: 'teacherZ', classroomId: 'classA', status: 'active' },
+    },
+  ]
 
-  // Teacher status disabled
-  const firestoreDisabled = createMockFirestore({
-    'classroomLoginCodes/23456789': { status: 'active', classroomId: 'classA' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
-    'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'disabled' },
-    'classrooms/classA/studentCredentials/alex-smith': { active: true, classroomId: 'classA', studentId: 'stu1', authUid, schemaVersion: 1 },
+  for (const { desc, teacher } of cases) {
+    const firestore = createMockFirestore({
+      ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+      'teachers/teacherA': teacher,
+      ...credentialFixture('classA', 'alex-smith', 'stu1'),
+    })
+    const factory = tokenFactory()
+
+    await assert.rejects(
+      () =>
+        verifyStudentCredentialV2(
+          { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: '1234' },
+          { firestore, verifyPin: async () => true, createCustomToken: factory.createCustomToken },
+        ),
+      StudentVerifierError,
+      `Failed on ${desc}`,
+    )
+    assert.equal(factory.calls.length, 0, desc)
+  }
+})
+
+test('callable adapter raises generic HttpsError codes only', async () => {
+  const firestore = createMockFirestore({
+    ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+    ...credentialFixture('classA', 'alex-smith', 'stu1'),
   })
+  const factory = tokenFactory()
 
   await assert.rejects(
-    () => verifyStudentCredentialV2({ classroomCode: '23456789', loginId: 'alex-smith', pin: '1234' }, { firestore: firestoreDisabled, verifyPin: async () => true }),
-    StudentVerifierError,
+    () =>
+      studentPinLoginV2CallableHandler(
+        { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'wrong' },
+        {},
+        { firestore, verifyPin: async () => false, createCustomToken: factory.createCustomToken },
+      ),
+    (error) => {
+      assert.equal(error.code, 'unauthenticated')
+      assert.equal(error.message, 'Invalid student credentials.')
+      assert.equal(error.httpErrorCode?.status, 401)
+      assert.equal(error.details, undefined)
+      return true
+    },
   )
 
-  // Reciprocal classroom ID mismatch
-  const firestoreMismatch = createMockFirestore({
-    'classroomLoginCodes/23456789': { status: 'active', classroomId: 'classA' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
-    'teachers/teacherA': { uid: 'teacherA', classroomId: 'classB', status: 'active' },
-    'classrooms/classA/studentCredentials/alex-smith': { active: true, classroomId: 'classA', studentId: 'stu1', authUid, schemaVersion: 1 },
-  })
+  // An unexpected internal failure is not forwarded to the client.
+  const exploding = {
+    doc: firestore.doc,
+    collection: firestore.collection,
+    runTransaction: async () => {
+      throw new Error('internal detail: projectId morgan-bank secret path')
+    },
+  }
+  await assert.rejects(
+    () =>
+      studentPinLoginV2CallableHandler(
+        { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: '1234' },
+        {},
+        { firestore: exploding, verifyPin: async () => true, createCustomToken: factory.createCustomToken },
+      ),
+    (error) => {
+      assert.equal(error.code, 'internal')
+      assert.ok(!error.message.includes('morgan-bank'))
+      return true
+    },
+  )
+})
+
+test('missing custom-token factory fails fast before any Firestore access', async () => {
+  const firestore = createMockFirestore(
+    classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+  )
 
   await assert.rejects(
-    () => verifyStudentCredentialV2({ classroomCode: '23456789', loginId: 'alex-smith', pin: '1234' }, { firestore: firestoreMismatch, verifyPin: async () => true }),
-    StudentVerifierError,
+    () =>
+      verifyStudentCredentialV2(
+        { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: '1234' },
+        { firestore, verifyPin: async () => true },
+      ),
+    TypeError,
   )
+  assert.equal(firestore.transactionAttempts, 0)
 })
