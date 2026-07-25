@@ -51,12 +51,13 @@ export function buildClassroomDocument({
   ownerUid,
   name,
   timestamp,
+  studentLoginCode,
 }) {
   const normalizedOwnerUid = requiredString(ownerUid, 'ownerUid')
   const normalizedName = requiredString(name, 'name')
   const documentTimestamp = requiredTimestamp(timestamp)
 
-  return {
+  const classroomDoc = {
     ownerUid: normalizedOwnerUid,
     name: normalizedName,
     createdAt: documentTimestamp,
@@ -64,4 +65,10 @@ export function buildClassroomDocument({
     version: CLASSROOM_DOCUMENT_VERSION,
     settings: {},
   }
+
+  if (typeof studentLoginCode === 'string' && studentLoginCode) {
+    classroomDoc.studentLoginCode = studentLoginCode.trim()
+  }
+
+  return classroomDoc
 }
