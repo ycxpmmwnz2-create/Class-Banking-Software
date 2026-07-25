@@ -3,6 +3,9 @@ import {
   TEACHER_STATUS,
 } from './firestoreSchema.js'
 
+const FORMATTED_CLASSROOM_LOGIN_CODE =
+  /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}$/
+
 function requiredString(value, fieldName) {
   const normalizedValue = typeof value === 'string' ? value.trim() : ''
 
@@ -66,8 +69,16 @@ export function buildClassroomDocument({
     settings: {},
   }
 
-  if (typeof studentLoginCode === 'string' && studentLoginCode) {
-    classroomDoc.studentLoginCode = studentLoginCode.trim()
+  if (studentLoginCode !== undefined) {
+    if (
+      typeof studentLoginCode !== 'string' ||
+      !FORMATTED_CLASSROOM_LOGIN_CODE.test(studentLoginCode)
+    ) {
+      throw new TypeError(
+        'studentLoginCode must use the canonical XXXX-XXXX display format.',
+      )
+    }
+    classroomDoc.studentLoginCode = studentLoginCode
   }
 
   return classroomDoc

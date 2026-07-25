@@ -1,4 +1,5 @@
 import { FIRESTORE_COLLECTIONS, TEACHER_STATUS } from '../phase1/firestoreSchema.js'
+import { validateCanonicalDocumentId as validateIdentityDocumentId } from './identityNormalization.js'
 
 export class TeacherTenantResolverError extends Error {
   constructor(code, message) {
@@ -8,54 +9,12 @@ export class TeacherTenantResolverError extends Error {
   }
 }
 
-function isWellFormedUnicode(value) {
-  if (typeof String.prototype.isWellFormed === 'function') {
-    return value.isWellFormed()
-  }
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index)
-    if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF) {
-      const nextCodeUnit = value.charCodeAt(index + 1)
-      if (
-        index + 1 >= value.length ||
-        nextCodeUnit < 0xDC00 ||
-        nextCodeUnit > 0xDFFF
-      ) {
-        return false
-      }
-      index += 1
-      continue
-    }
-    if (codeUnit >= 0xDC00 && codeUnit <= 0xDFFF) {
-      return false
-    }
-  }
-  return true
-}
-
 export function validateCanonicalDocumentId(id, name) {
-  if (typeof id !== 'string') {
-    throw new TeacherTenantResolverError('invalid-argument', `${name} must be a string.`)
+  try {
+    return validateIdentityDocumentId(id, name)
+  } catch {
+    throw new TeacherTenantResolverError('invalid-argument', `${name} is malformed.`)
   }
-  if (!id) {
-    throw new TeacherTenantResolverError('invalid-argument', `${name} must not be empty.`)
-  }
-  if (id.trim() !== id) {
-    throw new TeacherTenantResolverError(
-      'invalid-argument',
-      `${name} must not have leading or trailing whitespace.`,
-    )
-  }
-  if (id.includes('/')) {
-    throw new TeacherTenantResolverError('invalid-argument', `${name} must not contain slashes.`)
-  }
-  if (id === '.' || id === '..') {
-    throw new TeacherTenantResolverError('invalid-argument', `${name} must not be a dot segment.`)
-  }
-  if (!isWellFormedUnicode(id)) {
-    throw new TeacherTenantResolverError('invalid-argument', `${name} contains invalid Unicode.`)
-  }
-  return id
 }
 
 export async function resolveActiveTeacherTenant({ firestore, auth }) {

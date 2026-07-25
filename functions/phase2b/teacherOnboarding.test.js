@@ -145,7 +145,9 @@ function createMockFirestore(initialDocs = {}) {
       // Commit phase: validate every precondition before applying anything.
       for (const entry of pending) {
         if (entry.op === 'create' && store.has(entry.path)) {
-          throw new Error(`Document already exists at ${entry.path}`)
+          const error = new Error(`Document already exists at ${entry.path}`)
+          error.code = 'already-exists'
+          throw error
         }
         if (entry.op === 'update' && !store.has(entry.path)) {
           throw new Error(`Document does not exist at ${entry.path}`)
@@ -760,7 +762,8 @@ test('onboardTeacherClassroomService: malformed stored classroomId never builds 
 
 /**
  * Two simultaneous onboarding calls for one UID serialize on `teachers/{uid}`.
- * Exactly one may create a classroom; the loser must commit nothing.
+ * Exactly one creates a classroom; the retrying caller resolves the committed
+ * foundation idempotently and both callers receive the same tenant.
  */
 test('onboardTeacherClassroomService: simultaneous calls for one UID create exactly one classroom', async () => {
   const emailDigest = hashEmailDigest('teacher@example.com')
@@ -790,7 +793,15 @@ test('onboardTeacherClassroomService: simultaneous calls for one UID create exac
   ])
 
   const fulfilled = settled.filter(entry => entry.status === 'fulfilled')
-  assert.equal(fulfilled.length, 1, 'exactly one concurrent call may succeed')
+  assert.equal(fulfilled.length, 2, 'both concurrent calls should resolve idempotently')
+  assert.deepEqual(
+    fulfilled.map(entry => entry.value.created).sort(),
+    [false, true],
+  )
+  assert.equal(
+    fulfilled[0].value.classroom.id,
+    fulfilled[1].value.classroom.id,
+  )
 
   const teacherCreates = db.creates.filter(entry => entry.path.startsWith('teachers/'))
   const classroomCreates = db.creates.filter(entry => entry.path.startsWith('classrooms/'))
@@ -906,4 +917,135 @@ test('resolveTeacherTenantService: classroom missing a student login code blocks
     resolveTeacherTenantService({ firestore: db, auth: { uid: 'teacher-uid-1' } }),
     err => err.code === 'failed-precondition',
   )
+})
+
+test('resolveTeacherTenantService: expired or malformed invitation is never eligible', async () => {
+  const emailDigest = hashEmailDigest('teacher@example.com')
+
+  for (const invitation of [
+    { email: 'teacher@example.com', status: 'active', expiresAt: 1000 },
+    { email: 'other@example.com', status: 'active', expiresAt: 3000 },
+    { email: 'not-an-email', status: 'active', expiresAt: 3000 },
+    { email: 'teacher@example.com', status: 'active', expiresAt: {} },
+  ]) {
+    const db = createMockFirestore({
+      [`teacherInvitations/${emailDigest}`]: invitation,
+    })
+    await assert.rejects(
+      resolveTeacherTenantService({
+        firestore: db,
+        auth: googleAuth(),
+        now: () => 2000,
+      }),
+      error => ['permission-denied', 'failed-precondition'].includes(error.code),
+    )
+  }
+})
+
+test('onboarding rejects a mismatched invitation body and consumed partial state', async () => {
+  const emailDigest = hashEmailDigest('teacher@example.com')
+  const mismatched = createMockFirestore({
+    [`teacherInvitations/${emailDigest}`]: {
+      email: 'other@example.com',
+      status: 'active',
+    },
+  })
+  await assert.rejects(
+    onboardTeacherClassroomService({
+      firestore: mismatched,
+      auth: googleAuth(),
+      data: { classroomName: 'Math' },
+    }),
+    error => error.code === 'failed-precondition',
+  )
+  assert.equal(mismatched.creates.length, 0)
+
+  for (const consumedByUid of ['teacher-uid-1', undefined]) {
+    const partial = createMockFirestore({
+      [`teacherInvitations/${emailDigest}`]: {
+        status: 'consumed',
+        consumedByUid,
+      },
+    })
+    await assert.rejects(
+      onboardTeacherClassroomService({
+        firestore: partial,
+        auth: googleAuth(),
+        data: { classroomName: 'Math' },
+      }),
+      error => error.code === 'failed-precondition',
+    )
+    assert.equal(partial.creates.length, 0)
+  }
+})
+
+test('onboarding maps exhausted transaction contention without leaking raw failures', async () => {
+  for (const [firestoreCode, expectedCode] of [
+    ['aborted', 'aborted'],
+    ['already-exists', 'resource-exhausted'],
+  ]) {
+    let attempts = 0
+    const firestore = {
+      collection() {
+        return { doc() {} }
+      },
+      async runTransaction() {
+        attempts += 1
+        const error = new Error('sensitive Firestore transaction detail')
+        error.code = firestoreCode
+        throw error
+      },
+    }
+
+    await assert.rejects(
+      onboardTeacherClassroomService({
+        firestore,
+        auth: googleAuth(),
+        data: { classroomName: 'Math' },
+      }),
+      error => {
+        assert.equal(error.code, expectedCode)
+        assert.doesNotMatch(error.message, /sensitive Firestore/)
+        return true
+      },
+    )
+    assert.equal(attempts, 5)
+  }
+})
+
+test('existing and resolved classrooms require canonical login-code display form', async () => {
+  for (const studentLoginCode of ['23456789', '2345 6789', '234-56789']) {
+    const foundation = {
+      'teachers/teacher-uid-1': {
+        uid: 'teacher-uid-1',
+        classroomId: 'classroom-1',
+        status: 'active',
+      },
+      'classrooms/classroom-1': {
+        ownerUid: 'teacher-uid-1',
+        name: 'Class',
+        studentLoginCode,
+      },
+      'classroomLoginCodes/23456789': {
+        classroomId: 'classroom-1',
+        status: 'active',
+      },
+    }
+
+    await assert.rejects(
+      onboardTeacherClassroomService({
+        firestore: createMockFirestore(foundation),
+        auth: googleAuth(),
+        data: { classroomName: 'Ignored' },
+      }),
+      error => error.code === 'failed-precondition',
+    )
+    await assert.rejects(
+      resolveTeacherTenantService({
+        firestore: createMockFirestore(foundation),
+        auth: { uid: 'teacher-uid-1' },
+      }),
+      error => error.code === 'failed-precondition',
+    )
+  }
 })

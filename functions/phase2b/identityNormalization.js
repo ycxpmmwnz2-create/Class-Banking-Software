@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 
 export const CLASSROOM_CODE_ALPHABET = Object.freeze([
   '2', '3', '4', '5', '6', '7', '8', '9',
@@ -8,6 +9,7 @@ export const CLASSROOM_CODE_ALPHABET = Object.freeze([
 ])
 
 const CLASSROOM_CODE_ALPHABET_SET = new Set(CLASSROOM_CODE_ALPHABET)
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/
 
 function isWellFormedUnicode(value) {
   if (typeof String.prototype.isWellFormed === 'function') {
@@ -32,6 +34,44 @@ function isWellFormedUnicode(value) {
     }
   }
   return true
+}
+
+export function validateCanonicalDocumentId(value, fieldName = 'documentId') {
+  if (typeof value !== 'string') {
+    throw new TypeError(`${fieldName} must be a string.`)
+  }
+  if (!value) {
+    throw new Error(`${fieldName} must not be empty.`)
+  }
+  if (value.trim() !== value) {
+    throw new Error(`${fieldName} must not have surrounding whitespace.`)
+  }
+  if (value.includes('/')) {
+    throw new Error(`${fieldName} must not contain slashes.`)
+  }
+  if (value === '.' || value === '..') {
+    throw new Error(`${fieldName} must not be a dot segment.`)
+  }
+  if (/^__[\s\S]*__$/.test(value)) {
+    throw new Error(`${fieldName} must not use a reserved document ID.`)
+  }
+  if (!isWellFormedUnicode(value)) {
+    throw new Error(`${fieldName} contains invalid Unicode.`)
+  }
+  if (Buffer.byteLength(value, 'utf8') > 1500) {
+    throw new Error(`${fieldName} exceeds the Firestore UTF-8 byte limit.`)
+  }
+  return value
+}
+
+export function validateSha256Digest(value, fieldName = 'digest') {
+  if (typeof value !== 'string') {
+    throw new TypeError(`${fieldName} must be a string.`)
+  }
+  if (!SHA256_HEX_PATTERN.test(value)) {
+    throw new Error(`${fieldName} must be a lowercase hexadecimal SHA-256 digest.`)
+  }
+  return value
 }
 
 function hasControlCharacters(value) {

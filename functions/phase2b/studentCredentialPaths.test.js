@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { hashSha256 } from './identityNormalization.js'
+
 import {
   STUDENT_CREDENTIAL_COLLECTIONS,
   classroomLoginCodePath,
@@ -47,9 +49,29 @@ test('studentAuthLogsCollectionPath & studentAuthLogPath: construct valid log pa
 })
 
 test('studentLoginThrottlePath & teacherInvitationPath: construct valid digest paths', () => {
-  assert.equal(studentLoginThrottlePath('digest-123'), 'studentLoginThrottle/digest-123')
-  assert.equal(teacherInvitationPath('abc123hex'), 'teacherInvitations/abc123hex')
-  assert.throws(() => studentLoginThrottlePath('digest/123'), Error)
+  const throttleDigest = hashSha256('23456789\0john-doe')
+  const emailDigest = hashSha256('teacher@example.com')
+
+  assert.equal(
+    studentLoginThrottlePath(throttleDigest),
+    `studentLoginThrottle/${throttleDigest}`,
+  )
+  assert.equal(
+    teacherInvitationPath(emailDigest),
+    `teacherInvitations/${emailDigest}`,
+  )
+
+  for (const rawValue of [
+    'digest-123',
+    'teacher@example.com',
+    '23456789\0john-doe',
+    emailDigest.toUpperCase(),
+    emailDigest.slice(1),
+    'g'.repeat(64),
+  ]) {
+    assert.throws(() => studentLoginThrottlePath(rawValue), Error)
+    assert.throws(() => teacherInvitationPath(rawValue), Error)
+  }
 })
 
 test('studentAuthUnresolvedLogPath & CollectionPath: construct valid unresolved log paths', () => {

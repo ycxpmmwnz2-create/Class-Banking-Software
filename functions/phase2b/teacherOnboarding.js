@@ -71,6 +71,62 @@ function toEpochMillis(value) {
   return null
 }
 
+function validateInvitationIdentityAndExpiry({
+  invitation,
+  normalizedEmail,
+  now,
+}) {
+  if (invitation.email !== undefined) {
+    let invitationEmail
+    try {
+      invitationEmail = normalizeEmail(invitation.email)
+    } catch {
+      throw new TeacherOnboardingError(
+        'failed-precondition',
+        'Invitation identity is malformed.',
+      )
+    }
+    if (invitationEmail !== normalizedEmail) {
+      throw new TeacherOnboardingError(
+        'failed-precondition',
+        'Invitation identity does not match its document key.',
+      )
+    }
+  }
+
+  if (invitation.expiresAt === undefined || invitation.expiresAt === null) {
+    return
+  }
+
+  const expiryMillis = toEpochMillis(invitation.expiresAt)
+  const currentMillis = toEpochMillis(now())
+
+  if (expiryMillis === null || currentMillis === null) {
+    throw new TeacherOnboardingError(
+      'failed-precondition',
+      'Invitation expiry could not be evaluated.',
+    )
+  }
+
+  if (expiryMillis <= currentMillis) {
+    throw new TeacherOnboardingError(
+      'permission-denied',
+      'Invitation has expired.',
+    )
+  }
+}
+
+function retryableTransactionKind(error) {
+  const code = error?.code
+  if (code === 10 || code === 'aborted' || code === 'ABORTED') {
+    return 'aborted'
+  }
+  if (code === 6 || code === 'already-exists' || code === 'ALREADY_EXISTS') {
+    return 'collision'
+  }
+  return null
+}
+
 function isWellFormedUnicode(value) {
   if (typeof String.prototype.isWellFormed === 'function') {
     return value.isWellFormed()
@@ -185,7 +241,12 @@ export async function onboardTeacherClassroomService({
 
   const emailDigest = hashEmailDigest(normalizedEmail)
 
-  return firestore.runTransaction(async transaction => {
+  const maxTransactionAttempts = 5
+  let lastRetryableKind = null
+
+  for (let attempt = 0; attempt < maxTransactionAttempts; attempt += 1) {
+    try {
+      return await firestore.runTransaction(async transaction => {
     const teacherRef = firestore
       .collection(FIRESTORE_COLLECTIONS.TEACHERS)
       .doc(uid)
@@ -264,6 +325,12 @@ export async function onboardTeacherClassroomService({
         throw new TeacherOnboardingError(
           'failed-precondition',
           'Existing classroom has malformed student login code.',
+        )
+      }
+      if (studentLoginCode !== formatClassroomCode(canonicalCode)) {
+        throw new TeacherOnboardingError(
+          'failed-precondition',
+          'Existing classroom login code is not in canonical display form.',
         )
       }
 
@@ -370,9 +437,19 @@ export async function onboardTeacherClassroomService({
     }
 
     if (invData.status === INVITATION_STATUS.CONSUMED) {
+      if (
+        typeof invData.consumedByUid === 'string' &&
+        invData.consumedByUid &&
+        invData.consumedByUid !== uid
+      ) {
+        throw new TeacherOnboardingError(
+          'already-exists',
+          'Invitation has already been consumed by another account.',
+        )
+      }
       throw new TeacherOnboardingError(
-        'already-exists',
-        'Invitation has already been consumed.',
+        'failed-precondition',
+        'Invitation is consumed but the linked foundation is missing.',
       )
     }
 
@@ -383,26 +460,11 @@ export async function onboardTeacherClassroomService({
       )
     }
 
-    if (invData.expiresAt != null) {
-      const expiryMillis = toEpochMillis(invData.expiresAt)
-      const currentMillis = toEpochMillis(now())
-
-      // Fail closed: an unreadable expiry or an unreadable clock must never be
-      // treated as "not expired".
-      if (expiryMillis === null || currentMillis === null) {
-        throw new TeacherOnboardingError(
-          'failed-precondition',
-          'Invitation expiry could not be evaluated.',
-        )
-      }
-
-      if (expiryMillis <= currentMillis) {
-        throw new TeacherOnboardingError(
-          'permission-denied',
-          'Invitation has expired.',
-        )
-      }
-    }
+    validateInvitationIdentityAndExpiry({
+      invitation: invData,
+      normalizedEmail,
+      now,
+    })
 
     // Code generation with collision retry loop
     let canonicalCode
@@ -486,16 +548,41 @@ export async function onboardTeacherClassroomService({
         studentLoginCode: formattedCode,
       },
     }
-  })
+      })
+    } catch (error) {
+      if (error instanceof TeacherOnboardingError) {
+        throw error
+      }
+      lastRetryableKind = retryableTransactionKind(error)
+      if (!lastRetryableKind) {
+        throw error
+      }
+    }
+  }
+
+  if (lastRetryableKind === 'collision') {
+    throw new TeacherOnboardingError(
+      'resource-exhausted',
+      'Concurrent classroom identity reservation retries were exhausted.',
+    )
+  }
+  throw new TeacherOnboardingError(
+    'aborted',
+    'Onboarding transaction contention retries were exhausted.',
+  )
 }
 
 export async function resolveTeacherTenantService({
   firestore,
   auth,
   data = {},
+  now = () => Date.now(),
 }) {
   if (!firestore || typeof firestore.collection !== 'function') {
     throw new TypeError('firestore with a collection method is required.')
+  }
+  if (typeof now !== 'function') {
+    throw new TypeError('now must be a function returning the current time.')
   }
   if (!auth || typeof auth !== 'object') {
     throw new TeacherOnboardingError('unauthenticated', 'Authentication required.')
@@ -563,6 +650,21 @@ export async function resolveTeacherTenantService({
         'Classroom document missing student login code.',
       )
     }
+    let canonicalCode
+    try {
+      canonicalCode = normalizeClassroomCode(studentLoginCode)
+    } catch {
+      throw new TeacherOnboardingError(
+        'failed-precondition',
+        'Classroom document has a malformed student login code.',
+      )
+    }
+    if (studentLoginCode !== formatClassroomCode(canonicalCode)) {
+      throw new TeacherOnboardingError(
+        'failed-precondition',
+        'Classroom login code is not in canonical display form.',
+      )
+    }
 
     return {
       state: 'active',
@@ -614,6 +716,12 @@ export async function resolveTeacherTenantService({
   if (invData.status !== INVITATION_STATUS.ACTIVE) {
     throw new TeacherOnboardingError('permission-denied', 'User is not invited.')
   }
+
+  validateInvitationIdentityAndExpiry({
+    invitation: invData,
+    normalizedEmail,
+    now,
+  })
 
   return {
     state: 'onboarding-required',

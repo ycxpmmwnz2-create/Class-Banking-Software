@@ -11,6 +11,8 @@ import {
   normalizeDisplayName,
   normalizeEmail,
   normalizeStudentLoginId,
+  validateCanonicalDocumentId,
+  validateSha256Digest,
 } from './identityNormalization.js'
 
 test('normalizeEmail: handles valid ASCII emails and ASCII uppercase lowering', () => {
@@ -127,4 +129,38 @@ test('normalizeStudentLoginId: rejects invalid grammar, slashes, leading/trailin
 test('hashSha256: deterministically hashes strings', () => {
   assert.equal(hashSha256('test'), '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08')
   assert.throws(() => hashSha256(123), TypeError)
+})
+
+test('validateCanonicalDocumentId rejects path, reserved, Unicode, and byte-limit hazards', () => {
+  assert.equal(validateCanonicalDocumentId('classroom-1'), 'classroom-1')
+
+  for (const value of [
+    '',
+    ' classroom-1',
+    'classroom-1 ',
+    'classrooms/one',
+    '.',
+    '..',
+    '__reserved__',
+    '\uD800',
+    'a'.repeat(1501),
+  ]) {
+    assert.throws(() => validateCanonicalDocumentId(value))
+  }
+})
+
+test('validateSha256Digest accepts only exact lowercase hexadecimal SHA-256 IDs', () => {
+  const digest = hashSha256('canonical input')
+  assert.equal(validateSha256Digest(digest), digest)
+
+  for (const value of [
+    'teacher@example.com',
+    '23456789-john-doe',
+    digest.toUpperCase(),
+    digest.slice(1),
+    `${digest}0`,
+    'g'.repeat(64),
+  ]) {
+    assert.throws(() => validateSha256Digest(value))
+  }
 })

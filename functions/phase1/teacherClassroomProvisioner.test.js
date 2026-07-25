@@ -104,6 +104,42 @@ test('classroom document builder returns the exact Phase 1 shape', () => {
   })
 })
 
+test('classroom document builder accepts only canonical optional login codes', () => {
+  assert.deepEqual(buildClassroomDocument({
+    ownerUid: 'teacher-1',
+    name: 'Period 1',
+    timestamp: TIMESTAMP,
+    studentLoginCode: '2345-6789',
+  }), {
+    ownerUid: 'teacher-1',
+    name: 'Period 1',
+    createdAt: TIMESTAMP,
+    updatedAt: TIMESTAMP,
+    version: CLASSROOM_DOCUMENT_VERSION,
+    settings: {},
+    studentLoginCode: '2345-6789',
+  })
+
+  for (const studentLoginCode of [
+    '',
+    '23456789',
+    '2345-6780',
+    '2345-678O',
+    ' 2345-6789 ',
+    23456789,
+  ]) {
+    assert.throws(
+      () => buildClassroomDocument({
+        ownerUid: 'teacher-1',
+        name: 'Period 1',
+        timestamp: TIMESTAMP,
+        studentLoginCode,
+      }),
+      /canonical XXXX-XXXX/,
+    )
+  }
+})
+
 test('document builders reject missing identity fields', () => {
   assert.throws(
     () => buildTeacherDocument({

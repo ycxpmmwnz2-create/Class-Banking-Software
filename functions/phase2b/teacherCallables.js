@@ -81,6 +81,7 @@ export async function resolveTeacherTenantCallable(request, options = {}) {
       firestore,
       auth: request?.auth,
       data: request?.data,
+      now: options.now,
     })
   } catch (error) {
     throw mapToHttpsError(error)
