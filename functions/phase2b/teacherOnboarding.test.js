@@ -1,18 +1,44 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { hashEmailDigest } from './identityNormalization.js'
+import { FieldValue, Timestamp } from 'firebase-admin/firestore'
+
+import { CLASSROOM_CODE_ALPHABET, hashEmailDigest } from './identityNormalization.js'
 import {
+  generateClassroomCode,
   onboardTeacherClassroomService,
   resolveTeacherTenantService,
 } from './teacherOnboarding.js'
 
 
+/**
+ * Deep-clones plain objects/arrays but passes class instances through by
+ * reference, so Firestore `Timestamp` values and `FieldValue` sentinels survive
+ * a round trip into the mock store. A JSON clone would silently flatten a
+ * Timestamp into `{_seconds,_nanoseconds}` and destroy `toMillis`.
+ */
+function cloneValue(value) {
+  if (value === null || typeof value !== 'object') {
+    return value
+  }
+  if (Array.isArray(value)) {
+    return value.map(cloneValue)
+  }
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    return value
+  }
+  const output = {}
+  for (const [key, nested] of Object.entries(value)) {
+    output[key] = cloneValue(nested)
+  }
+  return output
+}
+
 function createMockFirestore(initialDocs = {}) {
   const store = new Map()
 
   for (const [path, data] of Object.entries(initialDocs)) {
-    store.set(path, JSON.parse(JSON.stringify(data)))
+    store.set(path, cloneValue(data))
   }
 
   const reads = []
@@ -33,7 +59,7 @@ function createMockFirestore(initialDocs = {}) {
           exists: data !== undefined,
           id,
           path,
-          data: () => (data ? JSON.parse(JSON.stringify(data)) : undefined),
+          data: () => (data ? cloneValue(data) : undefined),
         }
       },
     }
@@ -66,9 +92,10 @@ function createMockFirestore(initialDocs = {}) {
     },
     async runTransaction(callback) {
       const transactionReads = []
-      const transactionCreates = []
-      const transactionUpdates = []
-      const transactionDeletes = []
+      // Writes are buffered and committed all-or-nothing after the callback
+      // resolves, so a violated `create` precondition leaves no partial state —
+      // the property the onboarding transaction depends on.
+      const pending = []
 
       const transaction = {
         async get(target) {
@@ -99,35 +126,46 @@ function createMockFirestore(initialDocs = {}) {
             exists: data !== undefined,
             id: target.id,
             path,
-            data: () => (data ? JSON.parse(JSON.stringify(data)) : undefined),
+            data: () => (data ? cloneValue(data) : undefined),
           }
         },
         create(targetRef, data) {
-          if (store.has(targetRef.path)) {
-            throw new Error(`Document already exists at ${targetRef.path}`)
-          }
-          store.set(targetRef.path, JSON.parse(JSON.stringify(data)))
-          transactionCreates.push({ path: targetRef.path, data })
-          creates.push({ path: targetRef.path, data })
+          pending.push({ op: 'create', path: targetRef.path, data })
         },
         update(targetRef, data) {
-          if (!store.has(targetRef.path)) {
-            throw new Error(`Document does not exist at ${targetRef.path}`)
-          }
-          const current = store.get(targetRef.path)
-          const updated = { ...current, ...data }
-          store.set(targetRef.path, JSON.parse(JSON.stringify(updated)))
-          transactionUpdates.push({ path: targetRef.path, data })
-          updates.push({ path: targetRef.path, data })
+          pending.push({ op: 'update', path: targetRef.path, data })
         },
         delete(targetRef) {
-          store.delete(targetRef.path)
-          transactionDeletes.push(targetRef.path)
-          deletes.push(targetRef.path)
+          pending.push({ op: 'delete', path: targetRef.path })
         },
       }
 
-      return callback(transaction)
+      const result = await callback(transaction)
+
+      // Commit phase: validate every precondition before applying anything.
+      for (const entry of pending) {
+        if (entry.op === 'create' && store.has(entry.path)) {
+          throw new Error(`Document already exists at ${entry.path}`)
+        }
+        if (entry.op === 'update' && !store.has(entry.path)) {
+          throw new Error(`Document does not exist at ${entry.path}`)
+        }
+      }
+
+      for (const entry of pending) {
+        if (entry.op === 'create') {
+          store.set(entry.path, cloneValue(entry.data))
+          creates.push({ path: entry.path, data: entry.data })
+        } else if (entry.op === 'update') {
+          store.set(entry.path, cloneValue({ ...store.get(entry.path), ...entry.data }))
+          updates.push({ path: entry.path, data: entry.data })
+        } else {
+          store.delete(entry.path)
+          deletes.push(entry.path)
+        }
+      }
+
+      return result
     },
   }
 }
@@ -158,7 +196,7 @@ test('onboardTeacherClassroomService: successful atomic creation', async () => {
     auth: googleAuth(),
     data: { classroomName: 'Algebra 1' },
     codeGenerator: () => '23456789',
-    clock: () => '2026-07-25T00:00:00Z',
+    serverTimestamp: () => '2026-07-25T00:00:00Z',
   })
 
   assert.equal(result.created, true)
@@ -250,7 +288,7 @@ test('onboardTeacherClassroomService: rejects uninvited, revoked, expired, and d
       firestore: db3,
       auth: googleAuth(),
       data: { classroomName: 'Math' },
-      clock: () => 2000,
+      now: () => 2000,
     }),
     err => err.code === 'permission-denied',
   )
@@ -432,5 +470,440 @@ test('resolveTeacherTenantService: rejects uninvited user or disabled teacher', 
   await assert.rejects(
     resolveTeacherTenantService({ firestore: db2, auth: googleAuth() }),
     err => err.code === 'permission-denied',
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Cycle 1 review regression tests
+// ---------------------------------------------------------------------------
+
+/**
+ * Regression: the default dependencies once used `FieldValue.serverTimestamp`
+ * as both the write sentinel and the current-time source. A sentinel is a
+ * write-time transform, not a readable clock, so `expiresAt <= now` compared a
+ * number against an object, evaluated to NaN-false, and accepted an expired
+ * invitation on the production default path. This test injects nothing, so it
+ * exercises the real defaults.
+ */
+test('onboardTeacherClassroomService: production default dependencies reject an expired invitation', async () => {
+  const emailDigest = hashEmailDigest('teacher@example.com')
+  const db = createMockFirestore({
+    [`teacherInvitations/${emailDigest}`]: {
+      status: 'active',
+      expiresAt: Timestamp.fromMillis(Date.now() - 3600_000),
+    },
+  })
+
+  await assert.rejects(
+    onboardTeacherClassroomService({
+      firestore: db,
+      auth: googleAuth(),
+      data: { classroomName: 'Math' },
+      // No `now`, no `serverTimestamp`, no `codeGenerator`: production defaults.
+    }),
+    err => err.code === 'permission-denied',
+  )
+
+  assert.equal(db.creates.length, 0)
+  assert.equal(db.updates.length, 0)
+  assert.equal(db.store.get(`teacherInvitations/${emailDigest}`).status, 'active')
+})
+
+test('onboardTeacherClassroomService: default dependencies accept an unexpired invitation', async () => {
+  const emailDigest = hashEmailDigest('teacher@example.com')
+  const db = createMockFirestore({
+    [`teacherInvitations/${emailDigest}`]: {
+      status: 'active',
+      expiresAt: Timestamp.fromMillis(Date.now() + 3600_000),
+    },
+  })
+
+  const result = await onboardTeacherClassroomService({
+    firestore: db,
+    auth: googleAuth(),
+    data: { classroomName: 'Math' },
+  })
+
+  assert.equal(result.created, true)
+  assert.equal(db.store.get(`teacherInvitations/${emailDigest}`).status, 'consumed')
+})
+
+/**
+ * Fail-closed: a serverTimestamp sentinel supplied where a clock is expected
+ * must never read as "not expired".
+ */
+test('onboardTeacherClassroomService: a serverTimestamp sentinel as the clock fails closed', async () => {
+  const emailDigest = hashEmailDigest('teacher@example.com')
+  const db = createMockFirestore({
+    [`teacherInvitations/${emailDigest}`]: {
+      status: 'active',
+      expiresAt: Timestamp.fromMillis(Date.now() - 3600_000),
+    },
+  })
+
+  await assert.rejects(
+    onboardTeacherClassroomService({
+      firestore: db,
+      auth: googleAuth(),
+      data: { classroomName: 'Math' },
+      now: FieldValue.serverTimestamp,
+    }),
+    err => err.code === 'failed-precondition',
+  )
+
+  assert.equal(db.creates.length, 0)
+})
+
+test('onboardTeacherClassroomService: unreadable expiresAt values fail closed', async () => {
+  const emailDigest = hashEmailDigest('teacher@example.com')
+
+  for (const expiresAt of ['not-a-timestamp', Number.NaN, {}, true]) {
+    const db = createMockFirestore({
+      [`teacherInvitations/${emailDigest}`]: { status: 'active', expiresAt },
+    })
+
+    await assert.rejects(
+      onboardTeacherClassroomService({
+        firestore: db,
+        auth: googleAuth(),
+        data: { classroomName: 'Math' },
+        now: () => Date.now(),
+      }),
+      err => err.code === 'failed-precondition',
+      `expiresAt ${String(expiresAt)} should fail closed`,
+    )
+    assert.equal(db.creates.length, 0)
+  }
+})
+
+test('onboardTeacherClassroomService: Date and Timestamp expiry forms are both honoured', async () => {
+  const emailDigest = hashEmailDigest('teacher@example.com')
+
+  const dbExpiredDate = createMockFirestore({
+    [`teacherInvitations/${emailDigest}`]: {
+      status: 'active',
+      expiresAt: new Date(Date.now() - 1000),
+    },
+  })
+  await assert.rejects(
+    onboardTeacherClassroomService({
+      firestore: dbExpiredDate,
+      auth: googleAuth(),
+      data: { classroomName: 'Math' },
+    }),
+    err => err.code === 'permission-denied',
+  )
+
+  const dbExpiredNumber = createMockFirestore({
+    [`teacherInvitations/${emailDigest}`]: { status: 'active', expiresAt: 1000 },
+  })
+  await assert.rejects(
+    onboardTeacherClassroomService({
+      firestore: dbExpiredNumber,
+      auth: googleAuth(),
+      data: { classroomName: 'Math' },
+      now: () => 2000,
+    }),
+    err => err.code === 'permission-denied',
+  )
+})
+
+/**
+ * Regression: classroom codes were drawn from `Math.random`, whose internal
+ * state is recoverable from observed output, making live student-facing codes
+ * predictable. Stubbing `Math.random` to a constant must not make the generator
+ * deterministic.
+ */
+test('generateClassroomCode: draws from a CSPRNG, not Math.random', () => {
+  const originalRandom = Math.random
+  Math.random = () => 0
+  try {
+    const samples = new Set()
+    for (let index = 0; index < 200; index += 1) {
+      const code = generateClassroomCode()
+      assert.equal(code.length, 8)
+      for (const character of code) {
+        assert.equal(
+          CLASSROOM_CODE_ALPHABET.includes(character),
+          true,
+          `unexpected character ${character}`,
+        )
+      }
+      samples.add(code)
+    }
+    // With Math.random pinned, a Math.random-based generator emits one value.
+    assert.ok(
+      samples.size > 190,
+      `expected near-unique codes from a CSPRNG, got ${samples.size} distinct of 200`,
+    )
+  } finally {
+    Math.random = originalRandom
+  }
+})
+
+/**
+ * The plan requires the code index be queried by classroomId and contain
+ * exactly the one entry named by the classroom root. Reading only the named
+ * document leaves a duplicate index undetected.
+ */
+test('onboardTeacherClassroomService: duplicate login code indexes block instead of resolving', async () => {
+  const db = createMockFirestore({
+    'teachers/teacher-uid-1': {
+      uid: 'teacher-uid-1',
+      classroomId: 'classroom-1',
+      status: 'active',
+    },
+    'classrooms/classroom-1': {
+      ownerUid: 'teacher-uid-1',
+      name: 'Original Name',
+      studentLoginCode: '2345-6789',
+    },
+    'classroomLoginCodes/23456789': { classroomId: 'classroom-1', status: 'active' },
+    // Stale duplicate left by a partially completed operation.
+    'classroomLoginCodes/3456789A': { classroomId: 'classroom-1', status: 'active' },
+  })
+
+  await assert.rejects(
+    onboardTeacherClassroomService({
+      firestore: db,
+      auth: googleAuth('teacher-uid-1'),
+      data: { classroomName: 'Math' },
+    }),
+    err => err.code === 'failed-precondition',
+  )
+
+  assert.equal(db.creates.length, 0)
+  assert.equal(db.updates.length, 0)
+})
+
+test('onboardTeacherClassroomService: code index naming a different code than the classroom root blocks', async () => {
+  const db = createMockFirestore({
+    'teachers/teacher-uid-1': {
+      uid: 'teacher-uid-1',
+      classroomId: 'classroom-1',
+      status: 'active',
+    },
+    'classrooms/classroom-1': {
+      ownerUid: 'teacher-uid-1',
+      name: 'Original Name',
+      studentLoginCode: '2345-6789',
+    },
+    // Index exists for the classroom, but under a different code.
+    'classroomLoginCodes/3456789A': { classroomId: 'classroom-1', status: 'active' },
+  })
+
+  await assert.rejects(
+    onboardTeacherClassroomService({
+      firestore: db,
+      auth: googleAuth('teacher-uid-1'),
+      data: { classroomName: 'Math' },
+    }),
+    err => err.code === 'failed-precondition',
+  )
+  assert.equal(db.creates.length, 0)
+})
+
+test('onboardTeacherClassroomService: classroom lacking a login code blocks without repair', async () => {
+  const db = createMockFirestore({
+    'teachers/teacher-uid-1': {
+      uid: 'teacher-uid-1',
+      classroomId: 'classroom-1',
+      status: 'active',
+    },
+    'classrooms/classroom-1': { ownerUid: 'teacher-uid-1', name: 'Original Name' },
+  })
+
+  await assert.rejects(
+    onboardTeacherClassroomService({
+      firestore: db,
+      auth: googleAuth('teacher-uid-1'),
+      data: { classroomName: 'Math' },
+    }),
+    err => err.code === 'failed-precondition',
+  )
+  assert.equal(db.creates.length, 0)
+  assert.equal(db.updates.length, 0)
+})
+
+/**
+ * A stored classroomId is untrusted input for path construction. The shared
+ * canonical contract must reject it before any read is issued.
+ */
+test('onboardTeacherClassroomService: malformed stored classroomId never builds a path', async () => {
+  for (const classroomId of ['classroom/../evil', '  classroom-1  ', '.', '..', '', 42]) {
+    const db = createMockFirestore({
+      'teachers/teacher-uid-1': {
+        uid: 'teacher-uid-1',
+        classroomId,
+        status: 'active',
+      },
+    })
+
+    await assert.rejects(
+      onboardTeacherClassroomService({
+        firestore: db,
+        auth: googleAuth('teacher-uid-1'),
+        data: { classroomName: 'Math' },
+      }),
+      err => err.code === 'failed-precondition',
+      `classroomId ${String(classroomId)} should be rejected`,
+    )
+
+    assert.equal(
+      db.reads.some(path => path !== 'teachers/teacher-uid-1'),
+      false,
+      `no read beyond the teacher document should occur, saw ${db.reads.join(', ')}`,
+    )
+    assert.equal(db.creates.length, 0)
+  }
+})
+
+/**
+ * Two simultaneous onboarding calls for one UID serialize on `teachers/{uid}`.
+ * Exactly one may create a classroom; the loser must commit nothing.
+ */
+test('onboardTeacherClassroomService: simultaneous calls for one UID create exactly one classroom', async () => {
+  const emailDigest = hashEmailDigest('teacher@example.com')
+  const db = createMockFirestore({
+    [`teacherInvitations/${emailDigest}`]: { status: 'active' },
+  })
+
+  let codeCounter = 0
+  const codeGenerator = () => {
+    codeCounter += 1
+    return codeCounter === 1 ? '23456789' : '3456789A'
+  }
+
+  const settled = await Promise.allSettled([
+    onboardTeacherClassroomService({
+      firestore: db,
+      auth: googleAuth('teacher-uid-1'),
+      data: { classroomName: 'First' },
+      codeGenerator,
+    }),
+    onboardTeacherClassroomService({
+      firestore: db,
+      auth: googleAuth('teacher-uid-1'),
+      data: { classroomName: 'Second' },
+      codeGenerator,
+    }),
+  ])
+
+  const fulfilled = settled.filter(entry => entry.status === 'fulfilled')
+  assert.equal(fulfilled.length, 1, 'exactly one concurrent call may succeed')
+
+  const teacherCreates = db.creates.filter(entry => entry.path.startsWith('teachers/'))
+  const classroomCreates = db.creates.filter(entry => entry.path.startsWith('classrooms/'))
+  const codeCreates = db.creates.filter(entry => entry.path.startsWith('classroomLoginCodes/'))
+
+  assert.equal(teacherCreates.length, 1)
+  assert.equal(classroomCreates.length, 1, 'no second classroom may be created')
+  assert.equal(codeCreates.length, 1, 'the loser must not leave an orphan code index')
+
+  const invitationUpdates = db.updates.filter(entry =>
+    entry.path.startsWith('teacherInvitations/'),
+  )
+  assert.equal(invitationUpdates.length, 1, 'the invitation is consumed exactly once')
+})
+
+test('resolveTeacherTenantService: malformed stored classroomId is a blocking integrity failure', async () => {
+  const db = createMockFirestore({
+    'teachers/teacher-uid-1': {
+      uid: 'teacher-uid-1',
+      classroomId: 'classroom/slash',
+      status: 'active',
+    },
+  })
+
+  await assert.rejects(
+    resolveTeacherTenantService({ firestore: db, auth: { uid: 'teacher-uid-1' } }),
+    err => err.code === 'failed-precondition',
+  )
+  assert.equal(
+    db.reads.some(path => path.includes('classroom/slash')),
+    false,
+  )
+})
+
+test('resolveTeacherTenantService: owner mismatch and unknown status are blocking integrity failures', async () => {
+  const dbOwnerMismatch = createMockFirestore({
+    'teachers/teacher-uid-1': {
+      uid: 'teacher-uid-1',
+      classroomId: 'classroom-1',
+      status: 'active',
+    },
+    'classrooms/classroom-1': { ownerUid: 'other-uid', name: 'Other' },
+  })
+  await assert.rejects(
+    resolveTeacherTenantService({ firestore: dbOwnerMismatch, auth: { uid: 'teacher-uid-1' } }),
+    err => err.code === 'failed-precondition',
+  )
+
+  const dbUnknownStatus = createMockFirestore({
+    'teachers/teacher-uid-1': {
+      uid: 'teacher-uid-1',
+      classroomId: 'classroom-1',
+      status: 'pending',
+    },
+  })
+  await assert.rejects(
+    resolveTeacherTenantService({ firestore: dbUnknownStatus, auth: { uid: 'teacher-uid-1' } }),
+    err => err.code === 'failed-precondition',
+  )
+
+  const dbUidMismatch = createMockFirestore({
+    'teachers/teacher-uid-1': {
+      uid: 'someone-else',
+      classroomId: 'classroom-1',
+      status: 'active',
+    },
+  })
+  await assert.rejects(
+    resolveTeacherTenantService({ firestore: dbUidMismatch, auth: { uid: 'teacher-uid-1' } }),
+    err => err.code === 'failed-precondition',
+  )
+})
+
+test('resolveTeacherTenantService: rejects any request payload, including non-objects', async () => {
+  const db = createMockFirestore({
+    'teachers/teacher-uid-1': {
+      uid: 'teacher-uid-1',
+      classroomId: 'classroom-1',
+      status: 'active',
+    },
+    'classrooms/classroom-1': {
+      ownerUid: 'teacher-uid-1',
+      name: 'Class',
+      studentLoginCode: '2345-6789',
+    },
+  })
+
+  for (const data of [{ classroomId: 'forged' }, { anything: 1 }, 'classroom-2', 42, ['a']]) {
+    await assert.rejects(
+      resolveTeacherTenantService({ firestore: db, auth: { uid: 'teacher-uid-1' }, data }),
+      err => err.code === 'invalid-argument',
+      `data ${JSON.stringify(data)} should be rejected`,
+    )
+  }
+
+  assert.equal(
+    db.reads.some(path => path.includes('forged') || path.includes('classroom-2')),
+    false,
+  )
+})
+
+test('resolveTeacherTenantService: classroom missing a student login code blocks', async () => {
+  const db = createMockFirestore({
+    'teachers/teacher-uid-1': {
+      uid: 'teacher-uid-1',
+      classroomId: 'classroom-1',
+      status: 'active',
+    },
+    'classrooms/classroom-1': { ownerUid: 'teacher-uid-1', name: 'Class' },
+  })
+
+  await assert.rejects(
+    resolveTeacherTenantService({ firestore: db, auth: { uid: 'teacher-uid-1' } }),
+    err => err.code === 'failed-precondition',
   )
 })

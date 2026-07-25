@@ -1,6 +1,9 @@
+import { randomInt } from 'node:crypto'
+
 import { FieldValue } from 'firebase-admin/firestore'
 
 import {
+  CLASSROOM_LOGIN_CODE_STATUS,
   FIRESTORE_COLLECTIONS,
   INVITATION_STATUS,
   TEACHER_STATUS,
@@ -18,6 +21,11 @@ import {
   normalizeDisplayName,
   normalizeEmail,
 } from './identityNormalization.js'
+import {
+  TeacherTenantResolverError,
+  resolveActiveTeacherTenant,
+  validateCanonicalDocumentId,
+} from './teacherTenantResolver.js'
 
 export class TeacherOnboardingError extends Error {
   constructor(code, message) {
@@ -27,13 +35,40 @@ export class TeacherOnboardingError extends Error {
   }
 }
 
-function defaultCodeGenerator() {
+/**
+ * Classroom login codes are student-facing locators. A predictable generator
+ * would let an outsider guess live classroom codes, so the default draws from a
+ * CSPRNG. `randomInt` is rejection-sampled by Node, so the 32-character
+ * alphabet stays uniformly distributed.
+ */
+export function generateClassroomCode() {
   let result = ''
   for (let index = 0; index < 8; index += 1) {
-    const randomIndex = Math.floor(Math.random() * CLASSROOM_CODE_ALPHABET.length)
-    result += CLASSROOM_CODE_ALPHABET[randomIndex]
+    result += CLASSROOM_CODE_ALPHABET[randomInt(CLASSROOM_CODE_ALPHABET.length)]
   }
   return result
+}
+
+/**
+ * Converts an injected wall-clock reading or a stored `expiresAt` field into
+ * finite epoch milliseconds. Returns null for anything unusable — including a
+ * `FieldValue.serverTimestamp()` sentinel, which is a write-time transform and
+ * carries no readable time — so callers can fail closed instead of comparing
+ * against NaN.
+ */
+function toEpochMillis(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null
+  }
+  if (value instanceof Date) {
+    const millis = value.getTime()
+    return Number.isFinite(millis) ? millis : null
+  }
+  if (value && typeof value.toMillis === 'function') {
+    const millis = value.toMillis()
+    return typeof millis === 'number' && Number.isFinite(millis) ? millis : null
+  }
+  return null
 }
 
 function isWellFormedUnicode(value) {
@@ -75,11 +110,22 @@ export async function onboardTeacherClassroomService({
   firestore,
   auth,
   data,
-  codeGenerator = defaultCodeGenerator,
-  clock = FieldValue.serverTimestamp,
+  codeGenerator = generateClassroomCode,
+  // Deliberately two distinct dependencies. `now` must yield a readable current
+  // time for expiry decisions; `serverTimestamp` yields the write-time sentinel
+  // stored in documents. A serverTimestamp sentinel is not a readable clock, so
+  // conflating them silently defeats invitation expiry.
+  now = () => Date.now(),
+  serverTimestamp = FieldValue.serverTimestamp,
 }) {
   if (!firestore || typeof firestore.collection !== 'function') {
     throw new TypeError('firestore with a collection method is required.')
+  }
+  if (typeof now !== 'function') {
+    throw new TypeError('now must be a function returning the current time.')
+  }
+  if (typeof serverTimestamp !== 'function') {
+    throw new TypeError('serverTimestamp must be a function returning a write timestamp.')
   }
   if (!auth || typeof auth !== 'object') {
     throw new TeacherOnboardingError('unauthenticated', 'Authentication required.')
@@ -169,11 +215,16 @@ export async function onboardTeacherClassroomService({
         )
       }
 
-      const classroomId = teacherData.classroomId
-      if (typeof classroomId !== 'string' || !classroomId) {
+      let classroomId
+      try {
+        // Shared canonical contract: a stored classroom ID is never trusted as
+        // a path segment until it is validated the same way the shared resolver
+        // validates it.
+        classroomId = validateCanonicalDocumentId(teacherData.classroomId, 'classroomId')
+      } catch {
         throw new TeacherOnboardingError(
           'failed-precondition',
-          'Teacher document missing classroom ID.',
+          'Teacher document has a missing or malformed classroom ID.',
         )
       }
 
@@ -216,6 +267,33 @@ export async function onboardTeacherClassroomService({
         )
       }
 
+      // The code index must contain exactly the one entry named by the
+      // classroom root. Querying by classroomId (not just reading the named
+      // document) is what detects duplicate indexes left behind by a partially
+      // completed operation; a duplicate blocks rather than being repaired.
+      const codeIndexQuery = firestore
+        .collection(FIRESTORE_COLLECTIONS.CLASSROOM_LOGIN_CODES)
+        .where('classroomId', '==', classroomId)
+        .limit(2)
+      const codeIndexSnap = await transaction.get(codeIndexQuery)
+      const codeIndexDocs = codeIndexSnap.docs ?? []
+
+      if (codeIndexDocs.length !== 1) {
+        throw new TeacherOnboardingError(
+          'failed-precondition',
+          codeIndexDocs.length === 0
+            ? 'Existing classroom login code index missing.'
+            : 'Existing classroom has multiple login code indexes.',
+        )
+      }
+
+      if (codeIndexDocs[0].id !== canonicalCode) {
+        throw new TeacherOnboardingError(
+          'failed-precondition',
+          'Existing classroom login code index does not match the classroom root.',
+        )
+      }
+
       const codeRef = firestore
         .collection(FIRESTORE_COLLECTIONS.CLASSROOM_LOGIN_CODES)
         .doc(canonicalCode)
@@ -231,7 +309,7 @@ export async function onboardTeacherClassroomService({
       const codeData = codeSnap.data() ?? {}
       if (
         codeData.classroomId !== classroomId ||
-        codeData.status !== TEACHER_STATUS.ACTIVE
+        codeData.status !== CLASSROOM_LOGIN_CODE_STATUS.ACTIVE
       ) {
         throw new TeacherOnboardingError(
           'failed-precondition',
@@ -306,15 +384,19 @@ export async function onboardTeacherClassroomService({
     }
 
     if (invData.expiresAt != null) {
-      const now = typeof clock === 'function' ? clock() : Date.now()
-      const expiryTime =
-        typeof invData.expiresAt.toMillis === 'function'
-          ? invData.expiresAt.toMillis()
-          : invData.expiresAt
-      const currentTime =
-        typeof now?.toMillis === 'function' ? now.toMillis() : now
+      const expiryMillis = toEpochMillis(invData.expiresAt)
+      const currentMillis = toEpochMillis(now())
 
-      if (expiryTime <= currentTime) {
+      // Fail closed: an unreadable expiry or an unreadable clock must never be
+      // treated as "not expired".
+      if (expiryMillis === null || currentMillis === null) {
+        throw new TeacherOnboardingError(
+          'failed-precondition',
+          'Invitation expiry could not be evaluated.',
+        )
+      }
+
+      if (expiryMillis <= currentMillis) {
         throw new TeacherOnboardingError(
           'permission-denied',
           'Invitation has expired.',
@@ -358,7 +440,7 @@ export async function onboardTeacherClassroomService({
       .collection(FIRESTORE_COLLECTIONS.CLASSROOMS)
       .doc()
     const generatedClassroomId = generatedClassroomRef.id
-    const timestamp = typeof clock === 'function' ? clock() : clock
+    const timestamp = serverTimestamp()
 
     const classroomDocument = buildClassroomDocument({
       ownerUid: uid,
@@ -377,7 +459,7 @@ export async function onboardTeacherClassroomService({
 
     const loginCodeDocument = {
       classroomId: generatedClassroomId,
-      status: 'active',
+      status: CLASSROOM_LOGIN_CODE_STATUS.ACTIVE,
       createdAt: timestamp,
     }
 
@@ -421,65 +503,60 @@ export async function resolveTeacherTenantService({
 
   const uid = validateUid(auth.uid)
 
-  if (data !== null && typeof data === 'object' && Object.keys(data).length > 0) {
-    throw new TeacherOnboardingError(
-      'invalid-argument',
-      'resolveTeacherTenant takes no input parameters.',
-    )
+  // No tenant input at all: any request field is rejected, and a non-object
+  // payload is rejected rather than silently ignored.
+  if (data !== undefined && data !== null) {
+    if (typeof data !== 'object' || Array.isArray(data)) {
+      throw new TeacherOnboardingError(
+        'invalid-argument',
+        'resolveTeacherTenant takes no input parameters.',
+      )
+    }
+    if (Object.keys(data).length > 0) {
+      throw new TeacherOnboardingError(
+        'invalid-argument',
+        'resolveTeacherTenant takes no input parameters.',
+      )
+    }
   }
 
-  const teacherRef = firestore
-    .collection(FIRESTORE_COLLECTIONS.TEACHERS)
-    .doc(uid)
-  const teacherSnap = await teacherRef.get()
-
-  if (teacherSnap.exists) {
-    const teacherData = teacherSnap.data() ?? {}
-
-    if (teacherData.status === TEACHER_STATUS.DISABLED) {
-      throw new TeacherOnboardingError(
-        'permission-denied',
-        'Teacher account is disabled.',
-      )
+  // The bidirectional ownership invariant lives in exactly one place: the
+  // shared resolver. This callable maps its structured codes onto the callable
+  // contract instead of reimplementing the checks.
+  let tenant = null
+  try {
+    tenant = await resolveActiveTeacherTenant({ firestore, auth: { uid } })
+  } catch (error) {
+    if (!(error instanceof TeacherTenantResolverError)) {
+      throw error
     }
-
-    if (teacherData.status !== TEACHER_STATUS.ACTIVE || teacherData.uid !== uid) {
-      throw new TeacherOnboardingError(
-        'failed-precondition',
-        'Teacher status or UID mismatch.',
-      )
+    switch (error.code) {
+      case 'teacher-not-found':
+        break
+      case 'unauthenticated':
+      case 'invalid-auth-uid':
+        throw new TeacherOnboardingError(
+          'unauthenticated',
+          'Authentication UID is malformed.',
+        )
+      case 'teacher-disabled':
+        throw new TeacherOnboardingError(
+          'permission-denied',
+          'Teacher account is disabled.',
+        )
+      default:
+        throw new TeacherOnboardingError(
+          'failed-precondition',
+          'Teacher foundation records are inconsistent.',
+        )
     }
+  }
 
-    const classroomId = teacherData.classroomId
-    if (typeof classroomId !== 'string' || !classroomId) {
-      throw new TeacherOnboardingError(
-        'failed-precondition',
-        'Teacher document missing classroom ID.',
-      )
-    }
-
-    const classroomRef = firestore
-      .collection(FIRESTORE_COLLECTIONS.CLASSROOMS)
-      .doc(classroomId)
-    const classroomSnap = await classroomRef.get()
-
-    if (!classroomSnap.exists) {
-      throw new TeacherOnboardingError(
-        'failed-precondition',
-        'Referenced classroom document not found.',
-      )
-    }
-
-    const classroomData = classroomSnap.data() ?? {}
-
-    if (classroomData.ownerUid !== uid) {
-      throw new TeacherOnboardingError(
-        'failed-precondition',
-        'Classroom owner UID mismatch.',
-      )
-    }
-
+  if (tenant) {
+    const teacherData = tenant.teacher.data
+    const classroomData = tenant.classroom.data
     const studentLoginCode = classroomData.studentLoginCode
+
     if (typeof studentLoginCode !== 'string' || !studentLoginCode) {
       throw new TeacherOnboardingError(
         'failed-precondition',
@@ -490,12 +567,12 @@ export async function resolveTeacherTenantService({
     return {
       state: 'active',
       teacher: {
-        uid,
+        uid: tenant.teacherUid,
         displayName: teacherData.displayName || '',
         email: teacherData.email || '',
       },
       classroom: {
-        id: classroomId,
+        id: tenant.classroomId,
         name: classroomData.name,
         studentLoginCode,
       },

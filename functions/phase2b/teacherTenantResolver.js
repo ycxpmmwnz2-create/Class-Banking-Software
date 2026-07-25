@@ -33,7 +33,7 @@ function isWellFormedUnicode(value) {
   return true
 }
 
-function validateCanonicalDocumentId(id, name) {
+export function validateCanonicalDocumentId(id, name) {
   if (typeof id !== 'string') {
     throw new TeacherTenantResolverError('invalid-argument', `${name} must be a string.`)
   }

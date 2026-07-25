@@ -16,4 +16,8 @@ export const INVITATION_STATUS = Object.freeze({
   REVOKED: 'revoked',
 })
 
+export const CLASSROOM_LOGIN_CODE_STATUS = Object.freeze({
+  ACTIVE: 'active',
+})
+
 export const CLASSROOM_DOCUMENT_VERSION = 1
