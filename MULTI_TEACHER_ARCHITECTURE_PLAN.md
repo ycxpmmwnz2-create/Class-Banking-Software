@@ -36,10 +36,11 @@ holds; it extends it into a concrete, phased implementation plan.
 ### Structural note
 
 The application as checked in on this branch is **not** the React/Vite
-scaffold implied by `package.json`. `src/App.jsx` and `src/main.jsx` are
-empty/unused. The entire client — UI, state, routing, auth, and every
-Firestore read/write the browser performs — is one 3,013-line inline
-`<script type="module">` block inside **`index.html`**, using hand-rolled
+scaffold implied by `package.json`. `src/App.jsx` is empty and `src/main.jsx`
+is an unused scaffold entry (it is not loaded by `index.html`). The entire
+client — UI, state, routing, auth, and every
+Firestore read/write the browser performs — is one inline
+`<script type="module">` block inside the 3,031-line **`index.html`**, using hand-rolled
 global state and `innerHTML` rendering (no React, no router). Server-side
 logic lives in `functions/`. This matters a great deal for the migration:
 there is no component tree, no context/provider pattern, and no URL-based
@@ -105,7 +106,7 @@ such document exists in the live deployed project is unknown.
 **Teacher (as of v1.1.0):** Google Sign-In (`signInWithPopup`) or legacy
 email/password, both resolving to one Firebase Auth user via account linking
 (`linkWithPopup`), so `auth.currentUser.uid` is stable. Teacher identity is
-decided by exactly one check, in `onAuthStateChanged` (`index.html:2910`):
+decided by exactly one check, in `onAuthStateChanged` (`index.html:2925-2928`):
 
 ```js
 const isAuthenticatedTeacher = user?.uid === TEACHER_UID;
@@ -131,7 +132,7 @@ close), provider-agnostic, unaffected by this migration.
 success mints a Firebase custom token with claims
 `{ role: "student", classroomId, studentId }`. Client calls
 `signInWithCustomToken`, then `onAuthStateChanged`'s student branch
-(`index.html:2925-2960`) reads back the claims and does:
+(`index.html:2945-2960`) reads back the claims and does:
 
 ```js
 const isSecureStudent = role === "student"
@@ -238,9 +239,9 @@ happen** — see Part 2, Ownership Model.
 | Assumption | Location |
 |---|---|
 | `TEACHER_UID` literal, sole authorization check | `index.html:758`, `firestore.rules`, `functions/resetStudentPin.js`, and (Phase 1 branch addition) `functions/phase1/ensureTeacherClassroom.js` (4 independent copies in source, not counting test fixtures — see §7) |
-| `classroomId === "morgan"` client-side gate | `index.html:930` (approx., in `onAuthStateChanged` student branch) |
-| `"morgan"` hardcoded as a Firestore path segment | `index.html:1120` (`viewStudentProfile`), and 3 `resetStudentPin({ classroomId: "morgan", ... })` call sites |
-| Single global document, no classroom key in path | `morganBank/classroomData` — read in `loadData()` (`index.html:868`), written in `saveData()` (`index.html:889`) |
+| `classroomId === "morgan"` client-side gate | `index.html:2948` (in the `onAuthStateChanged` student branch) |
+| `"morgan"` hardcoded as a Firestore path segment | `index.html:1137` (`viewStudentProfile`), and 3 `resetStudentPin({ classroomId: "morgan", ... })` call sites at `index.html:1181,1776,1817` |
+| Single global document, no classroom key in path | `morganBank/classroomData` — read in `loadData()` (`index.html:885`), written in `saveData()` (`index.html:906`) |
 | Global mutable module-level state (`data`, `isTeacher`, `screen`, etc.) | `index.html:807-820` — one in-memory session for the whole running app; no per-teacher/session isolation concept exists at all |
 | Single fixed `localStorage` key | `STORAGE_KEY = "mrMorganClassCashDataV5"` (`index.html:757`) — would collide across teachers on a shared device |
 | `syncStudentProfiles` hardcodes `'morgan'` | `functions/syncStudentProfiles.js` (3 places) |
@@ -258,14 +259,14 @@ and — checked in on `feature/multi-teacher`, not present before Phase 1 —
 search of the checked-in tree: exactly these four source files plus three
 test-fixture files contain the literal.
 
-**Classroom ID `"morgan"`**: `index.html:1120,1164,1758,1800,2930` (approx
-line numbers per agent scan); `functions/syncStudentProfiles.js:31,67,126`;
+**Classroom ID `"morgan"`**: `index.html:1137,1181,1776,1817,2948`;
+`functions/syncStudentProfiles.js:31,67,126`;
 `functions/scripts/seedTestStudent.js:5`; test fixtures in
 `functions/resetStudentPin.test.js` and
 `functions/studentCredentialVerifier.test.js`.
 
 **Singleton document path** `morganBank/classroomData`:
-`index.html:868,889`; `functions/syncStudentProfiles.js:6` (trigger is bound
+`index.html:885,906`; `functions/syncStudentProfiles.js:6` (trigger is bound
 to this exact path — the trigger itself must be redesigned, not just its
 body); `functions/scripts/checkData.js`, `seedTestStudent.js`.
 
@@ -421,10 +422,9 @@ the correct trade.
 
 > **Field provenance note:** the fields below marked *(Phase 1, implemented)*
 > are exactly what `functions/phase1/teacherClassroomModels.js` builds today.
-> Fields marked *(Phase 2B+ proposal)* are not implemented, not written by
-> any Phase 1 or Phase 2A code, and must not be read as current fact —
-> they're design placeholders for whichever later phase actually adds
-> profile-picture display, last-login tracking, or teacher-disable support.
+> The `"disabled"` status marked *(Phase 2B decision)* is not implemented or
+> written by any Phase 1 or Phase 2A code and must not be read as current fact.
+> Phase 2B explicitly declines durable profile-picture and last-login fields.
 
 ```
 teachers/{teacherUid}
@@ -432,18 +432,18 @@ teachers/{teacherUid}
     uid, classroomId,                   // (Phase 1, implemented)
     createdAt, updatedAt,                // (Phase 1, implemented)
     status: "active",                    // (Phase 1, implemented — TEACHER_STATUS.ACTIVE;
-                                          // "disabled" is a Phase 2B+ proposal, not built)
-    displayName, email,                  // (Phase 1, implemented — optional strings)
-    photoURL, lastLoginAt                // (Phase 2B+ proposal — not implemented)
+                                          // "disabled" is a Phase 2B decision, not built)
+    displayName, email                   // (Phase 1, implemented — optional strings)
   }
 
 classrooms/{classroomId}
   {
     ownerUid, name,                      // (Phase 1, implemented)
     createdAt, updatedAt, version,       // (Phase 1, implemented)
-    settings: {}                         // (Phase 1, implemented — empty object at creation;
+    settings: {},                        // (Phase 1, implemented — empty object at creation;
                                           // same shape as today's data.settings once populated
                                           // by Phase 2A migration)
+    studentLoginCode                     // (Phase 2B decision — not implemented)
   }
 
 classrooms/{classroomId}/students/{studentId}
@@ -458,13 +458,21 @@ classrooms/{classroomId}/transactions/{transactionId}
 classrooms/{classroomId}/loginHistory/{logId}
   { studentId, studentName, date, result, note }
 
-studentCredentials/{loginId}            // path and document schema UNCHANGED;
-                                         // classroomId VALUE is migrated per document
+studentCredentials/{loginId}            // Phase 2A/legacy compatibility source;
+                                         // retained untouched through rollback
+  { schemaVersion, authUid, classroomId, studentId, pinHash, active,
+    failedAttempts, lockedUntil, createdAt, updatedAt, pinUpdatedAt }
+
+classroomLoginCodes/{studentLoginCode}   // Phase 2B target: server-only locator
+  { classroomId, status, createdAt }
+
+classrooms/{classroomId}/studentCredentials/{loginId} // Phase 2B target;
+                                                       // server-only
   { schemaVersion, authUid, classroomId, studentId, pinHash, active,
     failedAttempts, lockedUntil, createdAt, updatedAt, pinUpdatedAt }
 
 studentAuthLogs/{classroomId}/logs/{logId}   // RE-SCOPED under classroomId
-  { loginId, success, reason, timestamp, studentId }
+  { identifierDigest, success, reason, timestamp, studentId? }
 ```
 
 `teachers` and `classrooms` are separate top-level collections (principle
@@ -494,17 +502,15 @@ Nesting under `classroomId` makes the security rule structurally scoped
 field-based `where` filter that a rule can't easily enforce on `list`/`read`
 without a `get()` lookup per document.
 
-**Why `studentCredentials` keeps its flat collection path and document
-schema**: it's server-only (Admin SDK), already has a `classroomId` field
-in the right shape, and is queried (not listed/read by clients) — there's
-no client-side rule risk here today, and changing its *path or schema*
-would be pure churn for no security benefit. This is about structure only,
-not data: every legacy document's `classroomId` **value** still has to be
-migrated from the literal `"morgan"` to the resolved generated
-`classroomId`, exactly like every other collection — see Part 2, "Student
-credentials," for the full migration requirements. Nothing about this
-collection is exempt from the migration; only its path and field names are
-unchanged.
+**Credential path evolution:** Phase 2A deliberately keeps the flat
+`studentCredentials/{loginId}` path and migrates only each document's
+`classroomId` value because that phase proves parity for the existing class.
+The detailed Phase 2B design below settles the previously unresolved product
+collision: the final V2 login accepts a classroom code and stores credentials
+at `classrooms/{classroomId}/studentCredentials/{loginId}`. Flat documents
+remain untouched compatibility/rollback sources; Phase 3 must re-key them with
+independent reconciliation and must never use a flat fallback after cutover.
+This later decision does not retroactively change Phase 2A's completed scope.
 
 ### Teacher profile model
 
@@ -531,10 +537,11 @@ teachers/{teacherUid}: {
 }
 ```
 
-`photoURL`, `lastLoginAt`, and a `"disabled"` status value are **Phase 2B+
-proposals** — none of them are written by `provisionTeacherClassroom` today,
-and nothing in Phase 2A depends on or introduces them. Do not treat them as
-current schema when implementing against this document in Phase 2A.
+`photoURL`, `lastLoginAt`, and a `"disabled"` status value are not current
+implemented fields. The detailed Phase 2B design below adopts `"disabled"`
+but deliberately does not persist `photoURL` or `lastLoginAt`. Nothing in
+Phase 2A depends on or introduces any of them; do not treat the Phase 2B status
+decision as current Phase 1/2A schema.
 
 Created once, atomically alongside its `classrooms/{classroomId}` document,
 by `provisionTeacherClassroom` (a server-only, transactional helper),
@@ -553,58 +560,66 @@ principle 5 without speculatively building for co-teaching now.
 
 - `classrooms/{classroomId}.ownerUid` is the single source of truth for
   ownership.
-- Firestore rules replace the literal-UID `isTeacher()` with an ownership
-  lookup:
+- Firestore rules replace the literal-UID `isTeacher()` with an active,
+  reciprocal ownership lookup. This is a structural sketch; the detailed
+  Phase 2B rules contract and proposed-rules tests below are normative:
 
 ```
-function isOwner(classroomId) {
+function isActiveOwner(classroomId) {
   return request.auth != null
+    && get(/databases/$(database)/documents/teachers/$(request.auth.uid)).data.uid == request.auth.uid
+    && get(/databases/$(database)/documents/teachers/$(request.auth.uid)).data.status == "active"
+    && get(/databases/$(database)/documents/teachers/$(request.auth.uid)).data.classroomId == classroomId
     && get(/databases/$(database)/documents/classrooms/$(classroomId)).data.ownerUid == request.auth.uid;
 }
 
 match /classrooms/{classroomId} {
-  allow read, write: if isOwner(classroomId);
+  allow read: if isActiveOwner(classroomId);
+  allow update: if isActiveOwner(classroomId)
+    && request.resource.data.diff(resource.data).affectedKeys()
+      .hasOnly(["settings", "lastBackupAt", "updatedAt"]);
+  allow create, delete: if false; // onboarding is Admin SDK only
 
   match /students/{studentId} {
-    allow read, write: if isOwner(classroomId);
+    allow read, write: if isActiveOwner(classroomId);
     allow read: if isStudent(classroomId, studentId);   // unchanged from today
   }
   match /transactions/{transactionId} {
-    allow read, write: if isOwner(classroomId);
+    allow read, write: if isActiveOwner(classroomId);
   }
   match /loginHistory/{logId} {
-    allow read, write: if isOwner(classroomId);
+    allow read, write: if isActiveOwner(classroomId);
   }
 }
 
 match /studentAuthLogs/{classroomId}/logs/{logId} {
-  allow read: if isOwner(classroomId);
+  allow read: if isActiveOwner(classroomId);
 }
 ```
 
 This is the structural fix for the risk flagged in Part 1 §4/§8: a second
 teacher's `classrooms/{their-id}` grants them nothing on
-`classrooms/morgan-generated-id/**`, because `isOwner()` checks the
-*specific* classroom document's `ownerUid`, not just "is this any teacher."
+`classrooms/morgan-generated-id/**`, because `isActiveOwner()` checks the
+*specific* reciprocal teacher/classroom relationship, not just "is this any
+teacher."
 
 - `resetStudentPin` (Cloud Function) changes its guard from
-  `auth.uid !== TEACHER_UID` to "does `classrooms/{classroomId}.ownerUid`
-  equal `auth.uid`?" — same shape, ownership-based instead of literal.
-- `syncStudentProfiles` trigger changes from a fixed single-document path
-  binding to a wildcard/collection-group binding
-  (`onDocumentWritten('classrooms/{classroomId}/...', ...)` or per-write-path
-  derivation) so `classroomId` comes from the triggering document's path, not
-  a hardcoded literal — this removes all three hardcoded `'morgan'`
-  occurrences in that file at once.
+  `auth.uid !== TEACHER_UID` to the active reciprocal teacher/classroom
+  resolver. Under the detailed Phase 2B contract the request no longer accepts
+  `classroomId`; the server derives it from the authenticated teacher.
+- The V2 `syncStudentProfiles` trigger is bound exactly to
+  `classrooms/{classroomId}/students/{studentId}`, so both IDs come from the
+  trusted event path rather than a hardcoded literal. The current singleton
+  trigger remains the compatibility export until Phase 3.
 
 ### Authentication flow (V2)
 
-Student PIN login is **unchanged in mechanism** — same callable function,
-same bcrypt verification, same lockout logic, same custom-token claims shape.
-The only change is on the client: replace the literal
-`classroomId === "morgan"` check with "does this classroomId exist and is it
-active," since any valid classroom should now be accepted, not just
-`"morgan"`.
+Student PIN login retains its **security mechanism** — callable verification,
+bcrypt, lockout, and the same custom-token claims shape — but the detailed
+Phase 2B design below changes its locator contract to classroom code + login ID
++ PIN and moves credentials into classroom-scoped paths. The Phase 3 client
+also replaces the literal `classroomId === "morgan"` check with validation of
+the server-minted claims against a valid classroom-scoped student path.
 
 Teacher login: Google Sign-In / linked email-password stays exactly as
 shipped in v1.1.0 (no further auth-provider changes needed). What changes is
@@ -646,7 +661,7 @@ equality check, `onAuthStateChanged` (or an equivalent) now:
 > This document describes what is checked in on `feature/multi-teacher`,
 > not what is currently running in production.
 >
-> What remains **actually unbuilt**, and is correctly still Phase 2B+ scope,
+> What remains **actually unbuilt**, and is Phase 2B scope,
 > is the **general** multi-teacher onboarding flow: a callable any newly
 > signed-in teacher (not just the one hardcoded UID) can call to create
 > their *own* classroom with a name they choose, plus the "Create your
@@ -655,19 +670,21 @@ equality check, `onAuthStateChanged` (or an equivalent) now:
 > hardcoded teacher; it does not generalize without further authorization
 > and UX work.
 
-The two-callable shape (`ensureTeacherProfile` then `createClassroom`)
-sketched in even earlier drafts of this document remains a reasonable
-target design for that later, general-onboarding phase, but should be
-revisited against what `ensureTeacherClassroom`/`provisionTeacherClassroom`
-already prove out (a single transactional helper covering both documents,
-currently gated to one teacher) rather than assumed as final:
+The normative Phase 2B design below chooses one invitation-controlled
+`onboardTeacherClassroom` transaction rather than the earlier speculative
+two-callable shape. It builds on what
+`ensureTeacherClassroom`/`provisionTeacherClassroom` already prove: one
+transaction must cover the linked records, and clients never create or attach
+ownership documents directly:
 
 1. Teacher signs in with Google (existing flow, no changes needed there).
-2. Client calls a callable that ensures a `teachers/{uid}` document exists,
+2. An invited client calls the onboarding callable, which ensures a
+   `teachers/{uid}` document exists,
    creating one (with its paired `classrooms/{classroomId}` document, per
    `provisionTeacherClassroom`'s actual transactional behavior) if it does
    not, or returning the existing one unchanged if it does — generalized,
-   for Phase 2B+, to any authorized teacher rather than one hardcoded UID.
+   for Phase 2B, to an invitation-authorized teacher rather than one hardcoded
+   UID.
 3. Client then proceeds parameterized by the returned `classroomId` instead
    of the literal `"morgan"`.
 
@@ -727,8 +744,10 @@ phase.
 
 Phase 2B (Functions/Auth changes, onboarding UX, credential-collision
 handling at the product level, browser account-switch/cache safety) is a
-mandatory follow-up before Phase 3, named here so it isn't lost, but is
-intentionally not designed in this document — see "Implementation phases."
+mandatory follow-up before Phase 3 and is entirely out of scope for Phase 2A.
+Its normative design is Part 2, "Phase 2B — Broader cutover readiness
+(detailed design)"; nothing specified there is authorized by, depended on by,
+or required for Phase 2A.
 
 #### Foundation and validation
 
@@ -749,7 +768,7 @@ intentionally not designed in this document — see "Implementation phases."
   - `status === TEACHER_STATUS.ACTIVE` (`'active'`) — the only status value
     the checked-in Phase 1 models (`functions/phase1/
     teacherClassroomModels.js`) or the Phase 2A rehearsal design in this
-    document ever write. A `"disabled"` status is a Phase 2B+ proposal not
+    document ever write. A `"disabled"` status is a Phase 2B decision not
     written by either of those — this says nothing about whether a
     deployed Firestore document could contain some other status value; the
     validator simply has no branch for anything but `"active"` beyond
@@ -2159,18 +2178,19 @@ point in Phase 2A rehearsal is low-risk and manifest-driven:
    covers any document under that path today, not a new default-deny rule.
    The existing student-specific rule keeps its own separate, already-
    existing coverage, unchanged. The full ownership-based rewrite of these
-   rules (`isOwner()`, `get()`-based lookups) remains Phase 3 scope, not
+   rules (`isActiveOwner()`, `get()`-based lookups) remains Phase 3 scope, not
    built or tested yet.
 2. **Cloud Functions unit tests** (extending the existing
    `resetStudentPin.test.js` / `studentCredentialVerifier.test.js` /
-   `functions/phase1/*.test.js` patterns) — Phase 3+ scope, listed here for
-   continuity with the original plan, not part of Phase 2A's deliverable:
+   `functions/phase1/*.test.js` patterns) — Phase 2B scope under the detailed
+   design below, listed here for continuity with the original plan and not
+   part of Phase 2A's deliverable:
    - `resetStudentPin` denies a teacher who doesn't own the target
      classroom.
    - `syncStudentProfiles` correctly derives `classroomId` from the
      triggering path for at least two different classroom IDs (regression
      test against the old hardcoded-`'morgan'` bug class).
-   - A **general**, any-teacher onboarding callable (the Phase 2B+
+   - A **general**, invitation-authorized onboarding callable (the Phase 2B
      generalization of the already-implemented, single-teacher-restricted
      `ensureTeacherClassroom` — see "New teacher onboarding flow") is
      idempotent and never leaves a `teachers` doc pointing at a
@@ -2179,7 +2199,7 @@ point in Phase 2A rehearsal is low-risk and manifest-driven:
      existing `ensureTeacherClassroom` callable wrapper already have test
      coverage today for their current, single-teacher-restricted behavior;
      this item is specifically about the *generalized*, multi-teacher
-     version Phase 2B+ would add.
+     version Phase 2B would add.
 3. **Migration script reconciliation test (Phase 2A, Firestore emulator
    only — never production, no Auth or Functions emulator required)**:
    the full "Reconciliation requirements" and "Synthetic fixture and
@@ -2278,6 +2298,913 @@ point in Phase 2A rehearsal is low-risk and manifest-driven:
 
 ---
 
+### Phase 2B — Broader cutover readiness (detailed design)
+
+> **Status and authority.** This section is the normative Phase 2B design.
+> It resolves the design gap previously recorded in Part 3. It describes
+> implementation work that has **not** been performed merely by writing this
+> plan. Repository facts are cited as current implemented facts; requirements
+> in this section are Phase 2B design decisions. Production deployment state
+> remains unknown. Phase 2B uses only local tests and the Auth, Functions, and
+> Firestore emulators: it does not migrate production data, deploy Functions or
+> rules, change the live client's primary path, or onboard a second real
+> teacher.
+
+#### 1. Scope, invariants, and the Phase 3 boundary
+
+**Goals.** Phase 2B must implement and emulator-prove the contracts needed for
+more than one independently owned classroom: invitation-controlled teacher
+onboarding; authoritative teacher/tenant resolution; reusable Functions
+authorization; classroom-qualified student login; scoped credentials and auth
+logs; safe PIN reset and student-profile synchronization; and browser session
+and cache isolation. The code may be built behind disabled/versioned adapters,
+but every target contract must be executable in emulators before Phase 2B is
+complete.
+
+**Accepted Version 2 cardinality.** Version 2 remains exactly one teacher UID
+to one independently owned classroom, and one classroom to one owner UID. The
+two links must agree:
+
+```
+teachers/{uid}.uid             == uid
+teachers/{uid}.classroomId     == classroomId
+teachers/{uid}.status          == "active"
+classrooms/{classroomId}.ownerUid == uid
+```
+
+No teacher may own a second classroom and no classroom may have a second
+owner. Multiple classrooms per teacher, classroom switching, co-teachers,
+district administrators, ownership transfer, and merging classrooms are
+non-goals. This preserves the scalar relationship already implemented by
+`buildTeacherDocument` (`functions/phase1/teacherClassroomModels.js:28-47`)
+and the paired transaction in `provisionTeacherClassroom`
+(`functions/phase1/teacherClassroomProvisioner.js:82-135`). It means there is
+no classroom picker: onboarding creates one classroom, every Functions call
+resolves that classroom from the caller UID, rules check both sides of the
+relationship, the UI shows one resolved classroom, and tests reject attempts
+to create or attach another.
+
+**Identity and trust invariants.** Generated Firestore document IDs remain the
+canonical classroom identity; neither a teacher UID, the legacy literal
+`morgan`, a classroom name, nor the new student-facing classroom code is a
+classroom ID. Authentication proves who signed in. It does not by itself grant
+teacher status or classroom access. Authorization requires an exact active
+teacher document plus the reciprocal classroom owner link. A classroom ID
+returned by the server may be used by the client to construct paths, but it is
+never accepted as authorization: rules and callable handlers independently
+re-resolve or verify ownership.
+
+All malformed identifiers and all missing, malformed, inactive, or
+inconsistent links fail closed. Unknown teacher and eligible invited teacher
+are distinct states; neither may navigate to classroom data before onboarding
+commits. `status: "disabled"` is adopted in Phase 2B. Any absent or unknown
+status is non-active. A disabled teacher cannot resolve, onboard, read, mutate,
+reset PINs, or retain cached classroom data. Disabling a teacher does not
+delete either foundation document.
+
+Onboarding and retryable mutations must be idempotent. Reads may retry;
+transactions must either commit all linked state or none. Duplicate,
+inconsistent, or partially written records are blocking integrity failures,
+never an invitation to repair from an ordinary client request.
+
+**Non-goals and inertness.** Phase 2B does not change production data,
+`firestore.rules`, the authoritative legacy `morganBank/classroomData` path,
+the checked-in Phase 2A migration/recovery algorithms, or the primary runtime
+exports used by the existing classroom. New V2 handlers and client modules
+must be versioned or disabled by a server/client cutover gate whose default is
+off. The existing hardcoded bootstrap and legacy handlers remain the active
+compatibility path until Phase 3. Phase 3 alone may adapt and run a separately
+reviewed production migration, rewrite/deploy rules, enable V2 Functions,
+switch the client data path, and coordinate rollback. Phase 4 verifies the
+existing real classroom; Phase 5 is the first point at which a second real
+teacher may be invited and onboarded.
+
+#### 2. General teacher onboarding and eligibility
+
+**Authorization decision: invitation required.** Arbitrary authenticated
+Google users may not self-provision. A new teacher must (a) authenticate with
+Google, (b) present Firebase token claims with a verified email and Google as
+the sign-in provider, and (c) match an unused, active, server-managed
+invitation. Existing foundation teachers remain resolvable without an
+invitation; the existing teacher's linked email/password fallback remains a
+compatibility concern through its established observation window.
+
+Invitation documents are Admin-SDK-only and default-denied to clients:
+
+```
+teacherInvitations/{sha256(normalizedEmail)}
+  { email, status: "active" | "consumed" | "revoked",
+    createdAt, expiresAt, consumedAt, consumedByUid }
+```
+
+Email normalization is `trim()` plus Unicode-independent ASCII lowercase;
+the token email must be a non-empty syntactically valid address and
+`email_verified === true`. The digest keeps raw email out of the document path
+but is not treated as encryption; the document body is still sensitive and
+server-only. Invitation creation/revocation is an out-of-band administrative
+operation and is not exposed to the browser in Phase 2B. Emulator fixtures may
+seed invitations with the Admin SDK.
+
+The target callable is:
+
+```
+onboardTeacherClassroom({ classroomName }) ->
+  { created, teacher: { uid, status, displayName, email },
+    classroom: { id, name, studentLoginCode } }
+```
+
+The UID, email, display name, and provider come only from `request.auth` and
+its verified token. Client-supplied UID/profile/email fields are rejected as
+unknown fields. `classroomName` is the sole client profile input: trim and
+collapse internal ASCII whitespace, require 1–80 Unicode code points, reject
+control characters and `/`. Display name is normalized from the token and
+limited to 100 code points; email is normalized as above. Phase 2B does not
+persist `photoURL` or `lastLoginAt`; the photo may be displayed ephemerally
+from Firebase Auth, avoiding a new durable PII field without a product need.
+
+The service generates both a Firestore auto-ID and a student login code. The
+login code uses eight random characters from an unambiguous uppercase alphabet
+and is displayed as `XXXX-XXXX`; its canonical index form has no hyphen. A
+transaction reads the invitation and `teachers/{uid}`, reserves
+`classroomLoginCodes/{canonicalCode}` with `create`, then creates the classroom
+and teacher and consumes the invitation. It also queries
+`classrooms.where('ownerUid', '==', uid).limit(2)` before creation: any
+owner-linked classroom without the reciprocal teacher document, or more than
+one result, is inconsistent partial state and blocks rather than creating a
+second classroom. A generated-code collision retries
+the whole operation with a new code up to a bounded limit and otherwise
+returns `resource-exhausted`. The linked writes are:
+
+```
+teachers/{uid}                           existing Phase 1 fields
+classrooms/{generatedId}                 existing fields + studentLoginCode
+classroomLoginCodes/{canonicalCode}
+  { classroomId: generatedId, status: "active", createdAt }
+teacherInvitations/{emailDigest}         status/consumption update
+```
+
+The login-code index is Admin-SDK-only and is a locator, never proof of access.
+Concurrent calls for one UID serialize on `teachers/{uid}`. If a valid linked
+foundation already exists, the callable ignores a different submitted name
+and returns `created: false`; it must not consume a second invitation or make a
+second classroom. It queries the code index by `classroomId` and requires
+exactly the one index named by the classroom root. If an existing valid
+classroom lacks a login code, ordinary
+onboarding returns `failed-precondition`; a separately reviewed emulator
+backfill/Phase 3 production adaptation owns that transition. Missing classroom,
+owner mismatch, UID mismatch, invalid status, multiple code indexes, and an
+invitation consumed by another UID all fail without repair or partial writes.
+
+Safe callable errors are: `unauthenticated` (sign in required),
+`permission-denied` (not eligible, revoked/expired invitation, wrong provider,
+disabled teacher), `invalid-argument` (classroom name/shape),
+`failed-precondition` (partial or inconsistent foundation),
+`already-exists` (conflicting invitation consumption), `aborted` (retryable
+transaction contention), `resource-exhausted` (code generation exhausted),
+and `internal` (unexpected). Client messages stay generic; logs may include a
+request correlation ID, result category, UID suffix/digest, and document paths,
+but never tokens, raw invitation email, classroom code, PIN, PIN hash, or full
+student login ID.
+
+The Phase 1 `ensureTeacherClassroom` wrapper
+(`functions/phase1/ensureTeacherClassroom.js:6-42`) remains unchanged and
+hardcoded through Phase 2B. The generalized handler reuses/refines the existing
+provisioning transaction rather than letting clients write ownership records.
+It is exposed only to emulator tests or behind the default-off V2 gate. Phase 3
+selects the generalized contract atomically with the new client; the hardcoded
+wrapper survives the rollback window and is removed only under a later cleanup
+checkpoint.
+
+#### 3. Teacher session and authoritative tenant resolution
+
+Introduce one server callable with no tenant input:
+
+```
+resolveTeacherTenant({}) -> one of
+  { state: "onboarding-required", eligibility: "invited" }
+  { state: "active", teacher: { uid, displayName, email },
+    classroom: { id, name, studentLoginCode } }
+```
+
+Unauthenticated callers receive `unauthenticated`; uninvited unknown users and
+disabled users receive `permission-denied`; malformed or inconsistent existing
+records receive `failed-precondition`. The handler derives `uid` from auth,
+reads `teachers/{uid}`, then reads its classroom and verifies the complete
+bidirectional invariant. It never accepts a classroom ID from request data.
+For a missing teacher it evaluates the invitation without exposing whether a
+different email is invited. Stale client state is irrelevant because every
+resolution is a fresh server read.
+
+The browser state machine is normative:
+
+```
+signed-out
+  -> authenticating
+  -> resolving(uid, epoch)
+       -> onboarding-required -> onboarding -> resolving
+       -> active(uid, classroomId, epoch) -> classroom-loading -> ready
+       -> denied-or-inconsistent -> signed-out/error
+any auth UID/classroom change -> invalidate epoch -> purge/reset -> resolving
+```
+
+`resolving`, `onboarding`, and `classroom-loading` render dedicated loading
+states with no classroom navigation or actions. `onboarding-required` renders
+only the classroom-name form and sign-out. `active` is not `ready`: data must
+load for the same epoch and resolved tenant before dashboard navigation is
+enabled. Denied/disabled/inconsistent states purge tenant memory/cache, show a
+safe recovery message, and sign out; inconsistency also offers a correlation ID
+for support, not a client repair control. The header in every ready teacher
+screen displays the classroom name and formatted student login code.
+
+`requireTeacher` becomes a UI convenience requiring `session.state ===
+"ready"`, the current auth UID equal to the resolved UID, and a nonempty
+resolved classroom ID. Rules and Functions remain the security boundary. A
+refresh repeats resolution before cache validation. Auth identity change,
+including teacher-to-student or student-to-teacher, invalidates all previous
+state before starting any new read.
+
+#### 4. Shared Functions authorization and function contracts
+
+Add a narrow shared `resolveActiveTeacherTenant({ firestore, auth })` helper.
+It performs the same no-input UID -> teacher -> classroom checks as the
+resolution callable and returns immutable `{ teacherUid, classroomId,
+teacher, classroom }`. It rejects absent auth, noncanonical IDs, every status
+except exact `active`, missing documents, UID mismatch, and owner mismatch.
+It must not repair data and must not accept a client classroom ID. All
+teacher-only callables use it; rules independently enforce the equivalent
+contract after Phase 3.
+
+**`resetStudentPin`.** Target request is `{ studentId, newPin }`; reject
+unknown fields and remove `classroomId` because one-teacher/one-classroom makes
+it unnecessary. Resolve the active tenant from auth, validate canonical
+student ID and exactly four ASCII digits, then read exactly
+`classrooms/{resolvedId}/studentCredentials/{normalizedLoginId}` only after
+locating the unique credential by `studentId`. Until a direct student-to-login
+index exists, query the scoped subcollection with `.where('studentId','==',
+studentId).limit(2)`; zero returns `not-found`, two returns
+`failed-precondition`. Verify the matching student document exists in the same
+classroom, hash outside sensitive logs, and transactionally update only PIN,
+activation, lockout, and timestamps. Teacher A can never name Classroom B;
+forged/unknown `classroomId` fields are `invalid-argument`. A retry may replace
+the same PIN hash but cannot change identity or another tenant.
+
+**`studentCredentialVerifier` / `studentPinLogin`.** Target request is
+`{ classroomCode, loginId, pin }`. No Firebase auth is required because the
+callable creates student auth. Normalize the classroom code by trimming,
+removing one display hyphen/ASCII spaces, and uppercasing ASCII; require exactly
+eight allowed characters. Normalize login ID with trim + ASCII lowercase;
+require 1–64 characters from `[a-z0-9-]`, no slash, leading/trailing hyphen,
+or repeated hyphens. The current trim/lowercase behavior is implemented at
+`functions/studentCredentialVerifier.js:60-85`; Phase 2B makes it a shared,
+stricter canonical contract used during credential creation too.
+
+Credential creation derives the base login ID from the student name by Unicode
+NFKD normalization, removing combining marks, ASCII-lowercasing, replacing each
+run outside `[a-z0-9]` with one hyphen, trimming hyphens, and limiting the base
+to 48 characters; an empty result becomes `student`. Collision suffixes fit
+within the 64-character maximum. The assigned ID is stored and remains stable
+across later name changes; a submitted login ID is validated, not re-slugged.
+
+Resolve `classroomLoginCodes/{code}` via Admin SDK, require its active index,
+then require a valid classroom root and its active reciprocal owner teacher.
+Read only
+`classrooms/{classroomId}/studentCredentials/{loginId}`. The credential must
+have matching `classroomId`, `studentId`, deterministic `authUid`, canonical
+login ID, active state, and schema version. Because Firebase Auth UIDs are
+global even when Firestore paths are scoped, `authUid` is
+`s_` + base64url(SHA-256(`classroomId` + NUL + `studentId`)), not the login ID.
+This is fixed-length, opaque, deterministic for retry, and distinct for the
+same student/login ID in two classrooms. The existing bcrypt,
+five-attempt/five-minute credential lockout, dummy-hash timing defense, and
+claims shape are preserved
+(`functions/studentCredentialVerifier.js:87-182`). On success return only a
+custom token with `{ role: "student", classroomId, studentId }`.
+
+Known-classroom attempts write
+`studentAuthLogs/{classroomId}/logs/{autoId}`. Unresolved/malformed classroom
+codes write only a server-private `studentAuthUnresolvedLogs/{autoId}` entry.
+Logs store outcome category, timestamp, student ID only when resolved, and a
+one-way identifier digest; never raw PIN/hash/token and never raw unknown
+login ID or classroom code. Client-visible response for malformed code,
+missing code, missing login, wrong PIN, inactive record, or lockout is the same
+`unauthenticated: Invalid student credentials.` This avoids enumeration.
+
+Rate limiting has two layers: the existing per-credential transaction remains
+five failures followed by five minutes locked, while server-only
+`studentLoginThrottle/{sha256(code + NUL + loginId)}` buckets count resolved
+and unresolved attempts in a rolling five-minute window and reject after ten.
+Throttle responses remain the same generic credential error. Phase 2B tests
+use an injected clock/digest; no raw identifiers enter throttle document IDs.
+App Check enforcement may be added only as a separately tested cutover
+hardening control; it is not a substitute for server rate limits and is not
+assumed configured today.
+
+**`syncStudentProfiles`.** Current implementation is a legacy singleton
+trigger (`functions/syncStudentProfiles.js:5-12`), queries only `morgan`
+credentials (`:28-44`), writes only `classrooms/morgan/students` (`:64-77`),
+and creates globally keyed credentials (`:103-135`). It remains the active
+legacy trigger through Phase 2B. Extract and test a V2 handler for the trusted
+trigger path `classrooms/{classroomId}/students/{studentId}`. Event path params,
+not document fields, provide both IDs. Before credential work the handler
+validates the classroom root and active reciprocal owner foundation.
+
+On student create, the V2 handler creates an inactive classroom-scoped
+credential, deriving a canonical base login ID from the name and adding
+`-2`, `-3`, etc. only for collisions *inside that classroom*. It uses a
+transaction/create precondition so concurrent same-name students cannot
+overwrite, and derives the global Firebase `authUid` from classroom ID plus
+student ID rather than from the reusable login ID. Within that same
+transaction, and before writing, it must also query the classroom's
+credentials for the event path's `studentId`: any existing credential for that
+`studentId`, active or inactive, is a blocking `failed-precondition`, never a
+second credential.
+
+That check is mandatory rather than defensive because `studentId` is
+load-bearing twice: `resetStudentPin` treats it as the unique credential key,
+and the deterministic `authUid` is derived from it. Two credentials sharing one
+`studentId` would therefore both break PIN reset (a permanent
+`failed-precondition` for that student) and alias two distinct login IDs onto a
+single Firebase Auth identity and claim set. The current client makes that
+collision reachable: `addStudent` allocates `max(existing id) + 1`
+(`index.html:1743-1745`) over a roster that `removeStudent` shrinks
+(`index.html:1875`), so removing the highest-numbered student and adding
+another reuses that student's ID. **Version 2 requires `studentId` to be unique
+and never reused within a classroom**; Phase 3's client/data service owns
+allocating IDs that satisfy this, and until it does the V2 handler fails closed
+instead of producing a duplicate. Legacy `syncStudentProfiles` does not produce a
+duplicate here, but it is not correct either: its `existingCredsByStudentId`
+lookup (`functions/syncStudentProfiles.js:80`) matches the departed student's
+credential by the recycled ID and the reactivation branch
+(`:103-111`) reuses it, silently giving the new student the previous
+occupant's login ID and PIN hash. Neither path is correct without this
+invariant. The credential's
+stable identity is found thereafter by scoped
+`studentId`; renaming a student does not silently rename the login ID. On
+student update it repairs only explicitly allowed active/profile fields, not
+ownership. On student delete it marks that classroom's credential inactive;
+it never deletes credentials and never scans or deactivates another classroom.
+The new handler does not mirror student documents back onto their own trigger
+path and therefore cannot loop. The Phase 3 client/data service becomes the
+source of truth for V2 student documents; the legacy blob and legacy trigger
+remain authoritative until that coordinated switch.
+
+**Exports and compatibility.** `functions/index.js` keeps current callable
+names and the current legacy sync export active in Phase 2B. New V2 wrapper
+exports are exactly `resolveTeacherTenantV2`, `onboardTeacherClassroomV2`,
+`studentPinLoginV2`, `resetStudentPinV2`, and `syncStudentProfilesV2`. They
+enforce a `defineBoolean('MULTI_TEACHER_V2_ENABLED', { default: false })`
+server gate before any Firestore access; the emulator acceptance command sets
+it true explicitly. Pure handlers are directly unit-tested. Phase 3 maps
+the stable public names to the approved V2 handlers and deploys them with the
+client/rules/migration. No handler may silently choose legacy versus V2 based
+on whether a document happens to exist.
+
+Every function logs only correlation ID, operation, result category, and
+redacted identifiers. Tests cover unauthenticated, disabled, missing,
+malformed, duplicate, owner-mismatch, cross-classroom, retry, and concurrency
+cases. Expected denials are structured outcomes, not error-level dumps of
+request bodies.
+
+#### 5. Student login collision decision and migration compatibility
+
+**Final decision: classroom code + login ID + PIN, with credentials scoped
+under the classroom.** Global uniqueness is rejected because it leaks one
+classroom's naming constraints into every other classroom and creates awkward
+suffixes. A flat composite ID is rejected because it preserves a global
+credential namespace and makes safe per-class operations harder. A raw
+classroom ID is rejected as unusable and as an internal identifier. The
+student-facing code/index design gives the callable enough context to resolve
+exactly one tenant while keeping credentials and locks structurally isolated.
+
+Two classrooms may each have `alex-smith`; the paths are distinct:
+
+```
+classrooms/A/studentCredentials/alex-smith
+classrooms/B/studentCredentials/alex-smith
+studentAuthLogs/A/logs/{logId}
+studentAuthLogs/B/logs/{logId}
+```
+
+Within one classroom, normalized login IDs must be unique; deterministic
+suffixing is performed transactionally. The UI asks for the classroom code,
+student login ID, and PIN, remembers neither PIN nor persistent student data,
+and formats the code without claiming it is secret. Teachers can view their
+own code and each student's assigned login ID only after active tenant
+resolution. The code index and credential collections have no client reads or
+writes under the Phase 3 rules contract; only Admin SDK handlers access them.
+
+Phase 2A correctly preserved flat `studentCredentials/{loginId}` documents and
+changed only their legacy classroom value for data-parity rehearsal. Phase 2B
+does not revise or delete that tooling. Emulator fixtures add a *separate*
+credential re-key projection proving every flat legacy credential maps to one
+scoped path with all security fields preserved except the explicitly derived
+V2 `authUid`; the projection records old/new UID values and verifies that
+claims resolve to the same classroom/student identity. The future Phase 3
+production runner must (1) assign/reserve the existing classroom's login code,
+(2) copy credentials to scoped paths with update-time/checksum preconditions,
+(3) keep flat credentials untouched for rollback, and (4) switch
+verifier/PIN-reset handlers only after scoped parity succeeds. During Phase 2B
+and before Phase 3,
+flat credentials and the old two-field login remain authoritative. There is no
+dual-read fallback: after cutover, absence/divergence at the scoped path fails
+closed rather than consulting a potentially ambiguous flat record. Existing
+legacy Firebase Auth student users are not deleted or rewritten; they remain
+rollback artifacts while V2 custom-token sign-in uses the new deterministic
+UIDs.
+
+#### 6. Browser account switching and cache isolation
+
+The current client has one global `data` object and session variables
+(`index.html:807-820`), and `loadData()` silently falls back to the shared
+`mrMorganClassCashDataV5` key (`:883-899`). `saveData()` writes that same key
+before its Firestore attempt (`:902-909`). The existing `authStateVersion`
+guards only two auth-observer awaits (`:2924-2960`), while log loads, PIN
+resets, provisioning, bulk loops, and saves have no tenant epoch check.
+
+Phase 2B introduces a small client session module rather than spreading more
+globals. Every auth transition increments a monotonically increasing epoch and
+captures `{ uid, role, classroomId, epoch }`. Every asynchronous continuation,
+subscription callback, render-affecting result, cache write, and mutation must
+compare its captured epoch and tenant to the current session before applying.
+Maintain registries for unsubscribe functions, `AbortController`s where APIs
+support cancellation, timeouts (including `messageTimeout`), and pending
+operation tokens. Invalidation cancels/clears them before resetting state.
+
+Teacher cache keys are:
+
+```
+morganBank:v2:{projectId}:teacher:{uid}:classroom:{classroomId}:data:v1
+```
+
+and values are envelopes `{ schemaVersion, projectId, ownerUid, classroomId,
+updatedAt, data }`. A cache is considered only after tenant resolution, and
+every metadata field must exactly match the current session. Malformed,
+unowned, or old-schema entries are removed and never rendered. Firestore
+permission/integrity errors never fall back to cache; a cache may provide an
+explicitly labeled offline view only for a transient network failure after a
+matching tenant has resolved. Student sessions use memory only and never write
+teacher localStorage.
+
+On sign-out, auth UID/role change, or resolved classroom change, synchronously:
+
+1. Increment the epoch and cancel listeners/controllers/timeouts/pending work.
+2. Remove the previous active tenant cache and the legacy
+   `mrMorganClassCashDataV5` key; do not copy legacy cache into V2.
+3. Reset `data`, teacher/profile/student IDs, selected student, transaction
+   target/filter, login drafts, teacher flags, classroom/teacher records,
+   screen/navigation, messages, auth logs/errors/loading flags, PIN-reset and
+   bulk-operation state to fresh defaults.
+4. Render a blocking resolving or signed-out screen before starting new work.
+
+The reset happens even if Firebase `signOut()` fails locally. Page refresh
+starts with no trusted tenant and resolves before reading a cache. Multiple
+tabs use both Firebase auth state and a `BroadcastChannel` (with the `storage`
+event fallback) carrying only `session-invalidated`, UID digest, and epoch;
+no classroom data is broadcast. A sign-out or account switch in either tab
+invalidates all tabs. Stale callbacks are harmless because an old epoch cannot
+write memory, storage, or DOM. If recovery resolution later succeeds, the app
+loads the new tenant from Firestore or its exactly matching cache; it never
+reanimates the previous tenant.
+
+#### 7. Emulator and test strategy
+
+Phase 2B adds Auth and Functions emulator configuration while retaining the
+existing Firestore emulator and Phase 2A's separate migration rehearsal. Test
+project IDs must be explicit non-production IDs; helpers refuse missing
+emulator hosts. Tests seed with Admin SDK only inside emulator processes and
+clear isolated emulator state between cases. No real Google accounts,
+production data, cached CLI credentials, or production services are used.
+
+The layers are deliberately distinct:
+
+- **Unit tests:** normalization, invitation eligibility, tenant resolver,
+  onboarding transaction outcomes, V2 sync planning, cache envelope checks,
+  reset/epoch behavior, throttle/lockout, and error mapping with injected
+  dependencies and clocks.
+- **Functions + Auth + Firestore emulator tests:** create two Auth users and
+  invitations; execute callable wrappers with emulator ID tokens; prove
+  onboarding idempotency/concurrency, resolver states, PIN reset ownership,
+  student code lookup, duplicate login IDs, scoped logs, lockout, and forged
+  inputs against real emulator transactions.
+- **Firestore rules emulator contract tests:** Phase 2B adds a proposed-rules
+  fixture/suite without editing deployed `firestore.rules`. It proves the
+  predicates Phase 3 must implement. Existing baseline tests continue against
+  the checked-in legacy rules.
+- **Browser tests:** run the app/test harness against all three emulators and
+  prove rendering/reset/cache behavior. Use a real browser runner because
+  `localStorage`, `BroadcastChannel`, auth persistence, and delayed callbacks
+  are the risk; pure DOM mocks are insufficient for acceptance.
+- **Later production acceptance:** Phase 4 validates the existing teacher;
+  Phase 5 validates a second real teacher. Neither is a Phase 2B test.
+
+The minimum fixture matrix is: Teacher A/Classroom A; Teacher B/Classroom B;
+an invited new teacher with no profile; an uninvited Google user; an active
+teacher; a disabled teacher; missing teacher, missing classroom, owner
+mismatch, UID mismatch, invalid status, malformed IDs, and duplicate code
+index states; Student A and Student B sharing the same normalized `loginId`;
+legacy flat credentials/logs; and forged classroom/code inputs.
+
+Required assertions include bidirectional A/B teacher denial, student denial,
+credential denial, and auth-log denial; server-only onboarding writes;
+idempotent and concurrent onboarding; no second classroom; unknown/inactive
+credential indistinguishability; lock/throttle boundaries; same login ID works
+only with its matching classroom code; account switching A->B and B->A;
+sign-out, refresh, and multi-tab invalidation; Firestore failure without
+cross-tenant fallback; stale load/save/log/PIN callbacks unable to repopulate;
+legacy handlers still work while the V2 gate is off; and malformed/forged
+classroom IDs never influence authorization.
+
+#### 8. Firestore rules contract for Phase 3
+
+Phase 2B does not edit `firestore.rules`, but its proposed-rules tests define
+the following exact contract. `isActiveOwner(classroomId)` requires auth,
+`teachers/{uid}.uid == uid`, exact active status, the teacher's scalar
+`classroomId == classroomId`, and the classroom root's `ownerUid == uid`.
+Missing fields/docs and read errors deny. A teacher may read their own teacher
+document and owned classroom root/students/transactions/loginHistory, and may
+write only fields/paths Phase 3 explicitly validates. They cannot list/read
+other teacher profiles or classrooms.
+
+Students may read only the student path matching both custom claims; student
+writes require a separately defined Phase 3 service/rule contract and are not
+granted by Phase 2B. No client can read/write
+`teacherInvitations`, `classroomLoginCodes`, `studentLoginThrottle`,
+`studentAuthUnresolvedLogs`, or either legacy/scoped credential collection.
+Teachers may read only `studentAuthLogs/{theirClassroomId}/logs/*`; students
+and other teachers cannot. Clients never create/update ownership links or
+consume invitations. Disabled teachers lose all teacher access immediately on
+fresh rules evaluation.
+
+**Recursive-match hazard created by scoping credentials under `classrooms/`.**
+Flat `studentCredentials` is safe today only because it is a top-level
+collection with no matching rule at all, so it default-denies
+(`firestore.rules` has no `studentCredentials` block). Moving credentials to
+`classrooms/{classroomId}/studentCredentials/{loginId}` moves them *inside* a
+subtree the checked-in rules already grant to a client: `match
+/classrooms/{document=**} { allow read, write: if isTeacher(); }`
+(`firestore.rules:21-23`), whose recursive wildcard matches every descendant
+path, as the baseline suite pins for the classroom root
+(`tests/firestore/rules.baseline.test.js`). That recursive rule must therefore
+be **deleted and replaced** by the explicit per-collection matches above. It
+must not merely be re-predicated on `isActiveOwner(classroomId)`: that edit is
+the smallest plausible Phase 3 change and it looks correct, but either form of
+retention gives a signed-in teacher's browser read and write on `pinHash`,
+`active`, `failedAttempts`, and `lockedUntil`, defeating both the server-only
+credential invariant and the login lockout. The resulting hard ordering
+constraint is that **no scoped credential document may exist in the production
+project while any recursive `classrooms/**` client allow is deployed** — so the
+ownership-rules deploy must precede, or land atomically with, the first scoped
+credential write. Part 3's general "migrate first, flip rules and client
+together second" sequence was written for `morganBank/classroomData` and does
+not by itself satisfy this; the Phase 3 runbook must resolve the conflict
+explicitly rather than inheriting that ordering. The proposed-rules suite must
+assert that an *active owner* is denied both read and write on their own
+`classrooms/{classroomId}/studentCredentials/{loginId}`, not only that other
+teachers and students are.
+
+Legacy `morganBank/**`, flat `studentCredentials`, flat `studentAuthLogs`, and
+the hardcoded teacher behavior remain pinned by the baseline suite until the
+Phase 3 coordinated rules/client switch. Phase 3 must define the exact overlap
+or maintenance-window ordering; it may not broaden legacy access to all active
+teachers, and per the preceding paragraph it may not carry the recursive
+`classrooms/{document=**}` allow across the switch. Proposed-rules tests cover
+two classrooms in both directions and must pass before their predicates are
+copied into `firestore.rules`.
+
+#### 9. Compatibility and transition sequence
+
+Phase 2B additions are new pure helpers, handlers, emulator fixtures, proposed
+rules, and gated client/session modules. The default gate leaves current
+`index.html`, current Function export behavior, current rules, flat credential
+lookup, flat logs, and `morganBank/classroomData` authoritative. The existing
+hardcoded teacher can continue to use the bootstrap and legacy data path in a
+build where V2 is disabled. The client gate is exact equality of
+`import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED` to the string `"true"`; absent
+or any other value is off. The V2 path never uses document-existence probing to
+decide modes and never dual-writes production-like legacy and V2 state.
+
+Phase 2A files, manifests, canonical slots, projection/reconciliation,
+recovery behavior, diagnostics, and rollback evidence are untouched. Phase 2B
+may build a separate emulator-only scoped-credential projection, but it cannot
+rewrite Phase 2A history. Keep legacy singleton data, flat credentials/logs,
+hardcoded wrappers, migration tools/manifests, and all recovery/rollback code.
+Cleanup requires the later checkpoints in `CLEANUP_CHECKPOINTS.md`; completion
+of Phase 2B is not deletion authorization.
+
+Phase 3 must atomically coordinate: production preflight/adaptation and scoped
+credential/log migration; classroom code reservation; V2 Function deploy;
+ownership rules deploy; client gate/data-path switch; and rollback controls.
+The exact safe order belongs in the Phase 3 runbook because production state
+is unknown. A partial V2 failure must stop the release; it must not fall back
+from a scoped credential to a flat credential or from one teacher cache to
+another.
+
+#### 10. Threat and failure analysis
+
+| Threat/failure | Required control and fail-closed result |
+|---|---|
+| Forged classroom ID | Teacher callables ignore/reject it and resolve from auth; student code is only a locator; rules verify reciprocal ownership. |
+| Ownership tampering | Clients cannot write either link; resolver checks both; mismatch is `failed-precondition`, not repair. |
+| Unauthorized onboarding | Verified Google email plus active unconsumed server invitation; UID/token fields are server-authoritative. |
+| Cross-classroom reads/writes | Structural classroom paths, active-owner rules, shared resolver, bidirectional A/B tests. |
+| Duplicate login IDs | Classroom code resolves tenant; scoped credential document IDs make duplicates across classrooms safe. |
+| Enumeration/brute force | Generic errors, dummy hash, scoped lockout, digest throttle, server-only code/index/log paths; no raw unresolved identifiers in logs. |
+| PIN/hash/token exposure | Server-only credentials; never return or log secrets; PIN only accepted over callable and replaced by bcrypt hash. |
+| Sensitive logs | Allowlisted structured metadata; redact email/code/login/PIN/hash/token and request bodies. |
+| Stale cache/account switch | Tenant envelope, purge-before-resolve, epoch checks, no student persistence, cross-tab invalidation. |
+| Concurrent onboarding | Transaction on teacher/invitation/code index; create preconditions; one linked pair or none. |
+| Partial/malformed records | Ordinary requests never auto-heal; block, redact, correlate, and require administrative reconciliation. |
+| Replay/idempotency | Existing valid pair returns unchanged; reset is identity-stable; triggers use create/transaction checks and scoped IDs. |
+| Disabled teacher | Exact active status required in resolver, callables, rules, and cache admission; cached data purged. |
+| Client/server boundary | Client UI guards improve UX only; Admin handlers/rules own authorization and tenant validation. |
+
+Every Phase 2B implementation item must preserve these security invariants:
+tenant identity is server-derived; both ownership links agree; only exact
+active status authorizes; invitation writes and secrets are server-only;
+student credentials/logs/throttles are tenant-scoped; generic auth errors do
+not enumerate; stale epochs cannot mutate state; partial state never grants
+access; and no Phase 2B path reaches production or removes rollback evidence.
+
+#### 11. Proposed modules and file boundaries
+
+This is an evidence-based inventory, not authorization to create the files in
+this design task. Item numbers refer to the implementation sequence below.
+
+| File | Purpose/API and dependencies | Kind | Owner |
+|---|---|---|---|
+| `functions/phase2b/identityNormalization.js` + test | Pure email, classroom-name, classroom-code, and login-ID normalization/digests; Node crypto only. | Production/unit test | 1 |
+| `functions/phase2b/teacherTenantResolver.js` + test | `resolveActiveTeacherTenant` and structured integrity errors; Admin Firestore injected. | Production/unit test | 2 |
+| `functions/phase2b/teacherOnboarding.js` + test | Invitation eligibility, transactional paired creation/code reservation/idempotency; reuses Phase 1 models where shapes agree. | Production/unit test | 3 |
+| `functions/phase2b/teacherCallables.js` + test | Gated `resolveTeacherTenant`/`onboardTeacherClassroom` request/error adapters; Firebase `HttpsError`. | Production/unit test | 3 |
+| `functions/phase1/firestoreSchema.js`, `teacherClassroomModels.js` + tests | Add disabled status and login-code/classroom schema fields only when Items 1–3 require them; no broad model rewrite. | Production/unit test | 3 |
+| `functions/phase2b/studentCredentialPaths.js` + test | Exact scoped credential/log/throttle path builders; shared canonical validation. | Production/unit test | 1 |
+| `functions/phase2b/scopedCredentialProjection.js` + test | Emulator-only flat-to-scoped credential projection/reconciliation with explicit V2 Auth UID mapping; depends on identity/path contracts, not Phase 2A edits. | Production-support/unit test | 4 |
+| `functions/phase2b/studentCredentialVerifier.js` + test | Classroom-code resolution, scoped verification, generic errors, locks/throttles/log records; bcrypt and resolver dependencies injected. | Production/unit test | 5 |
+| `functions/phase2b/resetStudentPin.js` + test | Tenant-derived classroom, unique scoped credential lookup, transactional reset. | Production/unit test | 6 |
+| `functions/phase2b/syncStudentProfiles.js` + test | V2 student-path trigger handler and collision-safe scoped credential lifecycle; Admin Firestore/bcrypt. | Production/unit test | 7 |
+| `functions/index.js` | Add only gated/versioned/emulator wrapper exports; retain current public handlers until Phase 3. | Production entry point | 8 |
+| `tests/phase2b/functions-auth.emulator.test.js` | Real Auth/Functions/Firestore emulator callable and concurrency matrix. | Integration test | 8 |
+| `src/phase2b/tenantSession.js` + test | State machine, epoch, reset registry, authoritative resolved context; Firebase adapters injected. | Gated production/unit test | 9 |
+| `src/phase2b/tenantCache.js` + test | Key/envelope validation, purge, BroadcastChannel/storage invalidation; Web Storage adapter injected. | Gated production/unit test | 9 |
+| `src/phase2b/tenantClient.js` + test | Callable resolution/onboarding orchestration and safe error-state mapping. | Gated production/unit test | 9 |
+| `index.html` | Phase 3-ready, default-off integration points and explicit loading/onboarding/identity UI; legacy path remains default in Phase 2B. | Production client | 9 |
+| `src/firebase/firebase.js` | Emulator connector selected only by explicit local test configuration; production config unchanged. | Production/test adapter | 8, 9 |
+| `tests/browser/tenant-isolation.spec.js` + config | Real-browser switch, refresh, stale callback, cache, and multi-tab acceptance. | Browser test | 10 |
+| `tests/firestore/rules.v2.contract.test.js` and `firestore.phase2b.proposed.rules` | Two-classroom proposed-rule contract without modifying checked-in production rules. | Rules test fixture | 10 |
+| `firebase.json`, root/function `package.json` and lockfiles | Add explicit Auth/Functions emulator ports and narrowly required unit/integration/browser test scripts and runner dependencies during implementation only. | Configuration | 8, 9, 10 |
+| `tests/phase2b/README.md` | Emulator-only commands, project guards, fixture matrix, and troubleshooting. | Documentation | 10 |
+| `MULTI_TEACHER_ARCHITECTURE_PLAN.md` | Record implemented deviations and readiness results without rewriting historical Phase 2A facts. | Documentation | 11 |
+
+Do not introduce a generic repository/service framework. The boundaries above
+exist because authorization, normalization, credential lifecycle, and browser
+epoch/cache isolation each have distinct security tests. Phase 2A modules may
+be imported only where their existing public contract exactly applies; they
+must not be edited merely to share code with Phase 2B.
+
+#### 12. Numbered Phase 2B implementation sequence
+
+Each item is one reviewable commit after Sol -> Gemini -> Claude review when
+material. Commands shown are the minimum targeted verification; final
+repository-wide commands appear in the completion gate. For every item, the
+**exact expected file scope** is all and only the inventory rows whose Owner
+column includes that item number; any additional file requires a design update
+and review before editing.
+
+**Item 1 — Canonical identity and path contracts (additive/inert).**
+
+- **Objective/scope:** add only `functions/phase2b/identityNormalization.js`,
+  `studentCredentialPaths.js`, and their tests.
+- **Security invariants:** no ambiguous normalization, slash/path injection,
+  raw secret in digest IDs, or cross-class path construction.
+- **Tests/verification:** boundary/Unicode/control/unknown-field cases,
+  classroom-code formatting, duplicate normalized login IDs; `npm --prefix
+  functions test -- phase2b/identityNormalization.test.js
+  phase2b/studentCredentialPaths.test.js` and Functions lint.
+- **Dependencies/non-goals:** none; no Firestore, callable, UI, rules, schema,
+  or migration changes.
+- **Commit boundary:** pure contracts and tests only.
+
+**Item 2 — Shared active teacher tenant resolver (additive/inert).**
+
+- **Objective/scope:** add `teacherTenantResolver.js` and test only.
+- **Security invariants:** auth UID is the sole starting identity; exact active
+  status and reciprocal links; malformed/missing/disabled all deny.
+- **Tests/verification:** two valid tenants plus every foundation failure and
+  forged request data; `node --test
+  functions/phase2b/teacherTenantResolver.test.js` and `npm --prefix functions
+  run lint`.
+- **Dependencies/non-goals:** Item 1; no onboarding, client, exports, writes,
+  or rules.
+- **Commit boundary:** reusable read-only authorization helper.
+
+**Item 3 — Invitation-controlled onboarding service (additive, gated).**
+
+- **Objective/scope:** add onboarding/callable modules/tests; narrowly update
+  Phase 1 schema/model files and tests for `disabled`/login code if required.
+- **Security invariants:** verified Google invitation, server UID/profile,
+  atomic invitation+teacher+classroom+code writes, one classroom only.
+- **Tests/verification:** unauthenticated/uninvited/revoked/expired/disabled,
+  validation, idempotent retry, simultaneous calls, generated-code collision,
+  partial records, owner conflict, no PII/secrets in errors; targeted tests and
+  Functions lint via `node --test
+  functions/phase2b/teacherOnboarding.test.js
+  functions/phase2b/teacherCallables.test.js
+  functions/phase1/teacherClassroomProvisioner.test.js` and `npm --prefix
+  functions run lint`.
+- **Dependencies/non-goals:** Items 1–2; do not change current bootstrap export,
+  client, rules, or production state.
+- **Commit boundary:** complete pure service and default-off adapter.
+
+**Item 4 — Classroom-scoped credential model and emulator projection
+(additive/inert).**
+
+- **Objective/scope:** add scoped credential projection/reconciliation helpers
+  and tests under `functions/phase2b/`; do not edit Phase 2A files.
+- **Security invariants:** preserve every legacy credential security field,
+  except the explicit deterministic V2 `authUid` derivation; deterministic
+  one-to-one paths, no overwrite/cross-tenant Auth or Firestore collision, flat
+  sources retained and old/new UID mapping reconciled.
+- **Tests/verification:** same login in two classrooms, malformed/duplicate
+  source, active/inactive/orphan parity, rerun/idempotency/divergence; targeted
+  verification is `node --test
+  functions/phase2b/scopedCredentialProjection.test.js` and `npm --prefix
+  functions run lint`.
+- **Dependencies/non-goals:** Item 1; emulator projection only, not a production
+  runner or write to real data.
+- **Commit boundary:** scoped-model proof independent of runtime verifier.
+
+**Item 5 — Student verification, logging, throttle, and custom claims
+(additive, gated).**
+
+- **Objective/scope:** add Phase 2B verifier and tests; add only a versioned
+  wrapper, leaving current `studentPinLogin` active.
+- **Security invariants:** code resolves tenant but grants nothing; scoped
+  lookup/log/lock; dummy hash and generic response; secret-redacted output.
+- **Tests/verification:** duplicate A/B login success only with matching code,
+  wrong/malformed/unknown equivalence, disabled/missing classroom, lockout,
+  throttle, transaction retry, forged index/credential mismatch, claims; Node
+  verification is `node --test
+  functions/phase2b/studentCredentialVerifier.test.js` and `npm --prefix
+  functions run lint`.
+- **Dependencies/non-goals:** Items 1 and 4; no client switch, rules, or legacy
+  fallback.
+- **Commit boundary:** complete gated student-auth server path.
+
+**Item 6 — Tenant-derived PIN reset (additive, gated).**
+
+- **Objective/scope:** add Phase 2B reset handler/test using Item 2; current
+  exported reset remains active.
+- **Security invariants:** no classroom request authority, unique scoped match,
+  same-class student existence, update allowlist only.
+- **Tests/verification:** Teacher A/B success and bidirectional denial by
+  construction, forged classroom field, disabled/malformed owner, zero/two
+  credentials, four-digit validation, concurrent/retry behavior; targeted
+  verification is `node --test functions/phase2b/resetStudentPin.test.js` and
+  `npm --prefix functions run lint`.
+- **Dependencies/non-goals:** Items 1–2 and 4; no UI or export cutover.
+- **Commit boundary:** complete gated PIN-reset handler.
+
+**Item 7 — V2 student-profile/credential synchronization (additive, gated).**
+
+- **Objective/scope:** add Phase 2B path-trigger handler/test; do not modify or
+  unexport the current singleton trigger.
+- **Security invariants:** event path supplies tenant; active reciprocal
+  foundation; create precondition; classroom-local collision/deactivation;
+  no trigger loop or credential delete; `studentId` is never reused, and any
+  existing credential for the event-path `studentId` fails closed.
+- **Tests/verification:** two classrooms with same name/login, concurrent
+  creates, suffix collision, rename stability, delete/deactivate isolation,
+  malformed event/foundation, retry/idempotency, and delete-highest-then-create
+  recycled-ID rejection without credential/Auth aliasing; run `node --test
+  functions/phase2b/syncStudentProfiles.test.js` and `npm --prefix functions
+  run lint`.
+- **Dependencies/non-goals:** Items 1–2 and 4; no primary data-path or legacy
+  source switch.
+- **Commit boundary:** V2 handler and unit proof only.
+
+**Item 8 — Auth/Functions emulator wiring and server acceptance
+(test infrastructure; no deployment).**
+
+- **Objective/scope:** explicit emulator config/scripts, the gated V2 wrappers
+  in `functions/index.js`, integration suite/README, and only necessary
+  package/lock changes.
+- **Security invariants:** refuse absent emulator hosts/non-test project IDs;
+  never use real accounts/production; gates default off outside emulator.
+- **Tests/verification:** full callable fixture matrix, concurrent onboarding,
+  ownership denials, duplicate login, scoped logs/credentials, legacy exports
+  unchanged; run the new `npm run test:phase2b:server`, `npm run
+  test:functions`, and `npm --prefix functions run lint`.
+- **Dependencies/non-goals:** Items 1–7; no deployment, rules edit, production
+  project, or real Google flow.
+- **Commit boundary:** reproducible server-side emulator acceptance.
+
+**Item 9 — Client tenant state machine and cache isolation (additive,
+default-off).**
+
+- **Objective/scope:** add three narrow `src/phase2b` modules/tests and minimal
+  default-off `index.html`/Firebase adapter integration.
+- **Security invariants:** block before resolution; exact tenant envelope;
+  purge-before-switch; epoch gates every async effect; no student persistence.
+- **Tests/verification:** all lifecycle transitions, missing/disabled/
+  inconsistent resolution, A->B/B->A, sign-out, refresh, transient offline,
+  stale loads/saves/logs/PIN callbacks, reset of every listed global; root lint
+  and targeted unit tests via `npm run test:phase2b:client`, `npm run lint`, and
+  `npm run build`.
+- **Dependencies/non-goals:** Items 2–3, 5–6, 8; V2 gate remains off, no new
+  primary Firestore path and no removal of legacy UI/state.
+- **Commit boundary:** testable client isolation primitives and inert wiring.
+
+**Item 10 — Real-browser and proposed-rules isolation contracts (tests only).**
+
+- **Objective/scope:** add browser runner/specs and proposed rules fixture/test;
+  package/lock/config/README changes only as required. Do not edit
+  `firestore.rules`.
+- **Security invariants:** browser cannot reveal prior tenant; proposed rules
+  implement exact active reciprocal ownership and server-only sensitive paths;
+  no recursive `classrooms/**` client allow remains.
+- **Tests/verification:** two tabs; refresh/sign-out; both switch directions;
+  delayed callbacks; cache poisoning; direct Teacher A/B, Student A/B,
+  credential/log/invitation/index/throttle access; explicit denial of an active
+  owner's read and write on their own scoped credential; browser script,
+  proposed-rules script, existing rules, and lint via `npm run
+  test:phase2b:browser`, `npm run test:phase2b:rules`, `npm run test:rules`, and
+  `npm run lint`.
+- **Dependencies/non-goals:** Items 8–9; no production rules/client activation
+  or manual real-account acceptance.
+- **Commit boundary:** independent browser/rules proof.
+
+**Item 11 — End-to-end Phase 2B readiness and documentation (verification
+and docs only).**
+
+- **Objective/scope:** run the complete matrix; update only test documentation
+  and this plan with actual results/deviations. Inventory first.
+- **Security invariants:** every preceding invariant; gates off; legacy and
+  Phase 2A/rollback capabilities intact; zero external access/deployment.
+- **Tests/verification:** `npm run lint`, Functions lint, all unit suites,
+  Functions/Auth/Firestore emulator suites, migration rehearsal, browser suite,
+  build, `git diff --check`, and explicit test counts recorded. Exact aggregate
+  commands are `npm run lint`, `npm --prefix functions run lint`, `npm run
+  build`, `npm run test:functions`, `npm run test:rules`, `npm run
+  test:migration`, `npm run test:phase2b:server`, `npm run
+  test:phase2b:client`, `npm run test:phase2b:rules`, `npm run
+  test:phase2b:browser`, and `git diff --check`.
+- **Dependencies/non-goals:** Items 1–10; no cleanup, production adaptation,
+  migration, rules deploy, client cutover, second real teacher, commit squash,
+  or publish without authorization.
+- **Commit boundary:** readiness evidence/docs only; Phase 3 remains blocked
+  pending independent review and explicit authorization.
+
+#### 13. Phase 2B completion gate and Phase 3 handoff
+
+Phase 3 may not begin until all are true:
+
+- General invitation-controlled onboarding and resolution contracts are
+  implemented and pass unit plus Auth/Functions/Firestore emulator tests,
+  including idempotent and simultaneous calls.
+- Every relevant teacher Function uses the shared active reciprocal tenant
+  contract; V2 sync derives tenant from its trusted event path; cross-classroom
+  attempts fail in both directions.
+- Classroom-code login, scoped credentials/logs/throttles, PIN reset, duplicate
+  normalized login IDs across two classrooms, generic errors, and lockout are
+  implemented and proven.
+- Student IDs are proven unique and never reused within a classroom; recycled
+  IDs fail closed without credential, Firebase Auth identity, or claim aliasing.
+- Browser tests prove purge/reset and no Teacher A data after A->B, B->A,
+  sign-out, refresh, failure recovery, stale async completion, and multi-tab
+  changes.
+- Auth-emulator, Functions-emulator, Firestore baseline, proposed ownership
+  rules, and browser suites all pass with two independently owned classrooms.
+- The Phase 3 rules predicates and sensitive-path denials are exact enough to
+  implement without new tenancy decisions, including removal of the recursive
+  `classrooms/**` client allow and active-owner denial on scoped credentials.
+- Existing Phase 1 hardcoded compatibility, Phase 2A tooling/manifests/
+  reconciliation/recovery, legacy data paths, and rollback evidence remain
+  present; no cleanup was inferred from passing tests.
+- Full root/Functions lint, unit, build, migration rehearsal, all emulator, and
+  browser verification passes from a clean test state with recorded commands
+  and counts.
+- Material implementation items completed Sol -> Gemini -> Claude independent
+  review. No production access, migration, deploy, real-account onboarding, or
+  inference about deployment state occurred.
+
+The Phase 3 handoff must include: reviewed code/commit IDs; exact schemas and
+normalizers; callable inputs/outputs/errors; all emulator/browser results;
+proposed rules and ownership tests; feature-gate inventory/defaults; complete
+legacy/V2 path and export inventory; scoped-credential/login-code projection
+and reconciliation evidence; the never-reused student-ID allocation contract;
+production-state questions requiring fresh read-only validation; production
+adaptation requirements; migration/write freeze/deployment/rollback ordering
+constraints, including rules-before-or-atomic-with-first-scoped-credential;
+cache-key and invalidation contract; known limitations; and explicit
+confirmation that Phase 2A sources and rollback artifacts were not removed.
+
+Phase 2B completion authorizes only the next architecture/release-planning
+stage. It does not authorize Phase 3 implementation, production inspection,
+migration, deploy, rules change, gate activation, cleanup, or a second real
+teacher.
+
+---
+
 ## Part 3 — Complexity Estimate and Phasing
 
 ### Complexity estimate
@@ -2323,7 +3250,7 @@ already anticipated this.
 
 **Phase 1 — Teacher & classroom data model, additive only (Phase 1B
 complete in the local repository, including a single-teacher-restricted
-callable; general multi-teacher onboarding is Phase 2B+ scope)**
+callable; general invitation-controlled onboarding is Phase 2B scope)**
 - `teachers/{uid}` and `classrooms/{classroomId}` document shapes, the
   server-only, transactional `provisionTeacherClassroom` helper
   (`functions/phase1/teacherClassroomProvisioner.js`), **and** the
@@ -2333,10 +3260,10 @@ callable; general multi-teacher onboarding is Phase 2B+ scope)**
   implemented and tested in the local `feature/multi-teacher` commit today.
   That callable is restricted to the existing hardcoded `TEACHER_UID` and a
   fixed classroom name — it is **not** the future general multi-teacher
-  onboarding flow. A callable any newly signed-in teacher can use to create
-  their *own*, arbitrarily-named classroom remains unbuilt and is Phase
-  2B+ scope — see "New teacher onboarding flow" in Part 2 for the corrected
-  status of that work.
+  onboarding flow. A callable an invited newly signed-in teacher can use to
+  create their *own*, arbitrarily-named classroom remains unbuilt and is Phase
+  2B scope — see "New teacher onboarding flow" and the detailed Phase 2B
+  section in Part 2 for the corrected status of that work.
 - No changes yet to `morganBank/classroomData`, existing rules, or the
   client's read/write path — purely additive, verified inert before
   anything depends on it. **Whether this local commit has been deployed to
@@ -2365,8 +3292,8 @@ specified — see Part 2, "Data migration strategy")**
   further implementation commits require this document to pass another
   independent review first.
 
-**Phase 2B — Broader cutover readiness (mandatory follow-up, not yet
-designed)**
+**Phase 2B — Broader cutover readiness (detailed design complete; implementation
+not started)**
 - Everything Phase 2A intentionally defers: generalizing
   `ensureTeacherClassroom` beyond its current single-hardcoded-teacher
   restriction into a real multi-teacher onboarding callable, plus
@@ -2380,18 +3307,19 @@ designed)**
   safety (e.g., the
   `mrMorganClassCashDataV5` localStorage-namespacing gap flagged in
   `PHASE1_IMPLEMENTATION_CHECKLIST.md` item 1).
-- This phase is a **mandatory prerequisite for Phase 3** — the rules
-  rewrite and client cutover cannot be safely designed until Phase 2B has
-  resolved how Functions, Auth, and the browser client behave across
-  multiple classrooms. It is called out here as a required follow-up; its
-  detailed design is explicitly out of scope for this revision and should
-  get its own planning pass before Phase 3 begins.
+- This phase is a **mandatory prerequisite for Phase 3**. Its normative
+  contracts, file boundaries, eleven implementation items, and completion gate
+  are now specified in Part 2, "Phase 2B — Broader cutover readiness (detailed
+  design)." Phase 3 remains blocked until that implementation and gate are
+  complete; a completed design is not a completed phase.
 
 **Phase 3 — Rules rewrite + client cutover (single coordinated release)**
 - New ownership-based `firestore.rules`, deployed together with the updated
   client that reads/writes `classrooms/{classroomId}` instead of
   `morganBank/classroomData`, and the updated `syncStudentProfiles`/
-  `resetStudentPin` functions.
+  `resetStudentPin`/`studentCredentialVerifier` functions, classroom-code
+  index, scoped credentials/logs, and tenant state/cache path specified by
+  Phase 2B.
 - **Phase 2A's tooling is emulator-only by construction (it hard-refuses to
   run without `FIRESTORE_EMULATOR_HOST` and has no production override
   path) and proves the migration *logic* only — it does not authorize and
@@ -2448,17 +3376,8 @@ designed)**
 
 ### Genuine remaining blockers
 
-These are open questions this document does not resolve, listed so they
-aren't mistaken for settled decisions:
-
-- **Phase 2B has no detailed design yet.** It is named and scoped at a
-  high level ("New teacher onboarding flow," "Implementation phases" above)
-  but its Functions/Auth/general-multi-teacher-onboarding-UX/
-  credential-collision/browser-cache design is genuinely not written down
-  anywhere — this is specifically about *generalizing*
-  `ensureTeacherClassroom` beyond its current single-hardcoded-teacher
-  restriction, not about building onboarding from scratch. Phase 3 cannot
-  start until it exists.
+These are remaining blockers outside the decisions settled by the detailed
+Phase 2B design; they must not be mistaken for implementation authorization:
 - **Production deployment state is unknown to this document by design** —
   per the task constraints this revision was written under, production
   state must not be inferred from the local repository. Phase 1B is
