@@ -1,12 +1,41 @@
 import bcrypt from 'bcryptjs'
+import { HttpsError } from 'firebase-functions/v2/https'
 import {
   resolveActiveTeacherTenant,
   TeacherTenantResolverError,
 } from './teacherTenantResolver.js'
-import { validateCanonicalDocumentId } from './identityNormalization.js'
+import {
+  normalizeStudentLoginId,
+  validateCanonicalDocumentId,
+} from './identityNormalization.js'
 import { STUDENT_CREDENTIAL_COLLECTIONS } from './studentCredentialPaths.js'
+import { deriveDeterministicStudentAuthUid } from './scopedCredentialProjection.js'
 
 const ASCII_FOUR_DIGITS_REGEX = /^[0-9]{4}$/
+const SUPPORTED_CREDENTIAL_SCHEMA_VERSION = 1
+
+/**
+ * The existing reset contract hashes at cost 12
+ * (`functions/resetStudentPin.js:6`), and Phase 2B preserves the existing
+ * bcrypt behavior rather than weakening it for the scoped path.
+ */
+export const STUDENT_PIN_BCRYPT_COST = 12
+
+/**
+ * Only these messages reach a browser. Service messages name document paths,
+ * identity findings, and resolver states; forwarding them would expose internal
+ * structure and let a caller distinguish foundation failure modes.
+ */
+const GENERIC_CLIENT_MESSAGES = Object.freeze({
+  'unauthenticated': 'Sign in required.',
+  'permission-denied': 'This account is not eligible to complete this action.',
+  'invalid-argument': 'The request was invalid.',
+  'not-found': 'That student was not found in your classroom.',
+  'failed-precondition':
+    'This student record cannot be updated automatically. Contact your administrator for assistance.',
+  'aborted': 'The request could not be completed. Please try again.',
+  'internal': 'An unexpected internal error occurred.',
+})
 
 export class ResetStudentPinError extends Error {
   constructor(code, message) {
@@ -17,7 +46,38 @@ export class ResetStudentPinError extends Error {
 }
 
 export async function defaultHashPin(pin) {
-  return await bcrypt.hash(pin, 10)
+  return await bcrypt.hash(pin, STUDENT_PIN_BCRYPT_COST)
+}
+
+function assertScopedCredentialIdentity({
+  credDocSnap,
+  credData,
+  classroomId,
+  studentId,
+}) {
+  let canonicalLoginId
+  try {
+    canonicalLoginId = normalizeStudentLoginId(credDocSnap.id)
+  } catch {
+    canonicalLoginId = null
+  }
+
+  const identityMatches =
+    canonicalLoginId === credDocSnap.id &&
+    (credData.loginId === undefined || credData.loginId === canonicalLoginId) &&
+    credData.studentId === studentId &&
+    credData.classroomId === classroomId &&
+    credData.authUid === deriveDeterministicStudentAuthUid(classroomId, studentId) &&
+    credData.schemaVersion === SUPPORTED_CREDENTIAL_SCHEMA_VERSION
+
+  if (!identityMatches) {
+    // A malformed or forged credential is an integrity failure to be
+    // reconciled administratively, never repaired by an ordinary reset.
+    throw new ResetStudentPinError(
+      'failed-precondition',
+      'Credential document identity mismatch.',
+    )
+  }
 }
 
 export async function resetStudentPinV2(
@@ -76,6 +136,9 @@ export async function resetStudentPinV2(
   const classroomId = tenant.classroomId
   const attemptTime = now()
 
+  // Hashing happens once, outside the transaction: a retried transaction
+  // callback must not repeat an expensive bcrypt round, and the hash is never
+  // logged.
   const pinHash = await hashPin(request.newPin)
 
   const credColRef = firestore
@@ -86,6 +149,7 @@ export async function resetStudentPinV2(
   const query = credColRef.where('studentId', '==', validStudentId).limit(2)
 
   return await firestore.runTransaction(async (transaction) => {
+    // All reads precede the single write, as Firestore transactions require.
     const credQuerySnap = await transaction.get(query)
 
     if (credQuerySnap.empty || credQuerySnap.docs.length === 0) {
@@ -119,18 +183,15 @@ export async function resetStudentPinV2(
       )
     }
 
-    const credData = credDocSnap.data() ?? {}
-    if (
-      credData.studentId !== validStudentId ||
-      (typeof credData.classroomId === 'string' &&
-        credData.classroomId !== classroomId)
-    ) {
-      throw new ResetStudentPinError(
-        'failed-precondition',
-        'Credential document identity mismatch.',
-      )
-    }
+    assertScopedCredentialIdentity({
+      credDocSnap,
+      credData: credDocSnap.data() ?? {},
+      classroomId,
+      studentId: validStudentId,
+    })
 
+    // Update allowlist: PIN, activation, lockout, and timestamps only. Identity
+    // and ownership fields are never rewritten by a reset.
     transaction.update(credRef, {
       pinHash,
       active: true,
@@ -148,6 +209,37 @@ export async function resetStudentPinV2(
   })
 }
 
+function externalCodeFor(error) {
+  if (error instanceof TeacherTenantResolverError) {
+    switch (error.code) {
+      case 'unauthenticated':
+      case 'invalid-auth-uid':
+        return 'unauthenticated'
+      case 'teacher-not-found':
+      case 'teacher-disabled':
+        return 'permission-denied'
+      default:
+        // Every other resolver state — invalid status, UID mismatch, malformed
+        // or missing classroom, owner mismatch — is inconsistent foundation
+        // data and must not be distinguishable from any other.
+        return 'failed-precondition'
+    }
+  }
+
+  if (error instanceof ResetStudentPinError) {
+    return Object.prototype.hasOwnProperty.call(GENERIC_CLIENT_MESSAGES, error.code)
+      ? error.code
+      : 'internal'
+  }
+
+  return 'internal'
+}
+
+/**
+ * Versioned callable adapter. Item 8 owns the gated `resetStudentPinV2`
+ * export; this boundary guarantees the browser only ever sees an allowlisted
+ * code with a fixed generic message and no `details` payload.
+ */
 export async function resetStudentPinV2CallableHandler(
   data,
   context,
@@ -158,26 +250,7 @@ export async function resetStudentPinV2CallableHandler(
     const result = await resetStudentPinV2(data, { ...dependencies, auth })
     return { success: result.success }
   } catch (error) {
-    if (
-      error instanceof ResetStudentPinError ||
-      error instanceof TeacherTenantResolverError
-    ) {
-      let canonicalCode = error.code
-      if (canonicalCode === 'invalid-auth-uid') canonicalCode = 'unauthenticated'
-      if (
-        canonicalCode === 'teacher-not-found' ||
-        canonicalCode === 'teacher-disabled' ||
-        canonicalCode === 'invalid-teacher-status' ||
-        canonicalCode === 'classroom-not-found' ||
-        canonicalCode === 'classroom-owner-mismatch'
-      ) {
-        canonicalCode = 'permission-denied'
-      }
-
-      const httpsError = new Error(error.message)
-      httpsError.code = canonicalCode
-      throw httpsError
-    }
-    throw error
+    const code = externalCodeFor(error)
+    throw new HttpsError(code, GENERIC_CLIENT_MESSAGES[code])
   }
 }
