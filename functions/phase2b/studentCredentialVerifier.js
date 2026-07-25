@@ -21,8 +21,11 @@ import {
 } from './studentCredentialPaths.js'
 import { deriveDeterministicStudentAuthUid } from './scopedCredentialProjection.js'
 
-const DUMMY_PIN_HASH =
-  '$2b$10$Ds5wfuAE9LT3Xe4vdygSMu1VUq0m8830nB5uQauQ0105kP4WDUR.a'
+// Match the cost used by live credential hashes. A lower-cost dummy would
+// create a measurable timing distinction between an unknown credential and a
+// wrong PIN for an existing credential.
+export const STUDENT_LOGIN_DUMMY_PIN_HASH =
+  '$2b$12$tkuV.NIDy2kwjmeSTGNDruO5eIUvcNY3shJwjb9ijSRjCw5HgC4VW'
 const LOCKOUT_DURATION_MS = 5 * 60 * 1000
 const MAX_CREDENTIAL_FAILED_ATTEMPTS = 5
 const THROTTLE_WINDOW_MS = 5 * 60 * 1000
@@ -423,7 +426,7 @@ export async function verifyStudentCredentialV2(
 
   if (!result.success) {
     if (result.dummyPin) {
-      await verifyPin(submittedPin, DUMMY_PIN_HASH)
+      await verifyPin(submittedPin, STUDENT_LOGIN_DUMMY_PIN_HASH)
     }
     throw new StudentVerifierError()
   }

@@ -4,6 +4,7 @@ import {
   verifyStudentCredentialV2,
   studentPinLoginV2CallableHandler,
   StudentVerifierError,
+  STUDENT_LOGIN_DUMMY_PIN_HASH,
   STUDENT_LOGIN_OUTCOMES,
 } from './studentCredentialVerifier.js'
 import { deriveDeterministicStudentAuthUid } from './scopedCredentialProjection.js'
@@ -11,9 +12,6 @@ import { formatClassroomCode } from './identityNormalization.js'
 
 const CLASS_A_CODE = '23456789'
 const CLASS_B_CODE = '3456789A'
-const DUMMY_PIN_HASH =
-  '$2b$10$Ds5wfuAE9LT3Xe4vdygSMu1VUq0m8830nB5uQauQ0105kP4WDUR.a'
-
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
 }
@@ -394,6 +392,8 @@ test('error indistinguishability: all failure modes return generic unauthenticat
 })
 
 test('dummy hash timing defense runs exactly once per attempt', async () => {
+  assert.match(STUDENT_LOGIN_DUMMY_PIN_HASH, /^\$2b\$12\$/)
+
   const initialDocs = {
     ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
     ...credentialFixture('classA', 'alex-smith', 'stu1', { pinHash: 'storedhash' }),
@@ -411,7 +411,7 @@ test('dummy hash timing defense runs exactly once per attempt', async () => {
     let dummyCalls = 0
     let storedCalls = 0
     const verifyPin = async (pin, hash) => {
-      if (hash === DUMMY_PIN_HASH) {
+      if (hash === STUDENT_LOGIN_DUMMY_PIN_HASH) {
         dummyCalls += 1
       } else {
         storedCalls += 1

@@ -41,6 +41,8 @@ const TARGET_ENVELOPE_KEYS = Object.freeze([
   'readTime',
 ])
 
+const LEGACY_FLAT_CLASSROOM_ID = 'morgan'
+
 export class ScopedCredentialProjectionError extends Error {
   constructor(code, message) {
     super(message)
@@ -324,13 +326,13 @@ export function projectScopedCredential(sourceEnvelope, targetClassroomId, optio
       `Invalid classroom ID in source credential data: ${error.message}`,
     )
   }
-  // The flat legacy source must still hold its untouched legacy classroom
-  // value. A source already carrying the scoped target ID is not a legacy
-  // rollback artifact and must not be treated as one.
-  if (sourceClassroomId === validTargetClassroomId) {
+  // The flat legacy source must still hold its exact untouched legacy
+  // classroom value. Accepting an arbitrary non-target classroom would allow
+  // a credential from another tenant to be projected into this one.
+  if (sourceClassroomId !== LEGACY_FLAT_CLASSROOM_ID) {
     throw new ScopedCredentialProjectionError(
       'source-classroom-mismatch',
-      'Flat source credential already carries the target classroom ID.',
+      'Flat source credential does not carry the legacy classroom ID.',
     )
   }
 

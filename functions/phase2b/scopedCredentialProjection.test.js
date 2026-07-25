@@ -303,6 +303,11 @@ test('malformed envelope/source/classroom/student/login rejection', () => {
       code: 'source-classroom-mismatch',
     },
     {
+      desc: 'source classroomId names a different non-target tenant',
+      envelope: flatSource('valid-login', { studentId: 'stu1', classroomId: 'classB' }),
+      code: 'source-classroom-mismatch',
+    },
+    {
       desc: 'non-array rosterStudentIds',
       envelope: flatSource('valid-login', { studentId: 'stu1' }),
       options: { rosterStudentIds: 'stu1' },
