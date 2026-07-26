@@ -226,8 +226,33 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     assert.equal(globalState.messageTimeout, null);
     assert.equal(globalState.resolvedClassroom, null);
     assert.equal(globalState.resolvedTeacher, null);
-    assert.equal(globalState.transactionTarget, "all");
+    assert.equal(globalState.transactionTarget, "selected");
     assert.equal(globalState.teacherTransactionFilter, "all");
+  });
+
+  test("resetGlobalApplicationState handles getter/setter proxy object like windowAppGlobals without throwing", () => {
+    let internalTarget = "selected";
+    let internalClassroom = { id: "room1" };
+    let internalBulkPending = true;
+
+    const mockWindowGlobals = {
+      get transactionTarget() { return internalTarget; },
+      set transactionTarget(val) { internalTarget = val; },
+      get resolvedClassroom() { return internalClassroom; },
+      set resolvedClassroom(val) { internalClassroom = val; },
+      get bulkOperationPending() { return internalBulkPending; },
+      set bulkOperationPending(val) { internalBulkPending = val; },
+      data: null,
+      screen: "teacher",
+      loginTab: "student",
+      isTeacher: true
+    };
+
+    resetGlobalApplicationState(mockWindowGlobals, () => createDefaultGlobalState().data);
+
+    assert.equal(internalTarget, "selected");
+    assert.equal(internalClassroom, null);
+    assert.equal(internalBulkPending, false);
   });
 
   test("requireTeacher enforces strict ready state, current auth UID, teacher role, and classroomId", () => {

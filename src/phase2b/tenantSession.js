@@ -82,7 +82,7 @@ export function createDefaultGlobalState() {
     messageTimeout: null,
     resolvedClassroom: null,
     resolvedTeacher: null,
-    transactionTarget: "all",
+    transactionTarget: "selected",
     teacherTransactionFilter: "all"
   };
 }
@@ -133,6 +133,7 @@ export class TenantSession {
     this.cacheModule = options.cacheModule || null;
     this.onResetGlobals = options.onResetGlobals || null;
     this.authAdapter = options.authAdapter || null;
+    this.multiTabInvalidator = options.multiTabInvalidator || null;
     this.projectId = options.projectId || "morgan-bank";
 
     this.state = SESSION_STATES.SIGNED_OUT;
@@ -271,11 +272,12 @@ export class TenantSession {
   }
 
   invalidate(reason = "session-invalidated", newIdentity = {}) {
+    const oldUid = this.uid;
+    const oldRole = this.role;
+    const oldClassroomId = this.classroomId;
+
     this.epoch += 1;
     this.invalidationReason = reason;
-
-    const oldUid = this.uid;
-    const oldClassroomId = this.classroomId;
 
     this.clearResources();
 
@@ -303,15 +305,32 @@ export class TenantSession {
       }
     }
 
-    this.uid = newIdentity.uid || null;
-    this.role = newIdentity.role || null;
-    this.classroomId = newIdentity.classroomId || null;
+    const newUid = newIdentity.uid || null;
+    const newRole = newIdentity.role || null;
+    const newClassroomId = newIdentity.classroomId || null;
+
+    this.uid = newUid;
+    this.role = newRole;
+    this.classroomId = newClassroomId;
     this.teacher = newIdentity.teacher || null;
     this.classroom = newIdentity.classroom || null;
     this.errorMessage = newIdentity.errorMessage || "";
     this.correlationId = newIdentity.correlationId || null;
 
     this.state = newIdentity.state || SESSION_STATES.SIGNED_OUT;
+
+    const shouldBroadcast =
+      reason !== "multi-tab-invalidation" &&
+      reason !== "malformed-broadcast-message" &&
+      (reason === "sign-out" || oldUid !== newUid || oldRole !== newRole || oldClassroomId !== newClassroomId);
+
+    if (shouldBroadcast && this.multiTabInvalidator && typeof this.multiTabInvalidator.broadcastInvalidation === "function") {
+      try {
+        this.multiTabInvalidator.broadcastInvalidation(oldUid || newUid || "unknown", this.epoch);
+      } catch (err) {
+        console.error("MultiTab invalidation broadcast failed:", err);
+      }
+    }
 
     return this.getState();
   }

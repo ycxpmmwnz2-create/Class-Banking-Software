@@ -18,6 +18,7 @@ let auth = getAuth(app);
 let db = getFirestore(app);
 let functions = getFunctions(app);
 let isEmulatorConnected = false;
+let connectedEmulatorConfig = null;
 
 export function isPortValid(port) {
   if (typeof port !== "number" || !Number.isInteger(port)) return false;
@@ -27,10 +28,6 @@ export function isPortValid(port) {
 export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
   const config = testConfig || (typeof window !== "undefined" && window.PHASE2B_EMULATOR_TEST_CONFIG);
   if (!config || !config.enabled) return { connected: false, reason: "disabled" };
-
-  if (isEmulatorConnected) {
-    return { connected: true, reason: "already-connected" };
-  }
 
   const projectId = config.projectId || "";
   if (!projectId || typeof projectId !== "string" || !projectId.startsWith("demo-")) {
@@ -42,17 +39,29 @@ export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
     throw new Error("Emulator connection must use loopback host.");
   }
 
-  if (config.authPort && !isPortValid(config.authPort)) {
+  if (config.authPort !== undefined && !isPortValid(config.authPort)) {
     throw new Error(`Invalid Auth emulator port: ${config.authPort}`);
   }
-  if (config.firestorePort && !isPortValid(config.firestorePort)) {
+  if (config.firestorePort !== undefined && !isPortValid(config.firestorePort)) {
     throw new Error(`Invalid Firestore emulator port: ${config.firestorePort}`);
   }
-  if (config.functionsPort && !isPortValid(config.functionsPort)) {
+  if (config.functionsPort !== undefined && !isPortValid(config.functionsPort)) {
     throw new Error(`Invalid Functions emulator port: ${config.functionsPort}`);
   }
 
-  // Ensure the actual app instance used by exported auth/db/functions has the demo projectId
+  if (isEmulatorConnected) {
+    if (
+      connectedEmulatorConfig.projectId !== projectId ||
+      connectedEmulatorConfig.host !== host ||
+      connectedEmulatorConfig.authPort !== config.authPort ||
+      connectedEmulatorConfig.firestorePort !== config.firestorePort ||
+      connectedEmulatorConfig.functionsPort !== config.functionsPort
+    ) {
+      throw new Error("Conflicting emulator configuration.");
+    }
+    return { connected: true, reason: "already-connected", app, auth, db, functions };
+  }
+
   if (app.options.projectId !== projectId) {
     const demoConfig = { ...firebaseConfig, projectId };
     app = initializeApp(demoConfig, "phase2b-emulator-app");
@@ -72,6 +81,14 @@ export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
   }
 
   isEmulatorConnected = true;
+  connectedEmulatorConfig = {
+    projectId,
+    host,
+    authPort: config.authPort,
+    firestorePort: config.firestorePort,
+    functionsPort: config.functionsPort
+  };
+
   return { connected: true, app, auth, db, functions };
 }
 

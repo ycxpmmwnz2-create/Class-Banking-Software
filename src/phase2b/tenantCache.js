@@ -1,20 +1,97 @@
-import { createHash } from "node:crypto";
-
 export const CACHE_SCHEMA_VERSION = "v1";
 export const LEGACY_STORAGE_KEY = "mrMorganClassCashDataV5";
 
-export function computeSha256Digest(str) {
-  if (!str || typeof str !== "string") return "";
+function sha256Bytes(bytes) {
+  function rightRotate(value, amount) {
+    return (value >>> amount) | (value << (32 - amount));
+  }
+  const K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ];
+  let H = [
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+  ];
 
-  if (typeof createHash === "function") {
-    try {
-      return "sha256_" + createHash("sha256").update(str, "utf8").digest("hex");
-    } catch {
-      // fallback below
+  const l = bytes.length;
+  const bitLen = l * 8;
+
+  const k = (55 - (l % 64) + 64) % 64;
+  const paddedLen = l + 1 + k + 8;
+  const padded = new Uint8Array(paddedLen);
+  padded.set(bytes, 0);
+  padded[l] = 0x80;
+
+  const view = new DataView(padded.buffer);
+  view.setUint32(paddedLen - 8, Math.floor(bitLen / 0x100000000), false);
+  view.setUint32(paddedLen - 4, bitLen >>> 0, false);
+
+  const w = new Uint32Array(64);
+
+  for (let offset = 0; offset < paddedLen; offset += 64) {
+    for (let i = 0; i < 16; i++) {
+      w[i] = view.getUint32(offset + i * 4, false);
     }
+    for (let i = 16; i < 64; i++) {
+      const s0 = (rightRotate(w[i - 15], 7) ^ rightRotate(w[i - 15], 18) ^ (w[i - 15] >>> 3));
+      const s1 = (rightRotate(w[i - 2], 17) ^ rightRotate(w[i - 2], 19) ^ (w[i - 2] >>> 10));
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
+    }
+
+    let a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+
+    for (let i = 0; i < 64; i++) {
+      const S1 = rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + S1 + ch + K[i] + w[i]) | 0;
+      const S0 = rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) | 0;
+
+      h = g;
+      g = f;
+      f = e;
+      e = (d + temp1) | 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (temp1 + temp2) | 0;
+    }
+
+    H[0] = (H[0] + a) | 0;
+    H[1] = (H[1] + b) | 0;
+    H[2] = (H[2] + c) | 0;
+    H[3] = (H[3] + d) | 0;
+    H[4] = (H[4] + e) | 0;
+    H[5] = (H[5] + f) | 0;
+    H[6] = (H[6] + g) | 0;
+    H[7] = (H[7] + h) | 0;
   }
 
-  return "sha256_0000000000000000000000000000000000000000000000000000000000000000";
+  let hex = "";
+  for (let i = 0; i < 8; i++) {
+    hex += (H[i] >>> 0).toString(16).padStart(8, "0");
+  }
+  return hex;
+}
+
+export function computeSha256Digest(str) {
+  if (!str || typeof str !== "string") return "";
+  try {
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(str);
+    const hex = sha256Bytes(bytes);
+    return "sha256_" + hex;
+  } catch {
+    return "";
+  }
 }
 
 export function buildCacheKey(projectId, uid, classroomId) {
@@ -172,21 +249,22 @@ export function classifyOfflineFailure(error) {
   return false;
 }
 
-export function createBroadcastMessage(uid, epoch, tabId = null) {
-  const msg = {
+export function createBroadcastMessage(uid, epoch) {
+  const digest = computeSha256Digest(uid);
+  if (!digest || !/^sha256_[0-9a-f]{64}$/.test(digest)) return null;
+  return {
     type: "session-invalidated",
-    uidDigest: computeSha256Digest(uid),
+    uidDigest: digest,
     epoch
   };
-  if (tabId) msg.tabId = tabId;
-  return msg;
 }
 
 export function validateBroadcastMessage(msg) {
   if (!msg || typeof msg !== "object" || Array.isArray(msg)) return false;
 
-  const allowedKeys = ["type", "uidDigest", "epoch", "tabId"];
+  const allowedKeys = ["type", "uidDigest", "epoch"];
   const keys = Object.keys(msg);
+  if (keys.length !== allowedKeys.length) return false;
   for (const k of keys) {
     if (!allowedKeys.includes(k)) return false;
   }
@@ -201,9 +279,9 @@ export function validateBroadcastMessage(msg) {
 export class MultiTabInvalidator {
   constructor(session, options = {}) {
     this.session = session;
-    this.channelAdapter = options.channelAdapter || null;
-    this.storageAdapter = options.storageAdapter || null;
-    this.tabId = options.tabId || "tab_" + Math.random().toString(36).slice(2, 10);
+    this.channelAdapter = options.channelAdapter ?? (typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("morgan_bank_v2_invalidation") : null);
+    this.storageAdapter = options.storageAdapter ?? (typeof localStorage !== "undefined" ? localStorage : null);
+    this.windowAdapter = options.windowAdapter ?? (typeof window !== "undefined" ? window : null);
     this.onInvalidated = options.onInvalidated || null;
     this.isSubscribed = false;
 
@@ -220,8 +298,8 @@ export class MultiTabInvalidator {
         this.channelAdapter.onmessage = this.onMessageListener;
       }
     }
-    if (this.storageAdapter && typeof this.storageAdapter.addEventListener === "function") {
-      this.storageAdapter.addEventListener("storage", this.onStorageListener);
+    if (this.windowAdapter && typeof this.windowAdapter.addEventListener === "function") {
+      this.windowAdapter.addEventListener("storage", this.onStorageListener);
     }
     this.isSubscribed = true;
   }
@@ -242,14 +320,16 @@ export class MultiTabInvalidator {
         }
       }
     }
-    if (this.storageAdapter && typeof this.storageAdapter.removeEventListener === "function") {
-      this.storageAdapter.removeEventListener("storage", this.onStorageListener);
+    if (this.windowAdapter && typeof this.windowAdapter.removeEventListener === "function") {
+      this.windowAdapter.removeEventListener("storage", this.onStorageListener);
     }
     this.isSubscribed = false;
   }
 
   broadcastInvalidation(uid, epoch) {
-    const msg = createBroadcastMessage(uid, epoch, this.tabId);
+    const msg = createBroadcastMessage(uid, epoch);
+    if (!msg) return;
+
     if (this.channelAdapter && typeof this.channelAdapter.postMessage === "function") {
       try {
         this.channelAdapter.postMessage(msg);
@@ -268,9 +348,6 @@ export class MultiTabInvalidator {
 
   handleChannelMessage(event) {
     const payload = event?.data || event;
-    if (payload?.tabId && payload.tabId === this.tabId) {
-      return; // prevent self-echo
-    }
     this.receiveMessage(payload);
   }
 
@@ -284,10 +361,6 @@ export class MultiTabInvalidator {
     } catch {
       this.receiveMessage(null);
       return;
-    }
-
-    if (payload?.tabId && payload.tabId === this.tabId) {
-      return; // prevent self-echo
     }
     this.receiveMessage(payload);
   }

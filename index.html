@@ -750,13 +750,13 @@
 <body>
   <div id="app"></div>
   <script type="module">
-import { auth, db, functions } from "./src/firebase/firebase.js";
+import { auth, db, functions, connectPhase2bEmulatorsIfConfigured } from "./src/firebase/firebase.js";
 import { browserSessionPersistence, GoogleAuthProvider, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
-import { mapSafeClientError, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
+import { mapSafeClientError, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
 
 const IS_MULTI_TEACHER_V2_ENABLED = typeof window !== "undefined" && window.MULTI_TEACHER_V2_ENABLED === true;
     const STORAGE_KEY = "mrMorganClassCashDataV5";
@@ -823,6 +823,9 @@ const IS_MULTI_TEACHER_V2_ENABLED = typeof window !== "undefined" && window.MULT
     let studentAuthLogsLoading = false;
     let studentAuthLogsError = "";
     let studentPinResetPending = false;
+    let bulkOperationPending = false;
+    let resolvedClassroom = null;
+    let resolvedTeacher = null;
 
     function requireTeacher() {
       if (IS_MULTI_TEACHER_V2_ENABLED) {
@@ -907,15 +910,25 @@ const IS_MULTI_TEACHER_V2_ENABLED = typeof window !== "undefined" && window.MULT
       }
     }
 
-  async function saveData() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    async function saveData() {
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        const saveFn = typeof window !== "undefined" && typeof window.V2_TENANT_DATA_SAVE_ADAPTER === "function"
+          ? window.V2_TENANT_DATA_SAVE_ADAPTER
+          : async (d) => {
+              writeTeacherCache(localStorage, v2TenantSession, "morgan-bank", d, v2TenantSession.captureIdentity());
+              return { success: true };
+            };
+        return orchestrateClassroomDataSave(v2TenantSession, saveFn, data, localStorage);
+      }
 
-  try {
-    await setDoc(doc(db, "morganBank", "classroomData"), data);
-  } catch (error) {
-    console.error("Firestore save failed:", error);
-  }
-}
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+
+      try {
+        await setDoc(doc(db, "morganBank", "classroomData"), data);
+      } catch (error) {
+        console.error("Firestore save failed:", error);
+      }
+    }
 
     function dollars(amount) {
       return "$" + Number(amount || 0).toLocaleString();
@@ -1060,6 +1073,28 @@ function toggleStudentDropdown() {
       studentAuthLogsError = "";
       render();
 
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        const fetchFn = async () => {
+          const snapshot = await getDocs(query(
+            collection(db, "studentAuthLogs"),
+            orderBy("timestamp", "desc"),
+            limit(25)
+          ));
+          return snapshot.docs.map(logDocument => logDocument.data());
+        };
+        const applyFn = (logs) => {
+          studentAuthLogs = logs;
+        };
+        const res = await orchestrateAuthLogsFetch(v2TenantSession, fetchFn, applyFn);
+        if (!res.executed) {
+          studentAuthLogs = [];
+          studentAuthLogsError = "Student auth log load failed or session invalidated.";
+        }
+        studentAuthLogsLoading = false;
+        render();
+        return;
+      }
+
       try {
         const snapshot = await getDocs(query(
           collection(db, "studentAuthLogs"),
@@ -1182,6 +1217,29 @@ function toggleStudentDropdown() {
       studentPinResetPending = true;
       message = "Resetting student PIN...";
       render();
+
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        const resetFn = async (p) => {
+          const resetStudentPin = httpsCallable(functions, "resetStudentPin");
+          return await resetStudentPin(p);
+        };
+        const payload = {
+          classroomId: v2TenantSession.classroomId || "morgan",
+          studentId: String(student.id),
+          newPin
+        };
+        const res = await orchestrateStudentPinReset(v2TenantSession, resetFn, payload);
+        if (res.executed) {
+          student.credentialActive = true;
+          saveData();
+          message = `PIN reset successfully for ${student.name}.`;
+        } else {
+          message = "Could not reset the student PIN.";
+        }
+        studentPinResetPending = false;
+        render();
+        return;
+      }
 
       try {
         const resetStudentPin = httpsCallable(functions, "resetStudentPin");
@@ -1778,6 +1836,28 @@ const targetStudents = transactionTarget === "whole"
       message = `Activating account for ${student.name}...`;
       render();
 
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        const resetFn = async (p) => {
+          const resetStudentPin = httpsCallable(functions, "resetStudentPin");
+          return await resetStudentPin(p);
+        };
+        const payload = {
+          classroomId: v2TenantSession.classroomId || "morgan",
+          studentId: String(student.id),
+          newPin
+        };
+        const res = await orchestrateStudentPinReset(v2TenantSession, resetFn, payload);
+        if (res.executed) {
+          student.credentialActive = true;
+          saveData();
+          message = `Account activated for ${student.name}.`;
+        } else {
+          message = `Failed to activate ${student.name}.`;
+        }
+        render();
+        return;
+      }
+
       try {
         const resetStudentPin = httpsCallable(functions, "resetStudentPin");
         await resetStudentPin({
@@ -1796,8 +1876,8 @@ const targetStudents = transactionTarget === "whole"
     }
 
     async function bulkActivateStudents() {
-      if (!requireTeacher()) return;
-      const checkboxes = document.querySelectorAll(".bulk-activate-check:checked");
+      if (!requireTeacher() || bulkOperationPending) return;
+      const checkboxes = Array.from(document.querySelectorAll(".bulk-activate-check:checked"));
       if (checkboxes.length === 0) {
         alert("Please select at least one inactive student.");
         return;
@@ -1809,8 +1889,47 @@ const targetStudents = transactionTarget === "whole"
         return;
       }
 
+      bulkOperationPending = true;
       message = `Activating ${checkboxes.length} accounts...`;
       render();
+
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        const bulkFn = async (p) => {
+          const resetStudentPin = httpsCallable(functions, "resetStudentPin");
+          let successCount = 0;
+          let failCount = 0;
+          for (const cb of p.checkboxes) {
+            const studentId = cb.value;
+            const student = data.students.find(s => String(s.id) === studentId);
+            if (student) {
+              try {
+                await resetStudentPin({
+                  classroomId: v2TenantSession.classroomId || "morgan",
+                  studentId: String(student.id),
+                  newPin: p.newPin
+                });
+                student.credentialActive = true;
+                successCount++;
+              } catch (error) {
+                console.error("Failed to activate student", student.name, error);
+                failCount++;
+              }
+            }
+          }
+          return { successCount, failCount };
+        };
+
+        const res = await orchestrateBulkOperation(v2TenantSession, bulkFn, { checkboxes, newPin });
+        if (res.executed) {
+          saveData();
+          message = `Bulk activation complete. ${res.result.successCount} succeeded, ${res.result.failCount} failed.`;
+        } else {
+          message = "Bulk activation cancelled or session invalidated.";
+        }
+        bulkOperationPending = false;
+        render();
+        return;
+      }
 
       const resetStudentPin = httpsCallable(functions, "resetStudentPin");
       let successCount = 0;
@@ -2283,6 +2402,57 @@ link.click();
     }
 
     function render() {
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        const state = v2TenantSession.getState();
+        if (state === SESSION_STATES.AUTHENTICATING) {
+          document.getElementById("app").innerHTML = `<div class="card hero"><h2>Authenticating...</h2><p class="tagline">Verifying tenant credentials...</p></div>`;
+          return;
+        }
+        if (state === SESSION_STATES.RESOLVING) {
+          document.getElementById("app").innerHTML = `<div class="card hero"><h2>Resolving Tenant...</h2><p class="tagline">Connecting to classroom tenant...</p></div>`;
+          return;
+        }
+        if (state === SESSION_STATES.ONBOARDING_REQUIRED || state === SESSION_STATES.ONBOARDING) {
+          const isSubmitting = state === SESSION_STATES.ONBOARDING;
+          document.getElementById("app").innerHTML = `
+            <div class="card soft-card" style="max-width: 500px; margin: 40px auto;">
+              <h2>Classroom Onboarding Required</h2>
+              <p class="small-note">Please enter a name for your new classroom tenant to complete setup.</p>
+              ${message ? `<div class="message">${escapeHtml(message)}</div>` : ""}
+              <label for="v2ClassroomName">Classroom Name</label>
+              <input id="v2ClassroomName" placeholder="e.g. Room 101 Bank" ${isSubmitting ? "disabled" : ""} />
+              <div style="display: flex; gap: 10px; margin-top: 14px;">
+                <button class="primary" onclick="submitV2Onboarding()" ${isSubmitting ? "disabled" : ""}>
+                  ${isSubmitting ? "Creating Classroom..." : "Create Classroom"}
+                </button>
+                <button onclick="logout()">Sign Out</button>
+              </div>
+            </div>
+          `;
+          return;
+        }
+        if (state === SESSION_STATES.CLASSROOM_LOADING) {
+          document.getElementById("app").innerHTML = `<div class="card hero"><h2>Loading Classroom Data...</h2><p class="tagline">Fetching classroom roster and transactions...</p></div>`;
+          return;
+        }
+        if (state === SESSION_STATES.DENIED_OR_INCONSISTENT) {
+          document.getElementById("app").innerHTML = `
+            <div class="card danger" style="max-width: 500px; margin: 40px auto; background: #fee2e2; color: #991b1b;">
+              <h2>Access Denied or Tenant Inconsistent</h2>
+              <p>${escapeHtml(v2TenantSession.errorMessage || "Your account is not authorized or is in an inconsistent state.")}</p>
+              <button class="primary" onclick="logout()" style="margin-top: 14px;">Sign Out</button>
+            </div>
+          `;
+          return;
+        }
+        if (state === SESSION_STATES.READY) {
+          isTeacher = v2TenantSession.role === "teacher";
+          resolvedClassroom = v2TenantSession.classroom;
+          resolvedTeacher = v2TenantSession.teacher;
+          if (screen === "login") screen = "teacher";
+        }
+      }
+
       const student = currentStudent();
       const totalCash = data.students.reduce((total, student) => total + Number(student.balance || 0), 0);
       const pendingTransactions = data.transactions.filter(transaction => transaction.status === "Pending");
@@ -2976,6 +3146,36 @@ if (screen === "editSettingsLists" && isTeacher) {
       resetGlobalApplicationState(windowAppGlobals, cloneDefault);
     }
 
+    async function submitV2Onboarding() {
+      const classroomName = document.getElementById("v2ClassroomName")?.value || "";
+      if (!classroomName.trim()) {
+        message = "Please enter a valid classroom name.";
+        render();
+        return;
+      }
+      message = "Creating classroom...";
+      render();
+      const callAdapter = async (name, payload) => {
+        const callable = httpsCallable(functions, name);
+        return await callable(payload);
+      };
+      const res = await orchestrateTeacherOnboarding(v2TenantSession, callAdapter, { classroomName });
+      if (res.success && v2TenantSession.getState() === SESSION_STATES.ACTIVE) {
+        const loadNetworkFn = async () => {
+          if (typeof window !== "undefined" && typeof window.V2_TENANT_DATA_ADAPTER === "function") {
+            return await window.V2_TENANT_DATA_ADAPTER({ uid: auth.currentUser?.uid, classroomId: v2TenantSession.classroomId });
+          }
+          throw new Error("V2 tenant data adapter is required in V2 mode.");
+        };
+        await loadClassroomDataWithCacheFallback(v2TenantSession, {
+          loadNetworkFn,
+          storageAdapter: localStorage,
+          projectId: "morgan-bank"
+        });
+      }
+      render();
+    }
+
     const v2TenantSession = new TenantSession({
       storageAdapter: localStorage,
       cacheModule: { purgeTenantCache, purgeLegacyCache, buildCacheKey },
@@ -2985,24 +3185,42 @@ if (screen === "editSettingsLists" && isTeacher) {
     });
 
     const v2MultiTabInvalidator = new MultiTabInvalidator(v2TenantSession, {
-      storageAdapter: typeof window !== "undefined" ? window : null,
+      storageAdapter: localStorage,
+      windowAdapter: typeof window !== "undefined" ? window : null,
       onInvalidated: () => render()
     });
+    v2TenantSession.multiTabInvalidator = v2MultiTabInvalidator;
 
     if (IS_MULTI_TEACHER_V2_ENABLED) {
       v2MultiTabInvalidator.start();
     }
 
-    let authStateVersion = 0;
+    let authObservedGeneration = 0;
+    connectPhase2bEmulatorsIfConfigured();
+
     onAuthStateChanged(auth, async user => {
+      const currentAuthGeneration = ++authObservedGeneration;
+
       if (IS_MULTI_TEACHER_V2_ENABLED) {
-        const tokenResult = user ? await user.getIdTokenResult().catch(() => ({ claims: {} })) : null;
+        let tokenResult = null;
+        if (user) {
+          try {
+            tokenResult = await user.getIdTokenResult();
+          } catch {
+            tokenResult = { claims: {} };
+          }
+        }
+        if (currentAuthGeneration !== authObservedGeneration) return;
+
         const callAdapter = async (name, payload) => {
           const callable = httpsCallable(functions, name);
           return await callable(payload);
         };
         const loadNetworkFn = async () => {
-          return await loadData();
+          if (typeof window !== "undefined" && typeof window.V2_TENANT_DATA_ADAPTER === "function") {
+            return await window.V2_TENANT_DATA_ADAPTER({ uid: user?.uid, classroomId: v2TenantSession.classroomId });
+          }
+          throw new Error("V2 tenant data adapter is required in V2 mode.");
         };
 
         const res = await handleAuthTransition(v2TenantSession, user, tokenResult, {
@@ -3012,6 +3230,8 @@ if (screen === "editSettingsLists" && isTeacher) {
           projectId: "morgan-bank"
         });
 
+        if (currentAuthGeneration !== authObservedGeneration) return;
+
         if (res.executed && res.data) {
           data = res.data;
         }
@@ -3019,7 +3239,6 @@ if (screen === "editSettingsLists" && isTeacher) {
         return;
       }
 
-      const currentAuthStateVersion = ++authStateVersion;
       const isAuthenticatedTeacher = user?.uid === TEACHER_UID;
       isTeacher = false;
       loggedInStudentId = null;
@@ -3029,7 +3248,7 @@ if (screen === "editSettingsLists" && isTeacher) {
 
       if (isAuthenticatedTeacher) {
         const loadedData = await loadData();
-        if (currentAuthStateVersion !== authStateVersion) return;
+        if (currentAuthGeneration !== authObservedGeneration) return;
 
         data = loadedData;
         isTeacher = true;
@@ -3039,6 +3258,8 @@ if (screen === "editSettingsLists" && isTeacher) {
       } else if (user) {
         try {
           const tokenResult = await user.getIdTokenResult();
+          if (currentAuthGeneration !== authObservedGeneration) return;
+
           const { role, classroomId, studentId } = tokenResult.claims;
           const isSecureStudent = role === "student"
             && classroomId === "morgan"
@@ -3053,7 +3274,7 @@ if (screen === "editSettingsLists" && isTeacher) {
           const studentSnapshot = await getDoc(
             doc(db, "classrooms", classroomId, "students", studentId)
           );
-          if (currentAuthStateVersion !== authStateVersion) return;
+          if (currentAuthGeneration !== authObservedGeneration) return;
 
           if (!studentSnapshot.exists()) {
             message = "Your student account is not available. Please see Mr. Morgan.";
@@ -3090,6 +3311,7 @@ window.viewStudentProfile = viewStudentProfile;
 window.resetProfileStudentPin = resetProfileStudentPin;
 window.activateStudent = activateStudent;
 window.bulkActivateStudents = bulkActivateStudents;
+window.submitV2Onboarding = submitV2Onboarding;
 window.render = render;
 window.addStudent = addStudent;
 window.removeStudent = removeStudent;

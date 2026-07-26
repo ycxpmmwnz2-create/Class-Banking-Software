@@ -61,8 +61,19 @@ export async function orchestrateTeacherResolution(session, callableAdapter) {
     }
 
     if (res?.state === "active" && res.classroom?.id) {
+      const teacherUid = typeof res.teacher?.uid === "string" ? res.teacher.uid.trim() : "";
+      if (!teacherUid || (session.uid && teacherUid !== session.uid)) {
+        const safeMessage = "Server teacher identity missing or mismatched.";
+        session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMessage });
+        session.invalidate("resolution-mismatched-server-uid", {
+          state: SESSION_STATES.DENIED_OR_INCONSISTENT,
+          errorMessage: safeMessage
+        });
+        return { success: false, reason: "mismatched-server-uid" };
+      }
+
       session.transitionTo(SESSION_STATES.ACTIVE, {
-        uid: res.teacher?.uid || session.uid,
+        uid: teacherUid,
         role: "teacher",
         classroomId: res.classroom.id,
         teacher: res.teacher,
@@ -116,14 +127,23 @@ export async function orchestrateTeacherOnboarding(session, callableAdapter, { c
 
     const res = response?.data || response;
     if (res?.teacher && res?.classroom?.id) {
-      session.transitionTo(SESSION_STATES.ACTIVE, {
-        uid: res.teacher.uid || session.uid,
-        role: "teacher",
-        classroomId: res.classroom.id,
-        teacher: res.teacher,
-        classroom: res.classroom
-      });
-      return { success: true, state: "active", teacher: res.teacher, classroom: res.classroom, created: Boolean(res.created) };
+      const teacherUid = typeof res.teacher?.uid === "string" ? res.teacher.uid.trim() : "";
+      if (!teacherUid || (session.uid && teacherUid !== session.uid)) {
+        const safeMsg = "Onboarding server identity missing or mismatched.";
+        session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMsg });
+        session.invalidate("onboarding-mismatched-server-uid", {
+          state: SESSION_STATES.DENIED_OR_INCONSISTENT,
+          errorMessage: safeMsg
+        });
+        return { success: false, reason: "mismatched-server-uid" };
+      }
+
+      // Perform a fresh authoritative resolution after onboarding
+      const resolutionRes = await orchestrateTeacherResolution(session, callableAdapter);
+      if (resolutionRes.success && session.getState() === SESSION_STATES.ACTIVE) {
+        return { success: true, state: "active", teacher: resolutionRes.teacher, classroom: resolutionRes.classroom, created: Boolean(res.created) };
+      }
+      return resolutionRes;
     }
 
     const safeMsg = "Onboarding response missing valid teacher or classroom data.";
@@ -148,6 +168,16 @@ export async function orchestrateTeacherOnboarding(session, callableAdapter, { c
 export async function loadClassroomDataWithCacheFallback(session, { loadNetworkFn, storageAdapter, projectId }) {
   if (session.getState() !== SESSION_STATES.ACTIVE) {
     throw new Error("Data load requires ACTIVE session state following authoritative resolution.");
+  }
+
+  if (!loadNetworkFn || typeof loadNetworkFn !== "function") {
+    const safeMsg = "V2 tenant data adapter is required.";
+    session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMsg });
+    session.invalidate("missing-v2-data-adapter", {
+      state: SESSION_STATES.DENIED_OR_INCONSISTENT,
+      errorMessage: safeMsg
+    });
+    return { executed: false, reason: "missing-v2-data-adapter" };
   }
 
   session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
@@ -197,7 +227,7 @@ export async function loadClassroomDataWithCacheFallback(session, { loadNetworkF
   }
 }
 
-export async function handleAuthTransition(session, user, tokenResult, { callAdapter, loadNetworkFn, storageAdapter, projectId }) {
+export async function handleAuthTransition(session, user, tokenResult, { callAdapter, loadNetworkFn, loadStudentNetworkFn, storageAdapter, projectId }) {
   const uid = user?.uid || null;
   const role = tokenResult?.claims?.role || (user ? "teacher" : null);
 
@@ -214,8 +244,40 @@ export async function handleAuthTransition(session, user, tokenResult, { callAda
   }
 
   if (role === "student") {
-    // V2 student session handling
-    return { state: SESSION_STATES.AUTHENTICATING, role: "student" };
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    const captured = session.captureIdentity();
+    if (typeof loadStudentNetworkFn === "function") {
+      try {
+        const studentData = await loadStudentNetworkFn({ uid, claims: tokenResult?.claims });
+        if (!session.validateCapturedIdentity(captured)) {
+          return { executed: false, reason: "stale-epoch-ignored" };
+        }
+        const classroomId = tokenResult?.claims?.classroomId || "student-room";
+        session.transitionTo(SESSION_STATES.ACTIVE, { uid, role: "student", classroomId });
+        session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+        session.transitionTo(SESSION_STATES.READY);
+        return { executed: true, data: studentData, role: "student" };
+      } catch (err) {
+        if (!session.validateCapturedIdentity(captured)) {
+          return { executed: false, reason: "stale-epoch-ignored" };
+        }
+        const safeMsg = mapSafeClientError(err);
+        session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMsg });
+        session.invalidate("student-load-failed", {
+          state: SESSION_STATES.DENIED_OR_INCONSISTENT,
+          errorMessage: safeMsg
+        });
+        return { success: false, reason: "student-load-failed", error: safeMsg };
+      }
+    }
+
+    const safeMsg = "V2 student access is unavailable or unsupported.";
+    session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMsg });
+    session.invalidate("v2-student-unsupported", {
+      state: SESSION_STATES.DENIED_OR_INCONSISTENT,
+      errorMessage: safeMsg
+    });
+    return { success: false, reason: "student-access-unavailable" };
   }
 
   const resolutionRes = await orchestrateTeacherResolution(session, callAdapter);

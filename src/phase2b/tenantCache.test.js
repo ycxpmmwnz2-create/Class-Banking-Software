@@ -94,13 +94,27 @@ describe("TenantCache Module Specifications", () => {
     assert.equal(digestEmpty, "");
   });
 
-  test("validateBroadcastMessage enforces exact sha256_ prefix plus 64 lowercase hexadecimal chars", () => {
+  test("createBroadcastMessage produces exact payload with only type, uidDigest, and epoch", () => {
+    const msg = createBroadcastMessage("user_abc", 3);
+    assert.deepEqual(Object.keys(msg).sort(), ["epoch", "type", "uidDigest"]);
+    assert.equal(msg.type, "session-invalidated");
+    assert.equal(msg.epoch, 3);
+    assert.equal("tabId" in msg, false);
+  });
+
+  test("validateBroadcastMessage enforces exact sha256_ prefix plus 64 lowercase hexadecimal chars and rejects tabId or extra keys", () => {
     const validMsg = {
       type: "session-invalidated",
       uidDigest: "sha256_ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
       epoch: 5
     };
     assert.equal(validateBroadcastMessage(validMsg), true);
+
+    const msgWithTabId = {
+      ...validMsg,
+      tabId: "tab_123"
+    };
+    assert.equal(validateBroadcastMessage(msgWithTabId), false, "Rejects extra tabId key in payload");
 
     // Invalid digest length/format
     const invalidDigestMsg = {
@@ -236,36 +250,48 @@ describe("TenantCache Module Specifications", () => {
     assert.equal(storage.getItem(keyA), null, "V2 cache must be purged on signOut");
   });
 
-  test("MultiTabInvalidator subscribes to adapters, processes events, and unsubscribes on destroy", () => {
-    const channelAdapter = createMockChannel();
-    const storageAdapter = createMockStorage();
-    const session = new TenantSession();
-    session.transitionTo(SESSION_STATES.AUTHENTICATING);
-    session.transitionTo(SESSION_STATES.RESOLVING);
-    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "u1", role: "teacher", classroomId: "c1" });
+  test("MultiTabInvalidator subscribes to separate adapters and receiver invalidates on sender broadcast", () => {
+    const channelSender = createMockChannel();
+    const channelReceiver = createMockChannel();
+    // Simulate BroadcastChannel network link:
+    channelSender.postMessage = (msg) => {
+      for (const listener of channelReceiver.listeners) {
+        listener({ data: msg });
+      }
+    };
 
-    let callbackFired = false;
-    const invalidator = new MultiTabInvalidator(session, {
-      channelAdapter,
-      storageAdapter,
-      tabId: "tab_other",
+    const receiverSession = new TenantSession();
+    receiverSession.transitionTo(SESSION_STATES.AUTHENTICATING);
+    receiverSession.transitionTo(SESSION_STATES.RESOLVING);
+    receiverSession.transitionTo(SESSION_STATES.ACTIVE, { uid: "u1", role: "teacher", classroomId: "c1" });
+
+    let receiverInvalidated = false;
+    const receiverInvalidator = new MultiTabInvalidator(receiverSession, {
+      channelAdapter: channelReceiver,
       onInvalidated: () => {
-        callbackFired = true;
+        receiverInvalidated = true;
       }
     });
 
-    invalidator.start();
-    assert.equal(invalidator.isSubscribed, true);
+    receiverInvalidator.start();
 
-    // Trigger event via channel adapter message emission
-    const validMsg = createBroadcastMessage("u1", 5, "tab_sender");
-    channelAdapter.postMessage(validMsg);
+    const senderSession = new TenantSession();
+    senderSession.transitionTo(SESSION_STATES.AUTHENTICATING);
+    senderSession.transitionTo(SESSION_STATES.RESOLVING);
+    senderSession.transitionTo(SESSION_STATES.ACTIVE, { uid: "u1", role: "teacher", classroomId: "c1" });
 
-    assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT);
-    assert.equal(callbackFired, true);
+    const senderInvalidator = new MultiTabInvalidator(senderSession, {
+      channelAdapter: channelSender
+    });
+    senderInvalidator.start();
 
-    // Teardown
-    invalidator.destroy();
-    assert.equal(invalidator.isSubscribed, false);
+    // Sender publishes invalidation
+    senderInvalidator.broadcastInvalidation("u1", 5);
+
+    assert.equal(receiverSession.getState(), SESSION_STATES.SIGNED_OUT);
+    assert.equal(receiverInvalidated, true);
+
+    receiverInvalidator.destroy();
+    senderInvalidator.destroy();
   });
 });
