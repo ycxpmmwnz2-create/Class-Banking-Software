@@ -64,6 +64,10 @@ const REQUIRED_SCRUBBED_VARIABLES = Object.freeze([
   'FIREBASE_AUTH_EMULATOR_HOST',
   'FUNCTIONS_EMULATOR',
   'MULTI_TEACHER_V2_ENABLED',
+  // Added in Commit 2 alongside the production release gate. A leaked release
+  // identifier could satisfy the production branch of the V2 gate during what
+  // was meant to be a local run, so it belongs beside MULTI_TEACHER_V2_ENABLED.
+  'MULTI_TEACHER_V2_RELEASE_ID',
 ])
 
 // ---------------------------------------------------------------------------
@@ -427,6 +431,39 @@ describe('Phase 3 command-safety source contract', () => {
       }
       assert.ok(projectArguments(HARDENED_FIXTURE).every(project => project.startsWith('demo-')))
       assert.ok(!hasProductionProjectMarker(HARDENED_FIXTURE))
+    })
+
+    /**
+     * Targeted control for the newest scrub. A command can satisfy every other
+     * protection and still leak the production release identifier, which would
+     * let the V2 gate's production branch be satisfied during what was meant to
+     * be a local run. Removing only this one `-u` must fail.
+     */
+    it('rejects an emulator command that omits only the release-ID scrub', () => {
+      const missingReleaseScrub = HARDENED_FIXTURE.replace(
+        '-u MULTI_TEACHER_V2_RELEASE_ID',
+        '',
+      )
+
+      // Everything else still passes, isolating the single omission.
+      assert.ok(refusesLocalAdc(missingReleaseScrub))
+      assert.ok(usesTemporaryCliConfig(missingReleaseScrub))
+      assert.ok(disablesMetadataServer(missingReleaseScrub))
+      assert.ok(scrubsVariable(missingReleaseScrub, 'MULTI_TEACHER_V2_ENABLED'))
+      assert.ok(projectArguments(missingReleaseScrub).every(p => p.startsWith('demo-')))
+
+      // The release-ID scrub specifically is absent.
+      assert.ok(
+        !scrubsVariable(missingReleaseScrub, 'MULTI_TEACHER_V2_RELEASE_ID'),
+        'the matcher must reject a command that leaves MULTI_TEACHER_V2_RELEASE_ID set',
+      )
+
+      // And the scrub list must actually contain it, or the loop above would
+      // never check it for the real commands.
+      assert.ok(
+        REQUIRED_SCRUBBED_VARIABLES.includes('MULTI_TEACHER_V2_RELEASE_ID'),
+        'MULTI_TEACHER_V2_RELEASE_ID must be part of the scrub contract',
+      )
     })
 
     it('skips aggregator scripts that chain npm commands without launching emulators', () => {

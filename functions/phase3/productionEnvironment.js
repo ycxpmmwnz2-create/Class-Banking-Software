@@ -98,6 +98,28 @@ function fail(category, message, details) {
 }
 
 /**
+ * Validates a reviewed release identifier supplied by a caller.
+ *
+ * Deliberately NOT coercing: `String(123)` would let a numeric
+ * `expectedReleaseId` authorize release `"123"`, so a caller that read the value
+ * from JSON or a spreadsheet cell could authorize a release it never named. The
+ * reviewed identifier must already be a canonical string.
+ */
+function requireCanonicalReleaseId(value, missingMessage) {
+  if (value === undefined || value === null ||
+      (typeof value === 'string' && value.trim() === '')) {
+    fail(PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_AUTHORIZATION, missingMessage)
+  }
+  if (typeof value !== 'string' || !RELEASE_ID_PATTERN.test(value)) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_RELEASE_ID,
+      'The expected release identifier is not a canonical string.',
+    )
+  }
+  return value
+}
+
+/**
  * Reads a variable from an environment-like object.
  *
  * The environment is injected rather than read from `process.env` directly so
@@ -139,16 +161,72 @@ export function isLoopbackHostPort(value) {
 }
 
 /**
- * Resolves the runtime project ID from the two sources Firebase populates.
- *
- * When both are present they must agree exactly. Disagreement is ambiguous and
- * therefore blocking: guessing which one is authoritative is precisely how a
- * command aimed at an emulator ends up pointed at production.
+ * Every environment variable that can route a Firebase/Google client at a
+ * project. `GOOGLE_CLOUD_PROJECT` is included because the repository's own
+ * isolation contract already classifies it as project-routing (it is scrubbed by
+ * every Phase 2B emulator command); omitting it here would let a contradictory
+ * value pass unnoticed while a different SDK layer honored it.
  */
-export function resolveRuntimeProjectId(environment = process.env) {
-  const gcloudProject = readVariable(environment, 'GCLOUD_PROJECT')
+export const PROJECT_ROUTING_VARIABLES = Object.freeze([
+  'GCLOUD_PROJECT',
+  'GOOGLE_CLOUD_PROJECT',
+])
 
-  let firebaseConfigProject
+/**
+ * A canonical project ID: already exact, with no surrounding whitespace. This
+ * guard never normalizes a routing value — trimming would accept
+ * `" morgan-bank"` as production despite the exact-string requirement, and the
+ * padded value is evidence of a misconfigured caller, not a formatting nicety.
+ */
+function requireCanonicalProjectValue(value, source) {
+  if (typeof value !== 'string') {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+      'A project routing value must be a string.',
+      { variable: source },
+    )
+  }
+  if (value !== value.trim()) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+      'A project routing value has surrounding whitespace and is not canonical.',
+      { variable: source },
+    )
+  }
+  return value
+}
+
+/**
+ * Resolves the runtime project ID from every source Firebase/Google populates.
+ *
+ * All present sources must agree EXACTLY. Disagreement is ambiguous and
+ * therefore blocking: guessing which one is authoritative is precisely how a
+ * command aimed at an emulator ends up pointed at production. No value is
+ * trimmed, normalized, or coerced.
+ */
+export function resolveRuntimeProjectId(...args) {
+  // Same fail-closed rule as the high-level guards: an explicitly passed
+  // `undefined` must not silently fall back to the ambient `process.env`. This
+  // function is part of the public guard surface, so it needs the protection too.
+  const environment = args.length === 0 ? process.env : args[0]
+
+  if (environment === null || typeof environment !== 'object' ||
+      Array.isArray(environment)) {
+    throw new TypeError('environment must be an object.')
+  }
+
+  /** @type {{ source: string, value: string }[]} */
+  const found = []
+
+  for (const variable of PROJECT_ROUTING_VARIABLES) {
+    const raw = environment[variable]
+    if (isBlank(raw)) continue
+    found.push({
+      source: variable,
+      value: requireCanonicalProjectValue(raw, variable),
+    })
+  }
+
   const rawFirebaseConfig = environment.FIREBASE_CONFIG
   if (!isBlank(rawFirebaseConfig)) {
     let parsed
@@ -160,33 +238,41 @@ export function resolveRuntimeProjectId(environment = process.env) {
       fail(
         PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
         'FIREBASE_CONFIG is present but is not parseable JSON.',
+        { variable: 'FIREBASE_CONFIG' },
       )
     }
-    if (parsed && typeof parsed === 'object' && typeof parsed.projectId === 'string') {
-      firebaseConfigProject = parsed.projectId
+    if (parsed !== null && typeof parsed === 'object' &&
+        !isBlank(parsed.projectId)) {
+      found.push({
+        source: 'FIREBASE_CONFIG.projectId',
+        value: requireCanonicalProjectValue(
+          parsed.projectId,
+          'FIREBASE_CONFIG.projectId',
+        ),
+      })
     }
   }
 
-  const candidates = [gcloudProject, firebaseConfigProject].filter(
-    value => !isBlank(value),
-  )
-
-  if (candidates.length === 0) {
+  if (found.length === 0) {
     fail(
       PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_PROJECT_ID,
-      'No runtime project ID is present in GCLOUD_PROJECT or FIREBASE_CONFIG.',
+      'No runtime project ID is present in any project routing source.',
     )
   }
 
-  if (candidates.length === 2 && candidates[0] !== candidates[1]) {
+  // Full pairwise agreement, not just first-versus-second: with three sources a
+  // two-way check could pass while a third disagreed.
+  const distinct = [...new Set(found.map(entry => entry.value))]
+  if (distinct.length > 1) {
     fail(
       PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
-      'GCLOUD_PROJECT and FIREBASE_CONFIG name different projects.',
-      { gcloudProject, firebaseConfigProject },
+      'Project routing sources name different projects.',
+      // Names only, never values: Section 6 requires redacted telemetry.
+      { sources: found.map(entry => entry.source) },
     )
   }
 
-  return candidates[0].trim()
+  return found[0].value
 }
 
 /**
@@ -338,19 +424,11 @@ export function assertV2GateAllowed(options = {}) {
       'MULTI_TEACHER_V2_RELEASE_ID is not a canonical release identifier.',
     )
   }
-  if (isBlank(expectedReleaseId)) {
-    fail(
-      PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_AUTHORIZATION,
-      'An expected release identifier is required to validate a production gate.',
-    )
-  }
-  if (!RELEASE_ID_PATTERN.test(String(expectedReleaseId))) {
-    fail(
-      PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_RELEASE_ID,
-      'The expected release identifier is not canonical.',
-    )
-  }
-  if (actualReleaseId !== String(expectedReleaseId)) {
+  requireCanonicalReleaseId(
+    expectedReleaseId,
+    'An expected release identifier is required to validate a production gate.',
+  )
+  if (actualReleaseId !== expectedReleaseId) {
     // Values are deliberately omitted: Section 6 requires redacted telemetry.
     fail(
       PRODUCTION_ENVIRONMENT_CATEGORIES.RELEASE_ID_MISMATCH,
@@ -482,13 +560,11 @@ export function validateWriteAuthorization(authorization, options = {}) {
     )
   }
 
-  if (isBlank(expectedReleaseId)) {
-    fail(
-      PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_AUTHORIZATION,
-      'An expected release identifier is required to authorize a write.',
-    )
-  }
-  if (authorization.releaseId !== String(expectedReleaseId)) {
+  requireCanonicalReleaseId(
+    expectedReleaseId,
+    'An expected release identifier is required to authorize a write.',
+  )
+  if (authorization.releaseId !== expectedReleaseId) {
     fail(
       PRODUCTION_ENVIRONMENT_CATEGORIES.RELEASE_ID_MISMATCH,
       'The supplied release identifier does not match the reviewed artifact.',
@@ -521,7 +597,8 @@ export function redactEnvironmentError(error) {
       safeDetails[key] = error.details[key]
     }
   }
-  for (const key of ['missing', 'unknownKeys']) {
+  // `sources` holds variable NAMES (e.g. GOOGLE_CLOUD_PROJECT), never values.
+  for (const key of ['missing', 'unknownKeys', 'sources']) {
     if (Array.isArray(error.details[key])) {
       safeDetails[key] = Object.freeze([...error.details[key]])
     }

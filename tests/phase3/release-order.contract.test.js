@@ -244,13 +244,19 @@ describe('Phase 3 release-order source contract', () => {
       )
     }
 
-    // Commit 2 earns exactly the environment guard module and its test. The
-    // entrypoints, preflight, projection, manifest, writer, reconciliation, and
-    // lifecycle modules belong to Commits 3-6 and must not appear yet.
+    // Commit 2 earns exactly the environment guard module and its test.
+    // Everything else in Section 11's list belongs to Commits 3-6. Both the
+    // implementation AND its test are pinned: listing only the .js files would
+    // let a later commit's test file appear without its implementation, which is
+    // the mirror image of the placeholder problem Section 12 forbids.
     const NOT_YET_EARNED = [
-      'productionPreflight.js', 'productionProjection.js', 'productionManifest.js',
-      'productionWriter.js', 'productionReconciliation.js',
-      'preflight.js', 'write.js', 'reverify.js', 'studentLifecycle.js',
+      'productionPreflight.js', 'productionPreflight.test.js',
+      'productionProjection.js', 'productionProjection.test.js',
+      'productionManifest.js', 'productionManifest.test.js',
+      'productionWriter.js', 'productionWriter.test.js',
+      'productionReconciliation.js', 'productionReconciliation.test.js',
+      'preflight.js', 'write.js', 'reverify.js',
+      'studentLifecycle.js', 'studentLifecycle.test.js',
     ]
     for (const name of NOT_YET_EARNED) {
       assert.ok(
@@ -259,13 +265,50 @@ describe('Phase 3 release-order source contract', () => {
       )
     }
 
-    // Every implementation module present must have its colocated test in the
-    // same commit, per the Section 11 amendment.
-    for (const name of actual.filter(f => f.endsWith('.js') && !f.endsWith('.test.js'))) {
+    /**
+     * The three CLI entrypoints are exempt from colocation: the amended Section
+     * 11 assigns their coverage to the production-runner suites under
+     * `tests/phase3/`, and no `preflight.test.js` / `write.test.js` /
+     * `reverify.test.js` is permitted to exist. Requiring a colocated test for
+     * them would demand an unpermitted file.
+     */
+    const COLOCATION_EXEMPT_ENTRYPOINTS = new Set([
+      'preflight.js', 'write.js', 'reverify.js',
+    ])
+
+    for (const name of COLOCATION_EXEMPT_ENTRYPOINTS) {
+      const forbiddenTest = name.replace(/\.js$/, '.test.js')
+      assert.ok(
+        !SECTION_11_PERMITTED.has(forbiddenTest),
+        `${forbiddenTest} is not a permitted file; entrypoints are covered by the runner suites`,
+      )
+      assert.ok(
+        !actual.includes(forbiddenTest),
+        `${forbiddenTest} must not exist — entrypoint coverage lives in tests/phase3/`,
+      )
+    }
+
+    // Every non-entrypoint implementation module present must ship with its
+    // colocated test in the same commit, per the Section 11 amendment.
+    const implementationModules = actual.filter(name =>
+      name.endsWith('.js') &&
+      !name.endsWith('.test.js') &&
+      !COLOCATION_EXEMPT_ENTRYPOINTS.has(name))
+
+    for (const name of implementationModules) {
       const expectedTest = name.replace(/\.js$/, '.test.js')
       assert.ok(
         actual.includes(expectedTest),
         `${name} must ship with ${expectedTest} in the same commit`,
+      )
+    }
+
+    // The converse: no colocated test may exist without its implementation.
+    for (const name of actual.filter(f => f.endsWith('.test.js'))) {
+      const implementation = name.replace(/\.test\.js$/, '.js')
+      assert.ok(
+        actual.includes(implementation),
+        `${name} must not exist without ${implementation}`,
       )
     }
   })

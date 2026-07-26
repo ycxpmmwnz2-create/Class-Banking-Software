@@ -143,14 +143,19 @@ describe('Phase 3 production environment guards', () => {
   })
 
   describe('runtime project resolution', () => {
-    it('resolves from GCLOUD_PROJECT alone', () => {
+    it('resolves from each routing source alone', () => {
+      // Every source is load-bearing. GOOGLE_CLOUD_PROJECT is included because
+      // the repository's isolation contract already treats it as project-routing;
+      // ignoring it here would let a contradictory value pass while another SDK
+      // layer honored it.
       assert.equal(
         resolveRuntimeProjectId({ GCLOUD_PROJECT: 'morgan-bank' }),
         'morgan-bank',
       )
-    })
-
-    it('resolves from FIREBASE_CONFIG alone', () => {
+      assert.equal(
+        resolveRuntimeProjectId({ GOOGLE_CLOUD_PROJECT: 'morgan-bank' }),
+        'morgan-bank',
+      )
       assert.equal(
         resolveRuntimeProjectId({
           FIREBASE_CONFIG: JSON.stringify({ projectId: 'morgan-bank' }),
@@ -159,25 +164,137 @@ describe('Phase 3 production environment guards', () => {
       )
     })
 
-    it('accepts agreeing sources', () => {
+    it('accepts all three sources when they agree exactly', () => {
       assert.equal(
         resolveRuntimeProjectId({
           GCLOUD_PROJECT: 'morgan-bank',
+          GOOGLE_CLOUD_PROJECT: 'morgan-bank',
           FIREBASE_CONFIG: JSON.stringify({ projectId: 'morgan-bank' }),
         }),
         'morgan-bank',
       )
     })
 
-    it('rejects disagreeing sources rather than picking one', () => {
+    it('rejects every pairwise disagreement, including a dissenting third source', () => {
+      const conflicts = [
+        {
+          label: 'GCLOUD_PROJECT vs GOOGLE_CLOUD_PROJECT',
+          environment: {
+            GCLOUD_PROJECT: 'morgan-bank',
+            GOOGLE_CLOUD_PROJECT: ALLOWED_EMULATOR_PROJECT_ID,
+          },
+        },
+        {
+          label: 'GCLOUD_PROJECT vs FIREBASE_CONFIG',
+          environment: {
+            GCLOUD_PROJECT: 'morgan-bank',
+            FIREBASE_CONFIG: JSON.stringify({ projectId: ALLOWED_EMULATOR_PROJECT_ID }),
+          },
+        },
+        {
+          label: 'GOOGLE_CLOUD_PROJECT vs FIREBASE_CONFIG',
+          environment: {
+            GOOGLE_CLOUD_PROJECT: 'morgan-bank',
+            FIREBASE_CONFIG: JSON.stringify({ projectId: ALLOWED_EMULATOR_PROJECT_ID }),
+          },
+        },
+        {
+          label: 'two agree, third dissents',
+          environment: {
+            GCLOUD_PROJECT: 'morgan-bank',
+            GOOGLE_CLOUD_PROJECT: 'morgan-bank',
+            FIREBASE_CONFIG: JSON.stringify({ projectId: 'demo-something-else' }),
+          },
+        },
+      ]
+
+      for (const { label, environment } of conflicts) {
+        assertRejects(
+          () => resolveRuntimeProjectId(environment),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+          `${label} must block`,
+        )
+        // The same conflict must block the full guard, not only the resolver.
+        assertRejects(
+          () => validateExecutionEnvironment(environment),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+          `${label} must block validateExecutionEnvironment`,
+        )
+      }
+    })
+
+    it('rejects a padded value from every source instead of trimming it', () => {
+      // Trimming would accept " morgan-bank" as production despite the exact
+      // string requirement. Padding is evidence of a misconfigured caller.
+      const padded = [
+        { GCLOUD_PROJECT: ' morgan-bank' },
+        { GCLOUD_PROJECT: 'morgan-bank ' },
+        { GCLOUD_PROJECT: '\tmorgan-bank' },
+        { GOOGLE_CLOUD_PROJECT: ' morgan-bank' },
+        { GOOGLE_CLOUD_PROJECT: 'morgan-bank\n' },
+        { FIREBASE_CONFIG: JSON.stringify({ projectId: ' morgan-bank' }) },
+        { FIREBASE_CONFIG: JSON.stringify({ projectId: 'morgan-bank ' }) },
+      ]
+      for (const environment of padded) {
+        assertRejects(
+          () => resolveRuntimeProjectId(environment),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+          `padded ${JSON.stringify(environment)} must block`,
+        )
+        assertRejects(
+          () => validateExecutionEnvironment(environment),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+          `padded ${JSON.stringify(environment)} must block the full guard`,
+        )
+      }
+    })
+
+    it('rejects a non-string routing value', () => {
+      for (const value of [42, true, {}]) {
+        assertRejects(
+          () => resolveRuntimeProjectId({ GCLOUD_PROJECT: value }),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+          `non-string ${String(value)} must block`,
+        )
+      }
+
+      // `[]` stringifies to "" and is therefore treated as absent, not as a
+      // conflicting value — so it blocks as a missing project rather than an
+      // ambiguous one. Either way it never resolves to a project.
       assertRejects(
-        () => resolveRuntimeProjectId({
-          GCLOUD_PROJECT: 'morgan-bank',
-          FIREBASE_CONFIG: JSON.stringify({ projectId: ALLOWED_EMULATOR_PROJECT_ID }),
-        }),
-        PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
-        'disagreeing project sources must block',
+        () => resolveRuntimeProjectId({ GCLOUD_PROJECT: [] }),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_PROJECT_ID,
+        'an empty array must not resolve to a project',
       )
+    })
+
+    it('reports conflicting source names but never their values', () => {
+      try {
+        resolveRuntimeProjectId({
+          GCLOUD_PROJECT: 'secret-project-a',
+          GOOGLE_CLOUD_PROJECT: 'secret-project-b',
+        })
+        assert.fail('should have thrown')
+      } catch (error) {
+        const serialized = JSON.stringify(error.details)
+        assert.ok(serialized.includes('GCLOUD_PROJECT'))
+        assert.ok(serialized.includes('GOOGLE_CLOUD_PROJECT'))
+        assert.ok(!serialized.includes('secret-project-a'))
+        assert.ok(!serialized.includes('secret-project-b'))
+        // Redaction preserves the names for an operator to act on.
+        assert.deepEqual(
+          redactEnvironmentError(error).details.sources,
+          ['GCLOUD_PROJECT', 'GOOGLE_CLOUD_PROJECT'],
+        )
+      }
+    })
+
+    it('an explicitly passed undefined environment fails closed on the resolver too', () => {
+      // The resolver is part of the public guard surface, so it gets the same
+      // protection as the high-level guards.
+      assert.throws(() => resolveRuntimeProjectId(undefined), TypeError)
+      assert.throws(() => resolveRuntimeProjectId(null), TypeError)
+      assert.throws(() => resolveRuntimeProjectId([]), TypeError)
     })
 
     it('rejects unparseable FIREBASE_CONFIG instead of silently ignoring it', () => {
@@ -469,7 +586,7 @@ describe('Phase 3 production environment guards', () => {
       )
     })
 
-    it('rejects a malformed release ID', () => {
+    it('rejects a malformed deployed release ID', () => {
       for (const value of ['has space', '-leading-dash', 'semi;colon', 'a'.repeat(129)]) {
         assertRejects(
           () => assertV2GateAllowed({
@@ -479,6 +596,43 @@ describe('Phase 3 production environment guards', () => {
           }),
           PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_RELEASE_ID,
           `malformed release "${value}" must block`,
+        )
+      }
+    })
+
+    it('requires the expected release ID to be a canonical string, never coerced', () => {
+      // `String(123)` would let a numeric expectedReleaseId authorize release
+      // "123", so a caller reading the value from JSON or a spreadsheet cell
+      // could authorize a release it never named.
+      const nonCanonical = [
+        123,
+        0,
+        true,
+        {},
+        [],
+        ['phase3-rel-2026-07-26a'],
+        { toString: () => 'phase3-rel-2026-07-26a' },
+        ' phase3-rel-2026-07-26a',
+        'phase3-rel-2026-07-26a ',
+        'has space',
+        '-leading-dash',
+        'semi;colon',
+        'a'.repeat(129),
+      ]
+      for (const expected of nonCanonical) {
+        assertRejects(
+          () => assertV2GateAllowed({
+            environment: productionEnvironment({
+              // Deliberately matches what a coercion would produce.
+              MULTI_TEACHER_V2_RELEASE_ID: String(
+                Array.isArray(expected) ? expected[0] : expected,
+              ),
+            }),
+            v2Enabled: true,
+            expectedReleaseId: expected,
+          }),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_RELEASE_ID,
+          `non-canonical expected release ${JSON.stringify(expected)} must block the gate`,
         )
       }
     })
@@ -704,6 +858,51 @@ describe('Phase 3 production environment guards', () => {
       )
     })
 
+    it('requires the expected release ID to be a canonical string for a write too', () => {
+      // The write path carried the same String() coercion as the gate path: a
+      // numeric expectedReleaseId of 123 would have authorized release "123".
+      //
+      // A canonical-looking authorization.releaseId is paired with each
+      // non-canonical expected value, so the ONLY reason to reject is the
+      // expected identifier itself.
+      for (const expected of [
+        123,
+        0,
+        true,
+        { toString: () => 'phase3-rel-2026-07-26a' },
+        ['phase3-rel-2026-07-26a'],
+        ' phase3-rel-2026-07-26a',
+        'phase3-rel-2026-07-26a ',
+        'has space',
+        '-leading-dash',
+        'a'.repeat(129),
+      ]) {
+        assertRejects(
+          () => validateWriteAuthorization(
+            writeAuthorization({ releaseId: 'phase3-rel-2026-07-26a' }),
+            { environment: productionEnvironment(), expectedReleaseId: expected },
+          ),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_RELEASE_ID,
+          `non-canonical expected release ${JSON.stringify(expected)} must block a write`,
+        )
+      }
+    })
+
+    it('rejects a non-string releaseId inside the authorization itself', () => {
+      // Distinct guard, distinct category: the field-type check on the supplied
+      // authorization fires before the expected-identifier comparison.
+      for (const value of [123, {}, true]) {
+        assertRejects(
+          () => validateWriteAuthorization(
+            { ...writeAuthorization(), releaseId: value },
+            { environment: productionEnvironment(), expectedReleaseId: RELEASE_ID },
+          ),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_AUTHORIZATION,
+          `authorization.releaseId=${String(value)} must block as an invalid field`,
+        )
+      }
+    })
+
     it('a valid environment alone never authorizes a write', () => {
       // The separation Section 2.10 requires: passing the environment guard must
       // not imply write permission.
@@ -781,6 +980,7 @@ describe('Phase 3 production environment guards', () => {
         'EXECUTION_CONTEXT',
         'PRODUCTION_ENVIRONMENT_CATEGORIES',
         'PROHIBITED_AUTHORIZATION_KEYS',
+        'PROJECT_ROUTING_VARIABLES',
         'ProductionEnvironmentError',
         'REQUIRED_WRITE_AUTHORIZATION_FIELDS',
         'assertV2GateAllowed',

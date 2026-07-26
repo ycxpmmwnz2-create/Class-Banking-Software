@@ -64,7 +64,10 @@ emulator, browser, or production acceptance evidence.
 
 Parses the root `package.json` scripts and requires each emulator-backed command
 to refuse local Google ADC, use a temporary isolated Firebase CLI configuration,
-scrub every credential/token/project/config/emulator/gate variable, set
+scrub every credential/token/project/config/emulator/gate variable — including
+`MULTI_TEACHER_V2_RELEASE_ID`, added in Commit 2, since a leaked release
+identifier could satisfy the production branch of the V2 gate during a local
+run — set
 `METADATA_SERVER_DETECTION=none`, and target an explicit `demo-` project. It also
 rejects deploy, `--force`, production-project, and non-loopback-host markers
 across **all** scripts.
@@ -159,6 +162,20 @@ loopback-only emulator hosts, strict `v2Enabled === true`, release-ID matching,
 complete write authorization with every prohibited override key refused by name,
 and redacted telemetry that never carries a project or release value.
 
+Project identity resolves from **three** routing sources — `GCLOUD_PROJECT`,
+`GOOGLE_CLOUD_PROJECT`, and `FIREBASE_CONFIG.projectId`. All present sources must
+agree exactly, checked pairwise across the full set rather than two at a time. No
+value is trimmed, normalized, or coerced: `" morgan-bank"` is refused rather than
+silently accepted as production, because padding is evidence of a misconfigured
+caller. `GOOGLE_CLOUD_PROJECT` is included because the repository's isolation
+contract already classifies it as project-routing — omitting it would let a
+contradictory value pass here while another SDK layer honored it.
+
+Reviewed release identifiers must already be canonical strings. Coercion is
+deliberately absent: `String(123)` would let a numeric `expectedReleaseId`
+authorize release `"123"`, so a caller reading the value from JSON or a
+spreadsheet cell could authorize a release it never named.
+
 It does **not** prove that any future runner calls these guards, that production
 state matches any assumption, or that a release executes correctly. Wiring the
 guards into an entrypoint is a later commit's evidence.
@@ -166,7 +183,9 @@ guards into an entrypoint is a later commit's evidence.
 One assertion deserves note for reviewers: an explicitly passed
 `environment: undefined` must throw rather than silently fall back to
 `process.env`. A parameter default would have made `validate(maybeEnv)` check the
-ambient process while the caller believed it supplied a constrained context.
+ambient process while the caller believed it supplied a constrained context. This
+applies to every public guard surface, including the exported
+`resolveRuntimeProjectId`.
 
 ## Relationship to the Phase 2B matrix
 
