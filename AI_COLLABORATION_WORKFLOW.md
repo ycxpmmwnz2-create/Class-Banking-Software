@@ -35,9 +35,20 @@ requested additional opinion. Do not send it broad architecture or
 security-sensitive implementation work merely because it participated in an
 earlier phase.
 
-Grok, Gemini, or another model may provide a third set of eyes when the
-escalation conditions below apply. A third reviewer does not replace the
-Claude/Codex review cycle.
+Grok is the preferred lightweight third set of eyes: an independent
+systems-level reviewer and residual-risk inspector. At the close of each
+material implementation item, and again at a phase or production-readiness
+gate, give Grok a bounded, read-only "5,000-foot" review: a quick perusal for
+glaring security, data-integrity, scope, sequencing, rollback, isolation, or
+test-evidence problems. The useful question is whether the completed house is
+livable, not whether Grok would have selected every nail or built it the same
+way. Grok does not redo or replace any Claude/Codex plan-build-review-correct
+loop, become the architect or builder, or write to the repository during this
+checkpoint.
+
+Gemini or another model may still provide an additional opinion when the
+escalation conditions below apply. A lightweight Grok checkpoint or any other
+third reviewer does not replace the Claude/Codex review cycle.
 
 ## Non-negotiable operating rules
 
@@ -166,9 +177,51 @@ Closure must state one of:
 
 Do not call a phase complete when only an individual item is complete.
 
-## When to use a third reviewer
+### 8. Lightweight Grok checkpoint
 
-Request a third independent review when any of the following is true:
+After Claude and Codex agree that a material item is review-quality, send Grok
+the authoritative requirement, the exact commit or commit range, the permitted
+scope, the verification summary, and the known deferred risks. Ask for a
+bounded, read-only perusal rather than a full independent re-audit.
+
+Grok's default questions are:
+
+- Is there a realistic cross-module sequence, race window, state-machine
+  transition, pre-identity event, cache/auth interaction, or isolation-boundary
+  failure the primary pair missed?
+- Does any ambiguity fail open where it should fail closed, or does a
+  fail-closed choice create an unstated operational cost?
+- Does the implementation or release ordering create a glaring security,
+  credential, migration, rollback, or data-loss risk?
+- Do the architecture, rules, Functions, client behavior, migration plan, and
+  test claims remain mutually consistent when viewed together?
+- Do the stated tests actually prove their titles at the claimed evidence
+  layer, or is a safety conclusion over-claimed or under-specified?
+- Did a correction create a new high-level failure mode, and is any residual
+  risk being accepted without being named?
+- Is any finding serious enough to reopen the item before the next commit?
+
+This checkpoint is deliberately not an exhaustive checklist, a deep
+line-by-line or symbolic proof, or a substitute for detailed low-level edge-case
+enumeration. Claude and Codex retain those responsibilities throughout the
+normal build-and-check loop. Grok should follow a cross-cutting concern into
+specific files or lines when needed to support a concrete finding, but should
+not expand the checkpoint into a duplicate full implementation review.
+
+The expected response is short and severity-ordered. "No glaring issue found"
+is a valid result. Low-value style preferences and speculative redesigns do not
+reopen an item. A concrete Blocking or High finding returns to the original
+builder for correction and then to the Claude/Codex delta-review loop. Medium
+findings are recorded and either accepted explicitly or assigned to a named
+follow-up. Run this checkpoint once per material item rather than after every
+small corrective commit; at phase-completion and production-readiness gates,
+give Grok the cumulative range and ask for the same high-level pass.
+
+## When to use a deeper third review
+
+The lightweight Grok checkpoint above is the normal third-eye pass. Request a
+deeper independent review from Grok, Gemini, or another model when any of the
+following is true:
 
 - a phase-completion, production-readiness, migration, or deployment gate is
   approaching;
@@ -179,7 +232,7 @@ Request a third independent review when any of the following is true:
 - tests pass but production behavior remains difficult to connect to them;
 - Andrew explicitly requests an adversarial or additional audit.
 
-The third reviewer should receive the authoritative requirement, exact commit
+The deeper reviewer should receive the authoritative requirement, exact commit
 range, permitted scope, known disagreements, and requested checks. It should
 begin read-only. Use a narrow review request rather than asking it to redo the
 entire project history.
@@ -199,6 +252,7 @@ Permitted file scope:
 Implemented behavior:
 Exact commands and results:
 Known risks/deferred evidence:
+Lightweight Grok checkpoint scope and verdict:
 Explicitly forbidden actions:
 Next requested decision or action:
 ```
