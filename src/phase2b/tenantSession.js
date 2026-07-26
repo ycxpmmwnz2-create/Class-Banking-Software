@@ -336,14 +336,21 @@ export class TenantSession {
       }
     }
 
+    // A transport message always invalidates an OUTGOING tenant. During an
+    // initial Auth observation the observer stages uid/role in more than one
+    // invalidate() call before any classroom is resolved. Sending the incoming
+    // UID from either staging call makes an established same-account tab sign
+    // itself out merely because a new tab signed in.
+    const hadOutgoingTenant = Boolean(oldUid && oldClassroomId);
     const shouldBroadcast =
       reason !== "multi-tab-invalidation" &&
       reason !== "malformed-broadcast-message" &&
+      hadOutgoingTenant &&
       (reason === "sign-out" || oldUid !== newUid || oldRole !== newRole || oldClassroomId !== newClassroomId);
 
     if (shouldBroadcast && this.multiTabInvalidator && typeof this.multiTabInvalidator.broadcastInvalidation === "function") {
       try {
-        this.multiTabInvalidator.broadcastInvalidation(oldUid || newUid || "unknown", this.epoch);
+        this.multiTabInvalidator.broadcastInvalidation(oldUid, this.epoch);
       } catch (err) {
         console.error("MultiTab invalidation broadcast failed:", err);
       }

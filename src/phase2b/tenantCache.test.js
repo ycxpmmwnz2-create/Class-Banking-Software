@@ -281,6 +281,37 @@ describe("TenantCache Module Specifications", () => {
     assert.equal(published.length, 0, "Multi-tab-originated invalidation MUST NOT rebroadcast");
   });
 
+  test("initial null -> teacher authentication does not invalidate an established same-account tab", () => {
+    const published = [];
+    const session = new TenantSession({
+      storageAdapter: createMockStorage(),
+      cacheModule: { purgeTenantCache, purgeLegacyCache, buildCacheKey },
+      projectId: PROJECT_ID,
+      multiTabInvalidator: {
+        broadcastInvalidation(uid, epoch) { published.push({ uid, epoch }); }
+      }
+    });
+
+    // Mirrors index.html's staged initial observer flow: first the UID before
+    // token lookup, then the resolved teacher role. Neither state has an
+    // outgoing classroom tenant to invalidate.
+    session.invalidate("auth-observer-change", {
+      uid: "teacher_a",
+      state: SESSION_STATES.AUTHENTICATING
+    });
+    session.invalidate("auth-observer-change", {
+      uid: "teacher_a",
+      role: "teacher",
+      state: SESSION_STATES.AUTHENTICATING
+    });
+
+    assert.deepEqual(
+      published,
+      [],
+      "Opening a second same-account tab must not evict the already-established tab"
+    );
+  });
+
   test("createBroadcastMessage produces exact payload with only type, uidDigest, and epoch", () => {
     const msg = createBroadcastMessage("user_abc", 3);
     assert.deepEqual(Object.keys(msg).sort(), ["epoch", "type", "uidDigest"]);
