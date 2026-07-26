@@ -430,7 +430,7 @@ describe('Phase 3 release-order source contract', () => {
     )
   })
 
-  it('invariant: the emulator readers preserve raw ID types and read every scoped surface', () => {
+  it('invariant: the shared data readers preserve raw ID types and read every scoped surface', () => {
     // Two regressions this pins, both found in delta review of correction A:
     //
     // 1. The readers coerced every student ID with String(...), which hid the
@@ -439,7 +439,7 @@ describe('Phase 3 release-order source contract', () => {
     // 2. `scopedLogs` was hardcoded to 0 with no read at all, so preflight would
     //    report absence for a surface nobody examined.
     const source = readFileSync(
-      new URL('./production-runner.emulator.test.js', import.meta.url),
+      new URL('../../functions/phase3/productionPreflight.js', import.meta.url),
       'utf8',
     )
     const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
@@ -447,7 +447,7 @@ describe('Phase 3 release-order source contract', () => {
     assert.ok(
       !/String\(\s*(?:student\.id|entry\.studentId|doc\.data\(\)\.studentId)\s*\)/
         .test(code),
-      'the emulator readers must preserve raw student-ID types, not stringify them',
+      'the production data readers must preserve raw student-ID types, not stringify them',
     )
     assert.ok(
       !/scopedLogs:\s*0\b/.test(code),
@@ -517,28 +517,29 @@ describe('Phase 3 release-order source contract', () => {
       'watermark sources must be explicitly classified',
     )
 
-    // The emulator reader must enumerate roots and preserve raw ID types.
+    // The shared production reader must enumerate roots and preserve raw ID
+    // types; the emulator suite must invoke that reader rather than a copy.
     assert.ok(
-      /\['teachers',\s*'teacherIds'\]/.test(emulator) &&
-        /\['classrooms',\s*'classroomIds'\]/.test(emulator),
+      /collectionPath:\s*'teachers'/.test(preflight) &&
+        /collectionPath:\s*'classrooms'/.test(preflight),
       'teacher and classroom roots must both be enumerated',
     )
     assert.ok(
-      /\.collection\(collection\)\.listDocuments\(\)/.test(emulator),
+      /\.collection\(collectionPath\)\.listDocuments\(\)/.test(preflight),
       'root enumeration must use listDocuments() so phantom parents are reachable',
     )
     assert.ok(
-      /if \(snapshot\.exists\) roots\[key\]\.push/.test(emulator),
+      /if \(snapshot\.exists\) ids\.push\(reference\.id\)/.test(preflight),
       'only EXISTING documents may count as roots; a phantom parent is not a root',
     )
     assert.ok(
-      !/String\(\s*doc\.data\(\)\.studentId\s*\)/.test(emulator) &&
-        !/destination\w*:\s*[^,\n]*\.map\(\s*\w+\s*=>\s*String\(/.test(emulator),
+      !/String\(\s*document\.data\(\)\.studentId\s*\)/.test(preflight) &&
+        !/destination\w*:\s*[^,\n]*\.map\(\s*\w+\s*=>\s*String\(/.test(preflight),
       'destination watermark sources must preserve raw ID types',
     )
 
-    const destinationReader = emulator.match(
-      /readDestinationPaths:\s*async\s*\(\)\s*=>\s*\{[\s\S]*?readAuthCompatibility:/,
+    const destinationReader = preflight.match(
+      /async function readDestinationPaths\(\)\s*\{[\s\S]*?async function readAuthCompatibility/,
     )?.[0] ?? ''
     assert.ok(
       /studentIdCoverageBySurface/.test(destinationReader) &&
@@ -555,6 +556,10 @@ describe('Phase 3 release-order source contract', () => {
         '.filter(doc => doc.data().studentId != null)',
       ),
       'destination readers must classify missing IDs rather than filter them out',
+    )
+    assert.ok(
+      /createReadOnlyDataReaders\(\{/.test(emulator),
+      'the emulator suite must exercise the shared production data reader',
     )
     assert.ok(
       /referencedCount\s*\+\s*classification\.unassignedCount\s*!==\s*declaredDocuments/

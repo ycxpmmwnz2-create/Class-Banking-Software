@@ -38,16 +38,20 @@ assert.ok(
   'FIREBASE_AUTH_EMULATOR_HOST must be supplied by the emulator harness.',
 )
 
-const { runPreflightMain, PREFLIGHT_EXIT_CODES, parsePreflightArguments } =
+const {
+  runPreflightMain,
+  PREFLIGHT_EXIT_CODES,
+  parsePreflightArguments,
+  validateExplicitCredential,
+} =
   await import('../../functions/phase3/preflight.js')
 // Admin handles come from a module under functions/, so `firebase-admin`
 // resolves from functions/node_modules and never becomes a root dependency —
 // the same convention functions/phase2/seedRehearsal.js established.
 const {
-  CLASSROOM_SUBCOLLECTION_SURFACES,
   PREFLIGHT_ABORT_CATEGORIES,
   createReadOnlyAdminHandles,
-  numericStudentId,
+  createReadOnlyDataReaders,
 } = await import(
   '../../functions/phase3/productionPreflight.js'
 )
@@ -59,7 +63,7 @@ const {
   readProductionManifest,
   resolveManifestPath,
 } = await import('../../functions/phase3/productionManifest.js')
-const { serializeCanonicalState, encodeCanonicalFirestoreValue } = await import(
+const { serializeCanonicalState } = await import(
   '../../functions/phase2/canonicalState.js'
 )
 
@@ -174,18 +178,6 @@ function identityBearingSeedStrings() {
 }
 
 /**
- * Splits a millisecond epoch into exact {seconds, nanoseconds}.
- *
- * Auth metadata is only millisecond-resolution, so the nanosecond component is
- * exact-but-coarse here. Firestore snapshots carry true nanoseconds and use their
- * own components directly.
- */
-function exactUpdateTimeFromMillis(millis) {
-  const seconds = Math.floor(millis / 1000)
-  return { seconds, nanoseconds: (millis - seconds * 1000) * 1_000_000 }
-}
-
-/**
  * Persists through the real persister and records the path for cleanup.
  *
  * Aborting runs never reach this; only the acknowledged-count control does.
@@ -221,301 +213,15 @@ async function enumerateExistingRoots() {
   return roots
 }
 
-/**
- * Builds one per-document evidence entry from a real Firestore snapshot.
- *
- * This is the shape a later writer recomputes under the freeze. Note what is and
- * is not retained: the document's full path is HASHED (a path such as
- * `classrooms/x/studentCredentials/ada.smith` embeds student identity), the body
- * is hashed through the Phase 2A canonical encoder so secret-bearing fields enter
- * the preimage but never the manifest, and `updateTime` is carried exactly so a
- * same-shape rewrite is still detected.
- */
-function evidenceEntry(snapshot) {
-  return {
-    pathHash: createHash('sha256')
-      .update(snapshot.ref.path, 'utf8').digest('hex'),
-    // Full Firestore precision. `toDate().toISOString()` truncates to
-    // milliseconds, so two writes inside one millisecond restoring the same body
-    // would produce identical evidence.
-    updateTime: {
-      seconds: snapshot.updateTime.seconds,
-      nanoseconds: snapshot.updateTime.nanoseconds,
-    },
-    // Bodies hold native Firestore Timestamps, so the Phase 2A canonical
-    // Firestore-value encoder is what hashes them faithfully.
-    documentHash: createHash('sha256')
-      .update(serializeCanonicalState(
-        encodeCanonicalFirestoreValue(snapshot.data() ?? {}),
-      ), 'utf8')
-      .digest('hex'),
-  }
-}
-
-/**
- * Real Firestore/Auth readers. Every one issues only `get`/`list` operations
- * through the Admin SDK.
- */
+/** Real Firestore/Auth readers from the production data-reader implementation. */
 function liveReaders() {
   return {
     ...injectedDeploymentReaders(),
-
-    readLegacyClassroomAggregate: async () => {
-      const snapshot = await firestore.doc('morganBank/classroomData').get()
-      const data = snapshot.exists ? snapshot.data() : {}
-      const students = Array.isArray(data.students) ? data.students : []
-      const transactions = Array.isArray(data.transactions) ? data.transactions : []
-      const loginHistory = Array.isArray(data.loginHistory) ? data.loginHistory : []
-      return {
-        complete: true,
-        counts: {
-          students: students.length,
-          transactions: transactions.length,
-          loginHistory: loginHistory.length,
-        },
-        // Raw source types are preserved deliberately. Coercing with String()
-        // here would hide exactly the cross-source numeric/string equivalence the
-        // watermark must normalize (roster `id: 7`, credential `studentId: "7"`),
-        // so the live suite would not exercise the real behavior.
-        studentIds: students.map(student => student.id),
-        transactionStudentIds: transactions
-          .filter(entry => entry.studentId != null)
-          .map(entry => entry.studentId),
-        loginHistoryStudentIds: loginHistory
-          .filter(entry => entry.studentId != null)
-          .map(entry => entry.studentId),
-        noncanonicalValueCount: 0,
-        anomalies: [],
-        // Stated explicitly, so the singleton's presence is bound to its evidence
-        // cardinality rather than inferred from it.
-        present: snapshot.exists,
-        sourceEntries: snapshot.exists ? [evidenceEntry(snapshot)] : [],
-      }
-    },
-
-    readFlatCredentials: async () => {
-      const snapshot = await firestore.collection('studentCredentials').get()
-      const loginIds = snapshot.docs.map(doc => doc.id)
-      const studentIds = snapshot.docs.map(doc => doc.data().studentId)
-      return {
-        complete: true,
-        count: snapshot.size,
-        studentIds,
-        duplicateLoginIds: loginIds.length - new Set(loginIds).size,
-        // Compared on the NORMALIZED value: credentials are an identity set, so
-        // `7` and `"7"` here are two credentials claiming one student, which a
-        // raw-value Set would miss.
-        duplicateStudentIds: studentIds.length -
-          new Set(studentIds.map(id => numericStudentId(id) ?? `raw:${String(id)}`)).size,
-        noncanonicalLoginIds: loginIds.filter(
-          id => !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(id),
-        ).length,
-        anomalies: [],
-        // Credential bodies carry PIN hashes. They enter the hash preimage in
-        // memory; only the digest is retained.
-        sourceEntries: snapshot.docs.map(evidenceEntry),
-      }
-    },
-
-    readFlatAuthLogs: async () => {
-      const snapshot = await firestore.collection('studentAuthLogs').get()
-      return {
-        complete: true,
-        count: snapshot.size,
-        studentIds: snapshot.docs
-          .filter(doc => doc.data().studentId != null)
-          .map(doc => doc.data().studentId),
-        anomalies: [],
-        sourceEntries: snapshot.docs.map(evidenceEntry),
-      }
-    },
-
-    readFoundation: async () => {
-      // Enumerated roots, not just the named pair. Reading teachers/{uid}
-      // directly cannot see an unrelated second teacher or an extra classroom
-      // root, and multiple teachers/classrooms are outside Phase 3's authorized
-      // production state.
-      //
-      // listDocuments() returns phantom parents too, so each reference is probed
-      // with .get() and only EXISTING documents count as roots — a path holding
-      // only subcollections is not a teacher or a classroom.
-      const roots = await enumerateExistingRoots()
-
-      const teacherSnapshot = await firestore.doc(`teachers/${TEACHER_UID}`).get()
-      if (!teacherSnapshot.exists) {
-        return {
-          complete: true, present: false, anomalies: [], sourceEntries: [], roots,
-        }
-      }
-      const teacher = teacherSnapshot.data()
-      const classroomSnapshot = await firestore
-        .doc(`classrooms/${teacher.classroomId}`).get()
-      return {
-        complete: true,
-        present: true,
-        reciprocal: classroomSnapshot.exists &&
-          classroomSnapshot.data().ownerUid === TEACHER_UID &&
-          teacher.uid === TEACHER_UID,
-        teacherStatus: teacher.status,
-        classroomId: teacher.classroomId,
-        anomalies: [],
-        sourceEntries: [
-          evidenceEntry(teacherSnapshot),
-          ...(classroomSnapshot.exists ? [evidenceEntry(classroomSnapshot)] : []),
-        ],
-        roots,
-      }
-    },
-
-    readDestinationPaths: async () => {
-      // listDocuments(), NOT get(). A Firestore document that holds only
-      // subcollections is a "phantom parent": it does not exist as a document,
-      // so `collection('classrooms').get()` returns zero rows while its
-      // subcollections are fully readable. Enumerating with get() would make
-      // scoped credentials orphaned under such a parent INVISIBLE to preflight —
-      // precisely the pre-existing V2 data this check must catch. Verified
-      // against the emulator: get() saw 0, listDocuments() saw 1.
-      const classroomRefs = await firestore.collection('classrooms').listDocuments()
-      // Each surface keeps its OWN evidence set: a pooled set would let one
-      // surface go unenumerated while the total still matched.
-      const bySurface = {
-        classroomStudents: [],
-        classroomTransactions: [],
-        classroomLoginHistory: [],
-        scopedCredentials: [],
-        scopedLogs: [],
-      }
-      // Raw student-ID references per surface, types preserved. Acknowledged
-      // destination records still contribute their historical identities to the
-      // watermark, so these may not be dropped just because a count is allowed.
-      const idsBySurface = {
-        destinationStudents: [],
-        destinationCredentials: [],
-        destinationTransactions: [],
-        destinationLoginHistory: [],
-        destinationAuthLogs: [],
-      }
-      const idCoverageBySurface = Object.fromEntries(
-        Object.keys(idsBySurface).map(name => [name, {
-          referencedCount: 0,
-          unassignedCount: 0,
-          inconsistentCount: 0,
-        }]),
-      )
-
-      function recordIdentity(setName, document, { pathMustMatch = false } = {}) {
-        const body = document.data()
-        const field = pathMustMatch ? 'id' : 'studentId'
-        if (!Object.hasOwn(body, field) || body[field] == null) {
-          idCoverageBySurface[setName].unassignedCount += 1
-          return
-        }
-
-        const rawId = body[field]
-        idsBySurface[setName].push(rawId)
-        idCoverageBySurface[setName].referencedCount += 1
-        if (pathMustMatch) {
-          const bodyId = numericStudentId(rawId)
-          const pathId = numericStudentId(document.id)
-          if (bodyId === null || pathId === null || bodyId !== pathId) {
-            idCoverageBySurface[setName].inconsistentCount += 1
-          }
-        }
-      }
-
-      function recordReference(setName, document) {
-        const body = document.data()
-        if (!Object.hasOwn(body, 'studentId') || body.studentId == null) {
-          // Phase 2A deliberately preserves unassigned transactions and auth logs.
-          // They are classified explicitly so omission cannot masquerade as an
-          // unread document.
-          idCoverageBySurface[setName].unassignedCount += 1
-          return
-        }
-        idsBySurface[setName].push(body.studentId)
-        idCoverageBySurface[setName].referencedCount += 1
-      }
-
-      // Every scoped subcollection Phase 2A's destination model defines, for every
-      // classroom reference. Enumerating only students and credentials left a
-      // pre-existing transaction or login-history document invisible.
-      for (const classroomRef of classroomRefs) {
-        for (const [collection, surface] of Object.entries(
-          CLASSROOM_SUBCOLLECTION_SURFACES,
-        )) {
-          const snapshot = await classroomRef.collection(collection).get()
-          bySurface[surface].push(...snapshot.docs.map(evidenceEntry))
-
-          if (collection === 'students') {
-            // The body ID is mandatory and must normalize to the path ID. Never
-            // substitute doc.id for a missing body field: that would turn a
-            // malformed student into an apparently valid identity.
-            snapshot.docs.forEach(doc => recordIdentity(
-              'destinationStudents', doc, { pathMustMatch: true },
-            ))
-          } else if (collection === 'studentCredentials') {
-            snapshot.docs.forEach(doc => recordIdentity('destinationCredentials', doc))
-          } else {
-            const setName = collection === 'transactions'
-              ? 'destinationTransactions'
-              : 'destinationLoginHistory'
-            snapshot.docs.forEach(doc => recordReference(setName, doc))
-          }
-        }
-      }
-
-      // Scoped auth logs live at studentAuthLogs/{classroomId}/logs/{logId}, so
-      // they must be enumerated through the same phantom-parent-safe path. This
-      // was previously hardcoded to zero and never read at all, which would have
-      // reported absence for a surface nobody looked at.
-      const scopedLogParents = await firestore
-        .collection('studentAuthLogs').listDocuments()
-      for (const parentRef of scopedLogParents) {
-        const logs = await parentRef.collection('logs').get()
-        bySurface.scopedLogs.push(...logs.docs.map(evidenceEntry))
-        logs.docs.forEach(doc => recordReference('destinationAuthLogs', doc))
-      }
-
-      return {
-        complete: true,
-        counts: Object.fromEntries(
-          Object.entries(bySurface).map(([surface, entries]) => [
-            surface, entries.length,
-          ]),
-        ),
-        studentIdsBySurface: idsBySurface,
-        studentIdCoverageBySurface: idCoverageBySurface,
-        sourceEntriesBySurface: bySurface,
-      }
-    },
-
-    readAuthCompatibility: async () => {
-      const listed = await auth.listUsers(1000)
-      return {
-        complete: true,
-        uidCollisions: 0,
-        incompatibleUsers: 0,
-        examinedUserCount: listed.users.length,
-        // Auth users have no Firestore updateTime, so the evidence is built from
-        // Auth metadata. The UID and email are hashed, never retained: an email is
-        // directly identifying.
-        sourceEntries: listed.users.map(user => ({
-          pathHash: createHash('sha256')
-            .update(`auth/users/${user.uid}`, 'utf8').digest('hex'),
-          updateTime: exactUpdateTimeFromMillis(Date.parse(
-            user.metadata.lastRefreshTime ?? user.metadata.creationTime,
-          )),
-          documentHash: createHash('sha256')
-            .update(serializeCanonicalState({
-              uid: user.uid,
-              disabled: user.disabled,
-              providers: user.providerData.map(entry => entry.providerId).sort(),
-              emailPresent: typeof user.email === 'string',
-            }), 'utf8')
-            .digest('hex'),
-        })),
-      }
-    },
+    ...createReadOnlyDataReaders({
+      firestore,
+      auth,
+      teacherUid: TEACHER_UID,
+    }),
   }
 }
 
@@ -678,6 +384,116 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
     assert.equal(parsed.teacherUid, TEACHER_UID)
     assert.equal(parsed.credentialFile, '/tmp/c.json')
   })
+
+  test('explicit credential validation returns the Admin credential itself', () => {
+    const explicitCredential = Object.freeze({
+      getAccessToken: async () => ({ access_token: 'fake-token' }),
+    })
+    let supplied
+    const result = validateExplicitCredential({
+      type: 'service_account',
+      project_id: 'morgan-bank',
+      client_email: 'phase3@example.invalid',
+      private_key: 'not-a-real-key',
+    }, serviceAccount => {
+      supplied = serviceAccount
+      return explicitCredential
+    })
+    assert.strictEqual(result, explicitCredential)
+    assert.deepEqual(supplied, {
+      projectId: 'morgan-bank',
+      clientEmail: 'phase3@example.invalid',
+      privateKey: 'not-a-real-key',
+    })
+  })
+
+  test('production direct wiring binds authorization before handles and closes readers',
+    async () => {
+      const credentialPath = writeArtifact('production-wiring-credential.json', {
+        type: 'service_account',
+        project_id: 'morgan-bank',
+        client_email: 'phase3@example.invalid',
+        private_key: 'not-a-real-key',
+      })
+      const expectationsPath = writeArtifact(
+        'production-wiring-expectations.json',
+        expectationsArtifact(),
+      )
+      const credentialSha = createHash('sha256')
+        .update(fs.readFileSync(credentialPath, 'utf8'), 'utf8').digest('hex')
+      const expectationsSha = createHash('sha256')
+        .update(fs.readFileSync(expectationsPath, 'utf8'), 'utf8').digest('hex')
+      const authorizationPath = writeArtifact(
+        'production-wiring-authorization.json',
+        authorizationArtifact({
+          projectId: 'morgan-bank',
+          credentialSha256: credentialSha,
+          expectationsSha256: expectationsSha,
+        }),
+      )
+      const argv = [
+        '--teacher-uid', TEACHER_UID,
+        '--authorization-file', authorizationPath,
+        '--expectations-file', expectationsPath,
+        '--credential-file', credentialPath,
+      ]
+      const explicitCredential = Object.freeze({
+        getAccessToken: async () => ({ access_token: 'fake-token' }),
+      })
+      let factoryCalls = 0
+      let closeCalls = 0
+      const outcome = await runPreflightMain(argv, {
+        environment: { GCLOUD_PROJECT: 'morgan-bank' },
+        credentialFactory: () => explicitCredential,
+        productionReaderFactory: options => {
+          factoryCalls += 1
+          assert.strictEqual(options.credential, explicitCredential)
+          assert.equal(options.projectId, 'morgan-bank')
+          assert.equal(options.teacherUid, TEACHER_UID)
+          return {
+            ...liveReaders(),
+            close: async () => { closeCalls += 1 },
+          }
+        },
+        logger: { log() {}, error() {} },
+        persistManifest: async manifest => ({
+          preflightManifestId: manifest.preflightManifestId,
+          preflightChecksum: manifest.preflightChecksum,
+          manifestPath: '/disposable/unit-manifest.json',
+        }),
+      })
+      assert.equal(outcome.exitCode, PREFLIGHT_EXIT_CODES.SUCCESS,
+        `${outcome.error?.category ?? ''} ${outcome.error?.message ?? ''}`)
+      assert.equal(factoryCalls, 1)
+      assert.equal(closeCalls, 1)
+
+      const unboundAuthorization = writeArtifact(
+        'production-wiring-unbound-authorization.json',
+        authorizationArtifact({
+          projectId: 'morgan-bank',
+          credentialSha256: 'f'.repeat(64),
+          expectationsSha256: expectationsSha,
+        }),
+      )
+      const rejected = await runPreflightMain([
+        ...argv.slice(0, 2),
+        '--authorization-file', unboundAuthorization,
+        ...argv.slice(4),
+      ], {
+        environment: { GCLOUD_PROJECT: 'morgan-bank' },
+        credentialFactory: () => explicitCredential,
+        productionReaderFactory: () => {
+          factoryCalls += 1
+          throw new Error('authorization must bind before reader construction')
+        },
+        logger: { log() {}, error() {} },
+      })
+      assert.equal(rejected.exitCode, PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED)
+      assert.equal(rejected.error.category,
+        PREFLIGHT_ABORT_CATEGORIES.AUTHORIZATION_UNBOUND)
+      assert.equal(factoryCalls, 1,
+        'unbound authorization must not construct any Admin reader handle')
+    })
 
   test('a successful preflight reads live data and writes nothing remote', async () => {
     const firestoreBefore = await snapshotFirestore()
@@ -1292,6 +1108,28 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
 
     // An authorized_user credential is not an explicit service-account key.
     assert.equal(exitCode, PREFLIGHT_EXIT_CODES.AUTHORIZATION_REJECTED)
+  })
+
+  test('artifact bytes are hashed before strict UTF-8 decoding', async () => {
+    const invalidPath = path.join(temporaryDirectory, 'invalid-utf8.json')
+    fs.writeFileSync(invalidPath, Buffer.from([0x7b, 0xff, 0x7d]))
+    let readerFactoryCalls = 0
+    const { exitCode, error } = await runPreflightMain([
+      '--teacher-uid', TEACHER_UID,
+      '--authorization-file', invalidPath,
+      '--expectations-file', invalidPath,
+      '--credential-file', invalidPath,
+    ], {
+      environment: emulatorEnvironment(),
+      createReaders: () => {
+        readerFactoryCalls += 1
+        throw new Error('invalid bytes must be rejected before readers')
+      },
+      logger: { log() {}, error() {} },
+    })
+    assert.equal(exitCode, PREFLIGHT_EXIT_CODES.AUTHORIZATION_REJECTED)
+    assert.equal(error.category, 'malformed-artifact')
+    assert.equal(readerFactoryCalls, 0)
   })
 
   test('a missing artifact file fails without a manifest', async () => {

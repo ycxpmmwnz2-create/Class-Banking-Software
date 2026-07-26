@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import { readFile } from 'node:fs/promises'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
+import { TextDecoder } from 'node:util'
+
+import { cert } from 'firebase-admin/app'
 
 import {
   EXECUTION_CONTEXT,
@@ -11,7 +15,9 @@ import {
 } from './productionEnvironment.js'
 import {
   PreflightAbortError,
+  createProductionReaders,
   runProductionPreflight,
+  validateReadAuthorization,
 } from './productionPreflight.js'
 import {
   ProductionManifestError,
@@ -208,8 +214,24 @@ export function parsePreflightArguments(argv) {
  */
 async function readHashedArtifact(filePath, dependencies) {
   const read = dependencies.readFile ?? readFile
-  const contents = await read(filePath, 'utf8')
-  const sha256 = createHash('sha256').update(contents, 'utf8').digest('hex')
+  const artifact = await read(filePath)
+  if (typeof artifact !== 'string' && !(artifact instanceof Uint8Array)) {
+    failArgument('malformed-artifact', 'An artifact reader returned no bytes.')
+  }
+  const bytes = typeof artifact === 'string'
+    ? Buffer.from(artifact, 'utf8')
+    : artifact
+  // Digest the bytes BEFORE any decoding or JSON interpretation. A non-fatal
+  // UTF-8 decode could otherwise map distinct invalid byte sequences to the same
+  // replacement character and make the authorization bind a reconstruction
+  // rather than the exact file the operator supplied.
+  const sha256 = createHash('sha256').update(bytes).digest('hex')
+  let contents
+  try {
+    contents = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    failArgument('malformed-artifact', 'An artifact is not valid UTF-8.')
+  }
   return { contents, sha256 }
 }
 
@@ -228,7 +250,7 @@ function parseJsonArtifact(contents, label) {
  * The returned handle carries no private material beyond what the SDK factory
  * needs, and the caller never logs it.
  */
-export function validateExplicitCredential(parsed) {
+export function validateExplicitCredential(parsed, credentialFactory = cert) {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     failArgument('malformed-credential', 'The credential file must be a JSON object.')
   }
@@ -253,7 +275,32 @@ export function validateExplicitCredential(parsed) {
       )
     }
   }
-  return Object.freeze({ projectId: parsed.project_id })
+  if (typeof credentialFactory !== 'function') {
+    failArgument(
+      'malformed-credential',
+      'The explicit credential factory is unavailable.',
+    )
+  }
+  let credential
+  try {
+    credential = credentialFactory({
+      projectId: parsed.project_id,
+      clientEmail: parsed.client_email,
+      privateKey: parsed.private_key,
+    })
+  } catch {
+    failArgument(
+      'malformed-credential',
+      'The credential file does not contain a usable service-account key.',
+    )
+  }
+  if (!credential || typeof credential.getAccessToken !== 'function') {
+    failArgument(
+      'malformed-credential',
+      'The credential file did not produce an explicit Admin credential.',
+    )
+  }
+  return credential
 }
 
 /**
@@ -269,6 +316,7 @@ export async function runPreflightMain(argv = process.argv.slice(2), dependencie
   const environment = dependencies.environment ?? process.env
 
   let parsed
+  let managedReaders
   try {
     parsed = parsePreflightArguments(argv)
   } catch (error) {
@@ -314,6 +362,7 @@ export async function runPreflightMain(argv = process.argv.slice(2), dependencie
       credentialSha256 = credentialArtifact.sha256
       credential = validateExplicitCredential(
         parseJsonArtifact(credentialArtifact.contents, 'The credential file'),
+        dependencies.credentialFactory ?? cert,
       )
     } else {
       // Still hashed and bound, so the emulator path exercises the same binding
@@ -334,16 +383,36 @@ export async function runPreflightMain(argv = process.argv.slice(2), dependencie
       'The expectations file',
     )
 
+    const nowMillis = dependencies.nowMillis ?? Date.now()
+
+    // Bind authorization before the first Admin handle exists. The full runner
+    // repeats this validation as a defense-in-depth invariant, but doing it here
+    // keeps a mismatched/expired artifact from even constructing an SDK client.
+    validateReadAuthorization({
+      authorization,
+      credentialSha256,
+      expectationsSha256: expectationsArtifact.sha256,
+      teacherUid: parsed.teacherUid,
+      projectId: validatedEnvironment.projectId,
+      nowMillis,
+    })
+
     // Readers are constructed only now — after arguments, environment, and
-    // artifacts have all been accepted.
-    const readers = typeof dependencies.createReaders === 'function'
-      ? await dependencies.createReaders({
+    // artifacts (including authorization binding) have all been accepted.
+    const readerFactory = typeof dependencies.createReaders === 'function'
+      ? dependencies.createReaders
+      : validatedEnvironment.context === EXECUTION_CONTEXT.PRODUCTION
+        ? dependencies.productionReaderFactory ?? createProductionReaders
+        : null
+    const readers = typeof readerFactory === 'function'
+      ? await readerFactory({
         context: validatedEnvironment.context,
         projectId: validatedEnvironment.projectId,
+        teacherUid: parsed.teacherUid,
         credential,
-        credentialFile: parsed.credentialFile,
       })
       : dependencies.readers
+    if (readers && typeof readers.close === 'function') managedReaders = readers
 
     const result = await runProductionPreflight({
       environment,
@@ -356,7 +425,7 @@ export async function runPreflightMain(argv = process.argv.slice(2), dependencie
       // binds the whole artifact rather than a reconstruction of selected fields.
       authorizationSha256: authorizationArtifact.sha256,
       teacherUid: parsed.teacherUid,
-      nowMillis: dependencies.nowMillis ?? Date.now(),
+      nowMillis,
       observedAt: dependencies.observedAt ?? new Date().toISOString(),
       persistManifest: dependencies.persistManifest ?? persistProductionManifest,
     })
@@ -388,6 +457,17 @@ export async function runPreflightMain(argv = process.argv.slice(2), dependencie
     // artifact contents.
     logger.error(`Preflight failed: ${error?.message ?? 'unknown error'}`)
     return { exitCode: PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED, error }
+  } finally {
+    if (managedReaders !== undefined) {
+      try {
+        await managedReaders.close()
+      } catch {
+        // A completed preflight result is immutable; SDK cleanup cannot rewrite
+        // it into success or failure. The direct executable exits immediately,
+        // and the failure is reported without credential or SDK details.
+        logger.error('Preflight reader cleanup failed.')
+      }
+    }
   }
 }
 

@@ -228,8 +228,12 @@ remote writes.
 
 The deployment inventory — Rules releases, Functions revisions, Hosting releases —
 is **injected** in the emulator suite. The Firebase emulators do not emulate those
-control planes, so there is nothing live to read; every Firestore and Auth
-observation is genuine.
+control planes, so there is nothing live to read. The unit suite drives the real
+fixed-endpoint control-plane client with fake HTTP responses and proves GET-only
+requests, redirect rejection, deadlines, complete pagination, preview-channel
+coverage, and inventory caching. Every Firestore and Auth observation in the
+emulator suite is genuine and now runs through the same data-reader implementation
+the production entrypoint selects; there is no parallel emulator-only reader.
 
 The emulator suite runs under `demo-morgan-bank-phase2b-server-test`, the single
 demo project Commit 2's allowlist permits. Giving this suite its own project would
@@ -264,9 +268,10 @@ never carries.
 ### What these suites do not prove
 
 Nothing here proves production state, deployed artifacts, real-account behavior, or
-that a later writer honors a retained manifest. The emulator suite never installs
-an operator manifest — it captures the built manifest instead, so
-`functions/phase3/.state/` stays untouched by tests.
+that a later writer honors a retained manifest. No test contacts production. The
+emulator suite installs one real manifest only under its disposable demo identity,
+then verifies and removes exactly that test-owned path; it never removes or
+overwrites an operator manifest and leaves `functions/phase3/.state/` empty.
 
 ## Relationship to the Phase 2B matrix
 

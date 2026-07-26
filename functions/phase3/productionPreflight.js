@@ -1,10 +1,15 @@
 import { createHash } from 'node:crypto'
+import process from 'node:process'
+import { clearTimeout, setTimeout } from 'node:timers'
+import { URL } from 'node:url'
 
 import { deleteApp, getApps, initializeApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
-import { getFirestore } from 'firebase-admin/firestore'
+import { FieldPath, getFirestore } from 'firebase-admin/firestore'
 
 import {
+  EMULATOR_FLAG_VARIABLES,
+  EMULATOR_HOST_VARIABLES,
   EXECUTION_CONTEXT,
   validateExecutionEnvironment,
 } from './productionEnvironment.js'
@@ -13,6 +18,10 @@ import {
   buildProductionManifest,
   hashDomain,
 } from './productionManifest.js'
+import {
+  encodeCanonicalFirestoreValue,
+  serializeCanonicalState,
+} from '../phase2/canonicalState.js'
 
 /**
  * Phase 3 Commit 3 — strictly read-only production preflight.
@@ -1540,5 +1549,1273 @@ export function createReadOnlyAdminHandles({ projectId, appName, credential }) {
       // alone so a caller cannot accidentally tear down another consumer's handle.
       if (existing === undefined) await deleteApp(app)
     },
+  })
+}
+
+/** Fixed Google API origins reachable by the production reader factory. */
+export const PRODUCTION_GOOGLE_API_ORIGINS = Object.freeze({
+  rules: 'https://firebaserules.googleapis.com',
+  functions: 'https://cloudfunctions.googleapis.com',
+  hosting: 'https://firebasehosting.googleapis.com',
+  firestoreAdmin: 'https://firestore.googleapis.com',
+})
+
+export const PRODUCTION_READER_TIMEOUT_MS = 10_000
+const PRODUCTION_PAGE_LIMIT = 10_000
+const PRODUCTION_LIST_PAGE_SIZE = 1_000
+let productionReaderSequence = 0
+
+function canonicalDigest(value) {
+  return createHash('sha256')
+    .update(serializeCanonicalState(value), 'utf8')
+    .digest('hex')
+}
+
+function failInspection(message, details) {
+  abort(PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE, message, details)
+}
+
+async function boundedOperation(operation, label, timeoutMs) {
+  let timeout
+  try {
+    return await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise((resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(new PreflightAbortError(
+            PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+            'A read-only production inspection timed out.',
+            { surface: label },
+          ))
+        }, timeoutMs)
+      }),
+    ])
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+/**
+ * GET-only JSON client for the four fixed Google control-plane origins.
+ *
+ * Redirect following is disabled, every request has a deadline, response shapes
+ * are fail-closed, and pagination tokens are consumed until the service states
+ * that no page remains. Callers provide only an origin key and an absolute API
+ * path; no arbitrary URL is accepted.
+ */
+export function createBoundedGoogleApiClient({
+  credential,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = PRODUCTION_READER_TIMEOUT_MS,
+}) {
+  if (!credential || typeof credential.getAccessToken !== 'function') {
+    failInspection('The explicit credential cannot mint a Google access token.')
+  }
+  if (typeof fetchImpl !== 'function') {
+    failInspection('No HTTP implementation is available for control-plane reads.')
+  }
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 ||
+      timeoutMs > PRODUCTION_READER_TIMEOUT_MS) {
+    failInspection('The production-reader timeout is outside its fixed safety bound.')
+  }
+
+  async function accessToken() {
+    let result
+    try {
+      result = await boundedOperation(
+        () => credential.getAccessToken(),
+        'accessToken',
+        timeoutMs,
+      )
+    } catch (error) {
+      if (error instanceof PreflightAbortError) throw error
+      failInspection('The explicit credential could not obtain an access token.')
+    }
+    if (!isPlainObject(result) || typeof result.access_token !== 'string' ||
+        result.access_token === '') {
+      failInspection('The explicit credential returned no usable access token.')
+    }
+    return result.access_token
+  }
+
+  async function getJson(originKey, apiPath, query = {}) {
+    const origin = PRODUCTION_GOOGLE_API_ORIGINS[originKey]
+    if (typeof origin !== 'string' || typeof apiPath !== 'string' ||
+        !apiPath.startsWith('/') || apiPath.startsWith('//')) {
+      failInspection('A control-plane request was not anchored to a fixed endpoint.')
+    }
+    const url = new URL(apiPath, origin)
+    if (url.origin !== origin || url.username || url.password || url.hash) {
+      failInspection('A control-plane request escaped its fixed endpoint.')
+    }
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null && value !== '') {
+        url.searchParams.set(key, String(value))
+      }
+    }
+
+    const token = await accessToken()
+    const controller = new globalThis.AbortController()
+    let timeout
+    let response
+    try {
+      timeout = setTimeout(() => controller.abort(), timeoutMs)
+      response = await fetchImpl(url.href, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: Object.freeze({
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+        }),
+      })
+    } catch {
+      failInspection('A read-only Google API request failed or timed out.', {
+        service: originKey,
+      })
+    } finally {
+      clearTimeout(timeout)
+    }
+
+    if (!response || typeof response.status !== 'number') {
+      failInspection('A Google API returned no structured response.', {
+        service: originKey,
+      })
+    }
+    if (response.redirected === true ||
+        (response.status >= 300 && response.status < 400)) {
+      failInspection('A Google API attempted to redirect a fixed-endpoint request.', {
+        service: originKey,
+      })
+    }
+    if (response.status < 200 || response.status >= 300) {
+      failInspection('A read-only Google API request was rejected.', {
+        service: originKey,
+        status: response.status,
+      })
+    }
+
+    let payload
+    try {
+      payload = await boundedOperation(
+        () => response.json(),
+        `${originKey}.json`,
+        timeoutMs,
+      )
+    } catch (error) {
+      if (error instanceof PreflightAbortError) throw error
+      failInspection('A Google API returned malformed JSON.', { service: originKey })
+    }
+    if (!isPlainObject(payload)) {
+      failInspection('A Google API returned a non-object JSON response.', {
+        service: originKey,
+      })
+    }
+    return payload
+  }
+
+  async function listAll({
+    originKey,
+    apiPath,
+    itemsField,
+    query = {},
+    rejectUnreachable = false,
+  }) {
+    const items = []
+    const seenTokens = new Set()
+    let pageToken
+    for (let page = 0; page < PRODUCTION_PAGE_LIMIT; page += 1) {
+      const payload = await getJson(originKey, apiPath, {
+        ...query,
+        pageSize: query.pageSize ?? PRODUCTION_LIST_PAGE_SIZE,
+        pageToken,
+      })
+      const pageItems = payload[itemsField] ?? []
+      if (!Array.isArray(pageItems)) {
+        failInspection('A paginated Google API response has no item array.', {
+          service: originKey,
+          field: itemsField,
+        })
+      }
+      if (rejectUnreachable && Array.isArray(payload.unreachable) &&
+          payload.unreachable.length > 0) {
+        abort(
+          PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+          'A Google API reported an unreachable location.',
+          { service: originKey, count: payload.unreachable.length },
+        )
+      }
+      items.push(...pageItems)
+
+      const next = payload.nextPageToken
+      if (next === undefined || next === null || next === '') return items
+      if (typeof next !== 'string' || seenTokens.has(next)) {
+        abort(
+          PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+          'A Google API returned an invalid or repeated page token.',
+          { service: originKey },
+        )
+      }
+      seenTokens.add(next)
+      pageToken = next
+    }
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+      'A Google API exceeded the bounded pagination limit.',
+      { service: originKey },
+    )
+  }
+
+  return Object.freeze({ getJson, listAll })
+}
+
+function requireResourceName(value, prefix, label) {
+  if (typeof value !== 'string' || !value.startsWith(prefix) ||
+      value.includes('..') || value.includes('?') || value.includes('#')) {
+    failInspection('A Google API returned a malformed resource name.', { surface: label })
+  }
+  return value
+}
+
+function lastPathPart(resourceName) {
+  return resourceName.slice(resourceName.lastIndexOf('/') + 1)
+}
+
+async function readRulesInventory(client, projectId) {
+  const release = await client.getJson(
+    'rules',
+    `/v1/projects/${encodeURIComponent(projectId)}/releases/cloud.firestore`,
+  )
+  const releaseName = requireResourceName(
+    release.name,
+    `projects/${projectId}/releases/`,
+    'rulesRelease',
+  )
+  const rulesetName = requireResourceName(
+    release.rulesetName,
+    `projects/${projectId}/rulesets/`,
+    'ruleset',
+  )
+  const ruleset = await client.getJson('rules', `/v1/${rulesetName}`)
+  if (ruleset.name !== rulesetName || !isPlainObject(ruleset.source) ||
+      !Array.isArray(ruleset.source.files) || ruleset.source.files.length === 0) {
+    failInspection('The active Firestore ruleset source is incomplete.')
+  }
+  const files = ruleset.source.files.map(file => {
+    if (!isPlainObject(file) || typeof file.name !== 'string' ||
+        typeof file.content !== 'string') {
+      failInspection('The active Firestore ruleset contains a malformed source file.')
+    }
+    return {
+      name: file.name,
+      content: file.content,
+      fingerprint: typeof file.fingerprint === 'string' ? file.fingerprint : null,
+    }
+  }).sort((left, right) => left.name.localeCompare(right.name))
+
+  return Object.freeze({
+    release: releaseName,
+    checksum: canonicalDigest(files),
+  })
+}
+
+function normalizedFunctionRevision(functionResource) {
+  // The API response is JSON. Hash the complete deployed resource rather than a
+  // hand-selected subset: ingress, service account, secret bindings, scaling,
+  // memory, timeout or a future field are all deployment state and must not drift
+  // while a retained manifest still compares equal.
+  return canonicalDigest(functionResource)
+}
+
+async function readFunctionsInventory(client, projectId) {
+  const functions = await client.listAll({
+    originKey: 'functions',
+    apiPath: `/v2/projects/${encodeURIComponent(projectId)}/locations/-/functions`,
+    itemsField: 'functions',
+    rejectUnreachable: true,
+  })
+  const inventory = {}
+  const gateValues = new Map()
+  const writers = []
+  for (const resource of functions) {
+    if (!isPlainObject(resource)) {
+      failInspection('The Functions API returned a malformed function resource.')
+    }
+    const name = requireResourceName(
+      resource.name,
+      `projects/${projectId}/locations/`,
+      'function',
+    )
+    const key = name.slice(`projects/${projectId}/locations/`.length)
+    const keyParts = key.split('/')
+    if (keyParts.length !== 3 || keyParts[1] !== 'functions' ||
+        !CANONICAL_ID.test(keyParts[0]) || !CANONICAL_ID.test(keyParts[2]) ||
+        Object.hasOwn(inventory, key)) {
+      failInspection('The Functions API returned a duplicate function name.')
+    }
+    inventory[key] = normalizedFunctionRevision(resource)
+    writers.push(`function:${key}`)
+
+    const environmentVariables = {
+      ...(isPlainObject(resource.environmentVariables)
+        ? resource.environmentVariables
+        : {}),
+      ...(isPlainObject(resource.serviceConfig?.environmentVariables)
+        ? resource.serviceConfig.environmentVariables
+        : {}),
+    }
+    for (const parameter of [
+      'MULTI_TEACHER_V2_ENABLED',
+      'MULTI_TEACHER_V2_RELEASE_ID',
+    ]) {
+      const value = Object.hasOwn(environmentVariables, parameter)
+        ? environmentVariables[parameter]
+        : 'absent'
+      if (typeof value !== 'string') {
+        failInspection('A deployed gate parameter is not a string.', { parameter })
+      }
+      if (!gateValues.has(parameter)) gateValues.set(parameter, new Map())
+      gateValues.get(parameter).set(key, value)
+    }
+  }
+
+  const gateParameters = {}
+  for (const parameter of [
+    'MULTI_TEACHER_V2_ENABLED',
+    'MULTI_TEACHER_V2_RELEASE_ID',
+  ]) {
+    const values = gateValues.get(parameter)
+    if (!values || values.size === 0) {
+      gateParameters[parameter] = 'absent'
+      continue
+    }
+    const distinct = new Set(values.values())
+    gateParameters[parameter] = distinct.size === 1
+      ? [...distinct][0]
+      : `mixed:${canonicalDigest(Object.fromEntries([...values].sort()))}`
+  }
+
+  return Object.freeze({
+    inventory: Object.freeze(inventory),
+    gateParameters: Object.freeze(gateParameters),
+    writers: Object.freeze(writers.sort()),
+  })
+}
+
+async function readHostingInventory(client, projectId) {
+  const sites = await client.listAll({
+    originKey: 'hosting',
+    apiPath: `/v1beta1/projects/${encodeURIComponent(projectId)}/sites`,
+    itemsField: 'sites',
+    query: { pageSize: 100 },
+  })
+  const inventory = {}
+  const writers = []
+  for (const site of sites) {
+    if (!isPlainObject(site)) {
+      failInspection('The Hosting API returned a malformed site resource.')
+    }
+    const siteName = requireResourceName(
+      site.name,
+      `projects/${projectId}/sites/`,
+      'hostingSite',
+    )
+    const siteId = lastPathPart(siteName)
+    if (!CANONICAL_ID.test(siteId) || Object.hasOwn(inventory, siteId)) {
+      failInspection('The Hosting API returned an invalid or duplicate site ID.')
+    }
+    const releases = await client.listAll({
+      originKey: 'hosting',
+      apiPath: `/v1beta1/sites/${encodeURIComponent(siteId)}/releases`,
+      itemsField: 'releases',
+      query: { pageSize: 100 },
+    })
+    const releasesByTarget = new Map()
+    for (const release of releases) {
+      if (!isPlainObject(release) || typeof release.name !== 'string' ||
+          typeof release.releaseTime !== 'string' ||
+          !Number.isFinite(Date.parse(release.releaseTime))) {
+        failInspection('The Hosting API returned a malformed release resource.')
+      }
+      const livePrefix = `sites/${siteId}/releases/`
+      const channelPrefix = `sites/${siteId}/channels/`
+      let target = siteId
+      if (release.name.startsWith(channelPrefix)) {
+        const remainder = release.name.slice(channelPrefix.length)
+        const match = /^([^/]+)\/releases\/([^/]+)$/.exec(remainder)
+        if (!match || !CANONICAL_ID.test(match[1]) || !CANONICAL_ID.test(match[2])) {
+          failInspection('The Hosting API returned a malformed channel release name.')
+        }
+        target = `${siteId}:channel:${match[1]}`
+      } else if (!release.name.startsWith(livePrefix) ||
+          !CANONICAL_ID.test(release.name.slice(livePrefix.length))) {
+        failInspection('The Hosting API returned a malformed live release name.')
+      }
+      if (!releasesByTarget.has(target)) releasesByTarget.set(target, [])
+      releasesByTarget.get(target).push(release)
+    }
+
+    if (!releasesByTarget.has(siteId)) inventory[siteId] = 'none'
+    for (const [target, targetReleases] of releasesByTarget) {
+      targetReleases.sort((left, right) => {
+        const byTime = right.releaseTime.localeCompare(left.releaseTime)
+        return byTime === 0 ? left.name.localeCompare(right.name) : byTime
+      })
+      const current = targetReleases[0]
+      const versionName = current.version?.name
+      if (current.type === 'SITE_DISABLE' && versionName === undefined) {
+        inventory[target] = `${current.name}|SITE_DISABLE`
+        continue
+      }
+      if (typeof versionName !== 'string' ||
+          !versionName.startsWith(`sites/${siteId}/versions/`) ||
+          !CANONICAL_ID.test(lastPathPart(versionName))) {
+        failInspection('The current Hosting release has no valid version identity.')
+      }
+      inventory[target] = `${current.name}|${versionName}`
+      writers.push(`hosting:${target}:${lastPathPart(versionName)}`)
+    }
+  }
+  if (sites.length === 0) inventory.default = 'none'
+  return Object.freeze({
+    inventory: Object.freeze(inventory),
+    writers: Object.freeze(writers.sort()),
+  })
+}
+
+async function readIndexesInventory(client, projectId) {
+  const parent = `/v1/projects/${encodeURIComponent(projectId)}` +
+    '/databases/(default)/collectionGroups/-'
+  const [indexes, fields] = await Promise.all([
+    client.listAll({
+      originKey: 'firestoreAdmin',
+      apiPath: `${parent}/indexes`,
+      itemsField: 'indexes',
+    }),
+    client.listAll({
+      originKey: 'firestoreAdmin',
+      apiPath: `${parent}/fields`,
+      itemsField: 'fields',
+      query: { filter: 'indexConfig.usesAncestorConfig=false' },
+    }),
+  ])
+  const inventory = {}
+  for (const index of indexes) {
+    if (!isPlainObject(index)) failInspection('Firestore returned a malformed index.')
+    const name = requireResourceName(
+      index.name,
+      `projects/${projectId}/databases/(default)/collectionGroups/`,
+      'firestoreIndex',
+    )
+    const key = `composite:${name.slice(name.indexOf('/collectionGroups/') + 18)}`
+    if (Object.hasOwn(inventory, key)) {
+      failInspection('Firestore returned a duplicate composite index.')
+    }
+    inventory[key] = canonicalDigest(index)
+  }
+  for (const field of fields) {
+    if (!isPlainObject(field)) failInspection('Firestore returned a malformed field index.')
+    const name = requireResourceName(
+      field.name,
+      `projects/${projectId}/databases/(default)/collectionGroups/`,
+      'firestoreFieldIndex',
+    )
+    const key = `field:${name.slice(name.indexOf('/collectionGroups/') + 18)}`
+    if (Object.hasOwn(inventory, key)) {
+      failInspection('Firestore returned a duplicate field override.')
+    }
+    inventory[key] = canonicalDigest(field)
+  }
+  if (indexes.length === 0) inventory.composite = 'none'
+  if (fields.length === 0) inventory.fieldOverrides = 'none'
+  return Object.freeze(inventory)
+}
+
+const FIRESTORE_PAGE_SIZE = 250
+
+function exactSnapshotUpdateTime(snapshot, surface) {
+  const updateTime = snapshot?.updateTime
+  if (!Number.isSafeInteger(updateTime?.seconds) ||
+      !Number.isInteger(updateTime?.nanoseconds) ||
+      updateTime.nanoseconds < 0 || updateTime.nanoseconds > 999_999_999) {
+    failInspection('Firestore returned a document without an exact update time.', {
+      surface,
+    })
+  }
+  return {
+    seconds: updateTime.seconds,
+    nanoseconds: updateTime.nanoseconds,
+  }
+}
+
+function firestoreEvidenceEntry(snapshot, surface) {
+  if (!snapshot || snapshot.exists !== true ||
+      typeof snapshot.ref?.path !== 'string' ||
+      typeof snapshot.data !== 'function') {
+    failInspection('Firestore returned a malformed document snapshot.', { surface })
+  }
+
+  let documentHash
+  try {
+    documentHash = canonicalDigest(
+      encodeCanonicalFirestoreValue(snapshot.data() ?? {}),
+    )
+  } catch {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.NONCANONICAL_VALUE,
+      'A Firestore document cannot be encoded canonically.',
+      { surface },
+    )
+  }
+  return Object.freeze({
+    pathHash: createHash('sha256')
+      .update(snapshot.ref.path, 'utf8')
+      .digest('hex'),
+    updateTime: exactSnapshotUpdateTime(snapshot, surface),
+    documentHash,
+  })
+}
+
+function requireQueryPage(snapshot, collectionPath) {
+  if (!snapshot || !Array.isArray(snapshot.docs) ||
+      snapshot.docs.length > FIRESTORE_PAGE_SIZE) {
+    failInspection('Firestore returned a malformed or oversized query page.', {
+      surface: collectionPath,
+    })
+  }
+  return snapshot.docs
+}
+
+async function readPaginatedFirestoreCollection({
+  firestore,
+  collectionPath,
+  timeoutMs,
+}) {
+  const documents = []
+  const seenPaths = new Set()
+  let cursor = null
+
+  for (let page = 0; page < PRODUCTION_PAGE_LIMIT; page += 1) {
+    let query
+    try {
+      query = firestore.collection(collectionPath)
+        .orderBy(FieldPath.documentId())
+      if (cursor !== null) query = query.startAfter(cursor)
+      query = query.limit(FIRESTORE_PAGE_SIZE)
+    } catch {
+      failInspection('A bounded Firestore collection query could not be built.', {
+        surface: collectionPath,
+      })
+    }
+
+    let snapshot
+    try {
+      snapshot = await boundedOperation(
+        () => query.get(),
+        collectionPath,
+        timeoutMs,
+      )
+    } catch (error) {
+      if (error instanceof PreflightAbortError) throw error
+      failInspection('A bounded Firestore collection read failed.', {
+        surface: collectionPath,
+      })
+    }
+    const pageDocuments = requireQueryPage(snapshot, collectionPath)
+    for (const document of pageDocuments) {
+      if (document?.exists !== true || typeof document.ref?.path !== 'string' ||
+          seenPaths.has(document.ref.path)) {
+        abort(
+          PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+          'Firestore returned a malformed or duplicate paginated document.',
+          { surface: collectionPath },
+        )
+      }
+      seenPaths.add(document.ref.path)
+      documents.push(document)
+    }
+
+    if (pageDocuments.length < FIRESTORE_PAGE_SIZE) {
+      return Object.freeze(documents)
+    }
+    cursor = pageDocuments.at(-1)
+  }
+
+  abort(
+    PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+    'Firestore exceeded the bounded pagination limit.',
+    { surface: collectionPath },
+  )
+}
+
+async function readOptionalFirestoreDocument({
+  firestore,
+  documentPath,
+  timeoutMs,
+}) {
+  let snapshot
+  try {
+    snapshot = await boundedOperation(
+      () => firestore.doc(documentPath).get(),
+      documentPath,
+      timeoutMs,
+    )
+  } catch (error) {
+    if (error instanceof PreflightAbortError) throw error
+    failInspection('A bounded Firestore document read failed.', {
+      surface: documentPath,
+    })
+  }
+  if (!snapshot || typeof snapshot.exists !== 'boolean') {
+    failInspection('Firestore returned no document presence classification.', {
+      surface: documentPath,
+    })
+  }
+  return snapshot
+}
+
+async function enumerateExistingRootIds({ firestore, collectionPath, timeoutMs }) {
+  let references
+  try {
+    references = await boundedOperation(
+      () => firestore.collection(collectionPath).listDocuments(),
+      `${collectionPath}.listDocuments`,
+      timeoutMs,
+    )
+  } catch (error) {
+    if (error instanceof PreflightAbortError) throw error
+    failInspection('A Firestore root collection could not be enumerated.', {
+      surface: collectionPath,
+    })
+  }
+  if (!Array.isArray(references)) {
+    failInspection('Firestore returned no root-document reference list.', {
+      surface: collectionPath,
+    })
+  }
+
+  const ids = []
+  const seen = new Set()
+  for (const reference of references) {
+    if (typeof reference?.id !== 'string' || reference.id === '' ||
+        seen.has(reference.id) || typeof reference.get !== 'function') {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+        'Firestore returned a malformed or duplicate root reference.',
+        { surface: collectionPath },
+      )
+    }
+    seen.add(reference.id)
+    let snapshot
+    try {
+      snapshot = await boundedOperation(
+        () => reference.get(),
+        `${collectionPath}.root`,
+        timeoutMs,
+      )
+    } catch (error) {
+      if (error instanceof PreflightAbortError) throw error
+      failInspection('A Firestore root reference could not be inspected.', {
+        surface: collectionPath,
+      })
+    }
+    if (!snapshot || typeof snapshot.exists !== 'boolean') {
+      failInspection('Firestore returned an invalid root snapshot.', {
+        surface: collectionPath,
+      })
+    }
+    if (snapshot.exists) ids.push(reference.id)
+  }
+  return Object.freeze(ids.sort())
+}
+
+function arrayOrAnomaly(data, field, anomalies, prefix) {
+  if (Array.isArray(data[field])) return data[field]
+  anomalies.push(`${prefix}:${field}:not-array`)
+  return []
+}
+
+function duplicateNormalizedCount(values) {
+  const normalized = values.map((value, index) => {
+    const numeric = numericStudentId(value)
+    return numeric === null
+      // Malformed values are rejected later by watermark derivation. Keep them
+      // distinct here without stringifying or retaining secret-bearing data.
+      ? `malformed:${typeof value}:${index}`
+      : `numeric:${numeric}`
+  })
+  return normalized.length - new Set(normalized).size
+}
+
+function authUserUpdateTime(user) {
+  const value = user?.metadata?.lastRefreshTime ?? user?.metadata?.creationTime
+  const milliseconds = Date.parse(value)
+  if (!Number.isFinite(milliseconds)) {
+    failInspection('An Auth user has no parseable source timestamp.', {
+      surface: 'authUsers',
+    })
+  }
+  const seconds = Math.floor(milliseconds / 1_000)
+  return {
+    seconds,
+    nanoseconds: (milliseconds - seconds * 1_000) * 1_000_000,
+  }
+}
+
+function authUserEvidenceEntry(user) {
+  if (!user || typeof user.uid !== 'string' || user.uid === '') {
+    failInspection('Auth returned a malformed user record.', {
+      surface: 'authUsers',
+    })
+  }
+  if (!Array.isArray(user.providerData)) {
+    failInspection('Auth returned a user without a provider list.', {
+      surface: 'authUsers',
+    })
+  }
+  const providers = user.providerData.map(entry => entry?.providerId).sort()
+  if (providers.some(provider => typeof provider !== 'string')) {
+    failInspection('Auth returned a malformed provider record.', {
+      surface: 'authUsers',
+    })
+  }
+  let completeUserState
+  try {
+    // UserRecord.toJSON() is the Admin SDK's complete serializable view. Hashing
+    // it binds claims, provider identities, disabled state, token revocation and
+    // any password-hash metadata the caller is permitted to observe. Raw values
+    // exist only in this digest preimage and are never retained in the manifest.
+    const serializable = typeof user.toJSON === 'function'
+      ? user.toJSON()
+      : {
+        uid: user.uid,
+        disabled: user.disabled,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        displayName: user.displayName,
+        phoneNumber: user.phoneNumber,
+        photoURL: user.photoURL,
+        customClaims: user.customClaims,
+        tenantId: user.tenantId,
+        tokensValidAfterTime: user.tokensValidAfterTime,
+        metadata: user.metadata,
+        providerData: user.providerData,
+        multiFactor: user.multiFactor,
+      }
+    // Normalize through JSON exactly as the Admin record promises. This drops
+    // absent `undefined` properties without dropping present null/false values.
+    completeUserState = JSON.parse(JSON.stringify(serializable))
+  } catch {
+    failInspection('Auth returned a user that could not be hashed canonically.', {
+      surface: 'authUsers',
+    })
+  }
+  return Object.freeze({
+    pathHash: createHash('sha256')
+      .update(`auth/users/${user.uid}`, 'utf8')
+      .digest('hex'),
+    updateTime: authUserUpdateTime(user),
+    documentHash: canonicalDigest(completeUserState),
+  })
+}
+
+/**
+ * Builds the Firestore/Auth half of the production reader set.
+ *
+ * This exported seam lets the emulator suite exercise the exact production data
+ * reader code while continuing to inject control-plane state, which Firebase
+ * does not emulate. It accepts already-created handles and never initializes an
+ * SDK or credential on its own.
+ */
+export function createReadOnlyDataReaders({
+  firestore,
+  auth,
+  teacherUid,
+  timeoutMs = PRODUCTION_READER_TIMEOUT_MS,
+}) {
+  if (!firestore || typeof firestore.doc !== 'function' ||
+      typeof firestore.collection !== 'function' ||
+      !auth || typeof auth.listUsers !== 'function' ||
+      typeof teacherUid !== 'string' || teacherUid === '' ||
+      !Number.isInteger(timeoutMs) || timeoutMs < 1 ||
+      timeoutMs > PRODUCTION_READER_TIMEOUT_MS) {
+    failInspection('The read-only data-reader configuration is malformed.')
+  }
+
+  async function readLegacyClassroomAggregate() {
+    const snapshot = await readOptionalFirestoreDocument({
+      firestore,
+      documentPath: 'morganBank/classroomData',
+      timeoutMs,
+    })
+    if (!snapshot.exists) {
+      return Object.freeze({
+        complete: true,
+        counts: { students: 0, transactions: 0, loginHistory: 0 },
+        studentIds: [],
+        transactionStudentIds: [],
+        loginHistoryStudentIds: [],
+        noncanonicalValueCount: 0,
+        anomalies: [],
+        present: false,
+        sourceEntries: [],
+      })
+    }
+
+    const data = snapshot.data()
+    if (!isPlainObject(data)) {
+      failInspection('The legacy classroom singleton has a malformed body.')
+    }
+    const anomalies = []
+    const students = arrayOrAnomaly(data, 'students', anomalies, 'legacy')
+    const transactions = arrayOrAnomaly(data, 'transactions', anomalies, 'legacy')
+    const loginHistory = arrayOrAnomaly(data, 'loginHistory', anomalies, 'legacy')
+    for (const [name, values] of [
+      ['students', students],
+      ['transactions', transactions],
+      ['loginHistory', loginHistory],
+    ]) {
+      if (values.some(value => !isPlainObject(value))) {
+        anomalies.push(`legacy:${name}:item-not-object`)
+      }
+    }
+    return Object.freeze({
+      complete: true,
+      counts: {
+        students: students.length,
+        transactions: transactions.length,
+        loginHistory: loginHistory.length,
+      },
+      studentIds: students.map(student => student?.id),
+      transactionStudentIds: transactions
+        .filter(entry => entry?.studentId != null)
+        .map(entry => entry.studentId),
+      loginHistoryStudentIds: loginHistory
+        .filter(entry => entry?.studentId != null)
+        .map(entry => entry.studentId),
+      noncanonicalValueCount: 0,
+      anomalies,
+      present: true,
+      sourceEntries: [firestoreEvidenceEntry(snapshot, 'legacyClassroomAggregate')],
+    })
+  }
+
+  async function readFlatCredentials() {
+    const documents = await readPaginatedFirestoreCollection({
+      firestore,
+      collectionPath: 'studentCredentials',
+      timeoutMs,
+    })
+    const loginIds = documents.map(document => document.id)
+    const studentIds = documents.map(document => document.data()?.studentId)
+    return Object.freeze({
+      complete: true,
+      count: documents.length,
+      studentIds,
+      duplicateLoginIds: loginIds.length - new Set(loginIds).size,
+      duplicateStudentIds: duplicateNormalizedCount(studentIds),
+      noncanonicalLoginIds: loginIds.filter(
+        id => !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(id),
+      ).length,
+      anomalies: [],
+      sourceEntries: documents.map(document =>
+        firestoreEvidenceEntry(document, 'flatCredentials')),
+    })
+  }
+
+  async function readFlatAuthLogs() {
+    const documents = await readPaginatedFirestoreCollection({
+      firestore,
+      collectionPath: 'studentAuthLogs',
+      timeoutMs,
+    })
+    return Object.freeze({
+      complete: true,
+      count: documents.length,
+      studentIds: documents
+        .filter(document => document.data()?.studentId != null)
+        .map(document => document.data().studentId),
+      anomalies: [],
+      sourceEntries: documents.map(document =>
+        firestoreEvidenceEntry(document, 'flatAuthLogs')),
+    })
+  }
+
+  async function readFoundation() {
+    const [teacherIds, classroomIds] = await Promise.all([
+      enumerateExistingRootIds({
+        firestore,
+        collectionPath: 'teachers',
+        timeoutMs,
+      }),
+      enumerateExistingRootIds({
+        firestore,
+        collectionPath: 'classrooms',
+        timeoutMs,
+      }),
+    ])
+    const roots = Object.freeze({ teacherIds, classroomIds })
+    const teacherSnapshot = await readOptionalFirestoreDocument({
+      firestore,
+      documentPath: `teachers/${teacherUid}`,
+      timeoutMs,
+    })
+    if (!teacherSnapshot.exists) {
+      return Object.freeze({
+        complete: true,
+        present: false,
+        anomalies: [],
+        sourceEntries: [],
+        roots,
+      })
+    }
+
+    const teacher = teacherSnapshot.data()
+    if (!isPlainObject(teacher) || typeof teacher.classroomId !== 'string' ||
+        teacher.classroomId === '') {
+      failInspection('The authorized teacher foundation is malformed.')
+    }
+    const classroomSnapshot = await readOptionalFirestoreDocument({
+      firestore,
+      documentPath: `classrooms/${teacher.classroomId}`,
+      timeoutMs,
+    })
+    const classroom = classroomSnapshot.exists ? classroomSnapshot.data() : null
+    return Object.freeze({
+      complete: true,
+      present: true,
+      reciprocal: classroomSnapshot.exists && isPlainObject(classroom) &&
+        classroom.ownerUid === teacherUid && teacher.uid === teacherUid,
+      teacherStatus: teacher.status,
+      classroomId: teacher.classroomId,
+      anomalies: [],
+      sourceEntries: [
+        firestoreEvidenceEntry(teacherSnapshot, 'foundation'),
+        ...(classroomSnapshot.exists
+          ? [firestoreEvidenceEntry(classroomSnapshot, 'foundation')]
+          : []),
+      ],
+      roots,
+    })
+  }
+
+  async function readDestinationPaths() {
+    let classroomReferences
+    let scopedLogParents
+    try {
+      [classroomReferences, scopedLogParents] = await Promise.all([
+        boundedOperation(
+          () => firestore.collection('classrooms').listDocuments(),
+          'classrooms.listDocuments',
+          timeoutMs,
+        ),
+        boundedOperation(
+          () => firestore.collection('studentAuthLogs').listDocuments(),
+          'studentAuthLogs.listDocuments',
+          timeoutMs,
+        ),
+      ])
+    } catch (error) {
+      if (error instanceof PreflightAbortError) throw error
+      failInspection('A destination parent collection could not be enumerated.')
+    }
+    if (!Array.isArray(classroomReferences) || !Array.isArray(scopedLogParents)) {
+      failInspection('A destination parent enumeration was malformed.')
+    }
+
+    const bySurface = Object.fromEntries(
+      DESTINATION_SURFACES.map(surface => [surface, []]),
+    )
+    const idsBySurface = Object.fromEntries(
+      DESTINATION_ID_SETS.map(surface => [surface, []]),
+    )
+    const coverage = Object.fromEntries(
+      DESTINATION_ID_SETS.map(surface => [surface, {
+        referencedCount: 0,
+        unassignedCount: 0,
+        inconsistentCount: 0,
+      }]),
+    )
+
+    function recordIdentity(setName, document, { pathMustMatch = false } = {}) {
+      const body = document.data()
+      const field = pathMustMatch ? 'id' : 'studentId'
+      if (!isPlainObject(body) || !Object.hasOwn(body, field) ||
+          body[field] == null) {
+        coverage[setName].unassignedCount += 1
+        return
+      }
+      const rawId = body[field]
+      idsBySurface[setName].push(rawId)
+      coverage[setName].referencedCount += 1
+      if (pathMustMatch) {
+        const bodyId = numericStudentId(rawId)
+        const pathId = numericStudentId(document.id)
+        if (bodyId === null || pathId === null || bodyId !== pathId) {
+          coverage[setName].inconsistentCount += 1
+        }
+      }
+    }
+
+    function recordReference(setName, document) {
+      const body = document.data()
+      if (!isPlainObject(body) || !Object.hasOwn(body, 'studentId') ||
+          body.studentId == null) {
+        coverage[setName].unassignedCount += 1
+        return
+      }
+      idsBySurface[setName].push(body.studentId)
+      coverage[setName].referencedCount += 1
+    }
+
+    const classroomIds = new Set()
+    for (const reference of classroomReferences) {
+      if (typeof reference?.id !== 'string' || reference.id === '' ||
+          classroomIds.has(reference.id)) {
+        abort(
+          PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+          'Firestore returned a malformed or duplicate classroom reference.',
+        )
+      }
+      classroomIds.add(reference.id)
+      for (const [subcollection, surface] of Object.entries(
+        CLASSROOM_SUBCOLLECTION_SURFACES,
+      )) {
+        const documents = await readPaginatedFirestoreCollection({
+          firestore,
+          collectionPath: `classrooms/${reference.id}/${subcollection}`,
+          timeoutMs,
+        })
+        bySurface[surface].push(...documents.map(document =>
+          firestoreEvidenceEntry(document, surface)))
+        if (subcollection === 'students') {
+          documents.forEach(document => recordIdentity(
+            'destinationStudents',
+            document,
+            { pathMustMatch: true },
+          ))
+        } else if (subcollection === 'studentCredentials') {
+          documents.forEach(document => recordIdentity(
+            'destinationCredentials',
+            document,
+          ))
+        } else {
+          const setName = subcollection === 'transactions'
+            ? 'destinationTransactions'
+            : 'destinationLoginHistory'
+          documents.forEach(document => recordReference(setName, document))
+        }
+      }
+    }
+
+    const scopedParentIds = new Set()
+    for (const parent of scopedLogParents) {
+      if (typeof parent?.id !== 'string' || parent.id === '' ||
+          scopedParentIds.has(parent.id)) {
+        abort(
+          PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+          'Firestore returned a malformed or duplicate scoped-log parent.',
+        )
+      }
+      scopedParentIds.add(parent.id)
+      const documents = await readPaginatedFirestoreCollection({
+        firestore,
+        collectionPath: `studentAuthLogs/${parent.id}/logs`,
+        timeoutMs,
+      })
+      bySurface.scopedLogs.push(...documents.map(document =>
+        firestoreEvidenceEntry(document, 'scopedLogs')))
+      documents.forEach(document =>
+        recordReference('destinationAuthLogs', document))
+    }
+
+    return Object.freeze({
+      complete: true,
+      counts: Object.freeze(Object.fromEntries(
+        Object.entries(bySurface).map(([surface, entries]) => [
+          surface,
+          entries.length,
+        ]),
+      )),
+      sourceEntriesBySurface: Object.freeze(bySurface),
+      studentIdsBySurface: Object.freeze(idsBySurface),
+      studentIdCoverageBySurface: Object.freeze(coverage),
+    })
+  }
+
+  async function readAuthCompatibility() {
+    const users = []
+    const seenUids = new Set()
+    const seenTokens = new Set()
+    let pageToken
+    for (let page = 0; page < PRODUCTION_PAGE_LIMIT; page += 1) {
+      let result
+      try {
+        result = await boundedOperation(
+          () => auth.listUsers(PRODUCTION_LIST_PAGE_SIZE, pageToken),
+          'authUsers',
+          timeoutMs,
+        )
+      } catch (error) {
+        if (error instanceof PreflightAbortError) throw error
+        failInspection('A bounded Auth user read failed.')
+      }
+      if (!result || !Array.isArray(result.users)) {
+        failInspection('Auth returned a malformed user page.')
+      }
+      for (const user of result.users) {
+        if (typeof user?.uid !== 'string' || user.uid === '' ||
+            seenUids.has(user.uid)) {
+          abort(
+            PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+            'Auth returned a malformed or duplicate user.',
+          )
+        }
+        seenUids.add(user.uid)
+        users.push(user)
+      }
+      const next = result.pageToken
+      if (next === undefined || next === null || next === '') {
+        return Object.freeze({
+          complete: true,
+          // V2 owns the deterministic `s_` namespace. An existing user in that
+          // namespace can collide with a future classroom not yet present, so it
+          // is conservatively blocking even when no destination credential exists.
+          uidCollisions: users.filter(user => user.uid.startsWith('s_')).length,
+          incompatibleUsers: 0,
+          examinedUserCount: users.length,
+          sourceEntries: users.map(authUserEvidenceEntry),
+        })
+      }
+      if (typeof next !== 'string' || seenTokens.has(next)) {
+        abort(
+          PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+          'Auth returned an invalid or repeated page token.',
+        )
+      }
+      seenTokens.add(next)
+      pageToken = next
+    }
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+      'Auth exceeded the bounded pagination limit.',
+    )
+  }
+
+  return Object.freeze({
+    readLegacyClassroomAggregate,
+    readFlatCredentials,
+    readFlatAuthLogs,
+    readFoundation,
+    readDestinationPaths,
+    readAuthCompatibility,
+  })
+}
+
+/**
+ * Constructs the complete production reader set from one explicit credential.
+ * Construction never reads remotely; the returned functions perform the reads
+ * only after the entrypoint has validated arguments, environment, artifacts and
+ * authorization inputs.
+ */
+export function createProductionReaders({
+  projectId,
+  teacherUid,
+  credential,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = PRODUCTION_READER_TIMEOUT_MS,
+  adminHandleFactory = createReadOnlyAdminHandles,
+}) {
+  if (projectId !== 'morgan-bank') {
+    failInspection('The production reader factory requires the exact production project.')
+  }
+  if (!credential || typeof credential.getAccessToken !== 'function') {
+    failInspection('The production reader factory requires an explicit credential.')
+  }
+  if (!CANONICAL_ID.test(teacherUid)) {
+    failInspection('The production reader factory requires a canonical teacher UID.')
+  }
+  const ambientEmulatorMarker = [
+    ...EMULATOR_HOST_VARIABLES,
+    ...EMULATOR_FLAG_VARIABLES,
+  ].find(name => typeof process.env[name] === 'string' &&
+    process.env[name].trim() !== '')
+  if (ambientEmulatorMarker !== undefined) {
+    failInspection(
+      'The production reader factory refuses ambient emulator routing.',
+      { variable: ambientEmulatorMarker },
+    )
+  }
+  if (typeof adminHandleFactory !== 'function') {
+    failInspection('The production Admin handle factory is unavailable.')
+  }
+  // Validate HTTP and timeout configuration before constructing an Admin app, so
+  // an invalid test seam cannot leave even a local SDK handle behind.
+  const client = createBoundedGoogleApiClient({ credential, fetchImpl, timeoutMs })
+
+  const handles = adminHandleFactory({
+    projectId,
+    credential,
+    appName: `phase3-production-preflight-${process.pid}-${productionReaderSequence += 1}`,
+  })
+  if (!handles || typeof handles.close !== 'function') {
+    failInspection('The production Admin handle factory returned no closable handles.')
+  }
+  let dataReaders
+  try {
+    dataReaders = createReadOnlyDataReaders({
+      firestore: handles.firestore,
+      auth: handles.auth,
+      teacherUid,
+      timeoutMs,
+    })
+  } catch (error) {
+    // Factory construction is synchronous, while deleteApp is asynchronous.
+    // Start cleanup immediately and retain the original fail-closed error.
+    Promise.resolve().then(() => handles.close()).catch(() => {})
+    throw error
+  }
+  let inventoryPromise
+
+  async function readControlPlane() {
+    if (inventoryPromise === undefined) {
+      inventoryPromise = Promise.all([
+        readRulesInventory(client, projectId),
+        readFunctionsInventory(client, projectId),
+        readHostingInventory(client, projectId),
+        readIndexesInventory(client, projectId),
+      ]).then(([rules, functions, hosting, indexes]) => Object.freeze({
+        rules,
+        functions: functions.inventory,
+        hosting: hosting.inventory,
+        indexes,
+        gateParameters: functions.gateParameters,
+        writers: Object.freeze([
+          ...functions.writers,
+          ...hosting.writers,
+        ].sort()),
+      }))
+    }
+    return inventoryPromise
+  }
+
+  return Object.freeze({
+    ...dataReaders,
+    readDeploymentInventory: async () => {
+      const inventory = await readControlPlane()
+      return Object.freeze({
+        complete: true,
+        rules: inventory.rules,
+        functions: inventory.functions,
+        hosting: inventory.hosting,
+        indexes: inventory.indexes,
+        gateParameters: inventory.gateParameters,
+      })
+    },
+    readActiveWriters: async () => {
+      const inventory = await readControlPlane()
+      return Object.freeze({ complete: true, writers: inventory.writers })
+    },
+    close: async () => handles.close(),
   })
 }

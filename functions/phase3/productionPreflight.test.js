@@ -14,7 +14,11 @@ import {
   COLLECTION_ENUMERATION_REQUIREMENT,
   DESTINATION_SURFACES,
   PREFLIGHT_ABORT_CATEGORIES,
+  PRODUCTION_GOOGLE_API_ORIGINS,
   PreflightAbortError,
+  createBoundedGoogleApiClient,
+  createProductionReaders,
+  createReadOnlyDataReaders,
   deriveStudentIdWatermark,
   numericStudentId,
   runProductionPreflight,
@@ -1992,6 +1996,318 @@ describe('Phase 3 production preflight', () => {
     })
   })
 
+  describe('bounded production readers', () => {
+    const credential = Object.freeze({
+      getAccessToken: async () => ({ access_token: 'unit-test-token' }),
+    })
+
+    function jsonResponse(payload, overrides = {}) {
+      return {
+        status: 200,
+        redirected: false,
+        json: async () => payload,
+        ...overrides,
+      }
+    }
+
+    it('locks control-plane requests to fixed GET-only origins and exhausts pages', async () => {
+      const calls = []
+      const pages = [
+        { values: [{ name: 'one' }], nextPageToken: 'next' },
+        { values: [{ name: 'two' }] },
+      ]
+      const client = createBoundedGoogleApiClient({
+        credential,
+        fetchImpl: async (url, options) => {
+          calls.push({ url, options })
+          return jsonResponse(pages.shift())
+        },
+      })
+      const values = await client.listAll({
+        originKey: 'hosting',
+        apiPath: '/v1beta1/projects/morgan-bank/sites',
+        itemsField: 'values',
+      })
+
+      assert.deepEqual(values, [{ name: 'one' }, { name: 'two' }])
+      assert.equal(calls.length, 2)
+      for (const call of calls) {
+        assert.equal(new globalThis.URL(call.url).origin,
+          PRODUCTION_GOOGLE_API_ORIGINS.hosting)
+        assert.equal(call.options.method, 'GET')
+        assert.equal(call.options.redirect, 'manual')
+        assert.equal(call.options.body, undefined)
+        assert.equal(call.options.headers.Authorization, 'Bearer unit-test-token')
+      }
+      assert.equal(new globalThis.URL(calls[1].url).searchParams.get('pageToken'),
+        'next')
+    })
+
+    it('fails closed on redirects, repeated tokens, unreachable regions and timeouts', async () => {
+      const redirecting = createBoundedGoogleApiClient({
+        credential,
+        fetchImpl: async () => jsonResponse({}, { status: 307 }),
+      })
+      await assert.rejects(
+        () => redirecting.getJson('rules', '/v1/projects/morgan-bank/releases/x'),
+        error => error instanceof PreflightAbortError &&
+          error.category === PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      )
+
+      const repeated = createBoundedGoogleApiClient({
+        credential,
+        fetchImpl: async () => jsonResponse({ values: [], nextPageToken: 'same' }),
+      })
+      await assert.rejects(
+        () => repeated.listAll({
+          originKey: 'hosting', apiPath: '/v1/list', itemsField: 'values',
+        }),
+        error => error instanceof PreflightAbortError &&
+          error.category === PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+      )
+
+      const unreachable = createBoundedGoogleApiClient({
+        credential,
+        fetchImpl: async () => jsonResponse({
+          functions: [], unreachable: ['locations/example'],
+        }),
+      })
+      await assert.rejects(
+        () => unreachable.listAll({
+          originKey: 'functions', apiPath: '/v2/list', itemsField: 'functions',
+          rejectUnreachable: true,
+        }),
+        error => error instanceof PreflightAbortError &&
+          error.category === PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+      )
+
+      const timingOut = createBoundedGoogleApiClient({
+        credential,
+        timeoutMs: 1,
+        fetchImpl: async (unusedUrl, options) => new Promise((resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(new Error('aborted')))
+        }),
+      })
+      await assert.rejects(
+        () => timingOut.getJson('rules', '/v1/projects/morgan-bank/releases/x'),
+        error => error instanceof PreflightAbortError &&
+          error.category === PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      )
+    })
+
+    it('paginates Firestore and Auth without coercing IDs or accepting duplicates', async () => {
+      function document(index) {
+        return {
+          id: `student-${index}`,
+          exists: true,
+          ref: { path: `studentCredentials/student-${index}` },
+          updateTime: { seconds: 1_700_000_000 + index, nanoseconds: index },
+          data: () => ({ studentId: index }),
+        }
+      }
+      const firstPage = Array.from({ length: 250 }, (unused, index) =>
+        document(index + 1))
+      const secondPage = [document(251)]
+      const firestoreCursors = []
+      let firestoreReads = 0
+      const firestore = {
+        doc() {},
+        collection(collectionPath) {
+          assert.equal(collectionPath, 'studentCredentials')
+          const query = {
+            orderBy() { return query },
+            limit(value) { assert.equal(value, 250); return query },
+            startAfter(cursor) { firestoreCursors.push(cursor.id); return query },
+            async get() {
+              firestoreReads += 1
+              return { docs: firestoreReads === 1 ? firstPage : secondPage }
+            },
+          }
+          return query
+        },
+      }
+      const authTokens = []
+      const auth = {
+        async listUsers(limit, token) {
+          assert.equal(limit, 1000)
+          authTokens.push(token ?? null)
+          if (token === undefined) {
+            return { users: [authUser('legacy-a')], pageToken: 'auth-next' }
+          }
+          return { users: [authUser('legacy-b')] }
+        },
+      }
+      function authUser(uid) {
+        return {
+          uid,
+          disabled: false,
+          providerData: [],
+          metadata: { creationTime: '2026-07-26T18:00:00.123Z' },
+        }
+      }
+
+      const dataReaders = createReadOnlyDataReaders({
+        firestore,
+        auth,
+        teacherUid: TEACHER_UID,
+      })
+      const credentials = await dataReaders.readFlatCredentials()
+      const users = await dataReaders.readAuthCompatibility()
+      assert.equal(credentials.count, 251)
+      assert.equal(firestoreReads, 2)
+      assert.deepEqual(firestoreCursors, ['student-250'])
+      assert.deepEqual(credentials.studentIds.slice(-2), [250, 251])
+      assert.equal(users.examinedUserCount, 2)
+      assert.deepEqual(authTokens, [null, 'auth-next'])
+      assert.equal(users.sourceEntries[0].updateTime.nanoseconds, 123_000_000)
+
+      const duplicateAuth = createReadOnlyDataReaders({
+        firestore,
+        auth: {
+          async listUsers() {
+            return { users: [authUser('same')], pageToken: 'repeat' }
+          },
+        },
+        teacherUid: TEACHER_UID,
+      })
+      await assert.rejects(
+        () => duplicateAuth.readAuthCompatibility(),
+        error => error instanceof PreflightAbortError &&
+          error.category === PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+      )
+    })
+
+    it('assembles and caches the complete production inventory with no mutating call', async () => {
+      const calls = []
+      let closed = 0
+      let factoryArguments
+      const payloadFor = url => {
+        const parsed = new globalThis.URL(url)
+        if (parsed.pathname.endsWith('/releases/cloud.firestore')) {
+          return {
+            name: 'projects/morgan-bank/releases/cloud.firestore',
+            rulesetName: 'projects/morgan-bank/rulesets/ruleset-1',
+          }
+        }
+        if (parsed.pathname.endsWith('/rulesets/ruleset-1')) {
+          return {
+            name: 'projects/morgan-bank/rulesets/ruleset-1',
+            source: { files: [{ name: 'firestore.rules', content: 'rules' }] },
+          }
+        }
+        if (parsed.pathname.endsWith('/locations/-/functions')) {
+          return { functions: [{
+            name: 'projects/morgan-bank/locations/us-central1/functions/writer',
+            state: 'ACTIVE',
+            updateTime: '2026-07-26T18:00:00.000Z',
+            buildConfig: { runtime: 'nodejs20', entryPoint: 'writer' },
+            serviceConfig: {
+              revision: 'writer-00001',
+              environmentVariables: {
+                MULTI_TEACHER_V2_ENABLED: 'false',
+                MULTI_TEACHER_V2_RELEASE_ID: 'phase3-release-1',
+              },
+            },
+          }] }
+        }
+        if (parsed.pathname.endsWith('/projects/morgan-bank/sites')) {
+          return { sites: [{ name: 'projects/morgan-bank/sites/morgan-bank' }] }
+        }
+        if (parsed.pathname.endsWith('/sites/morgan-bank/releases')) {
+          return { releases: [
+            {
+              name: 'sites/morgan-bank/releases/release-1',
+              releaseTime: '2026-07-26T18:00:00.000Z',
+              version: { name: 'sites/morgan-bank/versions/version-1' },
+            },
+            {
+              name: 'sites/morgan-bank/channels/review/releases/release-old',
+              releaseTime: '2026-07-25T18:00:00.000Z',
+              version: { name: 'sites/morgan-bank/versions/version-old' },
+            },
+            {
+              name: 'sites/morgan-bank/channels/review/releases/release-2',
+              releaseTime: '2026-07-26T19:00:00.000Z',
+              version: { name: 'sites/morgan-bank/versions/version-2' },
+            },
+          ] }
+        }
+        if (parsed.pathname.endsWith('/indexes')) return { indexes: [] }
+        if (parsed.pathname.endsWith('/fields')) return { fields: [] }
+        throw new Error(`unhandled fake URL: ${parsed.pathname}`)
+      }
+      const readers = createProductionReaders({
+        projectId: 'morgan-bank',
+        teacherUid: TEACHER_UID,
+        credential,
+        adminHandleFactory: argumentsValue => {
+          factoryArguments = argumentsValue
+          return {
+            firestore: { doc() {}, collection() {} },
+            auth: { listUsers() {} },
+            close: async () => { closed += 1 },
+          }
+        },
+        fetchImpl: async (url, options) => {
+          calls.push({ url, options })
+          return jsonResponse(payloadFor(url))
+        },
+      })
+
+      const deployment = await readers.readDeploymentInventory()
+      const callCount = calls.length
+      const writers = await readers.readActiveWriters()
+      assert.equal(calls.length, callCount, 'inventory must be cached across readers')
+      assert.equal(factoryArguments.projectId, 'morgan-bank')
+      assert.strictEqual(factoryArguments.credential, credential)
+      assert.match(factoryArguments.appName, /^phase3-production-preflight-/)
+      assert.equal(deployment.complete, true)
+      assert.equal(deployment.gateParameters.MULTI_TEACHER_V2_ENABLED, 'false')
+      assert.equal(deployment.gateParameters.MULTI_TEACHER_V2_RELEASE_ID,
+        'phase3-release-1')
+      assert.equal(
+        deployment.hosting['morgan-bank:channel:review'],
+        'sites/morgan-bank/channels/review/releases/release-2|' +
+          'sites/morgan-bank/versions/version-2',
+      )
+      assert.deepEqual(writers.writers, [
+        'function:us-central1/functions/writer',
+        'hosting:morgan-bank:channel:review:version-2',
+        'hosting:morgan-bank:version-1',
+      ])
+      assert.ok(calls.every(call => call.options.method === 'GET' &&
+        call.options.redirect === 'manual' && call.options.body === undefined))
+      await readers.close()
+      assert.equal(closed, 1)
+    })
+
+    it('refuses project lookalikes, ambient credentials and widened timeouts', () => {
+      const handles = () => ({
+        firestore: { doc() {}, collection() {} },
+        auth: { listUsers() {} },
+        close: async () => {},
+      })
+      assert.throws(
+        () => createProductionReaders({
+          projectId: 'morgan-bank-dev', teacherUid: TEACHER_UID,
+          credential, adminHandleFactory: handles,
+        }),
+        PreflightAbortError,
+      )
+      assert.throws(
+        () => createProductionReaders({
+          projectId: 'morgan-bank', teacherUid: TEACHER_UID,
+          credential: null, adminHandleFactory: handles,
+        }),
+        PreflightAbortError,
+      )
+      assert.throws(
+        () => createBoundedGoogleApiClient({ credential, timeoutMs: 10_001 }),
+        PreflightAbortError,
+      )
+    })
+  })
+
   describe('phantom-parent enumeration requirement', () => {
     it('declares listDocuments as the required enumeration method', () => {
       // A Firestore document holding only subcollections does not exist as a
@@ -2006,16 +2322,16 @@ describe('Phase 3 production preflight', () => {
       assert.match(COLLECTION_ENUMERATION_REQUIREMENT.reason, /phantom-parent/)
     })
 
-    it('the emulator suite enumerates destination paths with listDocuments', async () => {
-      // Source guard on the sibling emulator suite: reverting its enumeration to
-      // get() would silently reintroduce the blind spot, and its own assertions
-      // would still pass because the seeded document would become invisible to
-      // both the reader and the pre/post snapshot.
+    it('the shared production data reader enumerates paths with listDocuments', async () => {
+      // The emulator suite now calls createReadOnlyDataReaders, so this guard
+      // inspects the implementation that both emulator and production execute.
+      // Reverting it to get() would silently reintroduce the phantom-parent blind
+      // spot even if a parallel test helper remained correct.
       const { readFileSync } = await import('node:fs')
       const { fileURLToPath } = await import('node:url')
       const source = readFileSync(
         fileURLToPath(new globalThis.URL(
-          '../../tests/phase3/production-runner.emulator.test.js',
+          './productionPreflight.js',
           import.meta.url,
         )),
         'utf8',
@@ -2035,6 +2351,15 @@ describe('Phase 3 production preflight', () => {
         !/collection\('classrooms'\)\.get\(\)/.test(code),
         'destination enumeration must not use get(), which hides phantom parents',
       )
+
+      const emulatorSource = readFileSync(
+        fileURLToPath(new globalThis.URL(
+          '../../tests/phase3/production-runner.emulator.test.js',
+          import.meta.url,
+        )),
+        'utf8',
+      )
+      assert.match(emulatorSource, /createReadOnlyDataReaders\(\{/)
     })
   })
 })
