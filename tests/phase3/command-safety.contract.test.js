@@ -1,9 +1,12 @@
 // Phase 3 Commit 1 — command-safety SOURCE contract.
 //
 // EVIDENCE LAYER: static analysis of package.json script text. This suite proves
-// that the declared emulator commands *carry* the credential-isolation contract.
-// It does NOT execute them, does not start an emulator, and therefore does not
-// prove the isolation works at runtime — see tests/phase3/README.md.
+// that every emulator-launching script *carries* the credential-isolation
+// contract. The command set is DISCOVERED from the scripts themselves, so a new
+// `firebase emulators:exec` script cannot escape these assertions by being
+// omitted from a hand-maintained list. It does NOT execute the commands, does
+// not start an emulator, and therefore does not prove the isolation works at
+// runtime — see tests/phase3/README.md.
 //
 // Authority: PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md Sections 12 and 14.
 
@@ -18,21 +21,32 @@ const packageJson = JSON.parse(
 )
 const scripts = packageJson.scripts ?? {}
 
+/** The marker that identifies a script as launching the Firebase emulators. */
+const EMULATOR_LAUNCH_MARKER = 'firebase emulators:exec'
+
 /**
- * Every emulator-backed command that touches Firestore/Auth/Functions must
- * carry the full isolation contract. Phase 2B's commands already do; Commit 1
- * adds `test:migration` to the list. As later Phase 3 emulator commands land,
- * append their names here — that is the mechanism by which this contract
- * expands per Section 14.
+ * Discovers every script that launches the Firebase emulators.
+ *
+ * DISCOVERY, NOT A MAINTAINED LIST. An earlier revision enumerated the command
+ * names by hand, which meant a new `firebase emulators:exec` script silently
+ * escaped every isolation assertion whenever its author forgot to append the
+ * name. Deriving the set from the scripts themselves makes the contract apply
+ * to future Phase 3 emulator commands automatically.
+ *
+ * Aggregators such as `test:phase2b:server`, which only chain other npm scripts
+ * and contain no emulator invocation of their own, are correctly skipped: the
+ * commands they delegate to are discovered and checked individually.
  */
-const ISOLATED_EMULATOR_COMMANDS = Object.freeze([
-  'test:rules',
-  'test:migration',
-  'test:phase2b:server:gate-off',
-  'test:phase2b:server:gate-on',
-  'test:phase2b:rules',
-  'test:phase2b:browser',
-])
+function discoverIsolatedEmulatorCommands(allScripts) {
+  return Object.freeze(
+    Object.entries(allScripts)
+      .filter(([, script]) => script.includes(EMULATOR_LAUNCH_MARKER))
+      .map(([name]) => name)
+      .sort(),
+  )
+}
+
+const ISOLATED_EMULATOR_COMMANDS = discoverIsolatedEmulatorCommands(scripts)
 
 /**
  * Variables that must be scrubbed before the Firebase CLI or Admin SDK starts.
@@ -105,15 +119,42 @@ function hasNonLoopbackHostMarker(script) {
 }
 
 describe('Phase 3 command-safety source contract', () => {
-  it('source contract: every isolated emulator command is declared', () => {
+  it('source contract: emulator commands are discovered automatically and the set is nonempty', () => {
+    assert.ok(
+      ISOLATED_EMULATOR_COMMANDS.length > 0,
+      'discovery must find at least one emulator command; an empty set would ' +
+        'make every isolation assertion below pass vacuously',
+    )
+
+    // test:migration is the command Commit 1 brought under this contract, so its
+    // presence proves discovery reaches the intended target rather than only the
+    // Phase 2B commands that were already hardened.
+    assert.ok(
+      ISOLATED_EMULATOR_COMMANDS.includes('test:migration'),
+      `discovery must include test:migration; found ${ISOLATED_EMULATOR_COMMANDS.join(', ')}`,
+    )
+
     for (const name of ISOLATED_EMULATOR_COMMANDS) {
-      assert.equal(
-        typeof scripts[name],
-        'string',
-        `package.json must declare script ${name}`,
-      )
+      assert.equal(typeof scripts[name], 'string')
       assert.ok(scripts[name].length > 0, `${name} must not be empty`)
     }
+  })
+
+  it('source contract: discovery covers every script that launches the emulators', () => {
+    // The complement check: no script may contain the emulator launch marker
+    // while being absent from the discovered set. This is what makes the
+    // contract self-expanding rather than dependent on a maintained list.
+    const undiscovered = Object.entries(scripts)
+      .filter(([name, script]) =>
+        script.includes(EMULATOR_LAUNCH_MARKER) &&
+        !ISOLATED_EMULATOR_COMMANDS.includes(name))
+      .map(([name]) => name)
+
+    assert.deepEqual(
+      undiscovered,
+      [],
+      `these scripts launch emulators but escaped discovery: ${undiscovered.join(', ')}`,
+    )
   })
 
   it('source contract: each isolated command refuses local Google ADC', () => {
@@ -288,6 +329,86 @@ describe('Phase 3 command-safety source contract', () => {
       assert.ok(hasForceMarker('node run.js --force'))
       assert.ok(hasNonLoopbackHostMarker('FIRESTORE_EMULATOR_HOST=10.0.0.5:8080'))
       assert.ok(!hasNonLoopbackHostMarker('FIRESTORE_EMULATOR_HOST=127.0.0.1:8080'))
+    })
+
+    /**
+     * Discovery-level negative control.
+     *
+     * Simulates the exact regression the manual list allowed: a NEW script that
+     * launches the emulators but carries none of the protections. It must be
+     * discovered (so it cannot escape the contract) and then rejected by the
+     * isolation matchers. This is the assertion that proves automatic discovery
+     * closes the escape rather than merely reorganizing the old list.
+     */
+    it('discovers and rejects a new emulator command that lacks the protections', () => {
+      const unprotected =
+        'firebase emulators:exec --project morgan-bank --only firestore "node --test new.js"'
+      const withNewCommand = {
+        ...scripts,
+        'test:phase3:future-unprotected': unprotected,
+      }
+
+      const discovered = discoverIsolatedEmulatorCommands(withNewCommand)
+      assert.ok(
+        discovered.includes('test:phase3:future-unprotected'),
+        'a new emulators:exec script must be discovered automatically',
+      )
+      assert.equal(
+        discovered.length,
+        ISOLATED_EMULATOR_COMMANDS.length + 1,
+        'discovery must grow by exactly the added command',
+      )
+
+      // Every protection the real commands satisfy must fail for this one.
+      assert.ok(!refusesLocalAdc(unprotected), 'must fail the ADC guard')
+      assert.ok(!usesTemporaryCliConfig(unprotected), 'must fail the temp CLI config check')
+      assert.ok(!disablesMetadataServer(unprotected), 'must fail metadata suppression')
+      for (const variable of REQUIRED_SCRUBBED_VARIABLES) {
+        assert.ok(
+          !scrubsVariable(unprotected, variable),
+          `must fail to scrub ${variable}`,
+        )
+      }
+      assert.ok(
+        !projectArguments(unprotected).every(project => project.startsWith('demo-')),
+        'must fail the demo- project requirement',
+      )
+      assert.ok(hasProductionProjectMarker(unprotected), 'must trip the production-project marker')
+    })
+
+    /**
+     * The inverse control: a new emulator command that IS hardened must be
+     * discovered and must satisfy every matcher. Without this, the control above
+     * could pass because the matchers reject everything indiscriminately.
+     */
+    it('discovers and accepts a new emulator command that carries the protections', () => {
+      const withNewCommand = {
+        ...scripts,
+        'test:phase3:future-hardened': HARDENED_FIXTURE,
+      }
+
+      const discovered = discoverIsolatedEmulatorCommands(withNewCommand)
+      assert.ok(discovered.includes('test:phase3:future-hardened'))
+
+      assert.ok(refusesLocalAdc(HARDENED_FIXTURE))
+      assert.ok(usesTemporaryCliConfig(HARDENED_FIXTURE))
+      assert.ok(disablesMetadataServer(HARDENED_FIXTURE))
+      for (const variable of REQUIRED_SCRUBBED_VARIABLES) {
+        assert.ok(scrubsVariable(HARDENED_FIXTURE, variable))
+      }
+      assert.ok(projectArguments(HARDENED_FIXTURE).every(project => project.startsWith('demo-')))
+      assert.ok(!hasProductionProjectMarker(HARDENED_FIXTURE))
+    })
+
+    it('skips aggregator scripts that chain npm commands without launching emulators', () => {
+      const discovered = discoverIsolatedEmulatorCommands({
+        ...scripts,
+        'test:phase3:aggregator': 'npm run test:migration && npm run test:rules',
+      })
+      assert.ok(
+        !discovered.includes('test:phase3:aggregator'),
+        'an aggregator has no emulator invocation of its own to isolate',
+      )
     })
   })
 

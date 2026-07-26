@@ -58,6 +58,18 @@ scrub every credential/token/project/config/emulator/gate variable, set
 rejects deploy, `--force`, production-project, and non-loopback-host markers
 across **all** scripts.
 
+**The command set is discovered automatically**, not maintained by hand. Any
+script whose text contains `firebase emulators:exec` is included, so a new Phase
+3 emulator command is subject to the full isolation contract the moment it is
+added — no list to remember to update. A complement assertion proves no
+emulator-launching script escaped discovery, and the set is asserted nonempty (an
+empty set would make every isolation assertion pass vacuously) and to include
+`test:migration`.
+
+Aggregator scripts such as `test:phase2b:server`, which only chain other npm
+scripts, are correctly skipped: they carry no emulator invocation of their own,
+and the commands they delegate to are discovered and checked individually.
+
 `test:migration` is brought under this contract in Commit 1. Before the change it
 had none of these protections and targeted the non-`demo-`
 `morgan-bank-migration-rehearsal`, so the Firebase CLI could attempt real project
@@ -68,9 +80,11 @@ The suite carries **negative controls**: a hardened fixture that satisfies every
 matcher, plus one mutation per protection that must be rejected. Without those, a
 matcher that always returned true would let the whole suite pass vacuously.
 
-As later Phase 3 emulator commands are added, append their names to
-`ISOLATED_EMULATOR_COMMANDS` — that list is the mechanism by which this contract
-expands.
+Two further controls cover discovery itself. A synthetic **unprotected** emulator
+command must be discovered *and* rejected by every matcher — the exact regression
+a hand-maintained list allowed. A synthetic **hardened** command must be
+discovered *and* accepted, so the first control cannot pass merely because the
+matchers reject everything indiscriminately.
 
 ### `release-order.contract.test.js`
 
