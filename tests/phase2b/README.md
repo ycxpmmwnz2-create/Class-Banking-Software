@@ -141,3 +141,59 @@ both storage keys, and the save adapter — are absent from default-off and pres
 in gate-on. Those are the strings whose presence would mean live transport or
 persistence shipping to production. Complete removal of the residual four is a
 production refactor, outside Item 10's boundary.
+
+## Item 11 completion-gate verification (2026-07-26)
+
+The complete Phase 2B matrix was rerun from local commit `36dc850` before any
+Item 11 documentation edit. No Function, rule, migration, client, or fixture
+file was changed for this verification.
+
+| Command | Fresh result |
+| --- | --- |
+| `npm run lint` | clean |
+| `npm --prefix functions run lint` | clean |
+| `npm run build` (V2 default off) | clean; 450.95 kB / 143.02 kB gzip |
+| `VITE_MULTI_TEACHER_V2_ENABLED=true npm run build` | clean; 467.56 kB / 146.75 kB gzip |
+| `npm run test:functions` | 357/357 |
+| `npm run test:rules` | 36/36 |
+| `npm run test:migration` | 38/38 |
+| `npm run test:phase2b:server` | 9/9 gate-off + 56/56 gate-on |
+| `npm run test:phase2b:client` | 84/84 |
+| `npm run test:phase2b:rules` | 29/29 |
+| `npm run test:phase2b:browser` | 21/21 |
+| `npm run test:phase2b:build-contract` | 6/6 |
+
+The checked-in `firestore.rules` remained byte-for-byte unchanged at SHA-256
+`0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50`.
+All emulator-backed Phase 2B commands use local emulator hosts; the browser,
+server, and proposed-rules commands additionally isolate Firebase CLI config
+and refuse local Google ADC. Nothing was deployed or migrated, no production
+data service was read or written, and no feature gate was activated outside a
+local build/emulator process.
+
+### Verification deviations and accepted limitations
+
+- The repository's exact `npm run test:migration` command passed 38/38, but it
+  does not isolate Firebase CLI config itself and the first run observed the
+  developer's cached CLI login while still forcing every Admin SDK operation
+  to `127.0.0.1:8080`. A second run with an empty temporary CLI config, Google
+  credential variables removed, and no ADC also passed 38/38 while explicitly
+  unauthenticated. The package-script hardening belongs to a separately scoped
+  infrastructure correction, not this docs-only item.
+- One additional credential-isolated migration run produced a non-reproducible
+  37/38 false positive in the final console-secret scan. That test searches
+  random IDs/checksums for the four-character synthetic PIN substrings `2718`
+  and `3141`; the unchanged immediate rerun passed 38/38. This is a fail-loud
+  test-harness flake, not evidence of a leaked value, and no assertion was
+  weakened for Item 11.
+- Independent adversarial review of `3be8fb5..36dc850` found no Blocking or
+  High Item 10 defect. Its two Medium observations are accepted fail-closed
+  availability costs: a malformed message creates a generic quarantine, and
+  more than 16 pending UID digests also degrade to generic quarantine. Dropping
+  either protection could silently lose an owed invalidation and permit tenant
+  reanimation; revisit the blast radius only with a separately reviewed design.
+
+These results close the repository/emulator evidence required by Item 11 and
+the Phase 2B completion gate. They do not prove deployment state, real-account
+behavior, live onboarding, or production rollout ordering. Phase 3 remains an
+architecture/release-planning handoff and requires explicit authorization.

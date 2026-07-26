@@ -3154,7 +3154,40 @@ and docs only).**
 - **Commit boundary:** readiness evidence/docs only; Phase 3 remains blocked
   pending independent review and explicit authorization.
 
+**Item 11 verification record — 2026-07-26.** The full matrix was rerun at
+local commit `36dc850` before this documentation-only update: root lint clean;
+Functions lint clean; default-off build 450.95 kB (143.02 kB gzip); gate-on
+build 467.56 kB (146.75 kB gzip); Functions 357/357; baseline rules 36/36;
+migration rehearsal 38/38; Phase 2B server 9/9 gate-off plus 56/56 gate-on;
+client 84/84; proposed rules 29/29; real-browser 21/21; and build-artifact
+contract 6/6. `firestore.rules` remained unchanged at SHA-256
+`0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50`.
+
+Independent adversarial review of `3be8fb5..36dc850` reported no Blocking or
+High Item 10 finding. It recorded two accepted fail-closed availability costs:
+malformed transport input quarantines the next observed identity generically,
+and more than 16 distinct pending UID digests degrades the tab to generic
+quarantine. Phase 2B retains both because silently clearing or evicting an owed
+invalidation can reanimate an outgoing tenant. Any availability refinement
+requires a separately scoped and reviewed design.
+
+The exact migration command passed 38/38 while forcing all Admin SDK access to
+the local Firestore emulator, but it inherited the developer's cached Firebase
+CLI login because that older package script does not isolate CLI config. A
+credential-isolated, no-ADC rerun also passed 38/38 and showed the CLI as
+unauthenticated. An additional isolated run hit a non-reproducible 37/38 false
+positive because its final leak scan searches random IDs/checksums for the
+four-character synthetic PIN strings `2718` and `3141`; the unchanged rerun
+passed. No test was weakened and no production data service was read or
+written. Package-script isolation and the fail-loud substring flake are
+documented deviations, not changes authorized by this docs-only item.
+
 #### 13. Phase 2B completion gate and Phase 3 handoff
+
+**Gate status — satisfied from repository and local-emulator evidence on
+2026-07-26.** Items 1–10 and the matrix above supply the evidence listed below.
+This status closes Phase 2B implementation only; it does not authorize any
+Phase 3 implementation or production action.
 
 Phase 3 may not begin until all are true:
 
