@@ -750,7 +750,7 @@
 <body>
   <div id="app"></div>
   <script type="module">
-import { auth, db, functions, connectPhase2bEmulatorsIfConfigured } from "./src/firebase/firebase.js";
+import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured } from "./src/firebase/firebase.js";
 import { browserSessionPersistence, GoogleAuthProvider, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
@@ -920,7 +920,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
           console.error("V2_TENANT_DATA_SAVE_ADAPTER is required in V2 mode.");
           return { executed: false, reason: "missing-v2-save-adapter" };
         }
-        return orchestrateClassroomDataSave(v2TenantSession, saveAdapter, data, { storageAdapter: localStorage, projectId: "morgan-bank" });
+        return orchestrateClassroomDataSave(v2TenantSession, saveAdapter, data, { storageAdapter: localStorage, projectId: v2TenantSession.projectId });
       }
 
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -3244,16 +3244,28 @@ if (screen === "editSettingsLists" && isTeacher) {
         await loadClassroomDataWithCacheFallback(v2TenantSession, {
           loadNetworkFn,
           storageAdapter: localStorage,
-          projectId: "morgan-bank"
+          projectId: v2TenantSession.projectId
         });
       }
       render();
     }
 
+    // The emulator connection may re-initialize the Firebase app under a demo
+    // project ID, so it MUST run before the active project ID is derived and
+    // before TenantSession is constructed. Otherwise V2 cache keys and envelope
+    // validation would be built from the production project ID while the data
+    // came from the emulator.
+    connectPhase2bEmulatorsIfConfigured();
+
+    // Single source of truth for the V2 cache namespace: the project ID of the
+    // Firebase app actually in use. Production/default resolves to
+    // "morgan-bank"; the browser emulator harness resolves to its demo project.
+    const V2_ACTIVE_PROJECT_ID = app.options.projectId;
+
     const v2TenantSession = new TenantSession({
       storageAdapter: localStorage,
       cacheModule: { purgeTenantCache, purgeLegacyCache, buildCacheKey },
-      projectId: "morgan-bank",
+      projectId: V2_ACTIVE_PROJECT_ID,
       onResetGlobals: resetAllGlobalState,
       onStateChange: () => render(),
       authAdapter: { signOut: () => signOut(auth) }
@@ -3265,7 +3277,11 @@ if (screen === "editSettingsLists" && isTeacher) {
       ? new MultiTabInvalidator(v2TenantSession, {
           storageAdapter: localStorage,
           windowAdapter: typeof window !== "undefined" ? window : null,
-          onInvalidated: () => render()
+          onInvalidated: () => render(),
+          // Ends THIS tab's Firebase Auth session after the cross-tab purge, so
+          // a refresh cannot re-resolve the invalidated teacher. Separate from
+          // authAdapter above because it must not trigger a rebroadcast.
+          localAuthAdapter: { signOut: () => signOut(auth) }
         })
       : null;
     v2TenantSession.multiTabInvalidator = v2MultiTabInvalidator;
@@ -3279,7 +3295,6 @@ if (screen === "editSettingsLists" && isTeacher) {
     }
 
     let authObservedGeneration = 0;
-    connectPhase2bEmulatorsIfConfigured();
 
     onAuthStateChanged(auth, async user => {
       const currentAuthGeneration = ++authObservedGeneration;
@@ -3316,7 +3331,7 @@ if (screen === "editSettingsLists" && isTeacher) {
           callAdapter,
           loadNetworkFn,
           storageAdapter: localStorage,
-          projectId: "morgan-bank"
+          projectId: v2TenantSession.projectId
         });
 
         if (currentAuthGeneration !== authObservedGeneration) return;

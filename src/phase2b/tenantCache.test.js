@@ -202,9 +202,11 @@ describe("TenantCache Module Specifications", () => {
     receiverSession.multiTabInvalidator = receiverInvalidator;
     receiverInvalidator.start();
 
+    // The digest must name the receiver's own current tenant, otherwise the
+    // message is for a different tenant and is correctly ignored.
     const validMessage = {
       type: "session-invalidated",
-      uidDigest: computeSha256Digest("u_other_tab").slice(0),
+      uidDigest: computeSha256Digest("u_recv"),
       epoch: 9
     };
 
@@ -517,6 +519,374 @@ describe("TenantCache Module Specifications", () => {
 
     receiverInvalidator.destroy();
     senderInvalidator.destroy();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Item 9 correction: cross-tab invalidation must terminate the receiving tab's
+  // own Firebase Auth session, and must apply only to the tenant it names.
+  //
+  // Before this correction the receiver invalidated its tenant state but left
+  // Firebase Auth signed in. Because the app uses browserSessionPersistence, a
+  // refresh re-ran onAuthStateChanged with the SAME user and fully re-resolved
+  // the supposedly invalidated teacher. These tests pin both halves of the fix.
+  // ---------------------------------------------------------------------------
+
+  function readyTeacherSession(uid, classroomId, options = {}) {
+    const session = new TenantSession({
+      storageAdapter: options.storageAdapter || createMockStorage(),
+      cacheModule: { purgeTenantCache, purgeLegacyCache, buildCacheKey },
+      projectId: options.projectId || PROJECT_ID
+    });
+    session.transitionTo(SESSION_STATES.AUTHENTICATING);
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    session.transitionTo(SESSION_STATES.ACTIVE, { uid, role: "teacher", classroomId });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
+    return session;
+  }
+
+  test("a matching cross-tab invalidation purges tenant state AND invokes local Firebase Auth sign-out so a refresh cannot reanimate the account", () => {
+    const storage = createMockStorage();
+    const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+    const cacheKey = buildCacheKey(PROJECT_ID, "teacher_a", "room_a");
+    writeTeacherCache(storage, session, PROJECT_ID, { dataA: 1 }, session.captureIdentity());
+    storage.setItem(LEGACY_STORAGE_KEY, JSON.stringify({ legacy: true }));
+    assert.notEqual(storage.getItem(cacheKey), null, "Precondition: A cache exists");
+
+    // Records ordering so we can prove the purge is synchronous and happens
+    // BEFORE local sign-out is even started, not merely that both occurred.
+    const order = [];
+    let signOutCalls = 0;
+    const session_invalidate = session.invalidate.bind(session);
+    session.invalidate = (reason, identity) => {
+      order.push(`invalidate:${reason}`);
+      return session_invalidate(reason, identity);
+    };
+
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      localAuthAdapter: {
+        signOut: () => {
+          signOutCalls++;
+          order.push("localAuthSignOut");
+          return Promise.resolve();
+        }
+      }
+    });
+
+    const applied = invalidator.receiveMessage({
+      type: "session-invalidated",
+      uidDigest: computeSha256Digest("teacher_a"),
+      epoch: 7
+    });
+
+    assert.equal(applied, true, "A matching valid message must be applied");
+    assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT);
+    assert.equal(session.uid, null, "Receiving tenant identity must be cleared");
+    assert.equal(storage.getItem(cacheKey), null, "Receiver's V2 tenant cache must be purged");
+    assert.equal(storage.getItem(LEGACY_STORAGE_KEY), null, "Legacy cache must be purged");
+
+    // THE refresh precondition: local Auth sign-out was actually invoked.
+    assert.equal(signOutCalls, 1, "Local Firebase Auth sign-out MUST be invoked exactly once");
+    assert.deepEqual(
+      order,
+      ["invalidate:multi-tab-invalidation", "localAuthSignOut"],
+      "Purge/reset must complete synchronously BEFORE local Auth sign-out begins"
+    );
+  });
+
+  test("a rejected local Auth sign-out is contained and purged state stays purged", async () => {
+    const storage = createMockStorage();
+    const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+    const cacheKey = buildCacheKey(PROJECT_ID, "teacher_a", "room_a");
+    writeTeacherCache(storage, session, PROJECT_ID, { dataA: 1 }, session.captureIdentity());
+
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      localAuthAdapter: { signOut: () => Promise.reject(new Error("network down")) }
+    });
+
+    // Must not throw synchronously and must not produce an unhandled rejection.
+    assert.doesNotThrow(() => {
+      invalidator.receiveMessage({
+        type: "session-invalidated",
+        uidDigest: computeSha256Digest("teacher_a"),
+        epoch: 3
+      });
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT, "State stays signed out despite sign-out rejection");
+    assert.equal(session.uid, null);
+    assert.equal(storage.getItem(cacheKey), null, "Cache stays purged despite sign-out rejection");
+  });
+
+  test("a synchronously throwing local Auth sign-out is contained and purged state stays purged", () => {
+    const storage = createMockStorage();
+    const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+    const cacheKey = buildCacheKey(PROJECT_ID, "teacher_a", "room_a");
+    writeTeacherCache(storage, session, PROJECT_ID, { dataA: 1 }, session.captureIdentity());
+
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      localAuthAdapter: { signOut: () => { throw new Error("adapter exploded"); } }
+    });
+
+    assert.doesNotThrow(() => {
+      invalidator.receiveMessage({
+        type: "session-invalidated",
+        uidDigest: computeSha256Digest("teacher_a"),
+        epoch: 3
+      });
+    });
+
+    assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT);
+    assert.equal(storage.getItem(cacheKey), null);
+  });
+
+  test("a VALID invalidation naming a DIFFERENT tenant is completely inert on the current tenant", () => {
+    const storage = createMockStorage();
+    const sessionB = readyTeacherSession("teacher_b", "room_b", { storageAdapter: storage });
+    const keyB = buildCacheKey(PROJECT_ID, "teacher_b", "room_b");
+    writeTeacherCache(storage, sessionB, PROJECT_ID, { dataB: 2 }, sessionB.captureIdentity());
+
+    let signOutCalls = 0;
+    let onInvalidatedCalls = 0;
+    const epochBefore = sessionB.getEpoch();
+
+    const invalidator = new MultiTabInvalidator(sessionB, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      onInvalidated: () => { onInvalidatedCalls++; },
+      localAuthAdapter: { signOut: () => { signOutCalls++; return Promise.resolve(); } }
+    });
+
+    // A well-formed, fully valid message — but for teacher A, not teacher B.
+    const applied = invalidator.receiveMessage({
+      type: "session-invalidated",
+      uidDigest: computeSha256Digest("teacher_a"),
+      epoch: 99
+    });
+
+    assert.equal(applied, false, "A valid message for another tenant must not be applied");
+    assert.equal(sessionB.getState(), SESSION_STATES.READY, "Teacher B must remain ready");
+    assert.equal(sessionB.uid, "teacher_b");
+    assert.equal(sessionB.getEpoch(), epochBefore, "Teacher B's epoch must not change");
+    assert.notEqual(storage.getItem(keyB), null, "Teacher B's cache must survive");
+    assert.equal(signOutCalls, 0, "Another tenant's invalidation must NOT sign B out");
+    assert.equal(onInvalidatedCalls, 0, "Another tenant's invalidation must not notify B");
+  });
+
+  test("a delayed invalidation for the OUTGOING tenant cannot purge or reset the newly established INCOMING tenant", () => {
+    const storage = createMockStorage();
+
+    // Tab establishes A, then switches to B (the switch itself invalidates A).
+    const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+    let signOutCalls = 0;
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      localAuthAdapter: { signOut: () => { signOutCalls++; return Promise.resolve(); } }
+    });
+
+    session.invalidate("switch-A-to-B", { uid: "teacher_b", role: "teacher", state: SESSION_STATES.RESOLVING });
+    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_b", role: "teacher", classroomId: "room_b" });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
+    writeTeacherCache(storage, session, PROJECT_ID, { dataB: 2 }, session.captureIdentity());
+
+    const keyB = buildCacheKey(PROJECT_ID, "teacher_b", "room_b");
+    const epochAfterSwitch = session.getEpoch();
+    assert.notEqual(storage.getItem(keyB), null, "Precondition: B cache established");
+
+    // A's invalidation finally arrives, late. It must not touch B.
+    const applied = invalidator.receiveMessage({
+      type: "session-invalidated",
+      uidDigest: computeSha256Digest("teacher_a"),
+      epoch: 1
+    });
+
+    assert.equal(applied, false, "Late A invalidation must not apply to B");
+    assert.equal(session.getState(), SESSION_STATES.READY, "B must remain ready");
+    assert.equal(session.uid, "teacher_b");
+    assert.equal(session.getEpoch(), epochAfterSwitch, "B's epoch must not move");
+    assert.notEqual(storage.getItem(keyB), null, "B's cache must NOT be purged by a late A invalidation");
+    assert.equal(signOutCalls, 0, "A late A invalidation must not sign B out");
+  });
+
+  test("a BroadcastChannel delivery followed by its identical storage-event duplicate causes exactly one effective reset, one sign-out, and no rebroadcast", () => {
+    const storage = createMockStorage();
+    const channel = createMockChannel();
+    let posted = 0;
+    channel.postMessage = () => { posted++; };
+
+    const mockWindow = {
+      listeners: new Set(),
+      addEventListener(type, listener) { if (type === "storage") this.listeners.add(listener); },
+      removeEventListener(type, listener) { if (type === "storage") this.listeners.delete(listener); }
+    };
+
+    const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+    const cacheKey = buildCacheKey(PROJECT_ID, "teacher_a", "room_a");
+    writeTeacherCache(storage, session, PROJECT_ID, { dataA: 1 }, session.captureIdentity());
+
+    let signOutCalls = 0;
+    let onInvalidatedCalls = 0;
+    let invalidateCalls = 0;
+    const rawInvalidate = session.invalidate.bind(session);
+    session.invalidate = (reason, identity) => {
+      invalidateCalls++;
+      return rawInvalidate(reason, identity);
+    };
+
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: channel,
+      storageAdapter: storage,
+      windowAdapter: mockWindow,
+      onInvalidated: () => { onInvalidatedCalls++; },
+      localAuthAdapter: { signOut: () => { signOutCalls++; return Promise.resolve(); } }
+    });
+    invalidator.start();
+
+    const message = {
+      type: "session-invalidated",
+      uidDigest: computeSha256Digest("teacher_a"),
+      epoch: 4
+    };
+    const serialized = JSON.stringify(message);
+
+    // Delivery 1: real BroadcastChannel message event.
+    for (const listener of channel.listeners) listener({ data: message });
+    // Delivery 2: the identical storage-event fallback for the SAME action.
+    for (const listener of mockWindow.listeners) {
+      listener({ key: "morganBank:v2:invalidation", newValue: serialized, oldValue: null });
+    }
+
+    assert.equal(invalidateCalls, 1, "Duplicate delivery must cause exactly ONE effective invalidation");
+    assert.equal(signOutCalls, 1, "Duplicate delivery must cause exactly ONE local Auth sign-out");
+    assert.equal(onInvalidatedCalls, 1, "Duplicate delivery must notify exactly once");
+    assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT);
+    assert.equal(storage.getItem(cacheKey), null);
+    assert.equal(posted, 0, "Receiving either delivery MUST NOT generate an outbound message");
+
+    invalidator.destroy();
+  });
+
+  test("a malformed cross-tab message fails closed AND invokes local Auth sign-out so refresh cannot reanimate the account", () => {
+    const cases = [
+      ["unparseable string", "{not json"],
+      ["null payload", null],
+      ["short digest", { type: "session-invalidated", uidDigest: "sha256_short", epoch: 1 }],
+      ["extra key", { type: "session-invalidated", uidDigest: computeSha256Digest("teacher_a"), epoch: 1, tabId: "t1" }],
+      ["wrong type", { type: "something-else", uidDigest: computeSha256Digest("teacher_a"), epoch: 1 }],
+      ["negative epoch", { type: "session-invalidated", uidDigest: computeSha256Digest("teacher_a"), epoch: -1 }]
+    ];
+
+    for (const [label, payload] of cases) {
+      const storage = createMockStorage();
+      const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+      const cacheKey = buildCacheKey(PROJECT_ID, "teacher_a", "room_a");
+      writeTeacherCache(storage, session, PROJECT_ID, { dataA: 1 }, session.captureIdentity());
+
+      let signOutCalls = 0;
+      let posted = 0;
+      const channel = createMockChannel();
+      channel.postMessage = () => { posted++; };
+
+      const invalidator = new MultiTabInvalidator(session, {
+        channelAdapter: channel,
+        storageAdapter: storage,
+        windowAdapter: null,
+        localAuthAdapter: { signOut: () => { signOutCalls++; return Promise.resolve(); } }
+      });
+
+      const applied = invalidator.receiveMessage(payload);
+
+      assert.equal(applied, false, `${label}: must not report success`);
+      assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT, `${label}: must fail closed`);
+      assert.equal(session.invalidationReason, "malformed-broadcast-message", `${label}: reason must be malformed`);
+      assert.equal(storage.getItem(cacheKey), null, `${label}: cache must be purged`);
+      assert.equal(signOutCalls, 1, `${label}: local Auth sign-out MUST be invoked`);
+      assert.equal(posted, 0, `${label}: must not rebroadcast`);
+    }
+  });
+
+  test("cross-tab invalidation with no local Auth adapter still purges and does not throw", () => {
+    const storage = createMockStorage();
+    const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+    const cacheKey = buildCacheKey(PROJECT_ID, "teacher_a", "room_a");
+    writeTeacherCache(storage, session, PROJECT_ID, { dataA: 1 }, session.captureIdentity());
+
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null
+    });
+
+    assert.doesNotThrow(() => {
+      invalidator.receiveMessage({
+        type: "session-invalidated",
+        uidDigest: computeSha256Digest("teacher_a"),
+        epoch: 2
+      });
+    });
+    assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT);
+    assert.equal(storage.getItem(cacheKey), null);
+  });
+
+  test("an invalidation arriving at a signed-out tab with no current tenant is inert", () => {
+    const storage = createMockStorage();
+    const session = new TenantSession({ storageAdapter: storage, projectId: PROJECT_ID });
+    let signOutCalls = 0;
+
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      localAuthAdapter: { signOut: () => { signOutCalls++; return Promise.resolve(); } }
+    });
+
+    const applied = invalidator.receiveMessage({
+      type: "session-invalidated",
+      uidDigest: computeSha256Digest("teacher_a"),
+      epoch: 5
+    });
+
+    assert.equal(applied, false, "No current tenant means nothing to invalidate");
+    assert.equal(session.getEpoch(), 0, "An inert message must not bump the epoch");
+    assert.equal(signOutCalls, 0);
+  });
+
+  // An explicitly-null adapter must stay null. Previously `options.x ?? global`
+  // constructed a REAL BroadcastChannel even when the caller passed null, which
+  // both broke injected-adapter isolation in tests and left an open handle that
+  // prevented the test process from exiting.
+  test("explicitly null channel/storage/window adapters are honoured and never fall back to real globals", () => {
+    const session = new TenantSession();
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: null,
+      windowAdapter: null
+    });
+
+    assert.equal(invalidator.channelAdapter, null, "Explicit null channelAdapter MUST NOT become a real BroadcastChannel");
+    assert.equal(invalidator.storageAdapter, null, "Explicit null storageAdapter MUST NOT become real localStorage");
+    assert.equal(invalidator.windowAdapter, null, "Explicit null windowAdapter MUST NOT become the real window");
+
+    // With no transport at all, publishing must be a silent no-op rather than a throw.
+    assert.doesNotThrow(() => invalidator.broadcastInvalidation("teacher_a", 1));
+    assert.doesNotThrow(() => invalidator.start());
+    assert.doesNotThrow(() => invalidator.destroy());
   });
 
   test("MultiTabInvalidator teardown assertions verify destroy unregisters listeners and closes channel", () => {

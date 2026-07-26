@@ -279,10 +279,26 @@ export function validateBroadcastMessage(msg) {
 export class MultiTabInvalidator {
   constructor(session, options = {}) {
     this.session = session;
-    this.channelAdapter = options.channelAdapter ?? (typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("morgan_bank_v2_invalidation") : null);
-    this.storageAdapter = options.storageAdapter ?? (typeof localStorage !== "undefined" ? localStorage : null);
-    this.windowAdapter = options.windowAdapter ?? (typeof window !== "undefined" ? window : null);
+    // An adapter key that is PRESENT but null/undefined means "explicitly no
+    // transport" and must not fall back to a real global. `??` alone would
+    // still construct a live BroadcastChannel for an explicit null, which both
+    // defeats injected-adapter isolation and leaves an open handle behind.
+    const hasOption = (key) => Object.prototype.hasOwnProperty.call(options, key);
+    this.channelAdapter = hasOption("channelAdapter")
+      ? (options.channelAdapter || null)
+      : (typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("morgan_bank_v2_invalidation") : null);
+    this.storageAdapter = hasOption("storageAdapter")
+      ? (options.storageAdapter || null)
+      : (typeof localStorage !== "undefined" ? localStorage : null);
+    this.windowAdapter = hasOption("windowAdapter")
+      ? (options.windowAdapter || null)
+      : (typeof window !== "undefined" ? window : null);
     this.onInvalidated = options.onInvalidated || null;
+    // Terminating the receiving tab's own Firebase Auth session is what stops a
+    // refresh from re-resolving the invalidated teacher. It is deliberately a
+    // separate injected adapter rather than session.signOut(), because
+    // session.signOut() invalidates with reason "sign-out", which rebroadcasts.
+    this.localAuthAdapter = options.localAuthAdapter || null;
     this.isSubscribed = false;
 
     this.onMessageListener = (event) => this.handleChannelMessage(event);
@@ -365,25 +381,65 @@ export class MultiTabInvalidator {
     this.receiveMessage(payload);
   }
 
+  // Terminates this tab's own Firebase Auth session after the tenant state has
+  // already been purged synchronously. Never invalidates again and never
+  // broadcasts, so one inbound message cannot become an outbound one. A
+  // rejected sign-out is contained: the purge above has already happened and
+  // must stay purged.
+  terminateLocalAuth() {
+    const adapter = this.localAuthAdapter;
+    if (!adapter || typeof adapter.signOut !== "function") return;
+    try {
+      const result = adapter.signOut();
+      if (result && typeof result.catch === "function") {
+        result.catch((err) => {
+          console.error("Local Firebase sign-out after cross-tab invalidation rejected:", err);
+        });
+      }
+    } catch (err) {
+      console.error("Local Firebase sign-out after cross-tab invalidation threw:", err);
+    }
+  }
+
+  // Fail closed: an unparseable or invalid payload purges this tenant AND ends
+  // the local Auth session, so a malformed message can never leave a
+  // refresh-reanimatable account behind.
+  invalidateAsMalformed() {
+    this.session.invalidate("malformed-broadcast-message");
+    this.terminateLocalAuth();
+    if (typeof this.onInvalidated === "function") this.onInvalidated();
+    return false;
+  }
+
   receiveMessage(rawMsg) {
     let msg = rawMsg;
     if (typeof rawMsg === "string") {
       try {
         msg = JSON.parse(rawMsg);
       } catch {
-        this.session.invalidate("malformed-broadcast-message");
-        if (typeof this.onInvalidated === "function") this.onInvalidated();
-        return false;
+        return this.invalidateAsMalformed();
       }
     }
 
     if (!validateBroadcastMessage(msg)) {
-      this.session.invalidate("malformed-broadcast-message");
-      if (typeof this.onInvalidated === "function") this.onInvalidated();
-      return false;
+      return this.invalidateAsMalformed();
     }
 
+    // A valid message applies ONLY to the tenant it names. Without this check a
+    // delayed invalidation for teacher A would reset a freshly established
+    // teacher B session, and the BroadcastChannel delivery plus its identical
+    // storage-event fallback would each reset the tenant a second time. Matching
+    // on the digest makes the duplicate inert: the first delivery clears
+    // session.uid, so the second no longer matches any current identity.
+    const currentUid = this.session?.uid;
+    if (!currentUid) return false;
+
+    const currentDigest = computeSha256Digest(currentUid);
+    if (!currentDigest || currentDigest !== msg.uidDigest) return false;
+
+    // Purge/reset happens synchronously BEFORE local Auth sign-out begins.
     this.session.invalidate("multi-tab-invalidation", { state: "signed-out" });
+    this.terminateLocalAuth();
     if (typeof this.onInvalidated === "function") this.onInvalidated();
     return true;
   }

@@ -1114,6 +1114,91 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     }
   });
 
+  // SOURCE GUARD for the Item 9 cache-project correction.
+  //
+  // V2 cache keys and envelope validation embed the project ID. If index.html
+  // hardcodes "morgan-bank" while the Firebase app is actually connected to an
+  // emulator demo project, every emulator-backed cache entry is written into the
+  // production project's namespace and the envelope's projectId check becomes
+  // meaningless. The active project ID must come from the Firebase app in use.
+  test("SOURCE GUARD: V2 cache project IDs are derived from the active Firebase app, never hardcoded, and are derived only after the emulator connection", () => {
+    const { source } = readV2Branches();
+
+    // 1. No V2 cache/session call site may hardcode the project ID.
+    assert.equal(
+      /projectId:\s*"morgan-bank"/.test(source),
+      false,
+      'No V2 call site may pass a hardcoded projectId: "morgan-bank"'
+    );
+
+    // 2. There is exactly one derivation, and it reads the live app options.
+    assert.match(
+      source,
+      /const V2_ACTIVE_PROJECT_ID = app\.options\.projectId;/,
+      "The active V2 project ID must be derived from the Firebase app actually in use"
+    );
+
+    // 3. `app` must be imported for that derivation to be live.
+    assert.match(
+      source,
+      /import \{[^}]*\bapp\b[^}]*\} from "\.\/src\/firebase\/firebase\.js";/,
+      "index.html must import the Firebase app binding to derive the active project ID"
+    );
+
+    // 4. ORDERING: connectPhase2bEmulatorsIfConfigured() may re-initialize the
+    //    app under the demo project, so it must run BEFORE the project ID is
+    //    derived and before TenantSession is constructed.
+    const connectAt = source.indexOf("connectPhase2bEmulatorsIfConfigured();");
+    const deriveAt = source.indexOf("const V2_ACTIVE_PROJECT_ID = app.options.projectId;");
+    const sessionAt = source.indexOf("const v2TenantSession = new TenantSession({");
+
+    assert.notEqual(connectAt, -1, "Expected the emulator connection call in index.html");
+    assert.notEqual(deriveAt, -1, "Expected the active project ID derivation in index.html");
+    assert.notEqual(sessionAt, -1, "Expected the TenantSession construction in index.html");
+
+    assert.equal(
+      connectAt < deriveAt,
+      true,
+      "The emulator connection MUST run before the active project ID is derived"
+    );
+    assert.equal(
+      deriveAt < sessionAt,
+      true,
+      "The active project ID MUST be derived before TenantSession is constructed"
+    );
+
+    // 5. The session is constructed with the derived value, and the remaining
+    //    V2 call sites reuse the session's project ID rather than re-deriving.
+    assert.match(
+      source,
+      /projectId: V2_ACTIVE_PROJECT_ID,/,
+      "TenantSession must be constructed with the derived active project ID"
+    );
+    assert.equal(
+      (source.match(/projectId: v2TenantSession\.projectId/g) || []).length,
+      3,
+      "The save, cache-fallback load, and auth-transition sites must all reuse the session project ID"
+    );
+  });
+
+  // The receiving tab must end its own Firebase Auth session after a cross-tab
+  // invalidation, otherwise browserSessionPersistence lets a refresh re-resolve
+  // the invalidated teacher. Behaviour is proven in tenantCache.test.js; this
+  // guards the production wiring that supplies the adapter.
+  test("SOURCE GUARD: the production MultiTabInvalidator is wired with a local Firebase Auth sign-out adapter", () => {
+    const { source } = readV2Branches();
+
+    const ctorAt = source.indexOf("new MultiTabInvalidator(");
+    assert.notEqual(ctorAt, -1, "Expected the production MultiTabInvalidator construction");
+    const ctorBlock = source.slice(ctorAt, ctorAt + 800);
+
+    assert.match(
+      ctorBlock,
+      /localAuthAdapter:\s*\{\s*signOut:\s*\(\)\s*=>\s*signOut\(auth\)\s*\}/,
+      "The production invalidator must receive a local Firebase Auth sign-out adapter"
+    );
+  });
+
   test("11. REQUIRE COMPLETE EMULATOR CONFIGURATION: missing ports, zero ports, non-demo IDs, non-loopback hosts throw before observer installation", () => {
     // 1. Missing config returns disabled
     const disabledRes = connectPhase2bEmulatorsIfConfigured(null);
