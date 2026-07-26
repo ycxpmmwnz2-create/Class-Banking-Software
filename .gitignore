@@ -24,3 +24,9 @@ dist-ssr
 *.sw?
 
 functions/phase2/.state/
+
+# Playwright (Item 10 browser isolation suite)
+test-results
+playwright-report
+blob-report
+playwright/.cache

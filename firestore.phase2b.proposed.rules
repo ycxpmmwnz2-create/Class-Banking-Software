@@ -1,0 +1,165 @@
+rules_version = '2';
+
+// PHASE 2B PROPOSED RULES — CONTRACT FIXTURE, NOT DEPLOYMENT RULES.
+//
+// This file is loaded explicitly by tests/firestore/rules.v2.contract.test.js via
+// initializeTestEnvironment(). It is NEVER copied over firestore.rules and is
+// NEVER deployed. The checked-in firestore.rules remains byte-identical and
+// authoritative for production; its content hash is pinned by the contract test.
+//
+// What changes versus the checked-in baseline:
+//
+//  * The baseline authorizes a SINGLE hardcoded teacher UID
+//    ("YkYUzIzy0aW7roolM1VaLcIJPuN2") and grants it recursive read+write over
+//    /classrooms/{document=**}. Under multi-teacher that recursive allow is
+//    exactly the cross-tenant hole: any authorized teacher could read and write
+//    every other teacher's classroom. It is removed here — there is deliberately
+//    no classrooms/{document=**} client allow anywhere in this file, and the
+//    contract test asserts that structurally.
+//
+//  * Authorization is derived per-tenant from the requesting UID: a teacher doc
+//    at /teachers/{uid} with status "active" pointing at a classroom, AND that
+//    classroom's ownerUid matching the same UID. Both must hold, independently.
+//
+//  * Teacher documents are read-only to clients. Status and ownership are
+//    server-managed; a client that could write them could grant itself a tenant.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- identity helpers ----------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function teacherDoc(uid) {
+      return get(/databases/$(database)/documents/teachers/$(uid));
+    }
+
+    function classroomDoc(classroomId) {
+      return get(/databases/$(database)/documents/classrooms/$(classroomId));
+    }
+
+    // An active teacher identity. Deliberately a separate get() from the
+    // classroom check below so "teacher doc active but classroom root missing"
+    // and its inverse fail through different branches.
+    function isActiveTeacher(uid) {
+      return isSignedIn()
+        && request.auth.uid == uid
+        && exists(/databases/$(database)/documents/teachers/$(uid))
+        && teacherDoc(uid).data.status == "active";
+    }
+
+    // Ownership of a specific classroom. Requires BOTH the teacher doc to point
+    // at this classroom AND the classroom root to name this UID as owner, so a
+    // stale pointer on either side denies.
+    function ownsClassroom(classroomId) {
+      return isActiveTeacher(request.auth.uid)
+        && teacherDoc(request.auth.uid).data.classroomId == classroomId
+        && exists(/databases/$(database)/documents/classrooms/$(classroomId))
+        && classroomDoc(classroomId).data.ownerUid == request.auth.uid;
+    }
+
+    function isStudentOf(classroomId, studentId) {
+      return isSignedIn()
+        && request.auth.token.role == "student"
+        && request.auth.token.classroomId == classroomId
+        && request.auth.token.studentId == studentId;
+    }
+
+    // Classroom-root updates are limited to genuinely client-owned presentation
+    // and bookkeeping fields. ownerUid, status, and anything else stay
+    // server-managed, so a client cannot re-point ownership at itself.
+    function onlyMutatesAllowedClassroomFields() {
+      return request.resource.data.diff(resource.data)
+        .affectedKeys()
+        .hasOnly(['settings', 'lastBackupAt', 'updatedAt']);
+    }
+
+    // ---------- teacher registry ----------
+
+    match /teachers/{teacherUid} {
+      // A teacher may read only their own record, and only while active.
+      allow get: if isActiveTeacher(teacherUid);
+      // Never client-writable, and never enumerable.
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    // ---------- classroom root ----------
+    // NOTE: no {document=**} recursive allow. Every subcollection below is
+    // enumerated explicitly and independently.
+
+    match /classrooms/{classroomId} {
+      allow get: if ownsClassroom(classroomId);
+      // Enumerating classrooms would leak the tenant list.
+      allow list: if false;
+      // Lifecycle is server-managed.
+      allow create, delete: if false;
+      allow update: if ownsClassroom(classroomId) && onlyMutatesAllowedClassroomFields();
+
+      match /students/{studentId} {
+        allow read, write: if ownsClassroom(classroomId);
+        // A student may read only their own exact claimed document, and may
+        // never write it.
+        allow get: if isStudentOf(classroomId, studentId);
+        allow list: if ownsClassroom(classroomId);
+      }
+
+      match /transactions/{transactionId} {
+        allow read, write: if ownsClassroom(classroomId);
+      }
+
+      match /loginHistory/{entryId} {
+        allow read, write: if ownsClassroom(classroomId);
+      }
+
+      // Scoped credentials are server-only. Even the active owner is denied, so
+      // a compromised teacher session cannot read or forge student credentials.
+      match /studentCredentials/{credentialId} {
+        allow read, write: if false;
+      }
+
+      // Classroom-scoped auth logs: owner may read, nobody may write from a
+      // client.
+      match /studentAuthLogs/{logId} {
+        allow get, list: if ownsClassroom(classroomId);
+        allow create, update, delete: if false;
+      }
+    }
+
+    // ---------- server-only collections ----------
+
+    match /teacherInvitations/{inviteId} {
+      allow read, write: if false;
+    }
+
+    match /studentLoginCodeIndex/{codeId} {
+      allow read, write: if false;
+    }
+
+    match /authThrottles/{throttleId} {
+      allow read, write: if false;
+    }
+
+    // Unresolved/unscoped auth logs from before classroom scoping.
+    match /studentAuthLogs/{logId} {
+      allow read, write: if false;
+    }
+
+    // Flat, pre-scoping credential collection.
+    match /studentCredentials/{credentialId} {
+      allow read, write: if false;
+    }
+
+    // ---------- legacy V1 single-tenant store ----------
+    // Retained so the V1 application keeps working during migration, still
+    // restricted to the original hardcoded teacher UID.
+
+    match /morganBank/{document=**} {
+      allow read, write: if isSignedIn()
+        && request.auth.uid == "YkYUzIzy0aW7roolM1VaLcIJPuN2";
+    }
+  }
+}
