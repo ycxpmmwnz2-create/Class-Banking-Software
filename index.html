@@ -2018,7 +2018,7 @@ const targetStudents = transactionTarget === "whole"
       render();
     }
 
-    function toggleStudentFrozen(studentId) {
+    function updateStudent(studentId) {
       if (!requireTeacher()) return;
       const name = document.getElementById("name-" + studentId).value.trim();
       const pin = document.getElementById("pin-" + studentId).value.trim();

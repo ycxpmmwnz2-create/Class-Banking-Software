@@ -1323,4 +1323,69 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       /Conflicting emulator configuration/
     );
   });
+  // ---------------------------------------------------------------------------
+  // Boot-integrity guard.
+  //
+  // index.html is one large inline module. A ReferenceError at its top level
+  // aborts the WHOLE module, so the application never boots — and no unit test
+  // notices, because unit tests import the extracted modules rather than running
+  // index.html.
+  //
+  // That is exactly what commit d1765f2 caused: it renamed `function
+  // updateStudent` to `function toggleStudentFrozen` while leaving both the
+  // roster button (`onclick="updateStudent(...)"`) and the top-level export
+  // `window.updateStudent = updateStudent;` pointing at the old name. The export
+  // threw on every page load and the app never started.
+  //
+  // This guard is deliberately GENERAL: every `window.X = X` export must have a
+  // matching definition, so the next accidental rename fails here instead of
+  // silently bricking the app.
+  // ---------------------------------------------------------------------------
+  test("BOOT GUARD: every top-level window.X = X export in index.html has a matching definition", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+
+    const exportRe = /^\s*window\.([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*;/gm;
+    const missing = [];
+
+    for (const m of source.matchAll(exportRe)) {
+      const identifier = m[2];
+      const defined =
+        new RegExp(`function\\s+${identifier}\\s*\\(`).test(source) ||
+        new RegExp(`(?:const|let|var)\\s+${identifier}\\s*=`).test(source) ||
+        new RegExp(`class\\s+${identifier}\\b`).test(source);
+      if (!defined) missing.push(`${m[1]} -> ${identifier}`);
+    }
+
+    assert.deepEqual(
+      missing,
+      [],
+      `index.html exports identifiers that are never defined, which throws at module top level and prevents the app from booting: ${missing.join(", ")}`
+    );
+  });
+
+  // Pins the specific handler d1765f2 broke, including its Save behavior, so a
+  // future rename cannot quietly reintroduce the regression or drop the body.
+  test("BOOT GUARD: updateStudent is defined, exported, wired to the roster Save button, and still saves", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+
+    assert.match(source, /function\s+updateStudent\s*\(\s*studentId\s*\)/, "updateStudent must be defined");
+    assert.match(source, /window\.updateStudent\s*=\s*updateStudent\s*;/, "updateStudent must be exported");
+    assert.match(source, /onclick="updateStudent\(\$\{student\.id\}\)"/, "the roster Save button must call updateStudent");
+
+    // The dead name must be gone entirely, not left as an alias.
+    assert.equal(
+      source.includes("toggleStudentFrozen"),
+      false,
+      "toggleStudentFrozen was an accidental rename of updateStudent and must not reappear"
+    );
+
+    // Save behavior: reads name/pin/balance and persists. Asserted so a future
+    // edit cannot keep the name while gutting what it does.
+    const body = source.slice(source.indexOf("function updateStudent"));
+    const end = body.indexOf("\n    }");
+    const fn = body.slice(0, end);
+    for (const needle of ['"name-" + studentId', '"pin-" + studentId', '"balance-" + studentId', "saveData()"]) {
+      assert.ok(fn.includes(needle), `updateStudent must still ${needle}`);
+    }
+  });
 });
