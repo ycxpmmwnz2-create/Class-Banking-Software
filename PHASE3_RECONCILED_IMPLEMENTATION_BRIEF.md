@@ -349,6 +349,8 @@ Existing files:
 - `package.json`, `functions/package.json`, and lockfiles only as required
 - `firebase.json`
 - `firestore.indexes.json` only with evidence of a required new index
+- `tests/phase3/README.md`, updated only to describe suites and evidence that
+  actually exist in the same commit
 - final evidence-only documentation updates
 
 New files:
@@ -356,11 +358,17 @@ New files:
 ```
 functions/phase3/
   productionEnvironment.js
+  productionEnvironment.test.js
   productionPreflight.js
+  productionPreflight.test.js
   productionProjection.js
+  productionProjection.test.js
   productionManifest.js
+  productionManifest.test.js
   productionWriter.js
+  productionWriter.test.js
   productionReconciliation.js
+  productionReconciliation.test.js
   preflight.js
   write.js
   reverify.js
@@ -387,6 +395,12 @@ tests/firestore/rules.phase3.final.test.js
 tests/firestore/rules.phase3.rollback.test.js
 PHASE3_RELEASE_RUNBOOK.md
 ```
+
+Each colocated `functions/phase3/*.test.js` file is permitted only in the same
+commit as the corresponding implementation module and must exercise real
+behavior; it may not be added as a placeholder. The three entrypoints are
+covered through the production-runner suites rather than additional unlisted
+entrypoint test files.
 
 Any additional file requires an architecture update before editing. Phase 2A
 runtime algorithms, manifests, recovery tools, legacy sources, flat
@@ -420,6 +434,12 @@ npm run test:phase3:migration
 npm run test:phase3:release-rehearsal
 npm run test:phase3:rollback-rehearsal
 ```
+
+`test:phase3:unit` is the emulator-free Node unit gate for the colocated Phase 3
+unit suites. It requires no Firebase CLI isolation wrapper because it must not
+start the Firebase CLI, an emulator, or any network-backed operation. A suite
+that needs an emulator belongs under an appropriately named emulator-backed
+command and inherits every isolation protection above.
 
 They supplement, not replace, the complete Phase 2B and repository matrix.
 Commit 1 must not add passing placeholder commands under these names before
