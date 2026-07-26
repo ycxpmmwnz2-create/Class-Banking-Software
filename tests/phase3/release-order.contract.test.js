@@ -465,6 +465,79 @@ describe('Phase 3 release-order source contract', () => {
     )
   })
 
+  it('invariant: every destination surface is enumerated and feeds the watermark', () => {
+    // The gap this pins: the surface contract named only students, credentials and
+    // logs, so a pre-existing transaction or login-history document — Phase 2A
+    // writes both — stayed invisible while preflight retained an absence manifest.
+    // Removing any one enumeration, or re-stringifying any watermark source, must
+    // fail rather than silently narrowing coverage.
+    const preflight = readFileSync(
+      new URL('../../functions/phase3/productionPreflight.js', import.meta.url),
+      'utf8',
+    ).replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
+    const emulator = readFileSync(
+      new URL('./production-runner.emulator.test.js', import.meta.url),
+      'utf8',
+    ).replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
+
+    // Phase 2A's destination model, mirrored in the Phase 3 contract.
+    for (const collection of [
+      'students', 'transactions', 'loginHistory', 'studentCredentials',
+    ]) {
+      assert.ok(
+        new RegExp(`${collection}:\\s*'`).test(preflight),
+        `CLASSROOM_SUBCOLLECTION_SURFACES must map ${collection}`,
+      )
+    }
+    for (const surface of [
+      'classroomStudents', 'classroomTransactions', 'classroomLoginHistory',
+      'scopedCredentials', 'scopedLogs',
+    ]) {
+      assert.ok(
+        preflight.includes(`'${surface}'`),
+        `DESTINATION_SURFACES must declare ${surface}`,
+      )
+    }
+
+    // Every destination reference set must reach the watermark.
+    for (const idSet of [
+      'destinationStudents', 'destinationCredentials', 'destinationTransactions',
+      'destinationLoginHistory', 'destinationAuthLogs',
+    ]) {
+      assert.ok(
+        preflight.includes(idSet),
+        `${idSet} must contribute to watermark derivation`,
+      )
+    }
+
+    // Identity versus reference classification must stay explicit.
+    assert.ok(
+      /WATERMARK_IDENTITY_SOURCES\s*=/.test(preflight) &&
+        /WATERMARK_REFERENCE_SOURCES\s*=/.test(preflight),
+      'watermark sources must be explicitly classified',
+    )
+
+    // The emulator reader must enumerate roots and preserve raw ID types.
+    assert.ok(
+      /\['teachers',\s*'teacherIds'\]/.test(emulator) &&
+        /\['classrooms',\s*'classroomIds'\]/.test(emulator),
+      'teacher and classroom roots must both be enumerated',
+    )
+    assert.ok(
+      /\.collection\(collection\)\.listDocuments\(\)/.test(emulator),
+      'root enumeration must use listDocuments() so phantom parents are reachable',
+    )
+    assert.ok(
+      /if \(snapshot\.exists\) roots\[key\]\.push/.test(emulator),
+      'only EXISTING documents may count as roots; a phantom parent is not a root',
+    )
+    assert.ok(
+      !/String\(\s*doc\.data\(\)\.studentId\s*\)/.test(emulator) &&
+        !/destination\w*:\s*[^,\n]*\.map\(\s*\w+\s*=>\s*String\(/.test(emulator),
+      'destination watermark sources must preserve raw ID types',
+    )
+  })
+
   it('boundary: the checked-in firestore.rules is byte-for-byte unchanged', () => {
     const contents = readFileSync(
       new URL('../../firestore.rules', import.meta.url),

@@ -10,7 +10,9 @@ import { createHash } from 'node:crypto'
 import { describe, it } from 'node:test'
 
 import {
+  CLASSROOM_SUBCOLLECTION_SURFACES,
   COLLECTION_ENUMERATION_REQUIREMENT,
+  DESTINATION_SURFACES,
   PREFLIGHT_ABORT_CATEGORIES,
   PreflightAbortError,
   deriveStudentIdWatermark,
@@ -83,6 +85,54 @@ function expectations(overrides = {}) {
   }
 }
 
+/**
+ * A complete destination reader result.
+ *
+ * Every surface in DESTINATION_SURFACES gets a count, an evidence set, and a raw
+ * student-ID reference set. `counts` defaults to the evidence cardinality so a
+ * fixture cannot accidentally declare an unsubstantiated count.
+ */
+function destinationResult({ entries = {}, ids = {}, counts } = {}) {
+  const bySurface = Object.fromEntries(
+    DESTINATION_SURFACES.map(surface => [surface, entries[surface] ?? []]),
+  )
+  return complete({
+    counts: counts ?? Object.fromEntries(
+      DESTINATION_SURFACES.map(surface => [surface, bySurface[surface].length]),
+    ),
+    sourceEntriesBySurface: bySurface,
+    studentIdsBySurface: {
+      destinationStudents: ids.destinationStudents ?? [],
+      destinationCredentials: ids.destinationCredentials ?? [],
+      destinationTransactions: ids.destinationTransactions ?? [],
+      destinationLoginHistory: ids.destinationLoginHistory ?? [],
+      destinationAuthLogs: ids.destinationAuthLogs ?? [],
+    },
+  })
+}
+
+/** A foundation reader result with enumerated roots. */
+function foundationResult(overrides = {}) {
+  const present = overrides.present ?? true
+  const base = present
+    ? {
+      present: true,
+      reciprocal: true,
+      teacherStatus: 'active',
+      classroomId: 'abc123',
+      anomalies: [],
+      sourceEntries: sourceEntries('foundation', 2),
+      roots: { teacherIds: [TEACHER_UID], classroomIds: ['abc123'] },
+    }
+    : {
+      present: false,
+      anomalies: [],
+      sourceEntries: [],
+      roots: { teacherIds: [], classroomIds: [] },
+    }
+  return complete({ ...base, ...overrides })
+}
+
 /** Readers that all report healthy, complete, pre-migration production state. */
 function readers(overrides = {}) {
   const base = {
@@ -121,21 +171,8 @@ function readers(overrides = {}) {
       anomalies: [],
       sourceEntries: sourceEntries('authLogs', 12),
     }),
-    readFoundation: async () => complete({
-      present: true,
-      reciprocal: true,
-      teacherStatus: 'active',
-      classroomId: 'abc123',
-      anomalies: [],
-      sourceEntries: sourceEntries('foundation', 2),
-    }),
-    readDestinationPaths: async () => complete({
-      counts: { scopedCredentials: 0, scopedLogs: 0, classroomStudents: 0 },
-      studentIds: [],
-      sourceEntriesBySurface: {
-        scopedCredentials: [], scopedLogs: [], classroomStudents: [],
-      },
-    }),
+    readFoundation: async () => foundationResult(),
+    readDestinationPaths: async () => destinationResult(),
     readAuthCompatibility: async () => complete({
       uidCollisions: 0,
       incompatibleUsers: 0,
@@ -578,9 +615,7 @@ describe('Phase 3 production preflight', () => {
     it('accepts an unambiguously absent foundation', async () => {
       const result = await run({
         readers: readers({
-          readFoundation: async () => complete({
-            present: false, anomalies: [], sourceEntries: [],
-          }),
+          readFoundation: async () => foundationResult({ present: false }),
         }),
       })
       assert.equal(result.outcome, 'succeeded')
@@ -590,10 +625,7 @@ describe('Phase 3 production preflight', () => {
       await assertAborts(
         {
           readers: readers({
-            readFoundation: async () => complete({
-              present: true, reciprocal: false, teacherStatus: 'active',
-              classroomId: 'abc123', anomalies: [],
-            }),
+            readFoundation: async () => foundationResult({ reciprocal: false }),
           }),
         },
         PREFLIGHT_ABORT_CATEGORIES.FOUNDATION_PARTIAL,
@@ -602,10 +634,7 @@ describe('Phase 3 production preflight', () => {
       await assertAborts(
         {
           readers: readers({
-            readFoundation: async () => complete({
-              present: true, reciprocal: true, teacherStatus: 'disabled',
-              classroomId: 'abc123', anomalies: [],
-            }),
+            readFoundation: async () => foundationResult({ teacherStatus: 'disabled' }),
           }),
         },
         PREFLIGHT_ABORT_CATEGORIES.FOUNDATION_PARTIAL,
@@ -618,7 +647,9 @@ describe('Phase 3 production preflight', () => {
         await assertAborts(
           {
             readers: readers({
-              readFoundation: async () => complete({ present, anomalies: [] }),
+              readFoundation: async () => foundationResult({
+                present, sourceEntries: [], roots: { teacherIds: [], classroomIds: [] },
+              }),
             }),
           },
           PREFLIGHT_ABORT_CATEGORIES.FOUNDATION_PARTIAL,
@@ -633,14 +664,8 @@ describe('Phase 3 production preflight', () => {
       await assertAborts(
         {
           readers: readers({
-            readDestinationPaths: async () => complete({
-              counts: { scopedCredentials: 3, scopedLogs: 0, classroomStudents: 0 },
-              studentIds: [],
-              sourceEntriesBySurface: {
-                scopedCredentials: sourceEntries('destCreds', 3),
-                scopedLogs: [],
-                classroomStudents: [],
-              },
+            readDestinationPaths: async () => destinationResult({
+              entries: { scopedCredentials: sourceEntries('destCreds', 3) },
             }),
           }),
         },
@@ -652,14 +677,9 @@ describe('Phase 3 production preflight', () => {
     it('accepts destination data only when expectations acknowledge the exact count', async () => {
       const result = await run({
         readers: readers({
-          readDestinationPaths: async () => complete({
-            counts: { classroomStudents: 3, scopedCredentials: 0, scopedLogs: 0 },
-            studentIds: ['1', '2', '3'],
-            sourceEntriesBySurface: {
-              classroomStudents: sourceEntries('destStudents', 3),
-              scopedCredentials: [],
-              scopedLogs: [],
-            },
+          readDestinationPaths: async () => destinationResult({
+            entries: { classroomStudents: sourceEntries('destStudents', 3) },
+            ids: { destinationStudents: ['1', '2', '3'] },
           }),
         }),
         expectations: expectations({
@@ -1464,6 +1484,266 @@ describe('Phase 3 production preflight', () => {
         persistManifest: async (manifest) => { captured = manifest; return echo(manifest) },
       })
       assert.match(captured.domainChecksums.destinationAbsence, /^[0-9a-f]{64}$/)
+    })
+  })
+
+  describe('complete destination surface coverage', () => {
+    it('declares every scoped subcollection Phase 2A can write', () => {
+      // Sourced from Phase 2A's own destination model. Naming only students,
+      // credentials and logs left a pre-existing transaction or login-history
+      // document invisible while preflight reported absence.
+      assert.deepEqual([...DESTINATION_SURFACES].sort(), [
+        'classroomLoginHistory',
+        'classroomStudents',
+        'classroomTransactions',
+        'scopedCredentials',
+        'scopedLogs',
+      ])
+      assert.deepEqual(
+        Object.keys(CLASSROOM_SUBCOLLECTION_SURFACES).sort(),
+        ['loginHistory', 'studentCredentials', 'students', 'transactions'],
+      )
+    })
+
+    it('aborts on a destination transaction or login-history record', async () => {
+      for (const surface of ['classroomTransactions', 'classroomLoginHistory']) {
+        await assertAborts(
+          {
+            readers: readers({
+              readDestinationPaths: async () => destinationResult({
+                entries: { [surface]: sourceEntries(surface, 1) },
+              }),
+            }),
+          },
+          PREFLIGHT_ABORT_CATEGORIES.DESTINATION_DATA_PRESENT,
+          `a pre-existing ${surface} document must abort`,
+        )
+      }
+    })
+
+    it('requires an evidence set and a count for every new surface', async () => {
+      for (const omitted of DESTINATION_SURFACES) {
+        const entries = Object.fromEntries(
+          DESTINATION_SURFACES.filter(s => s !== omitted).map(s => [s, []]),
+        )
+        await assertAborts(
+          {
+            readers: readers({
+              readDestinationPaths: async () => complete({
+                counts: Object.fromEntries(
+                  DESTINATION_SURFACES.map(s => [s, 0]),
+                ),
+                sourceEntriesBySurface: entries,
+                studentIdsBySurface: {
+                  destinationStudents: [], destinationCredentials: [],
+                  destinationTransactions: [], destinationLoginHistory: [],
+                  destinationAuthLogs: [],
+                },
+              }),
+            }),
+          },
+          PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+          `omitting ${omitted} evidence must abort`,
+        )
+      }
+    })
+  })
+
+  describe('acknowledged destination records still feed the watermark', () => {
+    /**
+     * "It normally aborts on nonzero destination counts" is not sufficient: a count
+     * can be explicitly acknowledged, and an acknowledged record still carries a
+     * historical identity a later allocator must start above.
+     */
+    async function acknowledgedRun({ surface, idSet, ids, entryCount }) {
+      return run({
+        readers: readers({
+          readDestinationPaths: async () => destinationResult({
+            entries: { [surface]: sourceEntries(surface, entryCount) },
+            ids: { [idSet]: ids },
+          }),
+        }),
+        expectations: expectations({
+          acknowledgedDestinationCounts: { [surface]: entryCount },
+        }),
+      })
+    }
+
+    it('raises the watermark from an acknowledged scoped credential', async () => {
+      // Baseline watermark from the legacy fixture is 3. An acknowledged scoped
+      // credential for student 900 must move it to 901 — dropping these sets is
+      // exactly how an acknowledged record would leave the watermark at 4.
+      const result = await acknowledgedRun({
+        surface: 'scopedCredentials',
+        idSet: 'destinationCredentials',
+        ids: [900],
+        entryCount: 1,
+      })
+      assert.equal(result.outcome, 'succeeded')
+      assert.equal(result.watermark.observedMaximum, 900)
+      assert.equal(result.watermark.nextStudentNumber, 901)
+    })
+
+    it('raises the watermark from acknowledged destination students, transactions, history and logs', async () => {
+      const cases = [
+        ['classroomStudents', 'destinationStudents', 500],
+        ['classroomTransactions', 'destinationTransactions', 600],
+        ['classroomLoginHistory', 'destinationLoginHistory', 700],
+        ['scopedLogs', 'destinationAuthLogs', 800],
+      ]
+      for (const [surface, idSet, id] of cases) {
+        const result = await acknowledgedRun({
+          surface, idSet, ids: [id], entryCount: 1,
+        })
+        assert.equal(
+          result.watermark.nextStudentNumber,
+          id + 1,
+          `${idSet} must contribute its historical ID`,
+        )
+      }
+    })
+
+    it('preserves raw ID types from every destination set', async () => {
+      // A string reference and a numeric reference to one student normalize.
+      const result = await acknowledgedRun({
+        surface: 'classroomTransactions',
+        idSet: 'destinationTransactions',
+        ids: ['42', 42, '42'],
+        entryCount: 1,
+      })
+      assert.equal(result.watermark.observedMaximum, 42)
+    })
+
+    it('treats destination students and credentials as identity sets', async () => {
+      for (const [surface, idSet] of [
+        ['classroomStudents', 'destinationStudents'],
+        ['scopedCredentials', 'destinationCredentials'],
+      ]) {
+        await assert.rejects(
+          () => acknowledgedRun({ surface, idSet, ids: [8, '8'], entryCount: 2 }),
+          error => {
+            assert.equal(error.category, PREFLIGHT_ABORT_CATEGORIES.IDENTITY_COLLISION)
+            assert.match(error.message, /identity set/)
+            return true
+          },
+          `${idSet} is an identity set`,
+        )
+      }
+    })
+
+    it('requires every destination ID set to be stated', async () => {
+      for (const omitted of [
+        'destinationStudents', 'destinationCredentials',
+        'destinationTransactions', 'destinationLoginHistory',
+        'destinationAuthLogs',
+      ]) {
+        const ids = {
+          destinationStudents: [], destinationCredentials: [],
+          destinationTransactions: [], destinationLoginHistory: [],
+          destinationAuthLogs: [],
+        }
+        delete ids[omitted]
+        await assertAborts(
+          {
+            readers: readers({
+              readDestinationPaths: async () => complete({
+                counts: Object.fromEntries(DESTINATION_SURFACES.map(s => [s, 0])),
+                sourceEntriesBySurface: Object.fromEntries(
+                  DESTINATION_SURFACES.map(s => [s, []]),
+                ),
+                studentIdsBySurface: ids,
+              }),
+            }),
+          },
+          PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
+          `omitting ${omitted} must abort rather than default to empty`,
+        )
+      }
+    })
+
+    it('refuses an unclassified watermark source', () => {
+      assert.throws(
+        () => deriveStudentIdWatermark({ someNewSource: [1] }),
+        error => {
+          assert.equal(error.category, PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED)
+          assert.match(error.message, /not classified/)
+          return true
+        },
+        'an unclassified source must not silently skip collision detection',
+      )
+    })
+  })
+
+  describe('foundation root enumeration', () => {
+    it('aborts on an unrelated teacher or an extra classroom root', async () => {
+      const cases = [
+        ['a second teacher', {
+          roots: { teacherIds: [TEACHER_UID, 'other-teacher'], classroomIds: ['abc123'] },
+        }],
+        ['an extra classroom root', {
+          roots: { teacherIds: [TEACHER_UID], classroomIds: ['abc123', 'extra'] },
+        }],
+        ['a teacher root while the foundation is absent', {
+          present: false, sourceEntries: [],
+          roots: { teacherIds: ['someone-else'], classroomIds: [] },
+        }],
+        ['a classroom root while the foundation is absent', {
+          present: false, sourceEntries: [],
+          roots: { teacherIds: [], classroomIds: ['stray-classroom'] },
+        }],
+        ['a different teacher than the invocation names', {
+          roots: { teacherIds: ['someone-else'], classroomIds: ['abc123'] },
+        }],
+        ['a different classroom than the foundation names', {
+          roots: { teacherIds: [TEACHER_UID], classroomIds: ['different'] },
+        }],
+      ]
+      for (const [label, override] of cases) {
+        await assertAborts(
+          { readers: readers({ readFoundation: async () => foundationResult(override) }) },
+          PREFLIGHT_ABORT_CATEGORIES.FOUNDATION_PARTIAL,
+          `${label} must abort`,
+        )
+      }
+    })
+
+    it('requires enumerated root lists rather than trusting the named pair', async () => {
+      for (const roots of [
+        undefined, null, 'none', {},
+        { teacherIds: [TEACHER_UID] },
+        { classroomIds: ['abc123'] },
+        { teacherIds: [TEACHER_UID], classroomIds: ['abc123'], extra: [] },
+        { teacherIds: [TEACHER_UID, TEACHER_UID], classroomIds: ['abc123'] },
+        { teacherIds: [7], classroomIds: ['abc123'] },
+      ]) {
+        await assertAborts(
+          { readers: readers({ readFoundation: async () => foundationResult({ roots }) }) },
+          PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+          `roots ${JSON.stringify(roots)} must abort`,
+        )
+      }
+    })
+
+    it('retains the enumerated root counts in the manifest', async () => {
+      let captured
+      await run({
+        persistManifest: async (manifest) => { captured = manifest; return echo(manifest) },
+      })
+      assert.match(captured.domainChecksums.foundationState, /^[0-9a-f]{64}$/)
+
+      // A different root population must change the domain, so the counts are
+      // genuinely attested rather than merely computed and discarded.
+      let other
+      await run({
+        readers: readers({
+          readFoundation: async () => foundationResult({ present: false }),
+        }),
+        persistManifest: async (manifest) => { other = manifest; return echo(manifest) },
+      })
+      assert.notEqual(
+        captured.domainChecksums.foundationState,
+        other.domainChecksums.foundationState,
+      )
     })
   })
 

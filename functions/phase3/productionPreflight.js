@@ -456,9 +456,51 @@ export function summarizeHashedSource(entries, surface) {
  * leaving one surface unenumerated.
  */
 export const DESTINATION_SURFACES = Object.freeze([
+  'classroomStudents',
+  'classroomTransactions',
+  'classroomLoginHistory',
   'scopedCredentials',
   'scopedLogs',
-  'classroomStudents',
+])
+
+/**
+ * The scoped subcollections beneath a V2 classroom root, paired with the
+ * destination surface each one evidences.
+ *
+ * Taken from Phase 2A's own destination model (`batchWriter.js` writes
+ * students/transactions/loginHistory/studentAuthLogs;
+ * `destinationPreflight.js` and `manifest.js` enumerate the same set), so this
+ * list cannot drift from what a V2 write would actually create. An earlier version
+ * of this contract named only students, credentials and logs, which left a
+ * pre-existing transaction or login-history document completely invisible while
+ * preflight reported absence.
+ */
+export const CLASSROOM_SUBCOLLECTION_SURFACES = Object.freeze({
+  students: 'classroomStudents',
+  transactions: 'classroomTransactions',
+  loginHistory: 'classroomLoginHistory',
+  studentCredentials: 'scopedCredentials',
+})
+
+/**
+ * Watermark sources that are IDENTITY SETS versus REFERENCE SETS.
+ *
+ * Exported so a reader cannot quietly classify a new source as a reference set to
+ * dodge collision detection.
+ */
+export const WATERMARK_IDENTITY_SOURCES = Object.freeze([
+  'roster',
+  'credentials',
+  'destinationStudents',
+  'destinationCredentials',
+])
+export const WATERMARK_REFERENCE_SOURCES = Object.freeze([
+  'transactions',
+  'loginHistory',
+  'authLogs',
+  'destinationTransactions',
+  'destinationLoginHistory',
+  'destinationAuthLogs',
 ])
 
 /**
@@ -492,6 +534,105 @@ function requireDestinationEvidence(destination) {
     )
   }
   return sets
+}
+
+/**
+ * Requires the foundation reader to report the EXISTING teacher and classroom root
+ * documents it enumerated.
+ *
+ * Both lists must be present and must contain only existing documents; a phantom
+ * parent is not a root document.
+ */
+function requireFoundationRoots(foundation) {
+  const roots = foundation.roots
+  if (!isPlainObject(roots)) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'The foundation reader must enumerate existing teacher and classroom roots.',
+    )
+  }
+  const unexpected = Object.keys(roots).filter(
+    key => key !== 'teacherIds' && key !== 'classroomIds',
+  )
+  if (unexpected.length > 0) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'The foundation reader reported an unrecognized root set.',
+      { unexpected },
+    )
+  }
+  const resolved = {}
+  for (const name of ['teacherIds', 'classroomIds']) {
+    const value = roots[name]
+    if (!Array.isArray(value) ||
+        value.some(id => typeof id !== 'string' || id.trim() === '')) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'A foundation root set is missing or not a list of document IDs.',
+        { set: name },
+      )
+    }
+    if (new Set(value).size !== value.length) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'A foundation root set reported the same document twice.',
+        { set: name },
+      )
+    }
+    resolved[name] = value
+  }
+  return resolved
+}
+
+/**
+ * The student-ID reference sets every destination reader must supply, one per
+ * surface that can carry a student identity.
+ */
+const DESTINATION_ID_SETS = Object.freeze([
+  'destinationStudents',
+  'destinationCredentials',
+  'destinationTransactions',
+  'destinationLoginHistory',
+  'destinationAuthLogs',
+])
+
+/**
+ * Requires the destination reader to state every student-ID reference set.
+ *
+ * An absent set is refused rather than defaulted to `[]`: silently treating a
+ * missing set as empty is exactly how an acknowledged scoped record's historical
+ * ID would fail to reach the watermark.
+ */
+function requireDestinationStudentIds(destination) {
+  const supplied = destination.studentIdsBySurface
+  if (!isPlainObject(supplied)) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
+      'The destination reader must supply student-ID references per surface.',
+    )
+  }
+  const unexpected = Object.keys(supplied).filter(
+    key => !DESTINATION_ID_SETS.includes(key),
+  )
+  if (unexpected.length > 0) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
+      'The destination reader supplied an unrecognized student-ID set.',
+      { unexpected },
+    )
+  }
+  const resolved = {}
+  for (const name of DESTINATION_ID_SETS) {
+    if (!Array.isArray(supplied[name])) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
+        'A destination student-ID set is missing or not an array.',
+        { set: name },
+      )
+    }
+    resolved[name] = supplied[name]
+  }
+  return resolved
 }
 
 /**
@@ -644,7 +785,7 @@ export function numericStudentId(value) {
  * the brief is explicit that "Numeric/string equivalents are normalized", so a
  * repeated cross-source reference must NOT block.
  */
-const IDENTITY_SET_SOURCES = Object.freeze(['roster', 'credentials', 'destinationStudents'])
+const IDENTITY_SET_SOURCES = WATERMARK_IDENTITY_SOURCES
 
 /**
  * Derives the historical student-ID watermark across every required source.
@@ -675,6 +816,19 @@ export function deriveStudentIdWatermark(sources) {
       abort(
         PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
         'Every watermark source must supply an array of student IDs.',
+        { source: sourceName },
+      )
+    }
+
+    // Every source must be explicitly classified. An unrecognized name would
+    // otherwise default to "reference set" and silently skip collision detection —
+    // so adding a new identity-bearing source without classifying it fails loudly
+    // instead of quietly weakening the check.
+    if (!IDENTITY_SET_SOURCES.includes(sourceName) &&
+        !WATERMARK_REFERENCE_SOURCES.includes(sourceName)) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
+        'A watermark source is not classified as an identity or reference set.',
         { source: sourceName },
       )
     }
@@ -922,6 +1076,49 @@ export async function runProductionPreflight({
     )
   }
 
+  // Enumerated roots, not just the ONE teacher and classroom the invocation names.
+  // Reading `teachers/{uid}` directly cannot see an unrelated second teacher or an
+  // extra classroom root, and multiple teachers/classrooms are outside the
+  // production state Phase 3 is authorized to migrate.
+  //
+  // Root documents must be EXISTING documents. A phantom parent — a path that
+  // holds only subcollections — is not a root document, and counting one as a
+  // teacher or classroom would invent state that is not there. The destination
+  // surfaces above are what account for data beneath a phantom parent.
+  const roots = requireFoundationRoots(foundation)
+
+  const authorizedTeachers = foundation.present === true ? 1 : 0
+  if (roots.teacherIds.length !== authorizedTeachers) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.FOUNDATION_PARTIAL,
+      'Production holds a teacher document outside the authorized foundation.',
+      { observed: roots.teacherIds.length, authorized: authorizedTeachers },
+    )
+  }
+  if (roots.classroomIds.length !== authorizedTeachers) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.FOUNDATION_PARTIAL,
+      'Production holds a classroom root outside the authorized foundation.',
+      { observed: roots.classroomIds.length, authorized: authorizedTeachers },
+    )
+  }
+  if (foundation.present === true) {
+    // The one existing pair must be exactly the reciprocal pair just validated,
+    // not some other teacher who happens to be the only one.
+    if (roots.teacherIds[0] !== teacherUid) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.FOUNDATION_PARTIAL,
+        'The only existing teacher document is not the authorized teacher.',
+      )
+    }
+    if (roots.classroomIds[0] !== foundation.classroomId) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.FOUNDATION_PARTIAL,
+        'The only existing classroom root is not the authorized classroom.',
+      )
+    }
+  }
+
   // Scoped credentials, scoped logs, or destination classroom data before bridge
   // rules would mean something already wrote V2 state. That must be explained,
   // not migrated over.
@@ -1056,13 +1253,26 @@ export async function runProductionPreflight({
     ]),
   )
 
+  // Every destination surface must contribute its raw student-ID references.
+  //
+  // "It normally aborts on nonzero destination counts" is NOT sufficient: a
+  // nonzero count can be explicitly acknowledged by the reviewed expectations, and
+  // an acknowledged record still carries a historical identity a later allocator
+  // must start above. Omitting these would let an acknowledged scoped credential
+  // holding student 900 leave the watermark at 4.
+  const destinationIds = requireDestinationStudentIds(destination)
+
   const watermark = deriveStudentIdWatermark({
     roster: legacy.studentIds ?? [],
     credentials: credentials.studentIds ?? [],
     transactions: legacy.transactionStudentIds ?? [],
     loginHistory: legacy.loginHistoryStudentIds ?? [],
     authLogs: authLogs.studentIds ?? [],
-    destinationStudents: destination.studentIds ?? [],
+    destinationStudents: destinationIds.destinationStudents,
+    destinationCredentials: destinationIds.destinationCredentials,
+    destinationTransactions: destinationIds.destinationTransactions,
+    destinationLoginHistory: destinationIds.destinationLoginHistory,
+    destinationAuthLogs: destinationIds.destinationAuthLogs,
   })
 
   // ---- 5. manifest, only after every check passed ----
@@ -1095,6 +1305,10 @@ export async function runProductionPreflight({
       reciprocal: foundation.present === true ? foundation.reciprocal : null,
       teacherStatus: foundation.present === true ? foundation.teacherStatus : null,
       classroomIdPresent: Boolean(foundation.classroomId),
+      // Enumerated root counts, so the manifest attests to how many teacher and
+      // classroom documents existed — not merely that the named pair was fine.
+      existingTeacherCount: roots.teacherIds.length,
+      existingClassroomCount: roots.classroomIds.length,
       sources: hashedSourceSummaries([
         ['foundation', foundation.sourceEntries],
       ]),

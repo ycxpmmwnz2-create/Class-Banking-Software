@@ -44,6 +44,7 @@ const { runPreflightMain, PREFLIGHT_EXIT_CODES, parsePreflightArguments } =
 // resolves from functions/node_modules and never becomes a root dependency —
 // the same convention functions/phase2/seedRehearsal.js established.
 const {
+  CLASSROOM_SUBCOLLECTION_SURFACES,
   PREFLIGHT_ABORT_CATEGORIES,
   createReadOnlyAdminHandles,
   numericStudentId,
@@ -185,6 +186,42 @@ function exactUpdateTimeFromMillis(millis) {
 }
 
 /**
+ * Persists through the real persister and records the path for cleanup.
+ *
+ * Aborting runs never reach this; only the acknowledged-count control does.
+ */
+async function echoRecord(manifest) {
+  const record = await persistProductionManifest(manifest)
+  createdManifestPaths.push(record.manifestPath)
+  return record
+}
+
+/**
+ * Enumerates the EXISTING teacher and classroom root documents.
+ *
+ * `listDocuments()` is used so a phantom parent's subcollections are still
+ * reachable, but each reference is then probed with `.get()` and only real
+ * documents are reported as roots: a path that holds only subcollections is not a
+ * teacher or a classroom, and counting one would invent state that is not there.
+ * Data beneath such a parent is accounted for by the destination surfaces instead.
+ */
+async function enumerateExistingRoots() {
+  const roots = { teacherIds: [], classroomIds: [] }
+  for (const [collection, key] of [
+    ['teachers', 'teacherIds'],
+    ['classrooms', 'classroomIds'],
+  ]) {
+    const refs = await firestore.collection(collection).listDocuments()
+    for (const ref of refs) {
+      const snapshot = await ref.get()
+      if (snapshot.exists) roots[key].push(ref.id)
+    }
+    roots[key].sort()
+  }
+  return roots
+}
+
+/**
  * Builds one per-document evidence entry from a real Firestore snapshot.
  *
  * This is the shape a later writer recomputes under the freeze. Note what is and
@@ -294,9 +331,21 @@ function liveReaders() {
     },
 
     readFoundation: async () => {
+      // Enumerated roots, not just the named pair. Reading teachers/{uid}
+      // directly cannot see an unrelated second teacher or an extra classroom
+      // root, and multiple teachers/classrooms are outside Phase 3's authorized
+      // production state.
+      //
+      // listDocuments() returns phantom parents too, so each reference is probed
+      // with .get() and only EXISTING documents count as roots — a path holding
+      // only subcollections is not a teacher or a classroom.
+      const roots = await enumerateExistingRoots()
+
       const teacherSnapshot = await firestore.doc(`teachers/${TEACHER_UID}`).get()
       if (!teacherSnapshot.exists) {
-        return { complete: true, present: false, anomalies: [], sourceEntries: [] }
+        return {
+          complete: true, present: false, anomalies: [], sourceEntries: [], roots,
+        }
       }
       const teacher = teacherSnapshot.data()
       const classroomSnapshot = await firestore
@@ -314,6 +363,7 @@ function liveReaders() {
           evidenceEntry(teacherSnapshot),
           ...(classroomSnapshot.exists ? [evidenceEntry(classroomSnapshot)] : []),
         ],
+        roots,
       }
     },
 
@@ -326,22 +376,58 @@ function liveReaders() {
       // precisely the pre-existing V2 data this check must catch. Verified
       // against the emulator: get() saw 0, listDocuments() saw 1.
       const classroomRefs = await firestore.collection('classrooms').listDocuments()
-      const studentIds = []
       // Each surface keeps its OWN evidence set: a pooled set would let one
       // surface go unenumerated while the total still matched.
       const bySurface = {
+        classroomStudents: [],
+        classroomTransactions: [],
+        classroomLoginHistory: [],
         scopedCredentials: [],
         scopedLogs: [],
-        classroomStudents: [],
+      }
+      // Raw student-ID references per surface, types preserved. Acknowledged
+      // destination records still contribute their historical identities to the
+      // watermark, so these may not be dropped just because a count is allowed.
+      const idsBySurface = {
+        destinationStudents: [],
+        destinationCredentials: [],
+        destinationTransactions: [],
+        destinationLoginHistory: [],
+        destinationAuthLogs: [],
       }
 
+      // Every scoped subcollection Phase 2A's destination model defines, for every
+      // classroom reference. Enumerating only students and credentials left a
+      // pre-existing transaction or login-history document invisible.
       for (const classroomRef of classroomRefs) {
-        const credentials = await classroomRef
-          .collection('studentCredentials').get()
-        const students = await classroomRef.collection('students').get()
-        studentIds.push(...students.docs.map(doc => doc.id))
-        bySurface.scopedCredentials.push(...credentials.docs.map(evidenceEntry))
-        bySurface.classroomStudents.push(...students.docs.map(evidenceEntry))
+        for (const [collection, surface] of Object.entries(
+          CLASSROOM_SUBCOLLECTION_SURFACES,
+        )) {
+          const snapshot = await classroomRef.collection(collection).get()
+          bySurface[surface].push(...snapshot.docs.map(evidenceEntry))
+
+          if (collection === 'students') {
+            // A student document's own ID is its identity.
+            idsBySurface.destinationStudents.push(
+              ...snapshot.docs.map(doc => doc.data().id ?? doc.id),
+            )
+          } else if (collection === 'studentCredentials') {
+            idsBySurface.destinationCredentials.push(
+              ...snapshot.docs
+                .filter(doc => doc.data().studentId != null)
+                .map(doc => doc.data().studentId),
+            )
+          } else {
+            const target = collection === 'transactions'
+              ? idsBySurface.destinationTransactions
+              : idsBySurface.destinationLoginHistory
+            target.push(
+              ...snapshot.docs
+                .filter(doc => doc.data().studentId != null)
+                .map(doc => doc.data().studentId),
+            )
+          }
+        }
       }
 
       // Scoped auth logs live at studentAuthLogs/{classroomId}/logs/{logId}, so
@@ -353,16 +439,21 @@ function liveReaders() {
       for (const parentRef of scopedLogParents) {
         const logs = await parentRef.collection('logs').get()
         bySurface.scopedLogs.push(...logs.docs.map(evidenceEntry))
+        idsBySurface.destinationAuthLogs.push(
+          ...logs.docs
+            .filter(doc => doc.data().studentId != null)
+            .map(doc => doc.data().studentId),
+        )
       }
 
       return {
         complete: true,
-        counts: {
-          scopedCredentials: bySurface.scopedCredentials.length,
-          scopedLogs: bySurface.scopedLogs.length,
-          classroomStudents: bySurface.classroomStudents.length,
-        },
-        studentIds,
+        counts: Object.fromEntries(
+          Object.entries(bySurface).map(([surface, entries]) => [
+            surface, entries.length,
+          ]),
+        ),
+        studentIdsBySurface: idsBySurface,
         sourceEntriesBySurface: bySurface,
       }
     },
@@ -874,6 +965,180 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
     assert.equal(await snapshotFirestore(), firestoreBefore)
 
     await firestore.doc('studentAuthLogs/unexpected-classroom/logs/log-1').delete()
+  })
+
+  /**
+   * Runs the real entrypoint with self-consistent artifacts against live readers.
+   *
+   * `expectationOverrides` lets a case acknowledge a destination count, which is
+   * what makes the watermark-contribution control possible: an acknowledged record
+   * must still raise the watermark.
+   */
+  async function liveRun(tag, expectationOverrides = {}) {
+    const credentialPath = writeArtifact(`cred-${tag}.json`, {
+      type: 'service_account', project_id: EMULATOR_PROJECT_ID,
+    })
+    const expectationsPath = writeArtifact(
+      `exp-${tag}.json`, expectationsArtifact(expectationOverrides),
+    )
+    const credentialSha = createHash('sha256')
+      .update(fs.readFileSync(credentialPath, 'utf8'), 'utf8').digest('hex')
+    const expectationsSha = createHash('sha256')
+      .update(fs.readFileSync(expectationsPath, 'utf8'), 'utf8').digest('hex')
+    const authorizationPath = writeArtifact(`auth-${tag}.json`, authorizationArtifact({
+      credentialSha256: credentialSha,
+      expectationsSha256: expectationsSha,
+    }))
+
+    let manifest
+    const outcome = await runPreflightMain([
+      '--teacher-uid', TEACHER_UID,
+      '--authorization-file', authorizationPath,
+      '--expectations-file', expectationsPath,
+      '--credential-file', credentialPath,
+    ], {
+      environment: emulatorEnvironment(),
+      readers: liveReaders(),
+      logger: { log() {}, error() {} },
+      persistManifest: async (built) => { manifest = built; return echoRecord(built) },
+    })
+    return { ...outcome, manifest }
+  }
+
+  test('a transaction beneath a phantom classroom is visible and blocking', async () => {
+    // The exact blind spot: `classrooms/{id}` holds no document of its own, and
+    // only a transaction exists beneath it. An enumeration limited to students and
+    // credentials would have reported absence for state that is plainly there.
+    await firestore
+      .doc('classrooms/phantom-txn/transactions/txn-1')
+      .set({ id: 100, studentId: 41, type: 'Add', amount: 5 })
+
+    const before = await snapshotFirestore()
+    const observed = await liveReaders().readDestinationPaths()
+    assert.equal(observed.counts.classroomTransactions, 1)
+    assert.equal(observed.sourceEntriesBySurface.classroomTransactions.length, 1)
+    assert.deepEqual(observed.studentIdsBySurface.destinationTransactions, [41])
+
+    const { exitCode, error } = await liveRun('txn')
+    assert.equal(exitCode, PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED)
+    assert.equal(error.category, PREFLIGHT_ABORT_CATEGORIES.DESTINATION_DATA_PRESENT)
+    assert.equal(await snapshotFirestore(), before)
+
+    await firestore.doc('classrooms/phantom-txn/transactions/txn-1').delete()
+  })
+
+  test('a login-history record beneath a phantom classroom is visible and blocking', async () => {
+    await firestore
+      .doc('classrooms/phantom-hist/loginHistory/hist-1')
+      .set({ id: 200, studentId: '43', result: 'success' })
+
+    const before = await snapshotFirestore()
+    const observed = await liveReaders().readDestinationPaths()
+    assert.equal(observed.counts.classroomLoginHistory, 1)
+    // Raw type preserved: a string reference stays a string.
+    assert.deepEqual(observed.studentIdsBySurface.destinationLoginHistory, ['43'])
+
+    const { exitCode, error } = await liveRun('hist')
+    assert.equal(exitCode, PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED)
+    assert.equal(error.category, PREFLIGHT_ABORT_CATEGORIES.DESTINATION_DATA_PRESENT)
+    assert.equal(await snapshotFirestore(), before)
+
+    await firestore.doc('classrooms/phantom-hist/loginHistory/hist-1').delete()
+  })
+
+  test('an unrelated teacher or an extra classroom root is visible and blocking', async () => {
+    for (const [label, docPath, body] of [
+      ['unrelated teacher', 'teachers/unrelated-teacher',
+        { uid: 'unrelated-teacher', classroomId: 'other', status: 'active' }],
+      ['extra classroom root', 'classrooms/extra-root',
+        { ownerUid: 'someone-else' }],
+    ]) {
+      await firestore.doc(docPath).set(body)
+      const before = await snapshotFirestore()
+
+      // The reader must SEE it as an existing root document.
+      const roots = await enumerateExistingRoots()
+      const observed = [...roots.teacherIds, ...roots.classroomIds]
+      assert.ok(
+        observed.some(id => docPath.endsWith(id)),
+        `${label} must be enumerated as an existing root`,
+      )
+
+      const { exitCode, error } = await liveRun(`root-${observed.length}`)
+      assert.equal(exitCode, PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED)
+      assert.equal(
+        error.category,
+        PREFLIGHT_ABORT_CATEGORIES.FOUNDATION_PARTIAL,
+        `${label} must abort as an unauthorized foundation document`,
+      )
+      assert.equal(await snapshotFirestore(), before)
+
+      await firestore.doc(docPath).delete()
+    }
+  })
+
+  test('a phantom classroom parent is not counted as an existing classroom root', async () => {
+    // The inverse control for the test above: a path holding only a subcollection
+    // is NOT a root document, so counting it would invent a classroom that does
+    // not exist. Its data is accounted for by the destination surfaces instead.
+    await firestore
+      .doc('classrooms/phantom-only/students/s1')
+      .set({ id: 3, name: 'Ada' })
+
+    const roots = await enumerateExistingRoots()
+    assert.ok(
+      !roots.classroomIds.includes('phantom-only'),
+      'a phantom parent must not be reported as an existing classroom root',
+    )
+    // But its student IS seen by the destination enumeration.
+    const observed = await liveReaders().readDestinationPaths()
+    assert.equal(observed.counts.classroomStudents, 1)
+
+    await firestore.doc('classrooms/phantom-only/students/s1').delete()
+  })
+
+  test('an acknowledged scoped credential still raises the watermark', async () => {
+    // Acknowledging a destination count permits the run; it does not erase the
+    // historical identity. Student 900 must move the watermark to 901, well above
+    // the seeded legacy maximum of 5.
+    await firestore
+      .doc('classrooms/ack-classroom/studentCredentials/zoe')
+      .set({ loginId: 'zoe', studentId: 900, classroomId: 'ack-classroom' })
+
+    const before = await snapshotFirestore()
+    let installedPath
+    const { exitCode, result, error, manifest } = await liveRun('ack', {
+      acknowledgedDestinationCounts: { scopedCredentials: 1 },
+    })
+
+    try {
+      assert.equal(
+        exitCode,
+        PREFLIGHT_EXIT_CODES.SUCCESS,
+        `an acknowledged count must permit the run; got ${error?.category ?? ''} ${error?.message ?? ''}`,
+      )
+      assert.equal(
+        result.watermark.observedMaximum,
+        900,
+        'the acknowledged record must contribute its raw ID',
+      )
+      assert.equal(result.watermark.nextStudentNumber, 901)
+      installedPath = manifest === undefined
+        ? undefined
+        : resolveManifestPath(manifest.preflightManifestId)
+      assert.equal(await snapshotFirestore(), before)
+    } finally {
+      if (installedPath !== undefined && fs.existsSync(installedPath)) {
+        assert.equal(manifest.projectId, EMULATOR_PROJECT_ID)
+        assert.equal(
+          path.dirname(installedPath),
+          path.resolve(PRODUCTION_STATE_DIRECTORY),
+        )
+        fs.rmSync(installedPath, { force: true })
+      }
+      await firestore
+        .doc('classrooms/ack-classroom/studentCredentials/zoe').delete()
+    }
   })
 
   test('a malformed credential file is rejected without reading Firestore', async () => {
