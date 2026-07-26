@@ -99,6 +99,182 @@ describe("TenantCache Module Specifications", () => {
     assert.equal(digestEmpty, "");
   });
 
+  // The browser digest is a hand-rolled SHA-256 (no node:crypto in production
+  // code), so its message-schedule, padding, and UTF-8 encoding paths need
+  // real known-answer vectors. 'abc' alone exercises only the single-block,
+  // single-byte-per-character path; these vectors additionally cover the
+  // length-field/two-block padding boundary, exact block multiples, genuine
+  // multi-block input, and non-ASCII UTF-8 (multi-byte) input.
+  test("computeSha256Digest matches known-answer vectors across padding boundaries, multi-block input, and non-ASCII UTF-8 input", () => {
+    const VECTORS = [
+      // 56 bytes: forces the second padding block (l % 64 >= 56). NIST vector.
+      [
+        "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+        "sha256_248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+      ],
+      // Exactly one block: k must wrap to a full extra block of padding.
+      [
+        "a".repeat(64),
+        "sha256_ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"
+      ],
+      // Genuine multi-block input (two compression rounds).
+      [
+        "a".repeat(119),
+        "sha256_31eba51c313a5c08226adf18d4a359cfdfd8d2e816b13f4af952f7ea6584dcfb"
+      ],
+      // Non-ASCII UTF-8: 2-, 3-, and 4-byte code points, including an
+      // astral-plane emoji (surrogate pair). 24 chars but 36 UTF-8 bytes, so a
+      // length-in-characters bug would produce a different digest here.
+      [
+        "Mr. Morgan’s Café — 教室 🎓",
+        "sha256_9e70fcd0accbcd73162ca6f4a1f5e4e321e417d1de6db053fe0ed4c5dadf4c64"
+      ],
+      // Latin-1 supplement characters, the realistic shape of a non-ASCII UID.
+      [
+        "üñïçødé-teacher-uid",
+        "sha256_7ef87a089248f4233bfa8ae256c76246c163d2e1e201a94ab4b7d3f385e5193b"
+      ]
+    ];
+
+    for (const [input, expected] of VECTORS) {
+      const actual = computeSha256Digest(input);
+      assert.equal(
+        actual,
+        expected,
+        `SHA-256 known-answer mismatch for ${JSON.stringify(input.slice(0, 24))} (${input.length} chars)`
+      );
+      // Strict wire format: lowercase "sha256_" prefix plus exactly 64
+      // lowercase hexadecimal characters, and nothing else.
+      assert.match(actual, /^sha256_[0-9a-f]{64}$/);
+      assert.equal(actual.length, "sha256_".length + 64);
+      assert.equal(actual, actual.toLowerCase(), "Digest must be lowercase hex");
+    }
+  });
+
+  test("digest failure prevents BOTH the BroadcastChannel and the storage-event transport from publishing", () => {
+    // A UID that cannot be digested (null/empty) must abort publication
+    // entirely rather than broadcast an undigested or placeholder identity.
+    assert.equal(createBroadcastMessage("", 4), null);
+    assert.equal(createBroadcastMessage(null, 4), null);
+
+    const channel = createMockChannel();
+    let posted = 0;
+    channel.postMessage = () => { posted++; };
+
+    const storage = createMockStorage();
+    const session = new TenantSession();
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: channel,
+      storageAdapter: storage,
+      windowAdapter: null
+    });
+
+    invalidator.broadcastInvalidation("", 4);
+    invalidator.broadcastInvalidation(null, 4);
+
+    assert.equal(posted, 0, "BroadcastChannel MUST NOT publish when the UID digest cannot be computed");
+    assert.equal(storage.store.size, 0, "Storage-event fallback MUST NOT publish when the UID digest cannot be computed");
+    assert.equal(storage.getItem("morganBank:v2:invalidation"), null);
+
+    // A valid UID still publishes on both transports, proving the assertions
+    // above detect suppression rather than a permanently broken invalidator.
+    invalidator.broadcastInvalidation("teacher_valid", 4);
+    assert.equal(posted, 1);
+    assert.equal(storage.store.size, 1);
+  });
+
+  test("receiving an invalidation does NOT rebroadcast, so two tabs cannot loop", () => {
+    const channel = createMockChannel();
+    let posted = 0;
+    channel.postMessage = () => { posted++; };
+    const storage = createMockStorage();
+
+    const receiverSession = new TenantSession();
+    receiverSession.transitionTo(SESSION_STATES.AUTHENTICATING);
+    receiverSession.transitionTo(SESSION_STATES.RESOLVING);
+    receiverSession.transitionTo(SESSION_STATES.ACTIVE, { uid: "u_recv", role: "teacher", classroomId: "c_recv" });
+
+    const receiverInvalidator = new MultiTabInvalidator(receiverSession, {
+      channelAdapter: channel,
+      storageAdapter: storage,
+      windowAdapter: null
+    });
+    receiverSession.multiTabInvalidator = receiverInvalidator;
+    receiverInvalidator.start();
+
+    const validMessage = {
+      type: "session-invalidated",
+      uidDigest: computeSha256Digest("u_other_tab").slice(0),
+      epoch: 9
+    };
+
+    receiverInvalidator.receiveMessage(validMessage);
+
+    assert.equal(receiverSession.getState(), SESSION_STATES.SIGNED_OUT, "Receiver must invalidate synchronously");
+    assert.equal(posted, 0, "Receiving an invalidation MUST NOT re-post to the channel (self-loop)");
+    assert.equal(storage.getItem("morganBank:v2:invalidation"), null, "Receiving an invalidation MUST NOT re-publish via storage");
+
+    // A malformed message also invalidates (fail closed) and also must not echo.
+    receiverInvalidator.receiveMessage({ type: "session-invalidated", uidDigest: "sha256_short", epoch: 1 });
+    assert.equal(posted, 0, "Malformed-message invalidation MUST NOT rebroadcast");
+    assert.equal(storage.getItem("morganBank:v2:invalidation"), null);
+
+    receiverInvalidator.destroy();
+  });
+
+  test("sign-out, UID change, role change, and resolved-classroom change each publish exactly one multi-tab invalidation", () => {
+    const published = [];
+    const recordingInvalidator = {
+      broadcastInvalidation(uid, epoch) { published.push({ uid, epoch }); }
+    };
+
+    function freshReadySession() {
+      const session = new TenantSession({
+        storageAdapter: createMockStorage(),
+        cacheModule: { purgeTenantCache, purgeLegacyCache, buildCacheKey },
+        projectId: PROJECT_ID,
+        multiTabInvalidator: recordingInvalidator
+      });
+      session.transitionTo(SESSION_STATES.AUTHENTICATING);
+      session.transitionTo(SESSION_STATES.RESOLVING);
+      session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_a", role: "teacher", classroomId: "room_a" });
+      session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+      session.transitionTo(SESSION_STATES.READY);
+      return session;
+    }
+
+    // 1. Sign-out
+    published.length = 0;
+    freshReadySession().signOut();
+    assert.equal(published.length, 1, "Sign-out MUST publish invalidation");
+    assert.equal(published[0].uid, "teacher_a", "Broadcast must carry the outgoing UID");
+
+    // 2. UID change (teacher A -> teacher B)
+    published.length = 0;
+    freshReadySession().invalidate("uid-change", { uid: "teacher_b", role: "teacher", state: SESSION_STATES.RESOLVING });
+    assert.equal(published.length, 1, "UID change MUST publish invalidation");
+
+    // 3. Role change (teacher -> student, same UID)
+    published.length = 0;
+    freshReadySession().invalidate("role-change", { uid: "teacher_a", role: "student", state: SESSION_STATES.AUTHENTICATING });
+    assert.equal(published.length, 1, "Role change MUST publish invalidation");
+
+    // 4. Resolved-classroom change (same UID and role, classroom A -> B)
+    published.length = 0;
+    freshReadySession().invalidate("resolved-classroom-changed", {
+      uid: "teacher_a",
+      role: "teacher",
+      classroomId: "room_b",
+      state: SESSION_STATES.RESOLVING
+    });
+    assert.equal(published.length, 1, "Resolved-classroom change MUST publish invalidation");
+
+    // 5. A received multi-tab invalidation is the one reason that must NOT publish.
+    published.length = 0;
+    freshReadySession().invalidate("multi-tab-invalidation", { state: SESSION_STATES.SIGNED_OUT });
+    assert.equal(published.length, 0, "Multi-tab-originated invalidation MUST NOT rebroadcast");
+  });
+
   test("createBroadcastMessage produces exact payload with only type, uidDigest, and epoch", () => {
     const msg = createBroadcastMessage("user_abc", 3);
     assert.deepEqual(Object.keys(msg).sort(), ["epoch", "type", "uidDigest"]);

@@ -1099,7 +1099,7 @@ function toggleStudentDropdown() {
 
         if (!res.executed) {
           studentAuthLogs = [];
-          studentAuthLogsError = "Student auth log load failed or session invalidated.";
+          studentAuthLogsError = res.error || "Could not load student auth logs.";
         }
         studentAuthLogsLoading = false;
         render();
@@ -1188,7 +1188,14 @@ function toggleStudentDropdown() {
       const student = data.students.find(s => s.id === teacherProfileStudentId);
       if (student) {
         const captured = IS_MULTI_TEACHER_V2_ENABLED ? v2TenantSession.captureIdentity() : null;
-        const classroomId = IS_MULTI_TEACHER_V2_ENABLED ? (v2TenantSession.classroomId || "morgan") : "morgan";
+        // V2 never falls back to the hardcoded legacy classroom: an absent
+        // resolved classroom ID is a fail-closed condition, not a default.
+        if (IS_MULTI_TEACHER_V2_ENABLED && !v2TenantSession.classroomId) {
+          profileLoginIdStatus = "Classroom not resolved.";
+          render();
+          return;
+        }
+        const classroomId = IS_MULTI_TEACHER_V2_ENABLED ? v2TenantSession.classroomId : "morgan";
         try {
           const snapshot = await getDoc(doc(db, "classrooms", classroomId, "students", String(student.id)));
           if (IS_MULTI_TEACHER_V2_ENABLED && !v2TenantSession.validateCapturedIdentity(captured)) return;
@@ -1256,7 +1263,7 @@ function toggleStudentDropdown() {
           }
         } else {
           if (v2TenantSession.validateCapturedIdentity(captured)) {
-            message = "Could not reset the student PIN.";
+            message = res.error || "Could not reset the student PIN.";
             studentPinResetPending = false;
             render();
           }
@@ -1886,7 +1893,9 @@ const targetStudents = transactionTarget === "whole"
           }
         } else {
           if (v2TenantSession.validateCapturedIdentity(captured)) {
-            message = `Failed to activate ${student.name}.`;
+            message = res.error
+              ? `Failed to activate ${student.name}: ${res.error}`
+              : `Failed to activate ${student.name}.`;
             render();
           }
         }
@@ -1973,7 +1982,7 @@ const targetStudents = transactionTarget === "whole"
           }
         } else {
           if (v2TenantSession.validateCapturedIdentity(captured)) {
-            message = "Bulk activation cancelled or session invalidated.";
+            message = res.error || "Bulk activation cancelled or session invalidated.";
             bulkOperationPending = false;
             render();
           }
@@ -2451,6 +2460,16 @@ link.click();
       `;
     }
 
+    // The authoritatively resolved teacher identity must be visible in the
+    // READY teacher UI, not merely stored on the session, so an operator can
+    // always tell which tenant the screen belongs to.
+    function resolvedTeacherLabel() {
+      const teacher = resolvedTeacher || v2TenantSession?.teacher || null;
+      if (!teacher) return "";
+      const label = teacher.displayName || teacher.email || teacher.uid || "";
+      return typeof label === "string" ? label : "";
+    }
+
     function render() {
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         const state = v2TenantSession.getState();
@@ -2533,7 +2552,7 @@ link.click();
               <h1>Mr. Morgan's Class Cash</h1>
               <p class="tagline">Classroom Banking Platform · Positive Vibes Only</p>
             </div>
-            ${(resolvedClassroom || v2TenantSession?.classroom || v2TenantSession?.classroomId) ? `<div class="hero-badge">Classroom: ${escapeHtml(resolvedClassroom?.name || v2TenantSession?.classroom?.name || v2TenantSession?.classroomId || "")}${v2IsOffline ? ' <span class="offline-badge" style="background: #f59e0b; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px;">[Offline]</span>' : ""}</div>` : '<div class="hero-badge">Fast, Simple and Student Friendly</div>'}
+            ${(resolvedClassroom || v2TenantSession?.classroom || v2TenantSession?.classroomId) ? `<div class="hero-badge">Classroom: ${escapeHtml(resolvedClassroom?.name || v2TenantSession?.classroom?.name || v2TenantSession?.classroomId || "")}${resolvedTeacherLabel() ? ` &middot; Teacher: ${escapeHtml(resolvedTeacherLabel())}` : ""}${v2IsOffline ? ' <span class="offline-badge" style="background: #f59e0b; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px;">[Offline view]</span>' : ""}</div>` : '<div class="hero-badge">Fast, Simple and Student Friendly</div>'}
           </div>
         </section>
 
@@ -3194,6 +3213,11 @@ if (screen === "editSettingsLists" && isTeacher) {
 
     function resetAllGlobalState() {
       resetGlobalApplicationState(windowAppGlobals, cloneDefault);
+      // Render-affecting V2 view state that is not part of the shared legacy
+      // global contract must be cleared by the same synchronous reset, or a
+      // previous tenant's offline badge / profile login ID can survive a switch.
+      v2IsOffline = false;
+      profileLoginIdStatus = "Checking...";
     }
 
     async function submitV2Onboarding() {

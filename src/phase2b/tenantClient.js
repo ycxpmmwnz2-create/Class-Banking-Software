@@ -321,7 +321,20 @@ export async function handleAuthTransition(session, user, tokenResult, { callAda
 
 export async function orchestrateClassroomDataLoad(session, loadFn, applyFn) {
   const captured = session.captureIdentity();
-  const loadedData = await loadFn();
+  let loadedData;
+  try {
+    loadedData = await loadFn();
+  } catch (err) {
+    // A rejected operation must never escape to the caller: the V2 call sites
+    // set pending/loading flags and a progress message before awaiting, and an
+    // escaping rejection would leave them set forever with no render. Report a
+    // structured failure instead, still gated on the captured identity so a
+    // stale rejection cannot repaint the current tenant's UI.
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+    return { executed: false, reason: "load-failed", error: mapSafeClientError(err) };
+  }
   if (!session.validateCapturedIdentity(captured)) {
     return { executed: false, reason: "stale-epoch-ignored" };
   }
@@ -340,11 +353,19 @@ export async function orchestrateClassroomDataSave(session, saveAdapter, data, o
   const projectId = options?.projectId || "morgan-bank";
 
   const captured = session.captureIdentity();
-  if (!session.validateCapturedIdentity(captured)) {
-    return { executed: false, reason: "stale-epoch-ignored" };
+
+  let result;
+  try {
+    result = await saveAdapter(data, captured);
+  } catch (err) {
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored-post-save" };
+    }
+    // A failed server save must never seed the tenant cache: the cache is only
+    // ever allowed to mirror data the server accepted.
+    return { executed: false, reason: "save-failed", error: mapSafeClientError(err) };
   }
 
-  const result = await saveAdapter(data, captured);
   if (!session.validateCapturedIdentity(captured)) {
     return { executed: false, reason: "stale-epoch-ignored-post-save" };
   }
@@ -358,7 +379,15 @@ export async function orchestrateClassroomDataSave(session, saveAdapter, data, o
 
 export async function orchestrateAuthLogsFetch(session, fetchFn, applyFn) {
   const captured = session.captureIdentity();
-  const logs = await fetchFn();
+  let logs;
+  try {
+    logs = await fetchFn();
+  } catch (err) {
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+    return { executed: false, reason: "auth-logs-fetch-failed", error: mapSafeClientError(err) };
+  }
   if (!session.validateCapturedIdentity(captured)) {
     return { executed: false, reason: "stale-epoch-ignored" };
   }
@@ -370,10 +399,15 @@ export async function orchestrateAuthLogsFetch(session, fetchFn, applyFn) {
 
 export async function orchestrateStudentPinReset(session, resetFn, payload) {
   const captured = session.captureIdentity();
-  if (!session.validateCapturedIdentity(captured)) {
-    return { executed: false, reason: "stale-epoch-ignored" };
+  let result;
+  try {
+    result = await resetFn(payload);
+  } catch (err) {
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored-post-reset" };
+    }
+    return { executed: false, reason: "pin-reset-failed", error: mapSafeClientError(err) };
   }
-  const result = await resetFn(payload);
   if (!session.validateCapturedIdentity(captured)) {
     return { executed: false, reason: "stale-epoch-ignored-post-reset" };
   }
@@ -382,10 +416,15 @@ export async function orchestrateStudentPinReset(session, resetFn, payload) {
 
 export async function orchestrateBulkOperation(session, bulkFn, payload) {
   const captured = session.captureIdentity();
-  if (!session.validateCapturedIdentity(captured)) {
-    return { executed: false, reason: "stale-epoch-ignored" };
+  let result;
+  try {
+    result = await bulkFn(payload, captured);
+  } catch (err) {
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored-post-bulk" };
+    }
+    return { executed: false, reason: "bulk-operation-failed", error: mapSafeClientError(err) };
   }
-  const result = await bulkFn(payload, captured);
   if (!session.validateCapturedIdentity(captured)) {
     return { executed: false, reason: "stale-epoch-ignored-post-bulk" };
   }
@@ -394,7 +433,15 @@ export async function orchestrateBulkOperation(session, bulkFn, payload) {
 
 export async function safeExecuteWithEpochCheck(session, asyncFn, applyFn) {
   const captured = session.captureIdentity();
-  const result = await asyncFn();
+  let result;
+  try {
+    result = await asyncFn();
+  } catch (err) {
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+    return { executed: false, reason: "operation-failed", error: mapSafeClientError(err) };
+  }
   if (!session.validateCapturedIdentity(captured)) {
     return { executed: false, reason: "stale-epoch-ignored" };
   }

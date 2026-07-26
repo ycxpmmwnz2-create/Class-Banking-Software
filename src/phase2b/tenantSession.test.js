@@ -1,5 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { TenantSession, SESSION_STATES, createDefaultGlobalState, resetGlobalApplicationState } from "./tenantSession.js";
 
 describe("TenantSession State Machine and Epoch Isolation", () => {
@@ -228,6 +230,68 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     assert.equal(globalState.resolvedTeacher, null);
     assert.equal(globalState.transactionTarget, "selected");
     assert.equal(globalState.teacherTransactionFilter, "all");
+  });
+
+  // The test below builds its own getter/setter object. On its own that proves
+  // only that resetGlobalApplicationState drives accessors, not that the real
+  // adapter in index.html exposes the fields the reset writes. This test ties
+  // the two together: it derives the reset's field contract from the module
+  // itself, then checks the production `windowAppGlobals` literal declares a
+  // getter AND a setter for every one of those fields. If either side gains or
+  // loses a field, this fails rather than silently leaving production state
+  // un-reset on an account switch.
+  test("the production windowAppGlobals adapter in index.html backs every field resetGlobalApplicationState writes", () => {
+    const indexHtml = readFileSync(
+      fileURLToPath(new URL("../../index.html", import.meta.url)),
+      "utf8"
+    );
+
+    const adapterStart = indexHtml.indexOf("const windowAppGlobals = {");
+    assert.notEqual(adapterStart, -1, "Expected the windowAppGlobals adapter in index.html");
+    const adapterSource = indexHtml.slice(adapterStart, indexHtml.indexOf("};", adapterStart));
+
+    // Field contract, derived from production code rather than hand-listed:
+    // every key the default state defines, plus messageTimeout, which the reset
+    // clears but the default-state factory owns as a timer handle.
+    const resetFields = Object.keys(createDefaultGlobalState());
+    assert.equal(resetFields.includes("messageTimeout"), true);
+    assert.equal(resetFields.length, 20, "Field contract changed: update the reset and the production adapter together");
+
+    // Prove the reset actually writes each field, using a probe object that
+    // records writes, so the contract is behavioural and not just a key list.
+    const written = new Set();
+    const probe = {};
+    for (const field of resetFields) {
+      Object.defineProperty(probe, field, {
+        get: () => undefined,
+        set: (val) => { written.add(field); void val; },
+        enumerable: true
+      });
+    }
+    resetGlobalApplicationState(probe, () => createDefaultGlobalState().data);
+
+    for (const field of resetFields) {
+      assert.equal(written.has(field), true, `resetGlobalApplicationState must write ${field}`);
+      assert.match(
+        adapterSource,
+        new RegExp(`get ${field}\\(\\) \\{ return ${field}; \\}`),
+        `Production windowAppGlobals must expose a getter for ${field}`
+      );
+      assert.match(
+        adapterSource,
+        new RegExp(`set ${field}\\(val\\) \\{ ${field} = val; \\}`),
+        `Production windowAppGlobals must expose a setter for ${field}, or the reset silently drops it`
+      );
+    }
+
+    // The production reset callback must also clear the V2-only render state
+    // that is deliberately outside the shared legacy global contract.
+    const resetFnStart = indexHtml.indexOf("function resetAllGlobalState()");
+    assert.notEqual(resetFnStart, -1);
+    const resetFnSource = indexHtml.slice(resetFnStart, indexHtml.indexOf("\n    }", resetFnStart));
+    assert.match(resetFnSource, /resetGlobalApplicationState\(windowAppGlobals, cloneDefault\);/);
+    assert.match(resetFnSource, /v2IsOffline = false;/, "The offline badge must not survive a tenant switch");
+    assert.match(resetFnSource, /profileLoginIdStatus = "Checking\.\.\.";/, "A previous tenant's profile login ID must not survive a tenant switch");
   });
 
   test("resetGlobalApplicationState correctly resets complete windowAppGlobals getter/setter proxy adapter backing all 20 application variables", () => {

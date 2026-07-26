@@ -1,5 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { TenantSession, SESSION_STATES } from "./tenantSession.js";
 import {
   mapSafeClientError,
@@ -27,6 +29,43 @@ function createMockStorage() {
     clear: () => store.clear(),
     store
   };
+}
+
+const INDEX_HTML_PATH = fileURLToPath(new URL("../../index.html", import.meta.url));
+
+/**
+ * Returns the source text of every `if (IS_MULTI_TEACHER_V2_ENABLED) { ... }`
+ * block in index.html, brace-matched so each string is exactly one V2 branch.
+ *
+ * The V2 branches are the only place the gate is on, so scoping assertions to
+ * them is what makes "no legacy call in V2 mode" checkable at all: the legacy
+ * branches of the same functions legitimately still contain `loadData()`,
+ * `resetStudentPin`, `classroomId: "morgan"` and the `mrMorganClassCashDataV5`
+ * key, and Item 9 must not change them.
+ */
+function readV2Branches() {
+  const source = readFileSync(INDEX_HTML_PATH, "utf8");
+  const marker = "if (IS_MULTI_TEACHER_V2_ENABLED) {";
+  const branches = [];
+
+  let from = 0;
+  for (;;) {
+    const start = source.indexOf(marker, from);
+    if (start === -1) break;
+    let depth = 0;
+    let i = start + marker.length - 1;
+    for (; i < source.length; i++) {
+      if (source[i] === "{") depth++;
+      else if (source[i] === "}") {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    branches.push(source.slice(start, i + 1));
+    from = i + 1;
+  }
+
+  return { source, branches };
 }
 
 describe("TenantClient Orchestration and Production Isolation Contracts", () => {
@@ -212,6 +251,153 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.equal(session.classroomId, null);
   });
 
+  test("V2 operation orchestrators fail closed on a rejected callable instead of letting the rejection escape", async () => {
+    // The V2 call sites in index.html set studentPinResetPending /
+    // bulkOperationPending / studentAuthLogsLoading and a progress message
+    // BEFORE awaiting. If an orchestrator let a rejection escape, those flags
+    // would stay set forever, the progress message would stay on screen, and
+    // no render would run. Every orchestrator must therefore resolve to a
+    // structured failure so the caller's failure branch is actually reachable.
+    const rejectingCallable = async () => {
+      const err = new Error("Firestore rejected the request");
+      err.code = "functions/permission-denied";
+      throw err;
+    };
+
+    const storage = createMockStorage();
+
+    const cases = [
+      ["orchestrateAuthLogsFetch", (s) => orchestrateAuthLogsFetch(s, rejectingCallable, () => {
+        throw new Error("apply callback MUST NOT run for a failed fetch");
+      }), "auth-logs-fetch-failed"],
+      ["orchestrateStudentPinReset", (s) => orchestrateStudentPinReset(s, rejectingCallable, { studentId: "s1", newPin: "1234" }), "pin-reset-failed"],
+      ["orchestrateBulkOperation", (s) => orchestrateBulkOperation(s, rejectingCallable, { checkboxes: [] }), "bulk-operation-failed"],
+      ["orchestrateClassroomDataSave", (s) => orchestrateClassroomDataSave(s, rejectingCallable, { students: [] }, { storageAdapter: storage, projectId: PROJECT_ID }), "save-failed"]
+    ];
+
+    for (const [label, invoke, expectedReason] of cases) {
+      const session = new TenantSession();
+      session.transitionTo(SESSION_STATES.AUTHENTICATING);
+      session.transitionTo(SESSION_STATES.RESOLVING);
+      session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_1", role: "teacher", classroomId: "room_1" });
+      session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+      session.transitionTo(SESSION_STATES.READY);
+
+      const epochBefore = session.getEpoch();
+      let res;
+      try {
+        res = await invoke(session);
+      } catch (err) {
+        assert.fail(`${label} MUST NOT let the rejection escape to the caller (threw ${err.code || err.message})`);
+      }
+
+      assert.equal(res.executed, false, `${label} must report a failure`);
+      assert.equal(res.reason, expectedReason, `${label} must report its specific failure reason`);
+      // Only allowlisted generic text ever reaches the browser.
+      assert.equal(res.error, "This account is not eligible to complete this action.");
+      // A failed operation is not an invalidation: the tenant stays resolved so
+      // the teacher can retry, and the epoch does not drift.
+      assert.equal(session.getEpoch(), epochBefore, `${label} must not change the epoch on failure`);
+      assert.equal(session.getState(), SESSION_STATES.READY);
+    }
+
+    // A rejected server save must never seed the tenant cache.
+    assert.equal(storage.store.size, 0, "A failed save MUST NOT write the tenant cache envelope");
+  });
+
+  test("a rejected V2 operation that lands after invalidation is reported as stale, not as a live failure", async () => {
+    const session = new TenantSession();
+    session.transitionTo(SESSION_STATES.AUTHENTICATING);
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_a", role: "teacher", classroomId: "room_a" });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
+
+    let rejectPending;
+    const pending = new Promise((_resolve, reject) => { rejectPending = reject; });
+
+    const resetPromise = orchestrateStudentPinReset(session, () => pending, { studentId: "s1", newPin: "1234" });
+
+    // Tenant switches while the PIN reset is in flight, then the old call fails.
+    session.invalidate("switch-to-b", { uid: "teacher_b", role: "teacher", state: SESSION_STATES.RESOLVING });
+    const err = new Error("late failure");
+    err.code = "functions/unavailable";
+    rejectPending(err);
+
+    const res = await resetPromise;
+    assert.equal(res.executed, false);
+    assert.equal(
+      res.reason,
+      "stale-epoch-ignored-post-reset",
+      "A rejection that lands after invalidation must be reported as stale so the new tenant's UI is never repainted with the old tenant's error"
+    );
+    assert.equal(res.error, undefined, "A stale rejection must not surface an error message to the new tenant");
+  });
+
+  test("integrity and permission failures never fall back to the tenant cache", async () => {
+    const storage = createMockStorage();
+
+    function readySessionWithCache() {
+      const session = new TenantSession({
+        storageAdapter: storage,
+        cacheModule: { purgeTenantCache, purgeLegacyCache, buildCacheKey },
+        projectId: PROJECT_ID
+      });
+      session.transitionTo(SESSION_STATES.AUTHENTICATING);
+      session.transitionTo(SESSION_STATES.RESOLVING);
+      session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_1", role: "teacher", classroomId: "room_1" });
+      session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+      session.transitionTo(SESSION_STATES.READY);
+      writeTeacherCache(storage, session, PROJECT_ID, { secret: "teacher-1-roster" }, session.captureIdentity());
+      session.transitionTo(SESSION_STATES.RESOLVING);
+      session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_1", role: "teacher", classroomId: "room_1" });
+      return session;
+    }
+
+    // Non-transient codes: an authoritative denial or integrity finding, never
+    // a network blip. A cache read here would render data the server just
+    // refused to authorize.
+    for (const code of ["permission-denied", "unauthenticated", "failed-precondition", "invalid-argument", "already-exists"]) {
+      const session = readySessionWithCache();
+      const cacheKey = buildCacheKey(PROJECT_ID, "teacher_1", "room_1");
+      assert.notEqual(storage.getItem(cacheKey), null, "Precondition: a matching cache entry exists");
+
+      const res = await loadClassroomDataWithCacheFallback(session, {
+        loadNetworkFn: async () => {
+          const err = new Error("denied");
+          err.code = `functions/${code}`;
+          throw err;
+        },
+        storageAdapter: storage,
+        projectId: PROJECT_ID
+      });
+
+      assert.equal(res.executed, false, `${code} MUST NOT be served from cache`);
+      assert.equal(res.reason, "non-transient-network-failure", `${code} must be treated as authoritative, not transient`);
+      assert.equal(res.data, undefined, `${code} MUST NOT return any cached data`);
+      assert.equal(session.getState(), SESSION_STATES.DENIED_OR_INCONSISTENT);
+      // Invalidation purges the cache, so the entry is gone afterwards.
+      assert.equal(storage.getItem(cacheKey), null, `${code} must purge, never serve, the tenant cache`);
+    }
+
+    // Control: a genuinely transient failure IS allowed to serve the matching
+    // cache, proving the assertions above detect the classification rather than
+    // a permanently disabled fallback.
+    const transientSession = readySessionWithCache();
+    const transientRes = await loadClassroomDataWithCacheFallback(transientSession, {
+      loadNetworkFn: async () => {
+        const err = new Error("offline");
+        err.code = "functions/unavailable";
+        throw err;
+      },
+      storageAdapter: storage,
+      projectId: PROJECT_ID
+    });
+    assert.equal(transientRes.executed, true);
+    assert.equal(transientRes.isOffline, true);
+    assert.deepEqual(transientRes.data, { secret: "teacher-1-roster" });
+  });
+
   test("3. USE THE REAL V2 PIN CALLABLE CONTRACT: resetStudentPinV2 called with exact payload { studentId, newPin } and no classroomId", async () => {
     const session = new TenantSession();
     session.transitionTo(SESSION_STATES.AUTHENTICATING);
@@ -358,11 +544,11 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.equal(session.getState(), SESSION_STATES.READY);
   });
 
-  test("7. INVALIDATE BEFORE TOKEN LOOKUP: slow A token then fast B, slow A resolution then fast B, slow A load then fast B, sign-out during each stage", async () => {
+  test("7. slow A resolution then fast B, slow A load then fast B, sign-out during resolution, sign-out during classroom load (token-stage race covered separately)", async () => {
     const storage = createMockStorage();
     const session = new TenantSession();
 
-    let renderedStates = [];
+    const renderedStates = [];
     session.onStateChange = (st) => renderedStates.push(st);
 
     // Case 1: Slow A resolution then fast B
@@ -473,6 +659,182 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     const resLoadA4 = await loadA4Promise;
     assert.equal(resLoadA4.reason, "stale-epoch-ignored");
     assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT);
+
+    // The lifecycle states must actually have been pushed to the render
+    // callback during the awaits above, not merely reached internally: this is
+    // what makes a blocking screen appear instead of leaving the previous
+    // tenant's DOM visible. (That the DOM itself repaints is Item 10.)
+    for (const expected of [
+      SESSION_STATES.AUTHENTICATING,
+      SESSION_STATES.RESOLVING,
+      SESSION_STATES.ACTIVE,
+      SESSION_STATES.CLASSROOM_LOADING,
+      SESSION_STATES.READY,
+      SESSION_STATES.SIGNED_OUT
+    ]) {
+      assert.equal(
+        renderedStates.includes(expected),
+        true,
+        `Render callback must be invoked for the ${expected} lifecycle state`
+      );
+    }
+    assert.equal(
+      renderedStates.indexOf(SESSION_STATES.RESOLVING) < renderedStates.indexOf(SESSION_STATES.READY),
+      true,
+      "A blocking resolving render must precede the ready render"
+    );
+  });
+
+  test("7b. TOKEN-STAGE RACE: the previous tenant is invalidated, purged, reset, and blocked BEFORE the new ID token is awaited", async () => {
+    // This mirrors the exact ordering the production auth observer uses in
+    // index.html: invalidate synchronously on the auth event, and only then
+    // await getIdTokenResult(). Real-browser execution of this sequence is
+    // Item 10; what is proven here is that the ordering leaves no window in
+    // which the previous tenant remains trusted while a slow token resolves.
+    const storage = createMockStorage();
+    const renderedStates = [];
+    let globalsResetCount = 0;
+
+    const session = new TenantSession({
+      storageAdapter: storage,
+      cacheModule: { purgeTenantCache, purgeLegacyCache, buildCacheKey },
+      projectId: PROJECT_ID,
+      onResetGlobals: () => { globalsResetCount++; },
+      onStateChange: (st) => renderedStates.push(st)
+    });
+
+    // Teacher A is fully READY with a populated tenant cache.
+    session.transitionTo(SESSION_STATES.AUTHENTICATING);
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_a", role: "teacher", classroomId: "room_a" });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
+    writeTeacherCache(storage, session, PROJECT_ID, { roster: "A" }, session.captureIdentity());
+    storage.setItem("mrMorganClassCashDataV5", JSON.stringify({ legacy: true }));
+
+    const keyA = buildCacheKey(PROJECT_ID, "teacher_a", "room_a");
+    assert.notEqual(storage.getItem(keyA), null, "Precondition: teacher A cache exists");
+    const epochA = session.getEpoch();
+    const resetsBefore = globalsResetCount;
+    renderedStates.length = 0;
+
+    // --- Production observer step 1: synchronous invalidation on the auth event.
+    let resolveToken;
+    const slowTokenB = new Promise((r) => { resolveToken = r; });
+    session.invalidate("auth-observer-change", { uid: "teacher_b", state: SESSION_STATES.AUTHENTICATING });
+
+    // --- Production observer step 2: await the new user's ID token.
+    const tokenPromise = slowTokenB;
+
+    // Everything below is asserted while the token is STILL PENDING.
+    assert.equal(session.getEpoch(), epochA + 1, "Epoch must increment before the token is awaited");
+    assert.equal(session.classroomId, null, "Previous tenant classroom must be dropped before the token is awaited");
+    assert.equal(session.role, null, "Previous tenant role must be dropped before the token is awaited");
+    assert.equal(session.getState(), SESSION_STATES.AUTHENTICATING, "A blocking authenticating state must be entered before the token is awaited");
+    assert.deepEqual(renderedStates, [SESSION_STATES.AUTHENTICATING], "The blocking state must be rendered before the token is awaited");
+    assert.equal(globalsResetCount, resetsBefore + 1, "Globals must be reset before the token is awaited");
+    assert.equal(storage.getItem(keyA), null, "Teacher A cache must be purged before the token is awaited");
+    assert.equal(storage.getItem("mrMorganClassCashDataV5"), null, "Legacy cache must be purged before the token is awaited");
+
+    // A load captured under teacher A can no longer apply.
+    assert.equal(session.validateCapturedIdentity({ uid: "teacher_a", role: "teacher", classroomId: "room_a", epoch: epochA }), false);
+
+    // --- Token finally arrives; teacher B resolves normally.
+    resolveToken({ claims: { role: "teacher" } });
+    const tokenResult = await tokenPromise;
+
+    const res = await handleAuthTransition(session, { uid: "teacher_b" }, tokenResult, {
+      callAdapter: async () => ({ data: { state: "active", teacher: { uid: "teacher_b" }, classroom: { id: "room_b" } } }),
+      loadNetworkFn: async () => ({ roster: "B" }),
+      storageAdapter: storage,
+      projectId: PROJECT_ID
+    });
+
+    assert.equal(res.executed, true);
+    assert.equal(session.uid, "teacher_b");
+    assert.equal(session.classroomId, "room_b");
+    assert.equal(session.getState(), SESSION_STATES.READY);
+    assert.deepEqual(res.data, { roster: "B" });
+    // Only teacher B's scoped envelope exists; nothing of A survived.
+    assert.deepEqual(Array.from(storage.store.keys()), [buildCacheKey(PROJECT_ID, "teacher_b", "room_b")]);
+  });
+
+  test("7c. TOKEN-STAGE RACE: sign-out during the token lookup leaves the session signed out and the late token inert", async () => {
+    const storage = createMockStorage();
+    const session = new TenantSession({
+      storageAdapter: storage,
+      cacheModule: { purgeTenantCache, purgeLegacyCache, buildCacheKey },
+      projectId: PROJECT_ID
+    });
+
+    session.transitionTo(SESSION_STATES.AUTHENTICATING);
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_a", role: "teacher", classroomId: "room_a" });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
+    writeTeacherCache(storage, session, PROJECT_ID, { roster: "A" }, session.captureIdentity());
+
+    // Observer fires for teacher A again and invalidates, then the token stalls.
+    let resolveToken;
+    const slowToken = new Promise((r) => { resolveToken = r; });
+    session.invalidate("auth-observer-change", { uid: "teacher_a", state: SESSION_STATES.AUTHENTICATING });
+
+    // The user signs out while the token is still in flight.
+    await session.signOut();
+    assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT);
+    const epochAfterSignOut = session.getEpoch();
+
+    // The token now arrives late. Continuing the transition must not resurrect
+    // teacher A: resolution is never even attempted for a signed-out session.
+    resolveToken({ claims: { role: "teacher" } });
+    const lateToken = await slowToken;
+
+    let resolveAttempts = 0;
+    const res = await handleAuthTransition(session, null, lateToken, {
+      callAdapter: async () => { resolveAttempts++; return {}; },
+      loadNetworkFn: async () => ({ roster: "A" }),
+      storageAdapter: storage,
+      projectId: PROJECT_ID
+    });
+
+    assert.equal(res.state, SESSION_STATES.SIGNED_OUT);
+    assert.equal(resolveAttempts, 0, "A signed-out session must not issue a tenant resolution");
+    assert.equal(session.uid, null);
+    assert.equal(session.classroomId, null);
+    assert.equal(session.getEpoch() >= epochAfterSignOut, true);
+    assert.equal(storage.store.size, 0, "No tenant cache may survive sign-out during the token lookup");
+  });
+
+  test("a stale student load is inert: it applies no data, sets no identity, and writes no storage", async () => {
+    const storage = createMockStorage();
+    const session = new TenantSession();
+
+    let resolveStudentLoad;
+    const pendingStudentLoad = new Promise((r) => { resolveStudentLoad = r; });
+
+    const studentClaims = { claims: { role: "student", classroomId: "room_s", studentId: "student_9" } };
+    const transitionPromise = handleAuthTransition(session, { uid: "student_uid_9" }, studentClaims, {
+      callAdapter: async () => {},
+      loadNetworkFn: async () => {},
+      loadStudentNetworkFn: () => pendingStudentLoad,
+      storageAdapter: storage,
+      projectId: PROJECT_ID
+    });
+
+    // The student signs out while their profile load is in flight.
+    await session.signOut();
+
+    resolveStudentLoad({ studentProfile: { name: "Should never be applied" } });
+    const res = await transitionPromise;
+
+    assert.equal(res.executed, false);
+    assert.equal(res.reason, "stale-epoch-ignored");
+    assert.equal(res.data, undefined, "A stale student load MUST NOT return profile data");
+    assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT);
+    assert.equal(session.uid, null);
+    assert.equal(session.role, null);
+    assert.equal(session.classroomId, null);
+    assert.equal(storage.store.size, 0, "A student session MUST NOT touch localStorage, stale or live");
   });
 
   test("8. HANDLE RESOLVED CLASSROOM CHANGES AS INVALIDATION: same-UID classroom-A to classroom-B transition increments epoch, purges cache, resets globals, and broadcasts invalidation", async () => {
@@ -571,6 +933,177 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.equal(session.role, "student");
     assert.equal(session.classroomId, "room_student");
     assert.equal(storage.store.size, 0, "Student session MUST remain memory-only and write no localStorage");
+  });
+
+  // SOURCE GUARD, NOT BEHAVIOURAL PROOF.
+  //
+  // The tests above exercise the orchestrators directly with mocks. They cannot
+  // show that index.html actually calls them with the right callable names,
+  // Firestore paths and payloads, because index.html is a single inline module
+  // that cannot be imported here. Executing the real page against the emulators
+  // is Item 10.
+  //
+  // What these two tests do give is a regression barrier on the V2 branches of
+  // the real production file: if a V2 branch regains a legacy callable, the
+  // legacy data path, the legacy storage key, a hardcoded classroom, or a
+  // classroomId in the V2 PIN payload, they fail. That is a real check on
+  // production source, and it is deliberately described as no more than that.
+  test("SOURCE GUARD: every V2 branch in index.html uses the V2 callables and scoped paths, and none reaches a legacy V2-forbidden path", () => {
+    const { branches } = readV2Branches();
+    assert.equal(branches.length > 0, true, "Expected V2 branches in index.html");
+
+    const v2Source = branches.join("\n/* --- next V2 branch --- */\n");
+
+    // index.html names the PIN callable directly in its V2 branches; the
+    // resolution and onboarding callables are named inside tenantClient.js and
+    // invoked through the callAdapter, so they are asserted at their real site.
+    assert.equal(
+      branches.filter(b => b.includes('httpsCallable(functions, "resetStudentPinV2")')).length,
+      3,
+      "All three V2 PIN sites (profile reset, single activation, bulk activation) must call resetStudentPinV2"
+    );
+
+    const tenantClientSource = readFileSync(
+      fileURLToPath(new URL("./tenantClient.js", import.meta.url)),
+      "utf8"
+    );
+    for (const callable of ["resolveTeacherTenantV2", "onboardTeacherClassroomV2"]) {
+      assert.match(
+        tenantClientSource,
+        new RegExp(`callableAdapter\\(\\s*"${callable}"`),
+        `The V2 orchestrator must invoke the ${callable} callable by name`
+      );
+    }
+    assert.equal(
+      /callableAdapter\(\s*"(resolveTeacherTenant|onboardTeacherClassroom|ensureTeacherClassroom)"/.test(tenantClientSource),
+      false,
+      "V2 orchestrators must never invoke the unversioned legacy callables"
+    );
+
+    // The scoped auth-log path, never the flat legacy collection.
+    assert.match(
+      v2Source,
+      /collection\(\s*db\s*,\s*"studentAuthLogs"\s*,\s*classroomId\s*,\s*"logs"\s*\)/,
+      "V2 auth logs must read studentAuthLogs/{classroomId}/logs"
+    );
+    assert.equal(
+      /collection\(\s*db\s*,\s*"studentAuthLogs"\s*\)/.test(v2Source),
+      false,
+      "V2 branches must never read the flat legacy studentAuthLogs collection"
+    );
+
+    // V2-forbidden legacy access must not appear in any V2 branch.
+    const forbidden = [
+      [/\bloadData\(\)/, "V2 must never call the legacy loadData()"],
+      [/"morganBank"\s*,\s*"classroomData"/, "V2 must never read or write the fixed morganBank/classroomData document"],
+      [/mrMorganClassCashDataV5/, "V2 must never read, write, or migrate the legacy cache key"],
+      [/localStorage\.setItem\(\s*STORAGE_KEY/, "V2 must never write the unscoped legacy storage key"],
+      [/morganBank:saveData/, "V2 must never write an unscoped classroom-data storage key"],
+      [/"morgan"/, "V2 must never fall back to the hardcoded legacy classroom identity"],
+      [/"student-room"/, "V2 must never fabricate a placeholder student classroom identity"],
+      [/httpsCallable\(\s*functions\s*,\s*"resetStudentPin"\s*\)/, "V2 must never call the legacy resetStudentPin callable"],
+      [/httpsCallable\(\s*functions\s*,\s*"studentPinLogin"\s*\)/, "V2 must never call the legacy studentPinLogin callable"]
+    ];
+
+    for (const [pattern, why] of forbidden) {
+      const offending = branches.findIndex(b => pattern.test(b));
+      assert.equal(offending, -1, `${why} (found in V2 branch #${offending + 1})`);
+    }
+
+    // viewStudentProfile gates on ternaries rather than an `if` block, so it is
+    // not one of the extracted branches and is asserted explicitly here. It
+    // must fail closed on an unresolved classroom instead of defaulting to the
+    // hardcoded legacy classroom.
+    const { source } = readV2Branches();
+    const profileFn = source.slice(
+      source.indexOf("async function viewStudentProfile"),
+      source.indexOf("async function resetProfileStudentPin")
+    );
+    assert.equal(profileFn.length > 0, true, "Expected to locate viewStudentProfile in index.html");
+    assert.match(
+      profileFn,
+      /if \(IS_MULTI_TEACHER_V2_ENABLED && !v2TenantSession\.classroomId\)/,
+      "viewStudentProfile must fail closed when the V2 classroom is unresolved"
+    );
+    assert.equal(
+      /IS_MULTI_TEACHER_V2_ENABLED \?\s*\(?v2TenantSession\.classroomId \|\| "morgan"\)?/.test(profileFn),
+      false,
+      'viewStudentProfile must never default the V2 classroom to "morgan"'
+    );
+    assert.match(
+      profileFn,
+      /const classroomId = IS_MULTI_TEACHER_V2_ENABLED \? v2TenantSession\.classroomId : "morgan";/,
+      "viewStudentProfile must take its V2 classroom only from the resolved session"
+    );
+
+    // The V2 PIN payload is exactly { studentId, newPin }: resetStudentPinV2
+    // rejects any additional key server-side, so a classroomId here would make
+    // every V2 PIN reset fail with invalid-argument.
+    const pinPayloads = v2Source.match(/const payload = \{[\s\S]*?\};/g) || [];
+    assert.equal(pinPayloads.length >= 2, true, "Expected the profile and activation V2 PIN payloads");
+    for (const payload of pinPayloads) {
+      assert.equal(/\bclassroomId\b/.test(payload), false, "V2 PIN payload must not contain classroomId");
+      assert.match(payload, /studentId:/);
+      assert.match(payload, /newPin/);
+    }
+  });
+
+  test("SOURCE GUARD: the V2 gate defaults to off and legacy default-off behaviour is preserved", () => {
+    const { source, branches } = readV2Branches();
+
+    // The gate is opt-in via an explicit `=== true` check on a window flag.
+    assert.match(
+      source,
+      /const IS_MULTI_TEACHER_V2_ENABLED = typeof window !== "undefined" && window\.MULTI_TEACHER_V2_ENABLED === true;/,
+      "V2 must activate only on an explicit window.MULTI_TEACHER_V2_ENABLED === true"
+    );
+    // Assignment, not the `===` comparison above: index.html must read the gate
+    // and never turn it on for itself.
+    assert.equal(
+      /window\.MULTI_TEACHER_V2_ENABLED\s*=(?!=)/.test(source),
+      false,
+      "index.html must never set the V2 gate itself"
+    );
+
+    // The legacy paths still exist outside the V2 branches.
+    const legacyOnly = branches.reduce((acc, b) => acc.replace(b, ""), source);
+    for (const [pattern, why] of [
+      [/async function loadData\(\)/, "legacy loadData() must remain"],
+      [/"morganBank"\s*,\s*"classroomData"/, "legacy morganBank/classroomData path must remain"],
+      [/localStorage\.setItem\(\s*STORAGE_KEY/, "legacy localStorage save must remain"],
+      [/httpsCallable\(\s*functions\s*,\s*"resetStudentPin"\s*\)/, "legacy resetStudentPin callable must remain"],
+      [/const TEACHER_UID = /, "legacy hardcoded teacher UID must remain"]
+    ]) {
+      assert.match(legacyOnly, pattern, why);
+    }
+
+    // Each V2 branch that shadows a legacy alternative must return, otherwise
+    // execution falls through and runs the legacy path as well — which would
+    // reinstate exactly the unscoped writes and legacy callables Item 9 forbids.
+    const branchesShadowingLegacy = [
+      ["V2_TENANT_DATA_SAVE_ADAPTER", "saveData"],
+      ["studentAuthLogs", "openStudentAuthLogs"],
+      ["orchestrateProductionLogout", "logout"],
+      ["orchestrateBulkOperation", "bulkActivateStudents"],
+      ["handleAuthTransition", "the auth observer"]
+    ];
+
+    for (const [needle, where] of branchesShadowingLegacy) {
+      const branch = branches.find(b => b.includes(needle));
+      assert.notEqual(branch, undefined, `Expected a V2 branch in ${where}`);
+      assert.match(
+        branch,
+        /\breturn\b/,
+        `The V2 branch in ${where} must return rather than fall through into the legacy path`
+      );
+    }
+
+    // Both V2 PIN branches (profile reset and single activation) also return.
+    const pinBranches = branches.filter(b => b.includes("orchestrateStudentPinReset"));
+    assert.equal(pinBranches.length, 2, "Expected the profile-reset and activation V2 PIN branches");
+    for (const branch of pinBranches) {
+      assert.match(branch, /\breturn;/, "Each V2 PIN branch must return rather than fall through");
+    }
   });
 
   test("11. REQUIRE COMPLETE EMULATOR CONFIGURATION: missing ports, zero ports, non-demo IDs, non-loopback hosts throw before observer installation", () => {
