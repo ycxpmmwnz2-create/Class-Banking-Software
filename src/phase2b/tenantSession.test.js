@@ -230,29 +230,90 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     assert.equal(globalState.teacherTransactionFilter, "all");
   });
 
-  test("resetGlobalApplicationState handles getter/setter proxy object like windowAppGlobals without throwing", () => {
-    let internalTarget = "selected";
-    let internalClassroom = { id: "room1" };
-    let internalBulkPending = true;
+  test("resetGlobalApplicationState correctly resets complete windowAppGlobals getter/setter proxy adapter backing all 20 application variables", () => {
+    let data = { students: [{ id: 1, name: "Student 1" }] };
+    let screen = "roster";
+    let loginTab = "student";
+    let showTeacherPasswordLogin = true;
+    let isTeacher = true;
+    let loggedInStudentId = "s1";
+    let teacherProfileStudentId = "s1";
+    let message = "Active";
+    let studentLoginIdDraft = "draft";
+    let studentLoginPending = true;
+    let studentAuthLogs = [{ id: 1 }];
+    let studentAuthLogsLoading = true;
+    let studentAuthLogsError = "Err";
+    let studentPinResetPending = true;
+    let bulkOperationPending = true;
+    let messageTimeout = 123;
+    let resolvedClassroom = { id: "room1" };
+    let resolvedTeacher = { uid: "t1" };
+    let transactionTarget = "s1";
+    let teacherTransactionFilter = "debit";
 
-    const mockWindowGlobals = {
-      get transactionTarget() { return internalTarget; },
-      set transactionTarget(val) { internalTarget = val; },
-      get resolvedClassroom() { return internalClassroom; },
-      set resolvedClassroom(val) { internalClassroom = val; },
-      get bulkOperationPending() { return internalBulkPending; },
-      set bulkOperationPending(val) { internalBulkPending = val; },
-      data: null,
-      screen: "teacher",
-      loginTab: "student",
-      isTeacher: true
+    const windowAppGlobals = {
+      get data() { return data; }, set data(val) { data = val; },
+      get screen() { return screen; }, set screen(val) { screen = val; },
+      get loginTab() { return loginTab; }, set loginTab(val) { loginTab = val; },
+      get showTeacherPasswordLogin() { return showTeacherPasswordLogin; }, set showTeacherPasswordLogin(val) { showTeacherPasswordLogin = val; },
+      get isTeacher() { return isTeacher; }, set isTeacher(val) { isTeacher = val; },
+      get loggedInStudentId() { return loggedInStudentId; }, set loggedInStudentId(val) { loggedInStudentId = val; },
+      get teacherProfileStudentId() { return teacherProfileStudentId; }, set teacherProfileStudentId(val) { teacherProfileStudentId = val; },
+      get message() { return message; }, set message(val) { message = val; },
+      get studentLoginIdDraft() { return studentLoginIdDraft; }, set studentLoginIdDraft(val) { studentLoginIdDraft = val; },
+      get studentLoginPending() { return studentLoginPending; }, set studentLoginPending(val) { studentLoginPending = val; },
+      get studentAuthLogs() { return studentAuthLogs; }, set studentAuthLogs(val) { studentAuthLogs = val; },
+      get studentAuthLogsLoading() { return studentAuthLogsLoading; }, set studentAuthLogsLoading(val) { studentAuthLogsLoading = val; },
+      get studentAuthLogsError() { return studentAuthLogsError; }, set studentAuthLogsError(val) { studentAuthLogsError = val; },
+      get studentPinResetPending() { return studentPinResetPending; }, set studentPinResetPending(val) { studentPinResetPending = val; },
+      get bulkOperationPending() { return bulkOperationPending; }, set bulkOperationPending(val) { bulkOperationPending = val; },
+      get messageTimeout() { return messageTimeout; }, set messageTimeout(val) { messageTimeout = val; },
+      get resolvedClassroom() { return resolvedClassroom; }, set resolvedClassroom(val) { resolvedClassroom = val; },
+      get resolvedTeacher() { return resolvedTeacher; }, set resolvedTeacher(val) { resolvedTeacher = val; },
+      get transactionTarget() { return transactionTarget; }, set transactionTarget(val) { transactionTarget = val; },
+      get teacherTransactionFilter() { return teacherTransactionFilter; }, set teacherTransactionFilter(val) { teacherTransactionFilter = val; }
     };
 
-    resetGlobalApplicationState(mockWindowGlobals, () => createDefaultGlobalState().data);
+    resetGlobalApplicationState(windowAppGlobals, () => createDefaultGlobalState().data);
 
-    assert.equal(internalTarget, "selected");
-    assert.equal(internalClassroom, null);
-    assert.equal(internalBulkPending, false);
+    assert.equal(screen, "login");
+    assert.equal(loginTab, "teacher");
+    assert.equal(showTeacherPasswordLogin, false);
+    assert.equal(isTeacher, false);
+    assert.equal(loggedInStudentId, null);
+    assert.equal(teacherProfileStudentId, null);
+    assert.equal(message, "");
+    assert.equal(studentLoginIdDraft, "");
+    assert.equal(studentLoginPending, false);
+    assert.deepEqual(studentAuthLogs, []);
+    assert.equal(studentAuthLogsLoading, false);
+    assert.equal(studentAuthLogsError, "");
+    assert.equal(studentPinResetPending, false);
+    assert.equal(bulkOperationPending, false);
+    assert.equal(messageTimeout, null);
+    assert.equal(resolvedClassroom, null);
+    assert.equal(resolvedTeacher, null);
+    assert.equal(transactionTarget, "selected");
+    assert.equal(teacherTransactionFilter, "all");
+    assert.deepEqual(data, createDefaultGlobalState().data);
+  });
+
+  test("onStateChange callback is fired synchronously on transitionTo and invalidate", () => {
+    const statesFired = [];
+    const session = new TenantSession({
+      onStateChange: (st) => statesFired.push(st)
+    });
+
+    session.transitionTo(SESSION_STATES.AUTHENTICATING);
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    session.invalidate("test-invalidation");
+
+    assert.deepEqual(statesFired, [
+      SESSION_STATES.AUTHENTICATING,
+      SESSION_STATES.RESOLVING,
+      SESSION_STATES.SIGNED_OUT
+    ]);
   });
 
   test("requireTeacher enforces strict ready state, current auth UID, teacher role, and classroomId", () => {

@@ -34,18 +34,18 @@ export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
     throw new Error("Emulator connection requires an explicit demo- project ID.");
   }
 
-  const host = config.host || "127.0.0.1";
+  const host = config.host || "";
   if (host !== "127.0.0.1" && host !== "localhost") {
     throw new Error("Emulator connection must use loopback host.");
   }
 
-  if (config.authPort !== undefined && !isPortValid(config.authPort)) {
+  if (!isPortValid(config.authPort)) {
     throw new Error(`Invalid Auth emulator port: ${config.authPort}`);
   }
-  if (config.firestorePort !== undefined && !isPortValid(config.firestorePort)) {
+  if (!isPortValid(config.firestorePort)) {
     throw new Error(`Invalid Firestore emulator port: ${config.firestorePort}`);
   }
-  if (config.functionsPort !== undefined && !isPortValid(config.functionsPort)) {
+  if (!isPortValid(config.functionsPort)) {
     throw new Error(`Invalid Functions emulator port: ${config.functionsPort}`);
   }
 
@@ -70,15 +70,9 @@ export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
     functions = getFunctions(app);
   }
 
-  if (config.authPort) {
-    connectAuthEmulator(auth, `http://${host}:${config.authPort}`, { disableWarnings: true });
-  }
-  if (config.firestorePort) {
-    connectFirestoreEmulator(db, host, config.firestorePort);
-  }
-  if (config.functionsPort) {
-    connectFunctionsEmulator(functions, host, config.functionsPort);
-  }
+  connectAuthEmulator(auth, `http://${host}:${config.authPort}`, { disableWarnings: true });
+  connectFirestoreEmulator(db, host, config.firestorePort);
+  connectFunctionsEmulator(functions, host, config.functionsPort);
 
   isEmulatorConnected = true;
   connectedEmulatorConfig = {

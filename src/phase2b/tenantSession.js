@@ -132,6 +132,7 @@ export class TenantSession {
     this.storageAdapter = options.storageAdapter || (typeof localStorage !== "undefined" ? localStorage : null);
     this.cacheModule = options.cacheModule || null;
     this.onResetGlobals = options.onResetGlobals || null;
+    this.onStateChange = options.onStateChange || null;
     this.authAdapter = options.authAdapter || null;
     this.multiTabInvalidator = options.multiTabInvalidator || null;
     this.projectId = options.projectId || "morgan-bank";
@@ -268,6 +269,14 @@ export class TenantSession {
     if (context.errorMessage !== undefined) this.errorMessage = context.errorMessage;
     if (context.correlationId !== undefined) this.correlationId = context.correlationId;
 
+    if (typeof this.onStateChange === "function") {
+      try {
+        this.onStateChange(this.state);
+      } catch (err) {
+        console.error("onStateChange callback failed:", err);
+      }
+    }
+
     return this.getState();
   }
 
@@ -318,6 +327,14 @@ export class TenantSession {
     this.correlationId = newIdentity.correlationId || null;
 
     this.state = newIdentity.state || SESSION_STATES.SIGNED_OUT;
+
+    if (typeof this.onStateChange === "function") {
+      try {
+        this.onStateChange(this.state);
+      } catch (err) {
+        console.error("onStateChange callback failed:", err);
+      }
+    }
 
     const shouldBroadcast =
       reason !== "multi-tab-invalidation" &&

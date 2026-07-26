@@ -43,14 +43,17 @@ function createMockStorage() {
       if (type === "storage") listeners.delete(listener);
     },
     clear: () => store.clear(),
-    store
+    store,
+    listeners
   };
 }
 
 function createMockChannel() {
   const listeners = new Set();
+  let closed = false;
   return {
     postMessage: (msg) => {
+      if (closed) return;
       for (const listener of listeners) {
         listener({ data: msg });
       }
@@ -61,7 +64,11 @@ function createMockChannel() {
     removeEventListener: (type, listener) => {
       if (type === "message") listeners.delete(listener);
     },
-    close: () => listeners.clear(),
+    close: () => {
+      closed = true;
+      listeners.clear();
+    },
+    isClosed: () => closed,
     listeners
   };
 }
@@ -81,7 +88,6 @@ describe("TenantCache Module Specifications", () => {
   };
 
   test("computeSha256Digest matches standard SHA-256 known-answer test vectors", () => {
-    // Known-answer SHA-256 for "abc"
     const digestAbc = computeSha256Digest("abc");
     assert.equal(
       digestAbc,
@@ -89,7 +95,6 @@ describe("TenantCache Module Specifications", () => {
       "Detects incorrect SHA-256 digest computation for 'abc'"
     );
 
-    // Known-answer SHA-256 for empty string
     const digestEmpty = computeSha256Digest("");
     assert.equal(digestEmpty, "");
   });
@@ -116,7 +121,6 @@ describe("TenantCache Module Specifications", () => {
     };
     assert.equal(validateBroadcastMessage(msgWithTabId), false, "Rejects extra tabId key in payload");
 
-    // Invalid digest length/format
     const invalidDigestMsg = {
       type: "session-invalidated",
       uidDigest: "sha256_invalid123",
@@ -198,7 +202,6 @@ describe("TenantCache Module Specifications", () => {
       projectId: PROJECT_ID
     });
 
-    // Setup Teacher A session and cache
     session.transitionTo(SESSION_STATES.AUTHENTICATING);
     session.transitionTo(SESSION_STATES.RESOLVING);
     session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_a", role: "teacher", classroomId: "room_a" });
@@ -212,12 +215,10 @@ describe("TenantCache Module Specifications", () => {
     assert.notEqual(storage.getItem(keyA), null);
     assert.notEqual(storage.getItem(LEGACY_STORAGE_KEY), null);
 
-    // Switch A -> B
     session.invalidate("switch-A-to-B", { uid: "teacher_b", role: "teacher", state: SESSION_STATES.RESOLVING });
     assert.equal(storage.getItem(keyA), null, "Teacher A V2 cache must be purged on switch to B");
     assert.equal(storage.getItem(LEGACY_STORAGE_KEY), null, "Legacy cache must be purged on switch to B");
 
-    // Setup Teacher B session and cache
     session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_b", role: "teacher", classroomId: "room_b" });
     session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
     session.transitionTo(SESSION_STATES.READY);
@@ -226,11 +227,9 @@ describe("TenantCache Module Specifications", () => {
     const keyB = buildCacheKey(PROJECT_ID, "teacher_b", "room_b");
     assert.notEqual(storage.getItem(keyB), null);
 
-    // Switch B -> A
     session.invalidate("switch-B-to-A", { uid: "teacher_a", role: "teacher", state: SESSION_STATES.RESOLVING });
     assert.equal(storage.getItem(keyB), null, "Teacher B V2 cache must be purged on switch back to A");
 
-    // Teacher -> Student role change
     session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_a", role: "teacher", classroomId: "room_a" });
     session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
     session.transitionTo(SESSION_STATES.READY);
@@ -239,7 +238,6 @@ describe("TenantCache Module Specifications", () => {
     session.invalidate("role-change-to-student", { uid: "student_1", role: "student", state: SESSION_STATES.AUTHENTICATING });
     assert.equal(storage.getItem(keyA), null, "V2 cache must be purged on role change to student");
 
-    // Sign out
     session.transitionTo(SESSION_STATES.RESOLVING);
     session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_a", role: "teacher", classroomId: "room_a" });
     session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
@@ -250,10 +248,9 @@ describe("TenantCache Module Specifications", () => {
     assert.equal(storage.getItem(keyA), null, "V2 cache must be purged on signOut");
   });
 
-  test("MultiTabInvalidator subscribes to separate adapters and receiver invalidates on sender broadcast", () => {
+  test("distinct sender/receiver BroadcastChannel test for multi-tab invalidation", () => {
     const channelSender = createMockChannel();
     const channelReceiver = createMockChannel();
-    // Simulate BroadcastChannel network link:
     channelSender.postMessage = (msg) => {
       for (const listener of channelReceiver.listeners) {
         listener({ data: msg });
@@ -272,7 +269,6 @@ describe("TenantCache Module Specifications", () => {
         receiverInvalidated = true;
       }
     });
-
     receiverInvalidator.start();
 
     const senderSession = new TenantSession();
@@ -285,7 +281,6 @@ describe("TenantCache Module Specifications", () => {
     });
     senderInvalidator.start();
 
-    // Sender publishes invalidation
     senderInvalidator.broadcastInvalidation("u1", 5);
 
     assert.equal(receiverSession.getState(), SESSION_STATES.SIGNED_OUT);
@@ -293,5 +288,90 @@ describe("TenantCache Module Specifications", () => {
 
     receiverInvalidator.destroy();
     senderInvalidator.destroy();
+  });
+
+  test("distinct sender-storage / receiver-window-storage-event test for multi-tab invalidation fallback", () => {
+    const storage = createMockStorage();
+    const mockWindow = {
+      listeners: new Set(),
+      addEventListener(type, listener) {
+        if (type === "storage") this.listeners.add(listener);
+      },
+      removeEventListener(type, listener) {
+        if (type === "storage") this.listeners.delete(listener);
+      }
+    };
+
+    const receiverSession = new TenantSession();
+    receiverSession.transitionTo(SESSION_STATES.AUTHENTICATING);
+    receiverSession.transitionTo(SESSION_STATES.RESOLVING);
+    receiverSession.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_stor", role: "teacher", classroomId: "c_stor" });
+
+    let receiverInvalidated = false;
+    const receiverInvalidator = new MultiTabInvalidator(receiverSession, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: mockWindow,
+      onInvalidated: () => { receiverInvalidated = true; }
+    });
+    receiverInvalidator.start();
+
+    const senderSession = new TenantSession();
+    senderSession.transitionTo(SESSION_STATES.AUTHENTICATING);
+    senderSession.transitionTo(SESSION_STATES.RESOLVING);
+    senderSession.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_stor", role: "teacher", classroomId: "c_stor" });
+
+    const senderInvalidator = new MultiTabInvalidator(senderSession, {
+      channelAdapter: null,
+      storageAdapter: storage
+    });
+    senderInvalidator.start();
+
+    // Attach storage event listener trigger to simulate multi-window storage event
+    storage.addEventListener("storage", (evt) => {
+      for (const listener of mockWindow.listeners) {
+        listener(evt);
+      }
+    });
+
+    senderInvalidator.broadcastInvalidation("teacher_stor", 2);
+
+    assert.equal(receiverSession.getState(), SESSION_STATES.SIGNED_OUT);
+    assert.equal(receiverInvalidated, true);
+
+    receiverInvalidator.destroy();
+    senderInvalidator.destroy();
+  });
+
+  test("MultiTabInvalidator teardown assertions verify destroy unregisters listeners and closes channel", () => {
+    const mockChannel = createMockChannel();
+    const mockStorage = createMockStorage();
+    const mockWindow = {
+      listeners: new Set(),
+      addEventListener(type, listener) {
+        if (type === "storage") this.listeners.add(listener);
+      },
+      removeEventListener(type, listener) {
+        if (type === "storage") this.listeners.delete(listener);
+      }
+    };
+
+    const session = new TenantSession();
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: mockChannel,
+      storageAdapter: mockStorage,
+      windowAdapter: mockWindow
+    });
+
+    invalidator.start();
+    assert.equal(invalidator.isSubscribed, true);
+    assert.equal(mockChannel.listeners.size, 1);
+    assert.equal(mockWindow.listeners.size, 1);
+
+    invalidator.destroy();
+    assert.equal(invalidator.isSubscribed, false);
+    assert.equal(mockChannel.isClosed(), true);
+    assert.equal(mockChannel.listeners.size, 0);
+    assert.equal(mockWindow.listeners.size, 0);
   });
 });

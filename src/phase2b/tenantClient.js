@@ -39,6 +39,14 @@ export function mapSafeClientError(error) {
   return "An unexpected internal error occurred.";
 }
 
+export async function orchestrateProductionLogout(session, authAdapter, onRender) {
+  if (!session) throw new Error("Tenant session is required for logout.");
+  if (typeof onRender === "function") {
+    session.onStateChange = onRender;
+  }
+  return session.signOut(authAdapter);
+}
+
 export async function orchestrateTeacherResolution(session, callableAdapter) {
   if (!session) throw new Error("Tenant session is required.");
   if (!callableAdapter || typeof callableAdapter !== "function") {
@@ -70,6 +78,15 @@ export async function orchestrateTeacherResolution(session, callableAdapter) {
           errorMessage: safeMessage
         });
         return { success: false, reason: "mismatched-server-uid" };
+      }
+
+      // If resolved classroom identity changes for the same UID/role, invalidate first
+      if (session.classroomId && session.classroomId !== res.classroom.id) {
+        session.invalidate("resolved-classroom-changed", {
+          uid: teacherUid,
+          role: "teacher",
+          state: SESSION_STATES.RESOLVING
+        });
       }
 
       session.transitionTo(SESSION_STATES.ACTIVE, {
@@ -244,40 +261,53 @@ export async function handleAuthTransition(session, user, tokenResult, { callAda
   }
 
   if (role === "student") {
-    session.transitionTo(SESSION_STATES.RESOLVING);
-    const captured = session.captureIdentity();
-    if (typeof loadStudentNetworkFn === "function") {
-      try {
-        const studentData = await loadStudentNetworkFn({ uid, claims: tokenResult?.claims });
-        if (!session.validateCapturedIdentity(captured)) {
-          return { executed: false, reason: "stale-epoch-ignored" };
-        }
-        const classroomId = tokenResult?.claims?.classroomId || "student-room";
-        session.transitionTo(SESSION_STATES.ACTIVE, { uid, role: "student", classroomId });
-        session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
-        session.transitionTo(SESSION_STATES.READY);
-        return { executed: true, data: studentData, role: "student" };
-      } catch (err) {
-        if (!session.validateCapturedIdentity(captured)) {
-          return { executed: false, reason: "stale-epoch-ignored" };
-        }
-        const safeMsg = mapSafeClientError(err);
-        session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMsg });
-        session.invalidate("student-load-failed", {
-          state: SESSION_STATES.DENIED_OR_INCONSISTENT,
-          errorMessage: safeMsg
-        });
-        return { success: false, reason: "student-load-failed", error: safeMsg };
-      }
+    const classroomId = typeof tokenResult?.claims?.classroomId === "string" ? tokenResult.claims.classroomId.trim() : "";
+    const studentId = typeof tokenResult?.claims?.studentId === "string" ? tokenResult.claims.studentId.trim() : "";
+
+    if (!classroomId || !studentId || !uid) {
+      const safeMsg = "Student identity or classroom claim is missing or invalid.";
+      session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMsg });
+      session.invalidate("student-claims-invalid", {
+        state: SESSION_STATES.DENIED_OR_INCONSISTENT,
+        errorMessage: safeMsg
+      });
+      return { success: false, reason: "student-claims-invalid", error: safeMsg };
     }
 
-    const safeMsg = "V2 student access is unavailable or unsupported.";
-    session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMsg });
-    session.invalidate("v2-student-unsupported", {
-      state: SESSION_STATES.DENIED_OR_INCONSISTENT,
-      errorMessage: safeMsg
-    });
-    return { success: false, reason: "student-access-unavailable" };
+    if (typeof loadStudentNetworkFn !== "function") {
+      const safeMsg = "V2 student access is unavailable or unsupported.";
+      session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMsg });
+      session.invalidate("v2-student-unsupported", {
+        state: SESSION_STATES.DENIED_OR_INCONSISTENT,
+        errorMessage: safeMsg
+      });
+      return { success: false, reason: "student-access-unavailable" };
+    }
+
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    const captured = session.captureIdentity();
+
+    try {
+      const studentData = await loadStudentNetworkFn({ uid, classroomId, studentId, claims: tokenResult?.claims });
+      if (!session.validateCapturedIdentity(captured)) {
+        return { executed: false, reason: "stale-epoch-ignored" };
+      }
+      session.transitionTo(SESSION_STATES.ACTIVE, { uid, role: "student", classroomId, studentId });
+      session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+      session.transitionTo(SESSION_STATES.READY);
+      return { executed: true, data: studentData, role: "student", classroomId, studentId };
+    } catch (err) {
+      if (!session.validateCapturedIdentity(captured)) {
+        return { executed: false, reason: "stale-epoch-ignored" };
+      }
+      const safeMsg = mapSafeClientError(err);
+      session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMsg });
+      session.invalidate("student-load-failed", {
+        state: SESSION_STATES.DENIED_OR_INCONSISTENT,
+        errorMessage: safeMsg
+      });
+      return { success: false, reason: "student-load-failed", error: safeMsg };
+    }
   }
 
   const resolutionRes = await orchestrateTeacherResolution(session, callAdapter);
@@ -301,18 +331,28 @@ export async function orchestrateClassroomDataLoad(session, loadFn, applyFn) {
   return { executed: true, data: loadedData };
 }
 
-export async function orchestrateClassroomDataSave(session, saveFn, data, storageSpy = null) {
+export async function orchestrateClassroomDataSave(session, saveAdapter, data, options = {}) {
+  if (!saveAdapter || typeof saveAdapter !== "function") {
+    return { executed: false, reason: "missing-v2-save-adapter" };
+  }
+
+  const storageAdapter = options?.storageAdapter || (options?.setItem ? options : null);
+  const projectId = options?.projectId || "morgan-bank";
+
   const captured = session.captureIdentity();
   if (!session.validateCapturedIdentity(captured)) {
     return { executed: false, reason: "stale-epoch-ignored" };
   }
-  const result = await saveFn(data);
+
+  const result = await saveAdapter(data, captured);
   if (!session.validateCapturedIdentity(captured)) {
     return { executed: false, reason: "stale-epoch-ignored-post-save" };
   }
-  if (storageSpy && typeof storageSpy.setItem === "function") {
-    storageSpy.setItem("morganBank:saveData", JSON.stringify(data));
+
+  if (storageAdapter) {
+    writeTeacherCache(storageAdapter, session, projectId, data, captured);
   }
+
   return { executed: true, result };
 }
 
@@ -345,7 +385,7 @@ export async function orchestrateBulkOperation(session, bulkFn, payload) {
   if (!session.validateCapturedIdentity(captured)) {
     return { executed: false, reason: "stale-epoch-ignored" };
   }
-  const result = await bulkFn(payload);
+  const result = await bulkFn(payload, captured);
   if (!session.validateCapturedIdentity(captured)) {
     return { executed: false, reason: "stale-epoch-ignored-post-bulk" };
   }
