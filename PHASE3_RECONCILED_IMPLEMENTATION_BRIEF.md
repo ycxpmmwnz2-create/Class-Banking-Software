@@ -275,11 +275,31 @@ discovery. Write mode requires the retained successful preflight manifest,
 exact project allowlist, reviewed release/change identifier, snapshot ID,
 write-freeze proof, credential provenance, and separate authorization.
 
+Commit 3's production preflight is read-only with respect to Firebase and
+Google services. Persisting its successful local manifest is required and does
+not weaken that boundary. Phase 3 owns a distinct, module-anchored canonical
+state directory at `functions/phase3/.state/`; it never stores Phase 3 state in
+the preserved Phase 2A slot. The directory has no CLI or environment override,
+is ignored by the exact repository-root `.gitignore` entry
+`functions/phase3/.state/`, and contains runtime/operator state only. Successful
+preflight manifests are immutable, installed atomically without overwriting an
+existing manifest, and retained for later write authorization and audit. The
+runner exposes no cleanup operation. Tests may remove only state created under
+an explicitly disposable test identity or isolated temporary filesystem; they
+never remove an operator manifest.
+
 The runner may reuse proven canonical/manifest concepts, but never edits or
 weakens `functions/phase2/**`. For credentials it uses Phase 2B copy semantics:
 flat `studentCredentials/{loginId}` remains byte-for-byte untouched; the scoped
 copy changes only the generated classroom ID and deterministic V2 Auth UID.
 Absence or divergence never falls back to flat data after activation.
+
+Commit 3 may import Phase 2A's proven canonical Firestore-value encoder from
+`functions/phase2/canonicalState.js` rather than vendor a second copy. That
+dependency does not authorize editing Phase 2A. A Phase 3 unit test must pin the
+imported encoder's canonical output and hash for a fixed representative fixture,
+including a Firestore Timestamp, so later encoder drift fails loudly before it
+can invalidate retained Phase 3 manifest checksums.
 
 ## 9. Release ordering and abort criteria
 
@@ -347,6 +367,8 @@ Existing files:
   directly affected tests
 - `firestore.rules`
 - `package.json`, `functions/package.json`, and lockfiles only as required
+- `.gitignore`, only to add the exact `functions/phase3/.state/` runtime-state
+  entry required by the production manifest contract
 - `firebase.json`
 - `firestore.indexes.json` only with evidence of a required new index
 - `tests/phase3/README.md`, updated only to describe suites and evidence that
@@ -440,6 +462,16 @@ unit suites. It requires no Firebase CLI isolation wrapper because it must not
 start the Firebase CLI, an emulator, or any network-backed operation. A suite
 that needs an emulator belongs under an appropriately named emulator-backed
 command and inherits every isolation protection above.
+
+Commit 3 adds the real `tests/phase3/production-runner.emulator.test.js`
+behavioral suite and earns `test:phase3:migration`. That command starts the
+emulators and therefore is discovered automatically by the command-safety
+contract; it receives the complete credential, token, project, config,
+emulator, and gate-variable isolation contract without a special-case list.
+The emulator-free `test:phase3:contracts` command must simultaneously narrow
+from `tests/phase3/*.test.js` to `tests/phase3/*.contract.test.js`. Otherwise its
+glob would also select the new emulator-backed runner suite and execute it
+without the required harness.
 
 They supplement, not replace, the complete Phase 2B and repository matrix.
 Commit 1 must not add passing placeholder commands under these names before
