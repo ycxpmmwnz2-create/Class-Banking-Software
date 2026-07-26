@@ -1,0 +1,249 @@
+// Phase 3 Commit 1 — release-order SOURCE contract.
+//
+// EVIDENCE LAYER: static analysis of PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md
+// plus filesystem/checksum facts. This suite proves the brief still *states* the
+// safe ordering and that Commit 1 has not created later-commit artifacts. It
+// does NOT execute a release, deploy anything, or prove production ordering.
+// See tests/phase3/README.md.
+//
+// Authority: PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md Sections 2, 9, 11, 14.
+
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
+import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
+
+const brief = readFileSync(
+  new URL('../../PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md', import.meta.url),
+  'utf8',
+)
+
+/** The Item 10 pin, extended into Phase 3. Commit 1 must not touch rules. */
+const EXPECTED_RULES_SHA256 =
+  '0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50'
+
+/**
+ * Parses a markdown numbered list into whole steps.
+ *
+ * Steps in the brief wrap onto indented continuation lines, and load-bearing
+ * text lands on them — step 13's "Any mismatch aborts before activation" is a
+ * continuation. Joining continuations into their owning step is therefore
+ * required for correctness, not tidiness: a line-at-a-time parser would drop
+ * that clause and the abort assertion would fail for the wrong reason.
+ */
+function parseNumberedSteps(markdown) {
+  const steps = []
+  for (const rawLine of markdown.split('\n')) {
+    const started = /^\s*(\d+)\.\s+(.*)$/.exec(rawLine)
+    if (started) {
+      steps.push({ number: Number(started[1]), text: started[2].trim() })
+      continue
+    }
+    // An indented, non-empty, non-list line continues the current step.
+    if (steps.length > 0 && /^\s+\S/.test(rawLine)) {
+      steps[steps.length - 1].text += ` ${rawLine.trim()}`
+    }
+  }
+  return steps
+}
+
+/**
+ * Extracts the numbered release-ordering list from Section 9 so ordering
+ * assertions run against the parsed sequence rather than raw file offsets.
+ * Raw `indexOf` over the whole document would also match the identical words in
+ * Sections 2 and 7 and could pass for the wrong reason.
+ */
+function releaseOrderingSteps() {
+  const section = brief.split('## 9. Release ordering and abort criteria')[1]
+  assert.ok(section, 'Section 9 must exist in the brief')
+  const beforeRollback = section.split('Rollback after scoped credentials exist')[0]
+  const steps = parseNumberedSteps(beforeRollback)
+  assert.ok(steps.length >= 19, `expected the full ordering list, got ${steps.length}`)
+  return steps
+}
+
+function rollbackSteps() {
+  const section = brief.split('Rollback after scoped credentials exist')[1]
+  assert.ok(section, 'the rollback sequence must exist in the brief')
+  const steps = parseNumberedSteps(section.split('\n## ')[0])
+  assert.ok(steps.length >= 6, `expected the rollback list, got ${steps.length}`)
+  return steps
+}
+
+/** Index of the first step whose text matches every supplied pattern. */
+function stepIndex(steps, ...patterns) {
+  const index = steps.findIndex(step =>
+    patterns.every(pattern => pattern.test(step.text)),
+  )
+  assert.notEqual(
+    index,
+    -1,
+    `no step matched ${patterns.map(String).join(' + ')}`,
+  )
+  return index
+}
+
+describe('Phase 3 release-order source contract', () => {
+  it('source contract: the existing foundation precedes bridge-rules deploy', () => {
+    const steps = releaseOrderingSteps()
+    const foundation = stepIndex(steps, /foundation/i, /validate|create/i)
+    const bridge = stepIndex(steps, /bridge rules/i, /deploy/i)
+    assert.ok(
+      foundation < bridge,
+      `foundation (step ${steps[foundation].number}) must precede bridge rules (step ${steps[bridge].number})`,
+    )
+  })
+
+  it('source contract: bridge rules precede the first scoped credential write', () => {
+    const steps = releaseOrderingSteps()
+    const bridge = stepIndex(steps, /bridge rules/i, /deploy/i)
+    // Anchored on "Run classroom migration and scoped credential/log copy".
+    // A looser /copy|migration/ also matches the step-2 rehearsal line, which
+    // would make this assertion pass for the wrong reason.
+    const credentialCopy = stepIndex(steps, /scoped credential\/log copy/i)
+    assert.ok(
+      bridge < credentialCopy,
+      'no scoped credential may be written while a recursive classrooms/** allow could be deployed',
+    )
+  })
+
+  it('source contract: final rules precede gate enable, which precedes gate-on Hosting', () => {
+    const steps = releaseOrderingSteps()
+    const finalRules = stepIndex(steps, /final/i, /rules/i, /deploy/i)
+    const gateEnable = stepIndex(steps, /enable/i, /gate/i)
+    const hosting = stepIndex(steps, /hosting/i, /gate-on/i)
+    assert.ok(finalRules < gateEnable, 'final rules must precede gate enable')
+    assert.ok(gateEnable < hosting, 'gate enable must precede gate-on Hosting')
+  })
+
+  it('source contract: reconciliation precedes activation and any mismatch aborts', () => {
+    const steps = releaseOrderingSteps()
+    const reconcile = stepIndex(steps, /reconcile/i)
+    const finalRules = stepIndex(steps, /final/i, /rules/i, /deploy/i)
+    assert.ok(reconcile < finalRules, 'reconciliation must precede final rules')
+    assert.match(
+      steps[reconcile].text,
+      /abort/i,
+      'the reconciliation step must state that a mismatch aborts',
+    )
+  })
+
+  it('source contract: rollback rolls Hosting back, disables the gate, then installs rollback-safe rules', () => {
+    const steps = rollbackSteps()
+    const hosting = stepIndex(steps, /hosting/i, /roll/i)
+    const gateDisable = stepIndex(steps, /disable/i, /gate/i)
+    const rollbackRules = stepIndex(steps, /rollback-safe rules/i)
+    const resume = stepIndex(steps, /resume/i)
+    assert.ok(hosting < gateDisable, 'Hosting default-off precedes gate disable')
+    assert.ok(gateDisable < rollbackRules, 'gate disable precedes rollback-safe rules')
+    assert.ok(
+      rollbackRules < resume,
+      'rollback-safe rules must be installed before legacy writes resume',
+    )
+  })
+
+  it('source contract: the recursive classrooms/** baseline is never redeployed', () => {
+    assert.match(
+      brief,
+      /Never redeploy the current recursive baseline rules while scoped credentials\s+exist\./,
+      'the brief must retain the absolute prohibition on the recursive baseline rule',
+    )
+    assert.match(
+      brief,
+      /All three artifacts delete the recursive `classrooms\/\{document=\*\*\}` client/,
+      'all three rules artifacts must delete the recursive client allow',
+    )
+  })
+
+  it('source contract: the ten non-negotiable decisions are all present', () => {
+    const section = brief.split('## 2. Non-negotiable decisions')[1].split('\n## ')[0]
+    for (const pattern of [
+      /Student creation and deletion are server-only/i,
+      /Rules deny browser `create` and `delete`/i,
+      /Flat credentials are immutable/i,
+      /login UI requires classroom code/i,
+      /calls versioned V2 Function names/i,
+      /not silently mapped to incompatible V2/i,
+      /fail closed for stale\s+clients/i,
+      /foundation precedes ownership-dependent bridge rules/i,
+      /separate checksum-pinned and\s+independently tested artifacts/i,
+      /separate entrypoints/i,
+    ]) {
+      assert.match(section, pattern)
+    }
+  })
+
+  it('source contract: preflight, write, and reverify are separate entrypoints', () => {
+    const section = brief.split('## 8. Production runner contract')[1].split('\n## ')[0]
+    assert.match(section, /functions\/phase3\/preflight\.js/)
+    assert.match(section, /functions\/phase3\/write\.js/)
+    assert.match(section, /functions\/phase3\/reverify\.js/)
+    assert.match(
+      section,
+      /no shared write subcommand, `--force`, production override/,
+      'the brief must forbid a shared subcommand and override flags',
+    )
+  })
+
+  // -------------------------------------------------------------------------
+  // Commit 1 boundary. These assertions fail if a later commit's artifacts are
+  // created early, which is the specific scope risk of a multi-commit plan.
+  // -------------------------------------------------------------------------
+
+  it('boundary: the three future rules artifacts are absent in Commit 1', () => {
+    for (const file of [
+      'firestore.phase3.bridge.rules',
+      'firestore.phase3.final.rules',
+      'firestore.phase3.rollback.rules',
+    ]) {
+      assert.equal(
+        existsSync(new URL(`../../${file}`, import.meta.url)),
+        false,
+        `${file} belongs to Commit 9/10, not Commit 1`,
+      )
+    }
+  })
+
+  it('boundary: functions/phase3 and src/phase3 remain absent in Commit 1', () => {
+    for (const dir of ['functions/phase3', 'src/phase3']) {
+      assert.equal(
+        existsSync(new URL(`../../${dir}`, import.meta.url)),
+        false,
+        `${dir} belongs to a later commit`,
+      )
+    }
+  })
+
+  it('boundary: the checked-in firestore.rules is byte-for-byte unchanged', () => {
+    const contents = readFileSync(
+      new URL('../../firestore.rules', import.meta.url),
+    )
+    assert.equal(
+      createHash('sha256').update(contents).digest('hex'),
+      EXPECTED_RULES_SHA256,
+      'Commit 1 must not edit firestore.rules',
+    )
+  })
+
+  it('boundary: the baseline rules still contain the hole Phase 3 must remove', () => {
+    // Asserted positively so the checksum pin above cannot silently become
+    // vacuous if the file were replaced by something unrelated.
+    const rules = readFileSync(
+      new URL('../../firestore.rules', import.meta.url),
+      'utf8',
+    )
+    assert.match(
+      rules,
+      /match \/classrooms\/\{document=\*\*\}/,
+      'the recursive allow is the documented starting condition for Phase 3',
+    )
+  })
+
+  it('boundary: the brief still declares itself planning-only', () => {
+    assert.match(
+      brief,
+      /Status: \*\*planning and review only\*\*/,
+      'the brief must not silently become an authorization document',
+    )
+  })
+})
