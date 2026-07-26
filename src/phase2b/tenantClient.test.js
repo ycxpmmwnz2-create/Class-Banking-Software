@@ -1051,18 +1051,26 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
   test("SOURCE GUARD: the V2 gate defaults to off and legacy default-off behaviour is preserved", () => {
     const { source, branches } = readV2Branches();
 
-    // The gate is opt-in via an explicit `=== true` check on a window flag.
+    // The authoritative client gate is build-time, opt-in, and exact: absent,
+    // false, or any string other than "true" must leave V2 disabled.
     assert.match(
       source,
-      /const IS_MULTI_TEACHER_V2_ENABLED = typeof window !== "undefined" && window\.MULTI_TEACHER_V2_ENABLED === true;/,
-      "V2 must activate only on an explicit window.MULTI_TEACHER_V2_ENABLED === true"
+      /const IS_MULTI_TEACHER_V2_ENABLED = import\.meta\.env\.VITE_MULTI_TEACHER_V2_ENABLED === "true";/,
+      'V2 must activate only when VITE_MULTI_TEACHER_V2_ENABLED is exactly "true"'
     );
-    // Assignment, not the `===` comparison above: index.html must read the gate
-    // and never turn it on for itself.
     assert.equal(
-      /window\.MULTI_TEACHER_V2_ENABLED\s*=(?!=)/.test(source),
+      /window\.MULTI_TEACHER_V2_ENABLED/.test(source),
       false,
-      "index.html must never set the V2 gate itself"
+      "index.html must not bypass the required Vite environment gate with a runtime window flag"
+    );
+
+    // MultiTabInvalidator's constructor opens a BroadcastChannel immediately.
+    // Its production construction therefore must itself be gate-conditional;
+    // merely guarding start() would still change default-off browser behavior.
+    assert.match(
+      source,
+      /const v2MultiTabInvalidator = IS_MULTI_TEACHER_V2_ENABLED\s*\? new MultiTabInvalidator\(/,
+      "default-off mode must not construct the multi-tab transport"
     );
 
     // The legacy paths still exist outside the V2 branches.

@@ -758,7 +758,7 @@ import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./sr
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
 import { mapSafeClientError, orchestrateProductionLogout, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
 
-const IS_MULTI_TEACHER_V2_ENABLED = typeof window !== "undefined" && window.MULTI_TEACHER_V2_ENABLED === true;
+const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED === "true";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
     const defaultSettings = {
@@ -3259,11 +3259,15 @@ if (screen === "editSettingsLists" && isTeacher) {
       authAdapter: { signOut: () => signOut(auth) }
     });
 
-    const v2MultiTabInvalidator = new MultiTabInvalidator(v2TenantSession, {
-      storageAdapter: localStorage,
-      windowAdapter: typeof window !== "undefined" ? window : null,
-      onInvalidated: () => render()
-    });
+    // Keep the default-off build inert: constructing MultiTabInvalidator would
+    // open a real BroadcastChannel even before start() installs listeners.
+    const v2MultiTabInvalidator = IS_MULTI_TEACHER_V2_ENABLED
+      ? new MultiTabInvalidator(v2TenantSession, {
+          storageAdapter: localStorage,
+          windowAdapter: typeof window !== "undefined" ? window : null,
+          onInvalidated: () => render()
+        })
+      : null;
     v2TenantSession.multiTabInvalidator = v2MultiTabInvalidator;
 
     if (IS_MULTI_TEACHER_V2_ENABLED) {
