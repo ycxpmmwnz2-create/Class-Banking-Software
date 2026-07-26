@@ -395,6 +395,46 @@ function liveReaders() {
         destinationLoginHistory: [],
         destinationAuthLogs: [],
       }
+      const idCoverageBySurface = Object.fromEntries(
+        Object.keys(idsBySurface).map(name => [name, {
+          referencedCount: 0,
+          unassignedCount: 0,
+          inconsistentCount: 0,
+        }]),
+      )
+
+      function recordIdentity(setName, document, { pathMustMatch = false } = {}) {
+        const body = document.data()
+        const field = pathMustMatch ? 'id' : 'studentId'
+        if (!Object.hasOwn(body, field) || body[field] == null) {
+          idCoverageBySurface[setName].unassignedCount += 1
+          return
+        }
+
+        const rawId = body[field]
+        idsBySurface[setName].push(rawId)
+        idCoverageBySurface[setName].referencedCount += 1
+        if (pathMustMatch) {
+          const bodyId = numericStudentId(rawId)
+          const pathId = numericStudentId(document.id)
+          if (bodyId === null || pathId === null || bodyId !== pathId) {
+            idCoverageBySurface[setName].inconsistentCount += 1
+          }
+        }
+      }
+
+      function recordReference(setName, document) {
+        const body = document.data()
+        if (!Object.hasOwn(body, 'studentId') || body.studentId == null) {
+          // Phase 2A deliberately preserves unassigned transactions and auth logs.
+          // They are classified explicitly so omission cannot masquerade as an
+          // unread document.
+          idCoverageBySurface[setName].unassignedCount += 1
+          return
+        }
+        idsBySurface[setName].push(body.studentId)
+        idCoverageBySurface[setName].referencedCount += 1
+      }
 
       // Every scoped subcollection Phase 2A's destination model defines, for every
       // classroom reference. Enumerating only students and credentials left a
@@ -407,25 +447,19 @@ function liveReaders() {
           bySurface[surface].push(...snapshot.docs.map(evidenceEntry))
 
           if (collection === 'students') {
-            // A student document's own ID is its identity.
-            idsBySurface.destinationStudents.push(
-              ...snapshot.docs.map(doc => doc.data().id ?? doc.id),
-            )
+            // The body ID is mandatory and must normalize to the path ID. Never
+            // substitute doc.id for a missing body field: that would turn a
+            // malformed student into an apparently valid identity.
+            snapshot.docs.forEach(doc => recordIdentity(
+              'destinationStudents', doc, { pathMustMatch: true },
+            ))
           } else if (collection === 'studentCredentials') {
-            idsBySurface.destinationCredentials.push(
-              ...snapshot.docs
-                .filter(doc => doc.data().studentId != null)
-                .map(doc => doc.data().studentId),
-            )
+            snapshot.docs.forEach(doc => recordIdentity('destinationCredentials', doc))
           } else {
-            const target = collection === 'transactions'
-              ? idsBySurface.destinationTransactions
-              : idsBySurface.destinationLoginHistory
-            target.push(
-              ...snapshot.docs
-                .filter(doc => doc.data().studentId != null)
-                .map(doc => doc.data().studentId),
-            )
+            const setName = collection === 'transactions'
+              ? 'destinationTransactions'
+              : 'destinationLoginHistory'
+            snapshot.docs.forEach(doc => recordReference(setName, doc))
           }
         }
       }
@@ -439,11 +473,7 @@ function liveReaders() {
       for (const parentRef of scopedLogParents) {
         const logs = await parentRef.collection('logs').get()
         bySurface.scopedLogs.push(...logs.docs.map(evidenceEntry))
-        idsBySurface.destinationAuthLogs.push(
-          ...logs.docs
-            .filter(doc => doc.data().studentId != null)
-            .map(doc => doc.data().studentId),
-        )
+        logs.docs.forEach(doc => recordReference('destinationAuthLogs', doc))
       }
 
       return {
@@ -454,6 +484,7 @@ function liveReaders() {
           ]),
         ),
         studentIdsBySurface: idsBySurface,
+        studentIdCoverageBySurface: idCoverageBySurface,
         sourceEntriesBySurface: bySurface,
       }
     },
@@ -1138,6 +1169,105 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       }
       await firestore
         .doc('classrooms/ack-classroom/studentCredentials/zoe').delete()
+    }
+  })
+
+  test('acknowledgment cannot hide a missing or path-mismatched student ID', async () => {
+    for (const [tag, body] of [
+      ['missing', { name: 'Missing ID', balance: 0, frozen: false }],
+      ['mismatch', { id: 8, name: 'Wrong ID', balance: 0, frozen: false }],
+    ]) {
+      const document = firestore.doc(`classrooms/identity-${tag}/students/7`)
+      await document.set(body)
+      try {
+        const observed = await liveReaders().readDestinationPaths()
+        const coverage = observed.studentIdCoverageBySurface.destinationStudents
+        assert.equal(observed.counts.classroomStudents, 1)
+        assert.equal(
+          tag === 'missing' ? coverage.unassignedCount : coverage.inconsistentCount,
+          1,
+          `${tag} identity must be classified rather than dropped`,
+        )
+
+        const { exitCode, error } = await liveRun(`student-${tag}`, {
+          acknowledgedDestinationCounts: { classroomStudents: 1 },
+        })
+        assert.equal(exitCode, PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED)
+        assert.equal(error.category, PREFLIGHT_ABORT_CATEGORIES.MALFORMED_ID)
+      } finally {
+        await document.delete()
+      }
+    }
+  })
+
+  test('acknowledgment cannot hide a scoped credential missing studentId', async () => {
+    const document = firestore.doc(
+      'classrooms/identity-credential/studentCredentials/missing-student',
+    )
+    await document.set({ classroomId: 'identity-credential', active: true })
+    try {
+      const observed = await liveReaders().readDestinationPaths()
+      assert.equal(
+        observed.studentIdCoverageBySurface.destinationCredentials.unassignedCount,
+        1,
+      )
+      const { exitCode, error } = await liveRun('credential-missing-id', {
+        acknowledgedDestinationCounts: { scopedCredentials: 1 },
+      })
+      assert.equal(exitCode, PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED)
+      assert.equal(error.category, PREFLIGHT_ABORT_CATEGORIES.MALFORMED_ID)
+    } finally {
+      await document.delete()
+    }
+  })
+
+  test('a malformed non-null reference is retained for validation and blocks', async () => {
+    const document = firestore.doc(
+      'classrooms/identity-reference/transactions/malformed-reference',
+    )
+    await document.set({ id: 1, studentId: { malformed: true }, amount: 1 })
+    try {
+      const observed = await liveReaders().readDestinationPaths()
+      assert.equal(
+        observed.studentIdCoverageBySurface.destinationTransactions.referencedCount,
+        1,
+      )
+      assert.deepEqual(
+        observed.studentIdsBySurface.destinationTransactions,
+        [{ malformed: true }],
+      )
+      const { exitCode, error } = await liveRun('malformed-reference', {
+        acknowledgedDestinationCounts: { classroomTransactions: 1 },
+      })
+      assert.equal(exitCode, PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED)
+      assert.equal(error.category, PREFLIGHT_ABORT_CATEGORIES.MALFORMED_ID)
+    } finally {
+      await document.delete()
+    }
+  })
+
+  test('a Phase 2A-compatible unassigned transaction is classified explicitly', async () => {
+    const document = firestore.doc(
+      'classrooms/unassigned-reference/transactions/unassigned',
+    )
+    await document.set({ id: 2, studentId: null, amount: 1 })
+    try {
+      const observed = await liveReaders().readDestinationPaths()
+      const coverage = observed.studentIdCoverageBySurface.destinationTransactions
+      assert.equal(coverage.referencedCount, 0)
+      assert.equal(coverage.unassignedCount, 1)
+
+      const { exitCode, result, error } = await liveRun('unassigned-reference', {
+        acknowledgedDestinationCounts: { classroomTransactions: 1 },
+      })
+      assert.equal(
+        exitCode,
+        PREFLIGHT_EXIT_CODES.SUCCESS,
+        `${error?.category ?? ''} ${error?.message ?? ''}`,
+      )
+      assert.equal(result.watermark.observedMaximum, 5)
+    } finally {
+      await document.delete()
     }
   })
 

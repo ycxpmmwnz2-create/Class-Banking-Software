@@ -596,6 +596,30 @@ const DESTINATION_ID_SETS = Object.freeze([
   'destinationAuthLogs',
 ])
 
+const DESTINATION_ID_SURFACE_CONTRACT = Object.freeze({
+  destinationStudents: Object.freeze({
+    surface: 'classroomStudents', identityRequired: true,
+  }),
+  destinationCredentials: Object.freeze({
+    surface: 'scopedCredentials', identityRequired: true,
+  }),
+  destinationTransactions: Object.freeze({
+    surface: 'classroomTransactions', identityRequired: false,
+  }),
+  destinationLoginHistory: Object.freeze({
+    surface: 'classroomLoginHistory', identityRequired: false,
+  }),
+  destinationAuthLogs: Object.freeze({
+    surface: 'scopedLogs', identityRequired: false,
+  }),
+})
+
+const DESTINATION_ID_COVERAGE_FIELDS = Object.freeze([
+  'referencedCount',
+  'unassignedCount',
+  'inconsistentCount',
+])
+
 /**
  * Requires the destination reader to state every student-ID reference set.
  *
@@ -621,7 +645,26 @@ function requireDestinationStudentIds(destination) {
       { unexpected },
     )
   }
+  const coverage = destination.studentIdCoverageBySurface
+  if (!isPlainObject(coverage)) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
+      'The destination reader must classify every document as referenced or unassigned.',
+    )
+  }
+  const unexpectedCoverage = Object.keys(coverage).filter(
+    key => !DESTINATION_ID_SETS.includes(key),
+  )
+  if (unexpectedCoverage.length > 0) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
+      'The destination reader supplied an unrecognized student-ID coverage set.',
+      { unexpected: unexpectedCoverage },
+    )
+  }
+
   const resolved = {}
+  const resolvedCoverage = {}
   for (const name of DESTINATION_ID_SETS) {
     if (!Array.isArray(supplied[name])) {
       abort(
@@ -631,8 +674,63 @@ function requireDestinationStudentIds(destination) {
       )
     }
     resolved[name] = supplied[name]
+
+    const classification = coverage[name]
+    if (!isPlainObject(classification) ||
+        Object.keys(classification).length !== DESTINATION_ID_COVERAGE_FIELDS.length ||
+        DESTINATION_ID_COVERAGE_FIELDS.some(field =>
+          !Object.hasOwn(classification, field) ||
+          !Number.isInteger(classification[field]) ||
+          classification[field] < 0,
+        )) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
+        'A destination student-ID coverage classification is malformed.',
+        { set: name },
+      )
+    }
+    const unexpectedFields = Object.keys(classification).filter(
+      field => !DESTINATION_ID_COVERAGE_FIELDS.includes(field),
+    )
+    if (unexpectedFields.length > 0) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
+        'A destination student-ID coverage classification has unknown fields.',
+        { set: name, unexpected: unexpectedFields },
+      )
+    }
+
+    const contract = DESTINATION_ID_SURFACE_CONTRACT[name]
+    const declaredDocuments = destination.counts[contract.surface]
+    if (classification.referencedCount !== supplied[name].length ||
+        classification.referencedCount + classification.unassignedCount !==
+          declaredDocuments) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
+        'A destination ID classification does not cover exactly the evidenced documents.',
+        { set: name },
+      )
+    }
+    if (contract.identityRequired && classification.unassignedCount !== 0) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.MALFORMED_ID,
+        'A destination identity document is missing its student ID.',
+        { set: name, count: classification.unassignedCount },
+      )
+    }
+    if (classification.inconsistentCount !== 0) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.MALFORMED_ID,
+        'A destination document carries an identity inconsistent with its path or shape.',
+        { set: name, count: classification.inconsistentCount },
+      )
+    }
+    resolvedCoverage[name] = Object.freeze({ ...classification })
   }
-  return resolved
+  return Object.freeze({
+    ids: Object.freeze(resolved),
+    coverage: Object.freeze(resolvedCoverage),
+  })
 }
 
 /**
@@ -1260,7 +1358,8 @@ export async function runProductionPreflight({
   // an acknowledged record still carries a historical identity a later allocator
   // must start above. Omitting these would let an acknowledged scoped credential
   // holding student 900 leave the watermark at 4.
-  const destinationIds = requireDestinationStudentIds(destination)
+  const destinationIdentity = requireDestinationStudentIds(destination)
+  const destinationIds = destinationIdentity.ids
 
   const watermark = deriveStudentIdWatermark({
     roster: legacy.studentIds ?? [],
@@ -1318,6 +1417,7 @@ export async function runProductionPreflight({
     // per surface, so a later writer can tell which surface was proven empty.
     destinationAbsence: {
       counts: destination.counts,
+      studentIdCoverage: destinationIdentity.coverage,
       sources: hashedSourceSummaries(
         DESTINATION_SURFACES.map(surface => [surface, destinationSurfaces[surface]]),
       ),

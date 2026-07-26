@@ -92,22 +92,41 @@ function expectations(overrides = {}) {
  * student-ID reference set. `counts` defaults to the evidence cardinality so a
  * fixture cannot accidentally declare an unsubstantiated count.
  */
-function destinationResult({ entries = {}, ids = {}, counts } = {}) {
+function destinationResult({ entries = {}, ids = {}, counts, coverage = {} } = {}) {
   const bySurface = Object.fromEntries(
     DESTINATION_SURFACES.map(surface => [surface, entries[surface] ?? []]),
   )
+  const resolvedCounts = counts ?? Object.fromEntries(
+    DESTINATION_SURFACES.map(surface => [surface, bySurface[surface].length]),
+  )
+  const resolvedIds = {
+    destinationStudents: ids.destinationStudents ?? [],
+    destinationCredentials: ids.destinationCredentials ?? [],
+    destinationTransactions: ids.destinationTransactions ?? [],
+    destinationLoginHistory: ids.destinationLoginHistory ?? [],
+    destinationAuthLogs: ids.destinationAuthLogs ?? [],
+  }
+  const sourceSurface = {
+    destinationStudents: 'classroomStudents',
+    destinationCredentials: 'scopedCredentials',
+    destinationTransactions: 'classroomTransactions',
+    destinationLoginHistory: 'classroomLoginHistory',
+    destinationAuthLogs: 'scopedLogs',
+  }
   return complete({
-    counts: counts ?? Object.fromEntries(
-      DESTINATION_SURFACES.map(surface => [surface, bySurface[surface].length]),
-    ),
+    counts: resolvedCounts,
     sourceEntriesBySurface: bySurface,
-    studentIdsBySurface: {
-      destinationStudents: ids.destinationStudents ?? [],
-      destinationCredentials: ids.destinationCredentials ?? [],
-      destinationTransactions: ids.destinationTransactions ?? [],
-      destinationLoginHistory: ids.destinationLoginHistory ?? [],
-      destinationAuthLogs: ids.destinationAuthLogs ?? [],
-    },
+    studentIdsBySurface: resolvedIds,
+    studentIdCoverageBySurface: Object.fromEntries(
+      Object.entries(resolvedIds).map(([setName, values]) => {
+        const documentCount = resolvedCounts[sourceSurface[setName]]
+        return [setName, coverage[setName] ?? {
+          referencedCount: values.length,
+          unassignedCount: Math.max(0, documentCount - values.length),
+          inconsistentCount: 0,
+        }]
+      }),
+    ),
   })
 }
 
@@ -1609,9 +1628,97 @@ describe('Phase 3 production preflight', () => {
         surface: 'classroomTransactions',
         idSet: 'destinationTransactions',
         ids: ['42', 42, '42'],
-        entryCount: 1,
+        entryCount: 3,
       })
       assert.equal(result.watermark.observedMaximum, 42)
+    })
+
+    it('refuses an acknowledged student or credential with no identity', async () => {
+      for (const [surface, idSet] of [
+        ['classroomStudents', 'destinationStudents'],
+        ['scopedCredentials', 'destinationCredentials'],
+      ]) {
+        await assertAborts(
+          {
+            readers: readers({
+              readDestinationPaths: async () => destinationResult({
+                entries: { [surface]: sourceEntries(surface, 1) },
+              }),
+            }),
+            expectations: expectations({
+              acknowledgedDestinationCounts: { [surface]: 1 },
+            }),
+          },
+          PREFLIGHT_ABORT_CATEGORIES.MALFORMED_ID,
+          `${idSet} must classify one identity for every evidenced document`,
+        )
+      }
+    })
+
+    it('refuses an identity inconsistent with its document path', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readDestinationPaths: async () => destinationResult({
+              entries: { classroomStudents: sourceEntries('students', 1) },
+              ids: { destinationStudents: [8] },
+              coverage: {
+                destinationStudents: {
+                  referencedCount: 1, unassignedCount: 0, inconsistentCount: 1,
+                },
+              },
+            }),
+          }),
+          expectations: expectations({
+            acknowledgedDestinationCounts: { classroomStudents: 1 },
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.MALFORMED_ID,
+        'a body/path identity mismatch must block',
+      )
+    })
+
+    it('accepts an explicitly classified unassigned reference', async () => {
+      const result = await acknowledgedRun({
+        surface: 'classroomTransactions',
+        idSet: 'destinationTransactions',
+        ids: [],
+        entryCount: 1,
+      })
+      assert.equal(result.outcome, 'succeeded')
+      assert.equal(result.watermark.observedMaximum, 3)
+    })
+
+    it('rejects malformed non-null references and incomplete coverage', async () => {
+      await assert.rejects(
+        () => acknowledgedRun({
+          surface: 'classroomTransactions',
+          idSet: 'destinationTransactions',
+          ids: [{ malformed: true }],
+          entryCount: 1,
+        }),
+        error => error.category === PREFLIGHT_ABORT_CATEGORIES.MALFORMED_ID,
+      )
+
+      await assertAborts(
+        {
+          readers: readers({
+            readDestinationPaths: async () => destinationResult({
+              entries: { classroomTransactions: sourceEntries('transactions', 1) },
+              coverage: {
+                destinationTransactions: {
+                  referencedCount: 0, unassignedCount: 0, inconsistentCount: 0,
+                },
+              },
+            }),
+          }),
+          expectations: expectations({
+            acknowledgedDestinationCounts: { classroomTransactions: 1 },
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
+        'every evidenced reference document must be classified',
+      )
     })
 
     it('treats destination students and credentials as identity sets', async () => {

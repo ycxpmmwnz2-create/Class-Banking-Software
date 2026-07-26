@@ -536,6 +536,31 @@ describe('Phase 3 release-order source contract', () => {
         !/destination\w*:\s*[^,\n]*\.map\(\s*\w+\s*=>\s*String\(/.test(emulator),
       'destination watermark sources must preserve raw ID types',
     )
+
+    const destinationReader = emulator.match(
+      /readDestinationPaths:\s*async\s*\(\)\s*=>\s*\{[\s\S]*?readAuthCompatibility:/,
+    )?.[0] ?? ''
+    assert.ok(
+      /studentIdCoverageBySurface/.test(destinationReader) &&
+        /recordIdentity/.test(destinationReader) &&
+        /recordReference/.test(destinationReader),
+      'every destination document must be classified as referenced or unassigned',
+    )
+    assert.ok(
+      !/doc\.data\(\)\.id\s*\?\?\s*doc\.id/.test(destinationReader),
+      'a missing student body ID must never fall back to the document ID',
+    )
+    assert.ok(
+      !destinationReader.includes(
+        '.filter(doc => doc.data().studentId != null)',
+      ),
+      'destination readers must classify missing IDs rather than filter them out',
+    )
+    assert.ok(
+      /referencedCount\s*\+\s*classification\.unassignedCount\s*!==\s*declaredDocuments/
+        .test(preflight),
+      'ID coverage must be cardinality-bound to the evidenced destination documents',
+    )
   })
 
   it('boundary: the checked-in firestore.rules is byte-for-byte unchanged', () => {
