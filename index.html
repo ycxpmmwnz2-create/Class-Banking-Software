@@ -754,6 +754,13 @@ import { auth, db, functions } from "./src/firebase/firebase.js";
 import { browserSessionPersistence, GoogleAuthProvider, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
+import { TenantSession, SESSION_STATES } from "./src/phase2b/tenantSession.js";
+import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache } from "./src/phase2b/tenantCache.js";
+import { mapSafeClientError, orchestrateTeacherResolution, orchestrateTeacherOnboarding, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
+
+const IS_MULTI_TEACHER_V2_ENABLED = Boolean(
+  typeof window !== "undefined" && window.MULTI_TEACHER_V2_ENABLED
+);
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
     const defaultSettings = {
@@ -2921,8 +2928,47 @@ if (screen === "editSettingsLists" && isTeacher) {
       document.getElementById("app").innerHTML = html;
     }
 
+    function resetAllGlobalState() {
+      data = cloneDefault();
+      isTeacher = false;
+      loggedInStudentId = null;
+      teacherProfileStudentId = null;
+      studentLoginIdDraft = "";
+      showTeacherPasswordLogin = false;
+      message = "";
+      studentAuthLogs = [];
+      studentAuthLogsError = "";
+      studentAuthLogsLoading = false;
+      studentPinResetPending = false;
+      clearTimeout(messageTimeout);
+      messageTimeout = null;
+    }
+
+    const v2TenantSession = new TenantSession({
+      onResetGlobals: resetAllGlobalState,
+      authAdapter: { signOut: () => signOut(auth) }
+    });
+
     let authStateVersion = 0;
     onAuthStateChanged(auth, async user => {
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        if (!user) {
+          await v2TenantSession.signOut();
+          render();
+          return;
+        }
+
+        const callAdapter = async (name, payload) => {
+          const callable = httpsCallable(functions, name);
+          return await callable(payload);
+        };
+
+        v2TenantSession.transitionTo(SESSION_STATES.AUTHENTICATING, { uid: user.uid, role: "teacher" });
+        await orchestrateTeacherResolution(v2TenantSession, callAdapter);
+        render();
+        return;
+      }
+
       const currentAuthStateVersion = ++authStateVersion;
       const isAuthenticatedTeacher = user?.uid === TEACHER_UID;
       isTeacher = false;

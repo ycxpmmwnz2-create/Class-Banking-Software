@@ -1,0 +1,259 @@
+export const SESSION_STATES = Object.freeze({
+  SIGNED_OUT: "signed-out",
+  AUTHENTICATING: "authenticating",
+  RESOLVING: "resolving",
+  ONBOARDING_REQUIRED: "onboarding-required",
+  ONBOARDING: "onboarding",
+  ACTIVE: "active",
+  CLASSROOM_LOADING: "classroom-loading",
+  READY: "ready",
+  DENIED_OR_INCONSISTENT: "denied-or-inconsistent"
+});
+
+const VALID_TRANSITIONS = {
+  [SESSION_STATES.SIGNED_OUT]: [SESSION_STATES.AUTHENTICATING, SESSION_STATES.RESOLVING],
+  [SESSION_STATES.AUTHENTICATING]: [SESSION_STATES.RESOLVING, SESSION_STATES.SIGNED_OUT],
+  [SESSION_STATES.RESOLVING]: [
+    SESSION_STATES.ONBOARDING_REQUIRED,
+    SESSION_STATES.ACTIVE,
+    SESSION_STATES.DENIED_OR_INCONSISTENT,
+    SESSION_STATES.SIGNED_OUT
+  ],
+  [SESSION_STATES.ONBOARDING_REQUIRED]: [SESSION_STATES.ONBOARDING, SESSION_STATES.SIGNED_OUT],
+  [SESSION_STATES.ONBOARDING]: [
+    SESSION_STATES.RESOLVING,
+    SESSION_STATES.DENIED_OR_INCONSISTENT,
+    SESSION_STATES.SIGNED_OUT
+  ],
+  [SESSION_STATES.ACTIVE]: [
+    SESSION_STATES.CLASSROOM_LOADING,
+    SESSION_STATES.DENIED_OR_INCONSISTENT,
+    SESSION_STATES.SIGNED_OUT
+  ],
+  [SESSION_STATES.CLASSROOM_LOADING]: [
+    SESSION_STATES.READY,
+    SESSION_STATES.DENIED_OR_INCONSISTENT,
+    SESSION_STATES.SIGNED_OUT
+  ],
+  [SESSION_STATES.READY]: [
+    SESSION_STATES.CLASSROOM_LOADING,
+    SESSION_STATES.RESOLVING,
+    SESSION_STATES.SIGNED_OUT,
+    SESSION_STATES.DENIED_OR_INCONSISTENT
+  ],
+  [SESSION_STATES.DENIED_OR_INCONSISTENT]: [SESSION_STATES.SIGNED_OUT, SESSION_STATES.AUTHENTICATING]
+};
+
+export class TenantSession {
+  constructor(options = {}) {
+    this.storageAdapter = options.storageAdapter || (typeof localStorage !== "undefined" ? localStorage : null);
+    this.cacheModule = options.cacheModule || null;
+    this.onResetGlobals = options.onResetGlobals || null;
+    this.authAdapter = options.authAdapter || null;
+    this.projectId = options.projectId || "morgan-bank";
+
+    this.state = SESSION_STATES.SIGNED_OUT;
+    this.epoch = 0;
+    this.uid = null;
+    this.role = null;
+    this.classroomId = null;
+    this.teacher = null;
+    this.classroom = null;
+    this.errorMessage = "";
+    this.correlationId = null;
+
+    this.listeners = new Set();
+    this.abortControllers = new Set();
+    this.timeouts = new Set();
+    this.pendingTokens = new Set();
+  }
+
+  getState() {
+    return this.state;
+  }
+
+  getEpoch() {
+    return this.epoch;
+  }
+
+  getContext() {
+    return {
+      uid: this.uid,
+      role: this.role,
+      classroomId: this.classroomId,
+      epoch: this.epoch,
+      state: this.state
+    };
+  }
+
+  captureIdentity() {
+    return {
+      uid: this.uid,
+      role: this.role,
+      classroomId: this.classroomId,
+      epoch: this.epoch
+    };
+  }
+
+  validateCapturedIdentity(captured) {
+    if (!captured || typeof captured !== "object") return false;
+    return (
+      captured.epoch === this.epoch &&
+      captured.uid === this.uid &&
+      captured.role === this.role &&
+      captured.classroomId === this.classroomId
+    );
+  }
+
+  registerListener(unsubscribeFn) {
+    if (typeof unsubscribeFn === "function") {
+      this.listeners.add(unsubscribeFn);
+    }
+  }
+
+  registerAbortController(controller) {
+    if (controller && typeof controller.abort === "function") {
+      this.abortControllers.add(controller);
+    }
+  }
+
+  registerTimeout(timeoutId) {
+    if (timeoutId !== null && timeoutId !== undefined) {
+      this.timeouts.add(timeoutId);
+    }
+  }
+
+  registerPendingToken(token) {
+    if (token) {
+      this.pendingTokens.add(token);
+    }
+  }
+
+  clearResources() {
+    for (const unsubscribeFn of this.listeners) {
+      try {
+        unsubscribeFn();
+      } catch (err) {
+        console.error("Error running listener unsubscribe:", err);
+      }
+    }
+    this.listeners.clear();
+
+    for (const controller of this.abortControllers) {
+      try {
+        controller.abort();
+      } catch (err) {
+        console.error("Error aborting controller:", err);
+      }
+    }
+    this.abortControllers.clear();
+
+    for (const timeoutId of this.timeouts) {
+      try {
+        clearTimeout(timeoutId);
+      } catch (err) {
+        console.error("Error clearing timeout:", err);
+      }
+    }
+    this.timeouts.clear();
+
+    this.pendingTokens.clear();
+  }
+
+  canTransitionTo(nextState) {
+    const allowed = VALID_TRANSITIONS[this.state];
+    return Array.isArray(allowed) && allowed.includes(nextState);
+  }
+
+  transitionTo(nextState, context = {}) {
+    if (!this.canTransitionTo(nextState)) {
+      throw new Error(`Invalid state transition from ${this.state} to ${nextState}`);
+    }
+
+    this.state = nextState;
+
+    if (context.uid !== undefined) this.uid = context.uid;
+    if (context.role !== undefined) this.role = context.role;
+    if (context.classroomId !== undefined) this.classroomId = context.classroomId;
+    if (context.teacher !== undefined) this.teacher = context.teacher;
+    if (context.classroom !== undefined) this.classroom = context.classroom;
+    if (context.errorMessage !== undefined) this.errorMessage = context.errorMessage;
+    if (context.correlationId !== undefined) this.correlationId = context.correlationId;
+
+    return this.getState();
+  }
+
+  invalidate(reason = "session-invalidated", newIdentity = {}) {
+    this.epoch += 1;
+    this.invalidationReason = reason;
+
+    const oldUid = this.uid;
+    const oldClassroomId = this.classroomId;
+
+    this.clearResources();
+
+    if (this.cacheModule && oldUid && oldClassroomId) {
+      try {
+        this.cacheModule.purgeTenantCache(this.storageAdapter, this.projectId, oldUid, oldClassroomId);
+      } catch (err) {
+        console.error("Cache purge failed during invalidation:", err);
+      }
+    }
+
+    if (this.storageAdapter && typeof this.storageAdapter.removeItem === "function") {
+      try {
+        this.storageAdapter.removeItem("mrMorganClassCashDataV5");
+      } catch (err) {
+        console.error("Legacy cache purge failed during invalidation:", err);
+      }
+    }
+
+    if (typeof this.onResetGlobals === "function") {
+      try {
+        this.onResetGlobals();
+      } catch (err) {
+        console.error("Reset globals callback failed during invalidation:", err);
+      }
+    }
+
+    this.uid = newIdentity.uid || null;
+    this.role = newIdentity.role || null;
+    this.classroomId = newIdentity.classroomId || null;
+    this.teacher = newIdentity.teacher || null;
+    this.classroom = newIdentity.classroom || null;
+    this.errorMessage = newIdentity.errorMessage || "";
+    this.correlationId = newIdentity.correlationId || null;
+
+    this.state = newIdentity.state || SESSION_STATES.SIGNED_OUT;
+
+    return this.getState();
+  }
+
+  async signOut(authAdapter = null) {
+    const adapter = authAdapter || this.authAdapter;
+    let signOutError = null;
+
+    if (adapter && typeof adapter.signOut === "function") {
+      try {
+        await adapter.signOut();
+      } catch (err) {
+        signOutError = err;
+      }
+    }
+
+    this.invalidate("sign-out", { state: SESSION_STATES.SIGNED_OUT });
+
+    if (signOutError) {
+      return { success: true, warning: "Local adapter signOut rejected, tenant state purged successfully." };
+    }
+    return { success: true };
+  }
+
+  requireTeacher() {
+    const isReady = this.state === SESSION_STATES.READY;
+    const hasMatchingUid = Boolean(this.uid);
+    const hasClassroom = Boolean(this.classroomId);
+    const isTeacherRole = this.role === "teacher";
+    return isReady && hasMatchingUid && hasClassroom && isTeacherRole;
+  }
+}
