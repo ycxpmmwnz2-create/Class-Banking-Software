@@ -7,13 +7,19 @@
 | 1 | Acceptance contracts and credential-isolated commands | complete |
 | 2 | Production environment, project, and authorization guards | complete |
 | 3 | Read-only production preflight and manifest | complete |
-| 4–11 | Projection, writer, lifecycle, client, rules, rehearsal | not started |
+| 4 | Copy-only production projection and reconciliation | complete |
+| 5–11 | Writer, lifecycle, client, rules, rehearsal | not started |
 
-No Phase 3 projection, reconciliation, writer, student lifecycle, client wiring,
-rules artifact, or deployment logic exists yet. Commit 3's preflight is read-only
-with respect to Firebase and Google services; persisting its local manifest is
-required and does not weaken that boundary. The `write.js` and `reverify.js`
-entrypoints do not exist, and `preflight.js` imports no writer module — asserted
+Commit 4 adds pure production projection and reconciliation functions. They
+accept caller-supplied values, reuse Phase 2A's data projection and Phase 2B's
+scoped-credential copy semantics, and expose no reader, SDK, filesystem,
+manifest, operation, or write surface. Flat credentials and logs are modeled
+only as immutable sources; they never appear as destinations. No Phase 3 writer,
+student lifecycle, client wiring, rules artifact, or deployment logic exists
+yet. Commit 3's preflight remains read-only with respect to Firebase and Google
+services; persisting its local manifest is required and does not weaken that
+boundary. The `write.js` and `reverify.js` entrypoints do not exist, and
+`preflight.js` imports no writer, projection, or reconciliation module — asserted
 by `release-order.contract.test.js`.
 
 ## Commands
@@ -272,6 +278,35 @@ that a later writer honors a retained manifest. No test contacts production. The
 emulator suite installs one real manifest only under its disposable demo identity,
 then verifies and removes exactly that test-owned path; it never removes or
 overwrites an operator manifest and leaves `functions/phase3/.state/` empty.
+
+## Commit 4 — copy projection and reconciliation suites
+
+`functions/phase3/productionProjection.test.js` and
+`productionReconciliation.test.js` are emulator-free behavioral suites. They
+exercise pure values only and do not construct a Firebase handle, load a
+credential, touch a manifest, or contact any service.
+
+The projection suite proves that the classroom patch, students, transactions,
+login history, scoped credentials, and scoped authentication logs are derived
+deterministically without mutating their sources. It pins the Phase 2A helper
+dependency for legacy data and the Phase 2B helper dependency for credentials.
+Every flat credential field is preserved except `classroomId` and `authUid`, the
+new Auth UID is deterministic, active/inactive/orphaned credentials all survive,
+and no projected destination can be a flat credential path.
+
+The reconciliation suite has separate dry-run and write-run surfaces. Dry-run
+recomputes the projection from source. Write-run compares caller-supplied
+post-copy reads against every expected destination path, body, and count and
+checks UID mappings, the exact five-field student allowlist, total balance, and
+scoped-log shape. It also compares the legacy singleton, every flat credential,
+every flat log, and the teacher foundation against their original bodies and
+exact update times. Mismatches report only area, reason, and path — never
+document bodies or secret values.
+
+These tests do not prove that a production reader can supply the reconciliation
+inputs or that a writer can apply the projection safely. Those responsibilities
+belong to Commit 5's bounded writer, recovery journal, runner integration, and
+emulator rehearsal. No Commit 4 function can read or write production.
 
 ## Relationship to the Phase 2B matrix
 

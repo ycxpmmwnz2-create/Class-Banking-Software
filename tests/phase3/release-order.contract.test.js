@@ -279,14 +279,13 @@ describe('Phase 3 release-order source contract', () => {
     // implementation AND its test are pinned: listing only the .js files would
     // let a later commit's test file appear without its implementation, which is
     // the mirror image of the placeholder problem Section 12 forbids.
-    // Commit 3 earned productionPreflight, productionManifest, and preflight.js.
-    // Everything below still belongs to Commits 4-6. Both implementation and
+    // Commit 3 earned productionPreflight, productionManifest, and preflight.js;
+    // Commit 4 earned productionProjection and productionReconciliation.
+    // Everything below still belongs to Commits 5-6. Both implementation and
     // test names stay pinned, so a later commit's test cannot appear without its
     // implementation either.
     const NOT_YET_EARNED = [
-      'productionProjection.js', 'productionProjection.test.js',
       'productionWriter.js', 'productionWriter.test.js',
-      'productionReconciliation.js', 'productionReconciliation.test.js',
       'write.js', 'reverify.js',
       'studentLifecycle.js', 'studentLifecycle.test.js',
     ]
