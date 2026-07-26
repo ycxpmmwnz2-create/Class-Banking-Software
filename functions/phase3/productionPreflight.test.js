@@ -1,0 +1,1030 @@
+// Phase 3 Commit 3 — production preflight behavioral tests.
+//
+// EVIDENCE LAYER: behavioral unit tests with injected readers. Every abort
+// category is exercised against the real runProductionPreflight. Spies prove no
+// mutating Firestore/Auth/control-plane operation is reachable. No emulator, no
+// network, no process.env mutation — environments are constructed inline.
+
+import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
+
+import {
+  COLLECTION_ENUMERATION_REQUIREMENT,
+  PREFLIGHT_ABORT_CATEGORIES,
+  PreflightAbortError,
+  deriveStudentIdWatermark,
+  numericStudentId,
+  runProductionPreflight,
+  validateReadAuthorization,
+} from './productionPreflight.js'
+import { CHECKSUM_DOMAINS } from './productionManifest.js'
+
+const PRODUCTION_ENVIRONMENT = Object.freeze({ GCLOUD_PROJECT: 'morgan-bank' })
+const TEACHER_UID = 'YkYUzIzy0aW7roolM1VaLcIJPuN2'
+const CREDENTIAL_SHA = 'c'.repeat(64)
+const EXPECTATIONS_SHA = 'e'.repeat(64)
+const NOW = Date.parse('2026-07-26T18:00:00.000Z')
+const OBSERVED_AT = '2026-07-26T18:00:00.000Z'
+
+function authorization(overrides = {}) {
+  return {
+    projectId: 'morgan-bank',
+    teacherUid: TEACHER_UID,
+    releaseId: 'phase3-rel-2026-07-26a',
+    changeId: 'CHG-2026-07-26-001',
+    authorizationId: 'AUTH-2026-07-26-001',
+    credentialProvenance: 'operator-workstation-key-rotated',
+    credentialSha256: CREDENTIAL_SHA,
+    expectationsSha256: EXPECTATIONS_SHA,
+    notBefore: '2026-07-26T17:00:00.000Z',
+    notAfter: '2026-07-26T23:00:00.000Z',
+    ...overrides,
+  }
+}
+
+function complete(payload) {
+  return { complete: true, ...payload }
+}
+
+function expectations(overrides = {}) {
+  return {
+    deployment: {
+      rules: { release: 'rules-release-42', checksum: 'a'.repeat(64) },
+      functions: { studentPinLoginV2: 'rev-7' },
+      hosting: { release: 'hosting-99' },
+      indexes: { composite: 'none' },
+      gateParameters: { MULTI_TEACHER_V2_ENABLED: 'false' },
+    },
+    acknowledgedWriters: ['legacy-teacher-browser'],
+    acknowledgedAnomalies: [],
+    acknowledgedDestinationCounts: {},
+    ...overrides,
+  }
+}
+
+/** Readers that all report healthy, complete, pre-migration production state. */
+function readers(overrides = {}) {
+  const base = {
+    readDeploymentInventory: async () => complete({
+      rules: { release: 'rules-release-42', checksum: 'a'.repeat(64) },
+      functions: { studentPinLoginV2: 'rev-7' },
+      hosting: { release: 'hosting-99' },
+      indexes: { composite: 'none' },
+      gateParameters: { MULTI_TEACHER_V2_ENABLED: 'false' },
+    }),
+    readActiveWriters: async () => complete({
+      writers: ['legacy-teacher-browser'],
+    }),
+    readLegacyClassroomAggregate: async () => complete({
+      counts: { students: 3, transactions: 10, loginHistory: 5 },
+      studentIds: ['1', '2', '3'],
+      transactionStudentIds: ['1', '2'],
+      loginHistoryStudentIds: ['3'],
+      noncanonicalValueCount: 0,
+      anomalies: [],
+    }),
+    readFlatCredentials: async () => complete({
+      count: 3,
+      studentIds: ['1', '2', '3'],
+      duplicateLoginIds: 0,
+      duplicateStudentIds: 0,
+      noncanonicalLoginIds: 0,
+      anomalies: [],
+    }),
+    readFlatAuthLogs: async () => complete({
+      count: 12,
+      studentIds: ['1'],
+      anomalies: [],
+    }),
+    readFoundation: async () => complete({
+      present: true,
+      reciprocal: true,
+      teacherStatus: 'active',
+      classroomId: 'abc123',
+      anomalies: [],
+    }),
+    readDestinationPaths: async () => complete({
+      counts: { scopedCredentials: 0, scopedLogs: 0, classroomStudents: 0 },
+      studentIds: [],
+    }),
+    readAuthCompatibility: async () => complete({
+      uidCollisions: 0,
+      incompatibleUsers: 0,
+      examinedUserCount: 3,
+    }),
+  }
+  return { ...base, ...overrides }
+}
+
+async function run(overrides = {}) {
+  return runProductionPreflight({
+    environment: PRODUCTION_ENVIRONMENT,
+    readers: readers(),
+    authorization: authorization(),
+    expectations: expectations(),
+    credentialSha256: CREDENTIAL_SHA,
+    expectationsSha256: EXPECTATIONS_SHA,
+    teacherUid: TEACHER_UID,
+    nowMillis: NOW,
+    observedAt: OBSERVED_AT,
+    persistManifest: async () => ({ persisted: true }),
+    ...overrides,
+  })
+}
+
+async function assertAborts(overrides, category, message) {
+  await assert.rejects(() => run(overrides), error => {
+    assert.ok(
+      error instanceof PreflightAbortError,
+      `${message}: expected PreflightAbortError, got ${error?.name}: ${error?.message}`,
+    )
+    assert.equal(error.category, category, `${message} (got ${error.category})`)
+    assert.equal(error.blocking, true)
+    return true
+  }, message)
+}
+
+describe('Phase 3 production preflight', () => {
+  describe('happy path', () => {
+    it('succeeds and produces every checksum domain', async () => {
+      const result = await run()
+      assert.equal(result.outcome, 'succeeded')
+      assert.equal(result.projectId, 'morgan-bank')
+      assert.match(result.preflightManifestId, /^[0-9a-f]{64}$/)
+      for (const domain of CHECKSUM_DOMAINS) {
+        assert.match(
+          result.domainChecksums[domain],
+          /^[0-9a-f]{64}$/,
+          `${domain} must have a checksum`,
+        )
+      }
+    })
+
+    it('derives the watermark above the historical maximum', async () => {
+      const result = await run()
+      assert.equal(result.watermark.observedMaximum, 3)
+      assert.equal(result.watermark.nextStudentNumber, 4)
+    })
+
+    it('is deterministic: identical state yields identical checksums', async () => {
+      const first = await run()
+      const second = await run()
+      assert.equal(first.preflightManifestId, second.preflightManifestId)
+      assert.deepEqual(
+        { ...first.domainChecksums },
+        { ...second.domainChecksums },
+      )
+    })
+
+    it('changes the manifest ID when any observed value changes', async () => {
+      const baseline = await run()
+      const changed = await run({
+        readers: readers({
+          readFlatAuthLogs: async () => complete({
+            count: 13, studentIds: ['1'], anomalies: [],
+          }),
+        }),
+      })
+      assert.notEqual(baseline.preflightManifestId, changed.preflightManifestId)
+    })
+  })
+
+  describe('environment guard runs before any reader', () => {
+    it('aborts on an unrecognized project without invoking a reader', async () => {
+      let invoked = 0
+      const counting = Object.fromEntries(
+        Object.entries(readers()).map(([name, fn]) => [
+          name,
+          async (...args) => { invoked += 1; return fn(...args) },
+        ]),
+      )
+
+      await assert.rejects(() => run({
+        environment: { GCLOUD_PROJECT: 'morgan-bank-staging' },
+        readers: counting,
+      }))
+      assert.equal(invoked, 0, 'no reader may run before the environment passes')
+    })
+
+    it('aborts on an emulator-contaminated production environment', async () => {
+      await assert.rejects(() => run({
+        environment: {
+          GCLOUD_PROJECT: 'morgan-bank',
+          FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080',
+        },
+      }))
+    })
+
+    it('aborts before readers when the authorization is unbound', async () => {
+      let invoked = 0
+      const counting = Object.fromEntries(
+        Object.entries(readers()).map(([name, fn]) => [
+          name,
+          async (...args) => { invoked += 1; return fn(...args) },
+        ]),
+      )
+      await assertAborts(
+        { readers: counting, credentialSha256: 'f'.repeat(64) },
+        PREFLIGHT_ABORT_CATEGORIES.AUTHORIZATION_UNBOUND,
+        'unbound credential must abort',
+      )
+      assert.equal(invoked, 0, 'authorization must be validated before reads')
+    })
+  })
+
+  describe('read authorization', () => {
+    it('accepts a complete, bound, unexpired authorization', () => {
+      const validated = validateReadAuthorization({
+        authorization: authorization(),
+        credentialSha256: CREDENTIAL_SHA,
+        expectationsSha256: EXPECTATIONS_SHA,
+        teacherUid: TEACHER_UID,
+        projectId: 'morgan-bank',
+        nowMillis: NOW,
+      })
+      assert.equal(validated.authorizationId, 'AUTH-2026-07-26-001')
+    })
+
+    it('aborts on each individually missing field', async () => {
+      for (const field of Object.keys(authorization())) {
+        const incomplete = authorization()
+        delete incomplete[field]
+        await assertAborts(
+          { authorization: incomplete },
+          PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+          `missing ${field} must abort`,
+        )
+      }
+    })
+
+    it('aborts on an unsupported extra field', async () => {
+      await assertAborts(
+        { authorization: { ...authorization(), approvedBy: 'someone' } },
+        PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+        'extra authorization field must abort',
+      )
+    })
+
+    it('aborts when the authorization names a different project or teacher', async () => {
+      await assertAborts(
+        { authorization: authorization({ projectId: 'demo-x' }) },
+        PREFLIGHT_ABORT_CATEGORIES.AUTHORIZATION_MISMATCH,
+        'wrong project must abort',
+      )
+      await assertAborts(
+        { authorization: authorization({ teacherUid: 'someone-else' }) },
+        PREFLIGHT_ABORT_CATEGORIES.AUTHORIZATION_MISMATCH,
+        'wrong teacher must abort',
+      )
+    })
+
+    it('aborts when the presented artifacts are not the authorized ones', async () => {
+      await assertAborts(
+        { credentialSha256: 'f'.repeat(64) },
+        PREFLIGHT_ABORT_CATEGORIES.AUTHORIZATION_UNBOUND,
+        'credential not bound must abort',
+      )
+      await assertAborts(
+        { expectationsSha256: 'f'.repeat(64) },
+        PREFLIGHT_ABORT_CATEGORIES.AUTHORIZATION_UNBOUND,
+        'expectations not bound must abort',
+      )
+    })
+
+    it('aborts outside the validity interval, on both sides', async () => {
+      await assertAborts(
+        { nowMillis: Date.parse('2026-07-26T16:59:59.000Z') },
+        PREFLIGHT_ABORT_CATEGORIES.AUTHORIZATION_EXPIRED,
+        'before notBefore must abort',
+      )
+      await assertAborts(
+        { nowMillis: Date.parse('2026-07-26T23:00:01.000Z') },
+        PREFLIGHT_ABORT_CATEGORIES.AUTHORIZATION_EXPIRED,
+        'after notAfter must abort',
+      )
+    })
+
+    it('aborts on an inverted or empty validity interval', async () => {
+      await assertAborts(
+        {
+          authorization: authorization({
+            notBefore: '2026-07-26T23:00:00.000Z',
+            notAfter: '2026-07-26T17:00:00.000Z',
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+        'inverted interval must abort',
+      )
+    })
+
+    it('aborts on unparseable validity bounds and non-canonical identifiers', async () => {
+      await assertAborts(
+        { authorization: authorization({ notAfter: 'whenever' }) },
+        PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+        'unparseable bound must abort',
+      )
+      await assertAborts(
+        { authorization: authorization({ changeId: 'has space' }) },
+        PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+        'non-canonical changeId must abort',
+      )
+      await assertAborts(
+        { authorization: authorization({ credentialSha256: 'nothex' }) },
+        PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+        'non-SHA256 checksum must abort',
+      )
+    })
+  })
+
+  describe('completeness and pagination', () => {
+    it('aborts when any reader reports an incomplete result', async () => {
+      for (const name of Object.keys(readers())) {
+        await assertAborts(
+          { readers: readers({ [name]: async () => ({ complete: false }) }) },
+          PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+          `${name} incomplete must abort`,
+        )
+      }
+    })
+
+    it('aborts when a reader reports unread pages', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readFlatCredentials: async () => ({
+              complete: true, nextPageToken: 'more', count: 3,
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+        'nextPageToken must abort',
+      )
+      await assertAborts(
+        {
+          readers: readers({
+            readFlatAuthLogs: async () => ({
+              complete: true, truncated: true, count: 3,
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.INCOMPLETE_PAGINATION,
+        'truncated must abort',
+      )
+    })
+
+    it('aborts when a reader returns no structured result', async () => {
+      await assertAborts(
+        { readers: readers({ readFoundation: async () => null }) },
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'null result must abort',
+      )
+    })
+
+    it('aborts when a required reader is absent', async () => {
+      const incomplete = readers()
+      delete incomplete.readAuthCompatibility
+      await assertAborts(
+        { readers: incomplete },
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'missing reader must abort',
+      )
+    })
+
+    it('aborts when a reader throws rather than treating it as empty', async () => {
+      await assert.rejects(() => run({
+        readers: readers({
+          readLegacyClassroomAggregate: async () => {
+            throw new Error('deadline exceeded')
+          },
+        }),
+      }))
+    })
+  })
+
+  describe('deployment inventory versus expectations', () => {
+    it('aborts on an artifact expectations do not describe', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readDeploymentInventory: async () => complete({
+              rules: { release: 'rules-release-42', checksum: 'a'.repeat(64) },
+              functions: { studentPinLoginV2: 'rev-7', mysteryFn: 'rev-1' },
+              hosting: { release: 'hosting-99' },
+              indexes: { composite: 'none' },
+              gateParameters: { MULTI_TEACHER_V2_ENABLED: 'false' },
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.UNKNOWN_DEPLOYED_ARTIFACT,
+        'undescribed function must abort',
+      )
+    })
+
+    it('aborts when an expected artifact is absent from production', async () => {
+      await assertAborts(
+        {
+          expectations: expectations({
+            deployment: {
+              ...expectations().deployment,
+              functions: { studentPinLoginV2: 'rev-7', missingFn: 'rev-2' },
+            },
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.EXPECTATIONS_MISMATCH,
+        'absent expected artifact must abort',
+      )
+    })
+
+    it('aborts on a divergent deployed value', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readDeploymentInventory: async () => complete({
+              rules: { release: 'rules-release-43', checksum: 'a'.repeat(64) },
+              functions: { studentPinLoginV2: 'rev-7' },
+              hosting: { release: 'hosting-99' },
+              indexes: { composite: 'none' },
+              gateParameters: { MULTI_TEACHER_V2_ENABLED: 'false' },
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.EXPECTATIONS_MISMATCH,
+        'divergent rules release must abort',
+      )
+    })
+
+    it('aborts on an unexpected gate-parameter value', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readDeploymentInventory: async () => complete({
+              rules: { release: 'rules-release-42', checksum: 'a'.repeat(64) },
+              functions: { studentPinLoginV2: 'rev-7' },
+              hosting: { release: 'hosting-99' },
+              indexes: { composite: 'none' },
+              gateParameters: { MULTI_TEACHER_V2_ENABLED: 'true' },
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.EXPECTATIONS_MISMATCH,
+        'an already-enabled gate must abort',
+      )
+    })
+
+    it('aborts when a required surface is missing from the inventory', async () => {
+      // The inventory omits gateParameters while expectations still describe it.
+      // Surfaces are checked in declared order, so `rules` is compared first and
+      // matches; the run then reaches gateParameters and finds it absent. The
+      // expectations-mismatch category is correct here: production failed to
+      // present a surface the reviewed artifact requires.
+      await assertAborts(
+        {
+          readers: readers({
+            readDeploymentInventory: async () => complete({
+              rules: { release: 'rules-release-42', checksum: 'a'.repeat(64) },
+              functions: { studentPinLoginV2: 'rev-7' },
+              hosting: { release: 'hosting-99' },
+              indexes: { composite: 'none' },
+              // gateParameters omitted entirely
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'a surface absent from the inventory must abort as unavailable',
+      )
+    })
+
+    it('aborts when the expectations artifact omits a required surface', async () => {
+      // The mirror case: production presents the surface but nothing reviewed
+      // describes it, so there is no baseline to compare against.
+      const withoutGate = expectations()
+      delete withoutGate.deployment.gateParameters
+      await assertAborts(
+        { expectations: withoutGate },
+        PREFLIGHT_ABORT_CATEGORIES.EXPECTATIONS_MISMATCH,
+        'an undescribed surface must abort',
+      )
+    })
+
+    it('aborts on an unacknowledged active writer', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readActiveWriters: async () => complete({
+              writers: ['legacy-teacher-browser', 'unknown-cron-job'],
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.UNKNOWN_DEPLOYED_ARTIFACT,
+        'unknown writer must abort',
+      )
+    })
+
+    it('aborts when expectations do not enumerate acknowledged writers', async () => {
+      const withoutWriters = expectations()
+      delete withoutWriters.acknowledgedWriters
+      await assertAborts(
+        { expectations: withoutWriters },
+        PREFLIGHT_ABORT_CATEGORIES.EXPECTATIONS_MISMATCH,
+        'missing writer enumeration must abort',
+      )
+    })
+  })
+
+  describe('foundation classification', () => {
+    it('accepts an unambiguously absent foundation', async () => {
+      const result = await run({
+        readers: readers({
+          readFoundation: async () => complete({
+            present: false, anomalies: [],
+          }),
+        }),
+      })
+      assert.equal(result.outcome, 'succeeded')
+    })
+
+    it('aborts on a non-reciprocal or inactive foundation', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readFoundation: async () => complete({
+              present: true, reciprocal: false, teacherStatus: 'active',
+              classroomId: 'abc123', anomalies: [],
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.FOUNDATION_PARTIAL,
+        'non-reciprocal link must abort',
+      )
+      await assertAborts(
+        {
+          readers: readers({
+            readFoundation: async () => complete({
+              present: true, reciprocal: true, teacherStatus: 'disabled',
+              classroomId: 'abc123', anomalies: [],
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.FOUNDATION_PARTIAL,
+        'inactive teacher must abort',
+      )
+    })
+
+    it('aborts on ambiguous foundation presence', async () => {
+      for (const present of [undefined, null, 'yes', 1]) {
+        await assertAborts(
+          {
+            readers: readers({
+              readFoundation: async () => complete({ present, anomalies: [] }),
+            }),
+          },
+          PREFLIGHT_ABORT_CATEGORIES.FOUNDATION_PARTIAL,
+          `present=${String(present)} must abort`,
+        )
+      }
+    })
+  })
+
+  describe('destination and scoped-path absence', () => {
+    it('aborts on unexpected scoped credentials before bridge rules', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readDestinationPaths: async () => complete({
+              counts: { scopedCredentials: 3, scopedLogs: 0, classroomStudents: 0 },
+              studentIds: [],
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.DESTINATION_DATA_PRESENT,
+        'scoped credentials must abort',
+      )
+    })
+
+    it('accepts destination data only when expectations acknowledge the exact count', async () => {
+      const result = await run({
+        readers: readers({
+          readDestinationPaths: async () => complete({
+            counts: { classroomStudents: 3, scopedCredentials: 0, scopedLogs: 0 },
+            studentIds: ['1', '2', '3'],
+          }),
+        }),
+        expectations: expectations({
+          acknowledgedDestinationCounts: {
+            classroomStudents: 3, scopedCredentials: 0, scopedLogs: 0,
+          },
+        }),
+      })
+      assert.equal(result.outcome, 'succeeded')
+    })
+
+    it('aborts when an acknowledged count does not match exactly', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readDestinationPaths: async () => complete({
+              counts: { classroomStudents: 4, scopedCredentials: 0, scopedLogs: 0 },
+              studentIds: [],
+            }),
+          }),
+          expectations: expectations({
+            acknowledgedDestinationCounts: { classroomStudents: 3 },
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.DESTINATION_DATA_PRESENT,
+        'count mismatch must abort',
+      )
+    })
+
+    it('aborts on a malformed destination count', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readDestinationPaths: async () => complete({
+              counts: { scopedCredentials: -1 }, studentIds: [],
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'negative count must abort',
+      )
+    })
+  })
+
+  describe('Auth compatibility', () => {
+    it('aborts on a deterministic UID collision', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readAuthCompatibility: async () => complete({
+              uidCollisions: 1, incompatibleUsers: 0, examinedUserCount: 3,
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.AUTH_INCOMPATIBLE,
+        'UID collision must abort',
+      )
+    })
+
+    it('aborts on an incompatible existing Auth user', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readAuthCompatibility: async () => complete({
+              uidCollisions: 0, incompatibleUsers: 2, examinedUserCount: 5,
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.AUTH_INCOMPATIBLE,
+        'incompatible user must abort',
+      )
+    })
+  })
+
+  describe('identity, anomalies, and canonical safety', () => {
+    it('aborts on non-checksum-safe legacy values', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readLegacyClassroomAggregate: async () => complete({
+              counts: { students: 3 },
+              studentIds: ['1'],
+              noncanonicalValueCount: 2,
+              anomalies: [],
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.NONCANONICAL_VALUE,
+        'noncanonical values must abort',
+      )
+    })
+
+    it('aborts on duplicate credential identities', async () => {
+      for (const field of ['duplicateLoginIds', 'duplicateStudentIds']) {
+        await assertAborts(
+          {
+            readers: readers({
+              readFlatCredentials: async () => complete({
+                count: 3, studentIds: ['1'],
+                duplicateLoginIds: 0, duplicateStudentIds: 0,
+                noncanonicalLoginIds: 0, anomalies: [],
+                [field]: 1,
+              }),
+            }),
+          },
+          PREFLIGHT_ABORT_CATEGORIES.IDENTITY_COLLISION,
+          `${field} must abort`,
+        )
+      }
+    })
+
+    it('aborts on a non-canonical login ID', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readFlatCredentials: async () => complete({
+              count: 3, studentIds: ['1'],
+              duplicateLoginIds: 0, duplicateStudentIds: 0,
+              noncanonicalLoginIds: 1, anomalies: [],
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.MALFORMED_ID,
+        'noncanonical login ID must abort',
+      )
+    })
+
+    it('aborts on an anomaly the expectations do not acknowledge', async () => {
+      await assertAborts(
+        {
+          readers: readers({
+            readFlatAuthLogs: async () => complete({
+              count: 12, studentIds: ['1'],
+              anomalies: ['auth-log-missing-classroom-id'],
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.UNREVIEWED_ANOMALY,
+        'unacknowledged anomaly must abort',
+      )
+    })
+
+    it('accepts an anomaly the checksum-bound expectations acknowledge', async () => {
+      const result = await run({
+        readers: readers({
+          readFlatAuthLogs: async () => complete({
+            count: 12, studentIds: ['1'],
+            anomalies: ['auth-log-missing-classroom-id'],
+          }),
+        }),
+        expectations: expectations({
+          acknowledgedAnomalies: ['auth-log-missing-classroom-id'],
+        }),
+      })
+      assert.equal(result.outcome, 'succeeded')
+    })
+  })
+
+  describe('student-ID watermark', () => {
+    it('classifies numeric IDs strictly', () => {
+      assert.equal(numericStudentId('7'), 7)
+      assert.equal(numericStudentId(7), 7)
+      assert.equal(numericStudentId('0'), 0)
+      // Normalization hazards are not numbers.
+      assert.equal(numericStudentId('007'), null)
+      assert.equal(numericStudentId(' 7'), null)
+      assert.equal(numericStudentId('7 '), null)
+      assert.equal(numericStudentId('7.0'), null)
+      assert.equal(numericStudentId('-7'), null)
+      assert.equal(numericStudentId('1e3'), null)
+      assert.equal(numericStudentId('abc'), null)
+      assert.equal(numericStudentId(''), null)
+      assert.equal(numericStudentId(null), null)
+      assert.equal(numericStudentId(1.5), null)
+      assert.equal(numericStudentId(Number.MAX_SAFE_INTEGER + 2), null)
+    })
+
+    it('takes the maximum across every source', () => {
+      const watermark = deriveStudentIdWatermark({
+        roster: ['1', '2'],
+        credentials: ['2', '9'],
+        transactions: ['1'],
+        loginHistory: [],
+        authLogs: ['4'],
+        destinationStudents: [],
+      })
+      assert.equal(watermark.observedMaximum, 9)
+      assert.equal(watermark.nextStudentNumber, 10)
+      // Distinct NUMERIC identities across all sources: 1, 2, 9, 4. The repeated
+      // '1' and '2' are the same student appearing in several sources.
+      assert.equal(watermark.distinctCount, 4)
+    })
+
+    it('starts at 1 for a classroom with no history', () => {
+      const watermark = deriveStudentIdWatermark({ roster: [] })
+      assert.equal(watermark.observedMaximum, null)
+      assert.equal(watermark.nextStudentNumber, 1)
+    })
+
+    it('aborts on a normalization collision between spellings', () => {
+      assert.throws(
+        () => deriveStudentIdWatermark({ roster: ['7'], credentials: [7] }),
+        error => error.category === PREFLIGHT_ABORT_CATEGORIES.IDENTITY_COLLISION,
+        'string 7 and numeric 7 must not silently share a slot',
+      )
+    })
+
+    it('aborts on a malformed historical ID', async () => {
+      assert.throws(
+        () => deriveStudentIdWatermark({ roster: ['abc'] }),
+        error => error.category === PREFLIGHT_ABORT_CATEGORIES.MALFORMED_ID,
+      )
+      await assertAborts(
+        {
+          readers: readers({
+            readLegacyClassroomAggregate: async () => complete({
+              counts: { students: 1 },
+              studentIds: ['007'],
+              noncanonicalValueCount: 0,
+              anomalies: [],
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.MALFORMED_ID,
+        'a padded historical ID must abort the run',
+      )
+    })
+
+    it('aborts when a watermark source is not an array', () => {
+      assert.throws(
+        () => deriveStudentIdWatermark({ roster: 'nope' }),
+        error => error.category === PREFLIGHT_ABORT_CATEGORIES.WATERMARK_UNRESOLVED,
+      )
+    })
+  })
+
+  describe('no remote mutation is reachable', () => {
+    it('invokes only the declared read functions', async () => {
+      const invoked = []
+      const spied = Object.fromEntries(
+        Object.entries(readers()).map(([name, fn]) => [
+          name,
+          async (...args) => { invoked.push(name); return fn(...args) },
+        ]),
+      )
+      await run({ readers: spied })
+
+      // Every invoked name must begin with `read`.
+      for (const name of invoked) {
+        assert.match(name, /^read/, `${name} is not a read operation`)
+      }
+      assert.equal(new Set(invoked).size, invoked.length, 'no reader ran twice')
+    })
+
+    it('never touches a mutating Firestore or Auth surface', async () => {
+      // A reader set that also exposes mutating methods; any call to one fails.
+      const forbidden = [
+        'set', 'update', 'delete', 'create', 'add', 'commit',
+        'batch', 'runTransaction', 'bulkWriter', 'writeBatch',
+        'setCustomUserClaims', 'createUser', 'updateUser', 'deleteUser',
+        'deploy', 'patch', 'setParameter',
+      ]
+      const trap = {}
+      for (const name of forbidden) {
+        trap[name] = () => {
+          throw new Error(`forbidden mutating call: ${name}`)
+        }
+      }
+
+      const result = await run({ readers: { ...readers(), ...trap } })
+      assert.equal(result.outcome, 'succeeded')
+    })
+
+    it('passes no writable handle to any reader', async () => {
+      const seenArguments = []
+      const spied = Object.fromEntries(
+        Object.entries(readers()).map(([name, fn]) => [
+          name,
+          async (...args) => { seenArguments.push(args); return fn(...args) },
+        ]),
+      )
+      await run({ readers: spied })
+      // Readers are invoked with no arguments at all, so the preflight cannot
+      // hand them a mutable client.
+      for (const args of seenArguments) {
+        assert.equal(args.length, 0, 'readers must be called with no arguments')
+      }
+    })
+  })
+
+  describe('manifest persistence discipline', () => {
+    it('persists exactly once on success', async () => {
+      let calls = 0
+      await run({
+        persistManifest: async (manifest) => {
+          calls += 1
+          assert.equal(manifest.outcome, 'succeeded')
+          return { persisted: true }
+        },
+      })
+      assert.equal(calls, 1)
+    })
+
+    it('never persists a manifest for a failed preflight', async () => {
+      let calls = 0
+      const persistManifest = async () => { calls += 1; return {} }
+
+      const failures = [
+        { credentialSha256: 'f'.repeat(64) },
+        { authorization: authorization({ projectId: 'demo-x' }) },
+        { nowMillis: Date.parse('2027-01-01T00:00:00.000Z') },
+        {
+          readers: readers({
+            readAuthCompatibility: async () => complete({
+              uidCollisions: 1, incompatibleUsers: 0, examinedUserCount: 1,
+            }),
+          }),
+        },
+        {
+          readers: readers({
+            readFoundation: async () => complete({
+              present: true, reciprocal: false, teacherStatus: 'active',
+              anomalies: [],
+            }),
+          }),
+        },
+        { readers: readers({ readFlatCredentials: async () => ({ complete: false }) }) },
+        { environment: { GCLOUD_PROJECT: 'morgan-bank-staging' } },
+      ]
+
+      for (const override of failures) {
+        await assert.rejects(() => run({ ...override, persistManifest }))
+      }
+      assert.equal(calls, 0, 'a failed preflight must never write a manifest')
+    })
+
+    it('omits persistence entirely when no persister is supplied', async () => {
+      const result = await run({ persistManifest: undefined })
+      assert.equal(result.persisted, null)
+      assert.equal(result.outcome, 'succeeded')
+    })
+  })
+
+  describe('manifest content safety', () => {
+    it('records only counts, classifications, and hashes', async () => {
+      let captured
+      await run({
+        persistManifest: async (manifest) => { captured = manifest; return {} },
+      })
+
+      const serialized = JSON.stringify(captured)
+      // No raw identifiers or secret-shaped material may appear.
+      assert.ok(!serialized.includes('private'))
+      assert.ok(!/-----BEGIN/.test(serialized))
+      assert.ok(!serialized.includes('@'), 'no email may appear')
+
+      // The observations carry aggregates, not records.
+      assert.equal(typeof captured.observations.counts.flatCredentials, 'number')
+      assert.equal(captured.observations.foundationPresent, true)
+    })
+
+    it('binds the expectations checksum into its own domain', async () => {
+      let captured
+      await run({
+        persistManifest: async (manifest) => { captured = manifest; return {} },
+      })
+      const other = await run({
+        expectationsSha256: EXPECTATIONS_SHA,
+        persistManifest: async () => ({}),
+      })
+      assert.match(captured.domainChecksums.expectationsArtifact, /^[0-9a-f]{64}$/)
+      assert.equal(other.outcome, 'succeeded')
+    })
+  })
+
+  describe('phantom-parent enumeration requirement', () => {
+    it('declares listDocuments as the required enumeration method', () => {
+      // A Firestore document holding only subcollections does not exist as a
+      // document, so collection().get() returns zero rows while its
+      // subcollections remain readable. A destination-absence check built on
+      // get() would miss scoped credentials orphaned under such a parent. Found
+      // against the real emulator during Commit 3 (get() saw 0, listDocuments()
+      // saw 1); pinned here so the requirement survives into the production
+      // reader implementation.
+      assert.equal(COLLECTION_ENUMERATION_REQUIREMENT.method, 'listDocuments')
+      assert.equal(COLLECTION_ENUMERATION_REQUIREMENT.rejected, 'get')
+      assert.match(COLLECTION_ENUMERATION_REQUIREMENT.reason, /phantom-parent/)
+    })
+
+    it('the emulator suite enumerates destination paths with listDocuments', async () => {
+      // Source guard on the sibling emulator suite: reverting its enumeration to
+      // get() would silently reintroduce the blind spot, and its own assertions
+      // would still pass because the seeded document would become invisible to
+      // both the reader and the pre/post snapshot.
+      const { readFileSync } = await import('node:fs')
+      const { fileURLToPath } = await import('node:url')
+      const source = readFileSync(
+        fileURLToPath(new globalThis.URL(
+          '../../tests/phase3/production-runner.emulator.test.js',
+          import.meta.url,
+        )),
+        'utf8',
+      )
+      // Comment lines are stripped before matching: the suite documents WHY
+      // get() is wrong, and that prose must not trip the check on itself.
+      const code = source
+        .split('\n')
+        .filter(line => !line.trim().startsWith('//'))
+        .join('\n')
+      assert.match(
+        code,
+        /collection\('classrooms'\)\.listDocuments\(\)/,
+        'destination enumeration must use listDocuments',
+      )
+      assert.ok(
+        !/collection\('classrooms'\)\.get\(\)/.test(code),
+        'destination enumeration must not use get(), which hides phantom parents',
+      )
+    })
+  })
+})

@@ -249,13 +249,15 @@ describe('Phase 3 release-order source contract', () => {
     // implementation AND its test are pinned: listing only the .js files would
     // let a later commit's test file appear without its implementation, which is
     // the mirror image of the placeholder problem Section 12 forbids.
+    // Commit 3 earned productionPreflight, productionManifest, and preflight.js.
+    // Everything below still belongs to Commits 4-6. Both implementation and
+    // test names stay pinned, so a later commit's test cannot appear without its
+    // implementation either.
     const NOT_YET_EARNED = [
-      'productionPreflight.js', 'productionPreflight.test.js',
       'productionProjection.js', 'productionProjection.test.js',
-      'productionManifest.js', 'productionManifest.test.js',
       'productionWriter.js', 'productionWriter.test.js',
       'productionReconciliation.js', 'productionReconciliation.test.js',
-      'preflight.js', 'write.js', 'reverify.js',
+      'write.js', 'reverify.js',
       'studentLifecycle.js', 'studentLifecycle.test.js',
     ]
     for (const name of NOT_YET_EARNED) {
@@ -309,6 +311,39 @@ describe('Phase 3 release-order source contract', () => {
       assert.ok(
         actual.includes(implementation),
         `${name} must not exist without ${implementation}`,
+      )
+    }
+  })
+
+  it('boundary: the preflight entrypoint cannot reach write or reverify code', () => {
+    const preflightPath = new URL(
+      '../../functions/phase3/preflight.js', import.meta.url,
+    )
+    if (!existsSync(preflightPath)) return
+
+    const source = readFileSync(preflightPath, 'utf8')
+
+    // Decision 2.10: no argument or subcommand typo may turn preflight into a
+    // write. The structural guarantee is that the write path is not importable
+    // from here — the sibling entrypoints do not exist yet, and this file must
+    // never import them or a writer module.
+    for (const forbidden of [
+      './write.js', './reverify.js', './productionWriter.js',
+      './productionProjection.js', './productionReconciliation.js',
+      './studentLifecycle.js',
+    ]) {
+      assert.ok(
+        !source.includes(forbidden),
+        `preflight.js must not import ${forbidden}`,
+      )
+    }
+
+    // And the sibling entrypoints must still be absent entirely.
+    for (const sibling of ['write.js', 'reverify.js']) {
+      assert.equal(
+        existsSync(new URL(`../../functions/phase3/${sibling}`, import.meta.url)),
+        false,
+        `${sibling} belongs to a later commit`,
       )
     }
   })

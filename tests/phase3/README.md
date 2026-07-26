@@ -6,11 +6,15 @@
 | --- | --- | --- |
 | 1 | Acceptance contracts and credential-isolated commands | complete |
 | 2 | Production environment, project, and authorization guards | complete |
-| 3–11 | Preflight, projection, writer, lifecycle, client, rules, rehearsal | not started |
+| 3 | Read-only production preflight and manifest | complete |
+| 4–11 | Projection, writer, lifecycle, client, rules, rehearsal | not started |
 
-No Phase 3 production runner, migration, projection, reconciliation, client
-wiring, rules artifact, or deployment logic exists yet. Commit 2 added only
-fail-closed guards; it performs no I/O.
+No Phase 3 projection, reconciliation, writer, student lifecycle, client wiring,
+rules artifact, or deployment logic exists yet. Commit 3's preflight is read-only
+with respect to Firebase and Google services; persisting its local manifest is
+required and does not weaken that boundary. The `write.js` and `reverify.js`
+entrypoints do not exist, and `preflight.js` imports no writer module — asserted
+by `release-order.contract.test.js`.
 
 ## Commands
 
@@ -18,6 +22,16 @@ fail-closed guards; it performs no I/O.
 | --- | --- | --- |
 | `npm run test:phase3:contracts` | no | no |
 | `npm run test:phase3:unit` | no | no |
+| `npm run test:phase3:migration` | yes | no |
+
+`test:phase3:contracts` selects `tests/phase3/*.contract.test.js` — deliberately
+**not** `*.test.js`. The broader glob would also select the emulator-backed runner
+suite and execute it with no emulator running. The command-safety contract asserts
+the narrowing and that no `*.emulator.test.js` file matches it.
+
+`test:phase3:migration` starts the Firestore and Auth emulators, so automatic
+discovery in `command-safety.contract.test.js` applies the complete isolation
+contract to it with no special-case entry.
 
 `test:phase3:unit` runs the colocated `functions/phase3/*.test.js` suites. Per
 Section 12 as amended it is **emulator-free** and therefore needs no Firebase CLI
@@ -203,6 +217,56 @@ One assertion deserves note for reviewers: an explicitly passed
 ambient process while the caller believed it supplied a constrained context. This
 applies to every public guard surface, including the exported
 `resolveRuntimeProjectId`.
+
+## Commit 3 — preflight and manifest suites
+
+`functions/phase3/productionPreflight.test.js` and
+`productionManifest.test.js` are **behavioral**. `production-runner.emulator.test.js`
+is **emulator-backed**: it drives the real `runPreflightMain` against live
+Firestore and Auth emulators and asserts pre/post state equality to prove zero
+remote writes.
+
+The deployment inventory — Rules releases, Functions revisions, Hosting releases —
+is **injected** in the emulator suite. The Firebase emulators do not emulate those
+control planes, so there is nothing live to read; every Firestore and Auth
+observation is genuine.
+
+The emulator suite runs under `demo-morgan-bank-phase2b-server-test`, the single
+demo project Commit 2's allowlist permits. Giving this suite its own project would
+have meant widening `ALLOWED_EMULATOR_PROJECT_ID`, weakening a security guard for
+test convenience; the suite conforms to the guard instead. It supplies
+`FUNCTIONS_EMULATOR=true` explicitly because `emulators:exec --only auth,firestore`
+does not set it (no Functions emulator runs) while the guard requires it.
+
+### Phantom-parent enumeration — found during this commit
+
+A Firestore document that holds only subcollections does not exist as a document:
+`collection('classrooms').get()` returns **zero** rows while its subcollections
+remain fully readable. Verified against the emulator — after writing
+`classrooms/x/studentCredentials/ada` with no `classrooms/x` document, `get()` saw
+0 and `listDocuments()` saw 1.
+
+A destination-absence check built on `get()` would therefore have been **blind to
+scoped credentials orphaned under such a parent** — exactly the pre-existing V2
+data the check exists to catch. Destination enumeration and the pre/post snapshot
+both use `listDocuments()`. `COLLECTION_ENUMERATION_REQUIREMENT` records the rule
+for the production reader implementation, and a source guard fails if the emulator
+suite reverts to `get()`.
+
+### Manifest project scope
+
+`validateProductionManifest` accepts the production project or a `demo-` project.
+The rehearsal therefore exercises the real validation and persistence path rather
+than a weaker variant. A rehearsal manifest still cannot authorize a production
+write: the future writer requires the production project ID, which a demo manifest
+never carries.
+
+### What these suites do not prove
+
+Nothing here proves production state, deployed artifacts, real-account behavior, or
+that a later writer honors a retained manifest. The emulator suite never installs
+an operator manifest — it captures the built manifest instead, so
+`functions/phase3/.state/` stays untouched by tests.
 
 ## Relationship to the Phase 2B matrix
 

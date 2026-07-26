@@ -10,7 +10,7 @@
 //
 // Authority: PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md Sections 12 and 14.
 
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
@@ -283,6 +283,32 @@ describe('Phase 3 command-safety source contract', () => {
       !/emulators:exec/.test(command),
       'the static contract suite must not start an emulator',
     )
+
+    // The glob must be narrowed to *.contract.test.js. A broader
+    // `tests/phase3/*.test.js` would also select the emulator-backed runner
+    // suite and execute it with no emulator running — a green-looking run that
+    // proved nothing, or a confusing hard failure.
+    assert.match(
+      command,
+      /\*\.contract\.test\.js/,
+      'the contracts glob must select only *.contract.test.js',
+    )
+
+    // Structural proof the narrowing matters: emulator-backed suites exist in
+    // this directory and must not match the contracts glob.
+    const emulatorSuites = readdirSync(
+      new URL('../../tests/phase3/', import.meta.url),
+    ).filter(name => name.endsWith('.emulator.test.js'))
+    assert.ok(
+      emulatorSuites.length > 0,
+      'this assertion is only meaningful while an emulator suite exists here',
+    )
+    for (const suite of emulatorSuites) {
+      assert.ok(
+        !suite.endsWith('.contract.test.js'),
+        `${suite} must not be selected by the emulator-free contracts glob`,
+      )
+    }
   })
 
   /**
@@ -298,7 +324,6 @@ describe('Phase 3 command-safety source contract', () => {
   it('source contract: no behavioral gate exists without the suite it runs', () => {
     for (const name of [
       'test:phase3:rules',
-      'test:phase3:migration',
       'test:phase3:release-rehearsal',
       'test:phase3:rollback-rehearsal',
     ]) {
@@ -308,6 +333,30 @@ describe('Phase 3 command-safety source contract', () => {
         `${name} must not exist until its behavioral suite does`,
       )
     }
+
+    // test:phase3:migration was earned in Commit 3 alongside the real
+    // production-runner emulator suite. It must name the suite it runs, and that
+    // suite must exist on disk.
+    const migrationGate = scripts['test:phase3:migration']
+    assert.equal(
+      typeof migrationGate,
+      'string',
+      'test:phase3:migration must exist in Commit 3',
+    )
+    assert.match(migrationGate, /production-runner\.emulator\.test\.js/)
+    assert.ok(
+      existsSync(new URL(
+        '../../tests/phase3/production-runner.emulator.test.js',
+        import.meta.url,
+      )),
+      'the emulator gate must have its suite present',
+    )
+    // It starts emulators, so discovery must have picked it up and applied the
+    // full isolation contract without a special case.
+    assert.ok(
+      ISOLATED_EMULATOR_COMMANDS.includes('test:phase3:migration'),
+      'the Phase 3 emulator gate must be covered by automatic discovery',
+    )
 
     // test:phase3:unit must exist AND must actually execute the colocated
     // Phase 3 unit suites, so the gate name cannot drift away from its suite.
