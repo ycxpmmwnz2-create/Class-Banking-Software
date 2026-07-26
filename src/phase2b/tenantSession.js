@@ -12,7 +12,7 @@ export const SESSION_STATES = Object.freeze({
 
 const VALID_TRANSITIONS = {
   [SESSION_STATES.SIGNED_OUT]: [SESSION_STATES.AUTHENTICATING, SESSION_STATES.RESOLVING],
-  [SESSION_STATES.AUTHENTICATING]: [SESSION_STATES.RESOLVING, SESSION_STATES.SIGNED_OUT],
+  [SESSION_STATES.AUTHENTICATING]: [SESSION_STATES.RESOLVING, SESSION_STATES.SIGNED_OUT, SESSION_STATES.DENIED_OR_INCONSISTENT],
   [SESSION_STATES.RESOLVING]: [
     SESSION_STATES.ONBOARDING_REQUIRED,
     SESSION_STATES.ACTIVE,
@@ -22,6 +22,8 @@ const VALID_TRANSITIONS = {
   [SESSION_STATES.ONBOARDING_REQUIRED]: [SESSION_STATES.ONBOARDING, SESSION_STATES.SIGNED_OUT],
   [SESSION_STATES.ONBOARDING]: [
     SESSION_STATES.RESOLVING,
+    SESSION_STATES.ACTIVE,
+    SESSION_STATES.ONBOARDING_REQUIRED,
     SESSION_STATES.DENIED_OR_INCONSISTENT,
     SESSION_STATES.SIGNED_OUT
   ],
@@ -41,7 +43,7 @@ const VALID_TRANSITIONS = {
     SESSION_STATES.SIGNED_OUT,
     SESSION_STATES.DENIED_OR_INCONSISTENT
   ],
-  [SESSION_STATES.DENIED_OR_INCONSISTENT]: [SESSION_STATES.SIGNED_OUT, SESSION_STATES.AUTHENTICATING]
+  [SESSION_STATES.DENIED_OR_INCONSISTENT]: [SESSION_STATES.SIGNED_OUT, SESSION_STATES.AUTHENTICATING, SESSION_STATES.RESOLVING]
 };
 
 export class TenantSession {
@@ -61,6 +63,7 @@ export class TenantSession {
     this.classroom = null;
     this.errorMessage = "";
     this.correlationId = null;
+    this.invalidationReason = null;
 
     this.listeners = new Set();
     this.abortControllers = new Set();
@@ -96,7 +99,10 @@ export class TenantSession {
   }
 
   validateCapturedIdentity(captured) {
-    if (!captured || typeof captured !== "object") return false;
+    if (!captured || typeof captured !== "object" || Array.isArray(captured)) return false;
+    if (typeof captured.epoch !== "number" || !Number.isInteger(captured.epoch) || captured.epoch < 0) {
+      return false;
+    }
     return (
       captured.epoch === this.epoch &&
       captured.uid === this.uid &&
@@ -192,7 +198,7 @@ export class TenantSession {
 
     this.clearResources();
 
-    if (this.cacheModule && oldUid && oldClassroomId) {
+    if (this.cacheModule && oldUid && oldClassroomId && typeof this.cacheModule.purgeTenantCache === "function") {
       try {
         this.cacheModule.purgeTenantCache(this.storageAdapter, this.projectId, oldUid, oldClassroomId);
       } catch (err) {
@@ -231,8 +237,11 @@ export class TenantSession {
 
   async signOut(authAdapter = null) {
     const adapter = authAdapter || this.authAdapter;
-    let signOutError = null;
 
+    // Invalidation and global reset happen synchronously BEFORE awaiting Firebase signOut
+    this.invalidate("sign-out", { state: SESSION_STATES.SIGNED_OUT });
+
+    let signOutError = null;
     if (adapter && typeof adapter.signOut === "function") {
       try {
         await adapter.signOut();
@@ -241,18 +250,16 @@ export class TenantSession {
       }
     }
 
-    this.invalidate("sign-out", { state: SESSION_STATES.SIGNED_OUT });
-
     if (signOutError) {
       return { success: true, warning: "Local adapter signOut rejected, tenant state purged successfully." };
     }
     return { success: true };
   }
 
-  requireTeacher() {
+  requireTeacher(currentAuthUid) {
     const isReady = this.state === SESSION_STATES.READY;
-    const hasMatchingUid = Boolean(this.uid);
-    const hasClassroom = Boolean(this.classroomId);
+    const hasMatchingUid = Boolean(this.uid && currentAuthUid === this.uid);
+    const hasClassroom = Boolean(typeof this.classroomId === "string" && this.classroomId.length > 0);
     const isTeacherRole = this.role === "teacher";
     return isReady && hasMatchingUid && hasClassroom && isTeacherRole;
   }

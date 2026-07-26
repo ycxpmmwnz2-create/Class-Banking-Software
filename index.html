@@ -2958,13 +2958,32 @@ if (screen === "editSettingsLists" && isTeacher) {
           return;
         }
 
+        const tokenResult = await user.getIdTokenResult().catch(() => ({ claims: {} }));
+        const role = tokenResult?.claims?.role || "teacher";
+
+        if (role === "student") {
+          // V2 student session handling (memory-only, no teacher cache/state)
+          v2TenantSession.transitionTo(SESSION_STATES.AUTHENTICATING, { uid: user.uid, role: "student" });
+          render();
+          return;
+        }
+
         const callAdapter = async (name, payload) => {
           const callable = httpsCallable(functions, name);
           return await callable(payload);
         };
 
         v2TenantSession.transitionTo(SESSION_STATES.AUTHENTICATING, { uid: user.uid, role: "teacher" });
-        await orchestrateTeacherResolution(v2TenantSession, callAdapter);
+        const res = await orchestrateTeacherResolution(v2TenantSession, callAdapter);
+
+        if (res.success && v2TenantSession.getState() === SESSION_STATES.ACTIVE) {
+          v2TenantSession.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+          const cached = readTeacherCache(localStorage, v2TenantSession, v2TenantSession.projectId);
+          if (cached) {
+            data = cached.data;
+          }
+          v2TenantSession.transitionTo(SESSION_STATES.READY);
+        }
         render();
         return;
       }

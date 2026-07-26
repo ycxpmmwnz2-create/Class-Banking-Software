@@ -1,36 +1,41 @@
 import { SESSION_STATES } from "./tenantSession.js";
 
+export function normalizeFirebaseErrorCode(error) {
+  if (!error) return "";
+  let code = typeof error === "string" ? error : error.code || "";
+  if (code.startsWith("functions/")) {
+    code = code.replace(/^functions\//, "");
+  }
+  return code;
+}
+
 export function mapSafeClientError(error) {
   if (!error) return "An unexpected error occurred. Please try again.";
 
-  const code = error.code || "";
-  if (code === "unauthenticated") {
-    return "Authentication required. Please sign in again.";
+  const rawCode = normalizeFirebaseErrorCode(error);
+  if (rawCode === "unauthenticated") {
+    return "Sign in required.";
   }
-  if (code === "permission-denied") {
-    return "Access denied. Your account is not authorized.";
+  if (rawCode === "permission-denied") {
+    return "This account is not eligible to complete this action.";
   }
-  if (code === "failed-precondition") {
-    const correlationId = error.details?.correlationId || error.correlationId;
-    if (correlationId) {
-      return `Account data is inconsistent. Please contact support with code: ${correlationId}`;
-    }
-    return "Account configuration is incomplete or inconsistent. Please contact support.";
+  if (rawCode === "failed-precondition") {
+    return "This account cannot be set up automatically. Contact your administrator for assistance.";
   }
-  if (code === "already-exists") {
-    return "Classroom setup has already been completed.";
+  if (rawCode === "already-exists") {
+    return "This account is not eligible to complete this action.";
   }
-  if (code === "invalid-argument") {
-    return "Invalid classroom input details provided.";
+  if (rawCode === "invalid-argument") {
+    return "The request was invalid.";
   }
-  if (code === "resource-exhausted") {
-    return "System is currently busy. Please try again shortly.";
+  if (rawCode === "resource-exhausted") {
+    return "The request could not be completed. Please try again later.";
   }
-  if (code === "aborted") {
-    return "Operation was interrupted. Please try again.";
+  if (rawCode === "aborted") {
+    return "The request could not be completed. Please try again.";
   }
 
-  return "An unexpected error occurred. Please try again.";
+  return "An unexpected internal error occurred.";
 }
 
 export async function orchestrateTeacherResolution(session, callableAdapter) {
@@ -43,7 +48,7 @@ export async function orchestrateTeacherResolution(session, callableAdapter) {
   session.transitionTo(SESSION_STATES.RESOLVING);
 
   try {
-    const response = await callableAdapter("resolveTeacherTenant", {});
+    const response = await callableAdapter("resolveTeacherTenantV2", {});
     if (!session.validateCapturedIdentity(captured)) {
       return { success: false, reason: "stale-epoch-ignored" };
     }
@@ -65,12 +70,11 @@ export async function orchestrateTeacherResolution(session, callableAdapter) {
       return { success: true, state: "active", teacher: res.teacher, classroom: res.classroom };
     }
 
-    session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, {
-      errorMessage: "Unexpected resolution response shape from server."
-    });
+    const safeMessage = "Unexpected server resolution state.";
+    session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMessage });
     session.invalidate("resolution-denied-or-inconsistent", {
       state: SESSION_STATES.DENIED_OR_INCONSISTENT,
-      errorMessage: "Unexpected resolution response shape from server."
+      errorMessage: safeMessage
     });
     return { success: false, reason: "inconsistent-resolution" };
 
@@ -80,16 +84,12 @@ export async function orchestrateTeacherResolution(session, callableAdapter) {
     }
 
     const safeMessage = mapSafeClientError(err);
-    session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, {
-      errorMessage: safeMessage,
-      correlationId: err?.details?.correlationId || err?.correlationId || null
-    });
+    session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMessage });
     session.invalidate("resolution-failed", {
       state: SESSION_STATES.DENIED_OR_INCONSISTENT,
-      errorMessage: safeMessage,
-      correlationId: err?.details?.correlationId || err?.correlationId || null
+      errorMessage: safeMessage
     });
-    return { success: false, error: safeMessage, rawCode: err?.code };
+    return { success: false, error: safeMessage, rawCode: normalizeFirebaseErrorCode(err) };
   }
 }
 
@@ -107,18 +107,25 @@ export async function orchestrateTeacherOnboarding(session, callableAdapter, { c
 
   try {
     const payload = { classroomName: classroomName.trim() };
-    const response = await callableAdapter("onboardTeacherClassroom", payload);
+    const response = await callableAdapter("onboardTeacherClassroomV2", payload);
 
     if (!session.validateCapturedIdentity(captured)) {
       return { success: false, reason: "stale-epoch-ignored" };
     }
 
     const res = response?.data || response;
-    if (res?.state === "resolving" || res?.success) {
-      return orchestrateTeacherResolution(session, callableAdapter);
+    if (res?.teacher && res?.classroom?.id) {
+      session.transitionTo(SESSION_STATES.ACTIVE, {
+        uid: res.teacher.uid || session.uid,
+        role: "teacher",
+        classroomId: res.classroom.id,
+        teacher: res.teacher,
+        classroom: res.classroom
+      });
+      return { success: true, state: "active", teacher: res.teacher, classroom: res.classroom, created: Boolean(res.created) };
     }
 
-    const safeMsg = "Onboarding completed but resolution failed to verify.";
+    const safeMsg = "Onboarding response missing valid teacher or classroom data.";
     session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMsg });
     session.invalidate("onboarding-inconsistent", {
       state: SESSION_STATES.DENIED_OR_INCONSISTENT,
@@ -133,8 +140,68 @@ export async function orchestrateTeacherOnboarding(session, callableAdapter, { c
 
     const safeMessage = mapSafeClientError(err);
     session.transitionTo(SESSION_STATES.ONBOARDING_REQUIRED, { errorMessage: safeMessage });
-    return { success: false, error: safeMessage, rawCode: err?.code };
+    return { success: false, error: safeMessage, rawCode: normalizeFirebaseErrorCode(err) };
   }
+}
+
+export async function orchestrateClassroomDataLoad(session, loadFn, applyFn) {
+  const captured = session.captureIdentity();
+  const loadedData = await loadFn();
+  if (!session.validateCapturedIdentity(captured)) {
+    return { executed: false, reason: "stale-epoch-ignored" };
+  }
+  if (typeof applyFn === "function") {
+    applyFn(loadedData);
+  }
+  return { executed: true, data: loadedData };
+}
+
+export async function orchestrateClassroomDataSave(session, saveFn, data) {
+  const captured = session.captureIdentity();
+  if (!session.validateCapturedIdentity(captured)) {
+    return { executed: false, reason: "stale-epoch-ignored" };
+  }
+  const result = await saveFn(data);
+  if (!session.validateCapturedIdentity(captured)) {
+    return { executed: false, reason: "stale-epoch-ignored-post-save" };
+  }
+  return { executed: true, result };
+}
+
+export async function orchestrateAuthLogsFetch(session, fetchFn, applyFn) {
+  const captured = session.captureIdentity();
+  const logs = await fetchFn();
+  if (!session.validateCapturedIdentity(captured)) {
+    return { executed: false, reason: "stale-epoch-ignored" };
+  }
+  if (typeof applyFn === "function") {
+    applyFn(logs);
+  }
+  return { executed: true, logs };
+}
+
+export async function orchestrateStudentPinReset(session, resetFn, payload) {
+  const captured = session.captureIdentity();
+  if (!session.validateCapturedIdentity(captured)) {
+    return { executed: false, reason: "stale-epoch-ignored" };
+  }
+  const result = await resetFn(payload);
+  if (!session.validateCapturedIdentity(captured)) {
+    return { executed: false, reason: "stale-epoch-ignored-post-reset" };
+  }
+  return { executed: true, result };
+}
+
+export async function orchestrateBulkOperation(session, bulkFn, payload) {
+  const captured = session.captureIdentity();
+  if (!session.validateCapturedIdentity(captured)) {
+    return { executed: false, reason: "stale-epoch-ignored" };
+  }
+  const result = await bulkFn(payload);
+  if (!session.validateCapturedIdentity(captured)) {
+    return { executed: false, reason: "stale-epoch-ignored-post-bulk" };
+  }
+  return { executed: true, result };
 }
 
 export async function safeExecuteWithEpochCheck(session, asyncFn, applyFn) {
