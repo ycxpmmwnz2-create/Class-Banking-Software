@@ -282,9 +282,16 @@ export function validateBroadcastMessage(msg) {
 // in-memory flag would evaporate on the refresh it is meant to block.
 export const PENDING_INVALIDATION_KEY = "morganBank:v2:pendingInvalidation";
 
-// A quarantine entry is either digest-scoped (a valid message naming one tenant)
-// or generic (a malformed message, which by construction names no tenant and so
-// must fail closed against whatever identity appears next).
+// Upper bound on tracked digests. Several legitimate tabs can broadcast during
+// one startup window, so a single replaceable slot loses invalidations; an
+// unbounded list would be a storage-growth vector fed by inbound messages.
+// Overflow degrades to generic quarantine rather than silently dropping a digest.
+export const MAX_PENDING_DIGESTS = 16;
+
+// A quarantine entry is either digest-scoped — a bounded, deduplicated SET of
+// digests, since concurrent pre-Auth invalidations must not overwrite each
+// other — or generic (a malformed payload, which by construction names no tenant
+// and so must fail closed against whatever identity appears next).
 export function readPendingInvalidation(sessionStorageAdapter) {
   if (!sessionStorageAdapter || typeof sessionStorageAdapter.getItem !== "function") return null;
   let raw;
@@ -303,9 +310,17 @@ export function readPendingInvalidation(sessionStorageAdapter) {
     return { scope: "generic" };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { scope: "generic" };
-  if (parsed.scope === "digest" && typeof parsed.uidDigest === "string" && /^sha256_[0-9a-f]{64}$/.test(parsed.uidDigest)) {
-    return { scope: "digest", uidDigest: parsed.uidDigest };
+
+  if (parsed.scope === "digest" && Array.isArray(parsed.uidDigests)) {
+    const digests = parsed.uidDigests;
+    // Ambiguous or oversized sets degrade closed: better to block one extra
+    // identity than to let a real invalidation through.
+    if (digests.length === 0 || digests.length > MAX_PENDING_DIGESTS) return { scope: "generic" };
+    const valid = digests.filter((d) => typeof d === "string" && /^sha256_[0-9a-f]{64}$/.test(d));
+    if (valid.length !== digests.length) return { scope: "generic" };
+    return { scope: "digest", uidDigests: [...new Set(valid)] };
   }
+
   return { scope: "generic" };
 }
 
@@ -316,6 +331,39 @@ export function writePendingInvalidation(sessionStorageAdapter, entry) {
   } catch (err) {
     console.error("Pending invalidation quarantine write failed:", err);
   }
+}
+
+// Adds one digest to the pending set without losing what is already there.
+// Deduplicated, so a BroadcastChannel delivery plus its identical storage
+// fallback cannot grow the set. Once generic, the quarantine stays generic —
+// it already blocks everything, so a digest adds nothing.
+export function addPendingDigest(sessionStorageAdapter, uidDigest) {
+  if (typeof uidDigest !== "string" || !/^sha256_[0-9a-f]{64}$/.test(uidDigest)) return;
+
+  const existing = readPendingInvalidation(sessionStorageAdapter);
+  if (existing && existing.scope === "generic") return;
+
+  const next = new Set(existing && existing.scope === "digest" ? existing.uidDigests : []);
+  next.add(uidDigest);
+
+  if (next.size > MAX_PENDING_DIGESTS) {
+    writePendingInvalidation(sessionStorageAdapter, { scope: "generic" });
+    return;
+  }
+  writePendingInvalidation(sessionStorageAdapter, { scope: "digest", uidDigests: [...next] });
+}
+
+// Removes one consumed digest, clearing the marker entirely once empty.
+export function removePendingDigest(sessionStorageAdapter, uidDigest) {
+  const existing = readPendingInvalidation(sessionStorageAdapter);
+  if (!existing || existing.scope !== "digest") return;
+
+  const next = existing.uidDigests.filter((d) => d !== uidDigest);
+  if (next.length === 0) {
+    clearPendingInvalidation(sessionStorageAdapter);
+    return;
+  }
+  writePendingInvalidation(sessionStorageAdapter, { scope: "digest", uidDigests: next });
 }
 
 export function clearPendingInvalidation(sessionStorageAdapter) {
@@ -336,7 +384,9 @@ export function isUidQuarantined(entry, uid) {
   if (entry.scope === "generic") return true;
   if (!uid) return false;
   const digest = computeSha256Digest(uid);
-  return Boolean(digest) && digest === entry.uidDigest;
+  // Must match ANY pending digest: an invalidation for A that arrived before a
+  // later one for B is still owed to A when A is the identity observed.
+  return Boolean(digest) && Array.isArray(entry.uidDigests) && entry.uidDigests.includes(digest);
 }
 
 export class MultiTabInvalidator {
@@ -500,10 +550,10 @@ export class MultiTabInvalidator {
     }
 
     if (!isUidQuarantined(entry, uid)) {
-      // A digest marker for teacher A must not block teacher B, and must not
-      // linger to ambush a later A observation either — B being signed in means
-      // A's session is gone.
-      if (entry.scope === "digest") clearPendingInvalidation(this.sessionStorageAdapter);
+      // An unrelated identity is signed in, so nothing in the set is owed to it.
+      // The set is NOT cleared: a digest for A is still owed to A, which a
+      // concurrent tab may yet observe. Clearing here is exactly how a
+      // legitimate B broadcast used to discard A's pending invalidation.
       return false;
     }
 
@@ -543,7 +593,16 @@ export class MultiTabInvalidator {
     // Discarding it here would let the observer go on to render that teacher, so
     // the digest is quarantined for the Auth observer to apply instead.
     if (!currentUid) {
-      writePendingInvalidation(this.sessionStorageAdapter, { scope: "digest", uidDigest: msg.uidDigest });
+      // Added, not overwritten: several tabs can legitimately broadcast during
+      // one startup window, and a digest for A is still owed to A even after a
+      // later message names B.
+      addPendingDigest(this.sessionStorageAdapter, msg.uidDigest);
+      // Deliberately NOT signing out here. This branch cannot tell "loading, and
+      // Auth is about to resolve the named teacher" from "legitimately signed
+      // out" or "about to resolve a DIFFERENT teacher" — session.uid is null in
+      // all three. An unconditional sign-out would therefore terminate Auth for
+      // tabs the message does not name. The quarantine set is authoritative and
+      // the observer applies it the moment an identity actually exists.
       return false;
     }
 
@@ -552,7 +611,7 @@ export class MultiTabInvalidator {
 
     // Recorded before the purge so a refresh mid-handler still finds it, and so
     // a rejected local sign-out leaves durable evidence behind.
-    writePendingInvalidation(this.sessionStorageAdapter, { scope: "digest", uidDigest: msg.uidDigest });
+    addPendingDigest(this.sessionStorageAdapter, msg.uidDigest);
 
     // Purge/reset happens synchronously BEFORE local Auth sign-out begins.
     this.session.invalidate("multi-tab-invalidation", { state: "signed-out" });

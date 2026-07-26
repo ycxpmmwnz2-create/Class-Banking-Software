@@ -15,6 +15,7 @@ import {
   LEGACY_STORAGE_KEY,
   CACHE_SCHEMA_VERSION,
   PENDING_INVALIDATION_KEY,
+  MAX_PENDING_DIGESTS,
   readPendingInvalidation,
   isUidQuarantined
 } from "./tenantCache.js";
@@ -769,7 +770,7 @@ describe("TenantCache Module Specifications", () => {
     const entry = readPendingInvalidation(quarantine);
     assert.deepEqual(
       entry,
-      { scope: "digest", uidDigest: computeSha256Digest("teacher_a") },
+      { scope: "digest", uidDigests: [computeSha256Digest("teacher_a")] },
       "The invalidation MUST be retained as a digest-scoped quarantine"
     );
   });
@@ -792,7 +793,7 @@ describe("TenantCache Module Specifications", () => {
 
     quarantine.setItem(
       PENDING_INVALIDATION_KEY,
-      JSON.stringify({ scope: "digest", uidDigest: computeSha256Digest("teacher_a") })
+      JSON.stringify({ scope: "digest", uidDigests: [computeSha256Digest("teacher_a")] })
     );
 
     // Simulates onAuthStateChanged firing with the quarantined teacher A.
@@ -827,7 +828,7 @@ describe("TenantCache Module Specifications", () => {
 
     quarantine.setItem(
       PENDING_INVALIDATION_KEY,
-      JSON.stringify({ scope: "digest", uidDigest: computeSha256Digest("teacher_a") })
+      JSON.stringify({ scope: "digest", uidDigests: [computeSha256Digest("teacher_a")] })
     );
 
     const blocked = invalidator.consumeQuarantineForObservedUid("teacher_b");
@@ -836,7 +837,174 @@ describe("TenantCache Module Specifications", () => {
     assert.equal(sessionB.getState(), SESSION_STATES.READY, "B must remain ready");
     assert.notEqual(storage.getItem(keyB), null, "B's cache must survive A's quarantine");
     assert.equal(signOutCalls, 0, "B must not be signed out by A's quarantine");
-    assert.equal(readPendingInvalidation(quarantine), null, "A's stale digest marker must be cleared");
+    assert.notEqual(
+      readPendingInvalidation(quarantine),
+      null,
+      "A's digest is still owed to A and must NOT be discarded just because B was observed"
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Delta: concurrent pre-Auth invalidations must not overwrite one another.
+  // A single replaceable slot lost A's invalidation as soon as a legitimate
+  // second tab broadcast for B, reopening the startup window.
+  // -------------------------------------------------------------------------
+
+  function preAuthInvalidator(quarantine, onSignOut) {
+    const session = new TenantSession({
+      storageAdapter: createMockStorage(),
+      cacheModule: { purgeTenantCache, purgeLegacyCache, buildCacheKey },
+      projectId: PROJECT_ID
+    });
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: createMockStorage(),
+      windowAdapter: null,
+      sessionStorageAdapter: quarantine,
+      localAuthAdapter: { signOut: () => { if (onSignOut) onSignOut(); return Promise.resolve(); } }
+    });
+    return { session, invalidator };
+  }
+
+  function preAuthMessage(uid, epoch) {
+    return { type: "session-invalidated", uidDigest: computeSha256Digest(uid), epoch };
+  }
+
+  for (const [first, second] of [["teacher_a", "teacher_b"], ["teacher_b", "teacher_a"]]) {
+    test(`pre-Auth invalidations arriving ${first} then ${second} both remain pending, in either order`, () => {
+      const quarantine = createMockStorage();
+      const { invalidator } = preAuthInvalidator(quarantine);
+
+      invalidator.receiveMessage(preAuthMessage(first, 1));
+      invalidator.receiveMessage(preAuthMessage(second, 2));
+
+      const entry = readPendingInvalidation(quarantine);
+      assert.equal(entry.scope, "digest");
+      assert.equal(entry.uidDigests.length, 2, "Both digests must be retained");
+      assert.ok(isUidQuarantined(entry, first), `${first} must still be quarantined`);
+      assert.ok(isUidQuarantined(entry, second), `${second} must still be quarantined`);
+    });
+  }
+
+  test("whichever of two pending pre-Auth identities Auth actually observes is blocked", () => {
+    for (const observed of ["teacher_a", "teacher_b"]) {
+      const quarantine = createMockStorage();
+      let signOuts = 0;
+      const { session, invalidator } = preAuthInvalidator(quarantine, () => { signOuts++; });
+
+      invalidator.receiveMessage(preAuthMessage("teacher_a", 1));
+      invalidator.receiveMessage(preAuthMessage("teacher_b", 2));
+      const signOutsBefore = signOuts;
+
+      // Auth resolves one of them; the pending set must still cover it.
+      session.transitionTo(SESSION_STATES.AUTHENTICATING);
+      const blocked = invalidator.consumeQuarantineForObservedUid(observed);
+
+      assert.equal(blocked, true, `Observing ${observed} must be blocked, not resolved`);
+      assert.equal(signOuts, signOutsBefore + 1, "Sign-out must be invoked for the observed identity");
+    }
+  });
+
+  test("an unrelated identity C is not blocked, and the pending A/B digests survive it", () => {
+    const quarantine = createMockStorage();
+    let signOuts = 0;
+    const { invalidator } = preAuthInvalidator(quarantine, () => { signOuts++; });
+
+    invalidator.receiveMessage(preAuthMessage("teacher_a", 1));
+    invalidator.receiveMessage(preAuthMessage("teacher_b", 2));
+    const signOutsBefore = signOuts;
+
+    const blocked = invalidator.consumeQuarantineForObservedUid("teacher_c");
+
+    assert.equal(blocked, false, "C was never invalidated and must resolve normally");
+    assert.equal(signOuts, signOutsBefore, "C must not be signed out");
+
+    const entry = readPendingInvalidation(quarantine);
+    assert.ok(isUidQuarantined(entry, "teacher_a"), "A's digest must survive an unrelated C observation");
+    assert.ok(isUidQuarantined(entry, "teacher_b"), "B's digest must survive an unrelated C observation");
+  });
+
+  test("duplicate BroadcastChannel/storage delivery of the same pre-Auth message does not grow the pending set", () => {
+    const quarantine = createMockStorage();
+    const { invalidator } = preAuthInvalidator(quarantine);
+
+    const msg = preAuthMessage("teacher_a", 1);
+    invalidator.receiveMessage(msg);
+    invalidator.receiveMessage({ ...msg });
+    invalidator.receiveMessage(JSON.stringify(msg));
+
+    const entry = readPendingInvalidation(quarantine);
+    assert.deepEqual(
+      entry,
+      { scope: "digest", uidDigests: [computeSha256Digest("teacher_a")] },
+      "Deduplicated: three deliveries of one invalidation are one pending digest"
+    );
+  });
+
+  test("overflowing the bounded pending set degrades to a generic quarantine rather than dropping a digest", () => {
+    const quarantine = createMockStorage();
+    const { invalidator } = preAuthInvalidator(quarantine);
+
+    for (let i = 0; i < MAX_PENDING_DIGESTS; i++) {
+      invalidator.receiveMessage(preAuthMessage(`teacher_${i}`, i));
+    }
+    // At exactly the bound the set is still precise, so the assertions below
+    // detect eviction rather than a set that was already generic.
+    const atBound = readPendingInvalidation(quarantine);
+    assert.equal(atBound.scope, "digest", "At the bound the set must still be digest-scoped");
+    assert.equal(atBound.uidDigests.length, MAX_PENDING_DIGESTS);
+    assert.ok(isUidQuarantined(atBound, "teacher_0"), "The earliest digest must still be present at the bound");
+
+    // One more overflows it.
+    invalidator.receiveMessage(preAuthMessage("teacher_overflow", 99));
+
+    const entry = readPendingInvalidation(quarantine);
+    assert.deepEqual(entry, { scope: "generic" }, "Overflow must fail closed, not silently evict");
+    // The critical property: the OLDEST digest must not have been dropped to make
+    // room. Silent eviction would leave teacher_0 unquarantined and resolvable.
+    assert.ok(isUidQuarantined(entry, "teacher_0"), "Overflow must not drop the oldest pending digest");
+    assert.ok(isUidQuarantined(entry, "teacher_overflow"), "The overflowing digest must also be covered");
+    // Failing closed means every identity is blocked, including one never named.
+    assert.equal(isUidQuarantined(entry, "teacher_never_seen"), true);
+  });
+
+  test("an oversized or non-digest pending set read from storage degrades to generic quarantine", () => {
+    const quarantine = createMockStorage();
+
+    quarantine.setItem(
+      PENDING_INVALIDATION_KEY,
+      JSON.stringify({ scope: "digest", uidDigests: new Array(MAX_PENDING_DIGESTS + 1).fill(computeSha256Digest("x")) })
+    );
+    assert.deepEqual(readPendingInvalidation(quarantine), { scope: "generic" }, "Oversized set must degrade closed");
+
+    quarantine.setItem(PENDING_INVALIDATION_KEY, JSON.stringify({ scope: "digest", uidDigests: [] }));
+    assert.deepEqual(readPendingInvalidation(quarantine), { scope: "generic" }, "Empty set is ambiguous, degrade closed");
+
+    quarantine.setItem(
+      PENDING_INVALIDATION_KEY,
+      JSON.stringify({ scope: "digest", uidDigests: [computeSha256Digest("teacher_a"), "bogus"] })
+    );
+    assert.deepEqual(readPendingInvalidation(quarantine), { scope: "generic" }, "A malformed member degrades the whole set");
+  });
+
+  // Codex suggested also signing out eagerly on a pre-Auth valid message to
+  // narrow the window. Rejected: with session.uid null this branch cannot
+  // distinguish "about to resolve the named teacher" from "legitimately signed
+  // out" or "about to resolve a DIFFERENT teacher", so an unconditional sign-out
+  // terminates Auth for tabs the message never named. The durable set already
+  // closes the window at the observer, where a real identity exists to match.
+  test("a pre-Auth message quarantines WITHOUT signing out a tab whose identity is not yet known", () => {
+    const quarantine = createMockStorage();
+    let signOuts = 0;
+    const { invalidator } = preAuthInvalidator(quarantine, () => { signOuts++; });
+
+    invalidator.receiveMessage(preAuthMessage("teacher_a", 1));
+
+    assert.equal(signOuts, 0, "A tab with no established identity must not have Auth terminated speculatively");
+    assert.ok(
+      isUidQuarantined(readPendingInvalidation(quarantine), "teacher_a"),
+      "The durable quarantine is what closes the window, and must be recorded"
+    );
   });
 
   test("a rejected local Auth sign-out leaves a durable quarantine that re-applies on the next observation", async () => {
