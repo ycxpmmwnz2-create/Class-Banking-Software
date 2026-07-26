@@ -2,27 +2,28 @@ rules_version = '2';
 
 // PHASE 2B PROPOSED RULES — CONTRACT FIXTURE, NOT DEPLOYMENT RULES.
 //
-// This file is loaded explicitly by tests/firestore/rules.v2.contract.test.js via
-// initializeTestEnvironment(). It is NEVER copied over firestore.rules and is
-// NEVER deployed. The checked-in firestore.rules remains byte-identical and
-// authoritative for production; its content hash is pinned by the contract test.
+// Loaded explicitly by tests/firestore/rules.v2.contract.test.js and by the
+// Item 10 browser suite via initializeTestEnvironment(). NEVER copied over
+// firestore.rules and NEVER deployed. The checked-in firestore.rules stays
+// byte-identical and authoritative; the contract test pins its content hash.
 //
-// What changes versus the checked-in baseline:
+// The predicates below implement MULTI_TEACHER_ARCHITECTURE_PLAN.md §8
+// ("Firestore rules contract for Phase 3"), which is authoritative:
 //
-//  * The baseline authorizes a SINGLE hardcoded teacher UID
-//    ("YkYUzIzy0aW7roolM1VaLcIJPuN2") and grants it recursive read+write over
-//    /classrooms/{document=**}. Under multi-teacher that recursive allow is
-//    exactly the cross-tenant hole: any authorized teacher could read and write
-//    every other teacher's classroom. It is removed here — there is deliberately
-//    no classrooms/{document=**} client allow anywhere in this file, and the
-//    contract test asserts that structurally.
+//   isActiveOwner(classroomId) requires auth, teachers/{uid}.uid == uid, exact
+//   active status, the teacher's scalar classroomId == classroomId, and the
+//   classroom root's ownerUid == uid. Missing fields/docs and read errors deny.
 //
-//  * Authorization is derived per-tenant from the requesting UID: a teacher doc
-//    at /teachers/{uid} with status "active" pointing at a classroom, AND that
-//    classroom's ownerUid matching the same UID. Both must hold, independently.
+// The baseline's recursive `match /classrooms/{document=**}` allow
+// (firestore.rules:21-23) is DELETED and replaced by explicit per-collection
+// matches. Per the plan that recursive rule must not merely be re-predicated on
+// isActiveOwner: retaining it in either form would give a signed-in teacher's
+// browser read/write on scoped credential fields (pinHash, active,
+// failedAttempts, lockedUntil), defeating the server-only credential invariant
+// and the login lockout. The contract test asserts its absence structurally.
 //
-//  * Teacher documents are read-only to clients. Status and ownership are
-//    server-managed; a client that could write them could grant itself a tenant.
+// Student writes are deliberately NOT granted: the plan defers them to a
+// separately defined Phase 3 service/rule contract.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -41,20 +42,23 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/classrooms/$(classroomId));
     }
 
-    // An active teacher identity. Deliberately a separate get() from the
-    // classroom check below so "teacher doc active but classroom root missing"
-    // and its inverse fail through different branches.
+    // An active teacher identity. Requires the teacher document's own `uid`
+    // field to match its document id, so a mis-seeded or tampered pointer
+    // cannot confer identity. A separate get() from the classroom check below,
+    // so "teacher doc active but classroom root missing" and its inverse deny
+    // through different branches.
     function isActiveTeacher(uid) {
       return isSignedIn()
         && request.auth.uid == uid
         && exists(/databases/$(database)/documents/teachers/$(uid))
+        && teacherDoc(uid).data.uid == uid
         && teacherDoc(uid).data.status == "active";
     }
 
-    // Ownership of a specific classroom. Requires BOTH the teacher doc to point
-    // at this classroom AND the classroom root to name this UID as owner, so a
-    // stale pointer on either side denies.
-    function ownsClassroom(classroomId) {
+    // Ownership of one specific classroom. Requires BOTH the teacher doc to
+    // point at this classroom AND the classroom root to name this UID as owner,
+    // so a stale pointer on either side denies.
+    function isActiveOwner(classroomId) {
       return isActiveTeacher(request.auth.uid)
         && teacherDoc(request.auth.uid).data.classroomId == classroomId
         && exists(/databases/$(database)/documents/classrooms/$(classroomId))
@@ -69,8 +73,8 @@ service cloud.firestore {
     }
 
     // Classroom-root updates are limited to genuinely client-owned presentation
-    // and bookkeeping fields. ownerUid, status, and anything else stay
-    // server-managed, so a client cannot re-point ownership at itself.
+    // and bookkeeping fields. ownerUid and status stay server-managed, so a
+    // client can never re-point ownership at itself.
     function onlyMutatesAllowedClassroomFields() {
       return request.resource.data.diff(resource.data)
         .affectedKeys()
@@ -82,51 +86,57 @@ service cloud.firestore {
     match /teachers/{teacherUid} {
       // A teacher may read only their own record, and only while active.
       allow get: if isActiveTeacher(teacherUid);
-      // Never client-writable, and never enumerable.
+      // Enumerating teacher profiles would leak the tenant roster.
       allow list: if false;
+      // Ownership links are never client-created or client-modified.
       allow create, update, delete: if false;
     }
 
-    // ---------- classroom root ----------
-    // NOTE: no {document=**} recursive allow. Every subcollection below is
+    // ---------- classroom root and subcollections ----------
+    // NOTE: no {document=**} recursive allow anywhere. Every subcollection is
     // enumerated explicitly and independently.
 
     match /classrooms/{classroomId} {
-      allow get: if ownsClassroom(classroomId);
-      // Enumerating classrooms would leak the tenant list.
+      allow get: if isActiveOwner(classroomId);
       allow list: if false;
-      // Lifecycle is server-managed.
       allow create, delete: if false;
-      allow update: if ownsClassroom(classroomId) && onlyMutatesAllowedClassroomFields();
+      allow update: if isActiveOwner(classroomId) && onlyMutatesAllowedClassroomFields();
 
       match /students/{studentId} {
-        allow read, write: if ownsClassroom(classroomId);
-        // A student may read only their own exact claimed document, and may
-        // never write it.
-        allow get: if isStudentOf(classroomId, studentId);
-        allow list: if ownsClassroom(classroomId);
+        // Owner has full access; a student may read ONLY their own exact
+        // claimed document and may never write.
+        allow get: if isActiveOwner(classroomId) || isStudentOf(classroomId, studentId);
+        allow list: if isActiveOwner(classroomId);
+        allow create, update, delete: if isActiveOwner(classroomId);
       }
 
       match /transactions/{transactionId} {
-        allow read, write: if ownsClassroom(classroomId);
+        allow get, list: if isActiveOwner(classroomId);
+        allow create, update, delete: if isActiveOwner(classroomId);
       }
 
       match /loginHistory/{entryId} {
-        allow read, write: if ownsClassroom(classroomId);
+        allow get, list: if isActiveOwner(classroomId);
+        allow create, update, delete: if isActiveOwner(classroomId);
       }
 
-      // Scoped credentials are server-only. Even the active owner is denied, so
-      // a compromised teacher session cannot read or forge student credentials.
-      match /studentCredentials/{credentialId} {
+      // Scoped credentials are server-only. The ACTIVE OWNER is denied both read
+      // and write on their own classroom's credentials — this is the specific
+      // assertion the plan calls out, because it is what the deleted recursive
+      // classrooms/** allow would otherwise have granted.
+      match /studentCredentials/{loginId} {
         allow read, write: if false;
       }
+    }
 
-      // Classroom-scoped auth logs: owner may read, nobody may write from a
-      // client.
-      match /studentAuthLogs/{logId} {
-        allow get, list: if ownsClassroom(classroomId);
-        allow create, update, delete: if false;
-      }
+    // ---------- classroom-scoped auth logs ----------
+    // Path shape is studentAuthLogs/{classroomId}/logs/{logId}. A teacher may
+    // read only their own classroom's logs; students and other teachers cannot.
+    // No client may write.
+
+    match /studentAuthLogs/{classroomId}/logs/{logId} {
+      allow get, list: if isActiveOwner(classroomId);
+      allow create, update, delete: if false;
     }
 
     // ---------- server-only collections ----------
@@ -135,27 +145,26 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    match /studentLoginCodeIndex/{codeId} {
+    match /classroomLoginCodes/{codeId} {
       allow read, write: if false;
     }
 
-    match /authThrottles/{throttleId} {
+    match /studentLoginThrottle/{throttleId} {
       allow read, write: if false;
     }
 
-    // Unresolved/unscoped auth logs from before classroom scoping.
-    match /studentAuthLogs/{logId} {
+    match /studentAuthUnresolvedLogs/{logId} {
       allow read, write: if false;
     }
 
     // Flat, pre-scoping credential collection.
-    match /studentCredentials/{credentialId} {
+    match /studentCredentials/{loginId} {
       allow read, write: if false;
     }
 
     // ---------- legacy V1 single-tenant store ----------
-    // Retained so the V1 application keeps working during migration, still
-    // restricted to the original hardcoded teacher UID.
+    // Retained so the V1 application keeps working until the Phase 3
+    // coordinated switch. Deliberately NOT broadened to all active teachers.
 
     match /morganBank/{document=**} {
       allow read, write: if isSignedIn()

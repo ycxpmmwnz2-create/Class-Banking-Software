@@ -30,6 +30,8 @@ import {
   TENANT_A,
   TENANT_B,
   cacheKey,
+  cleanupFixtures,
+  createStudentToken,
   poisonEnvelopes,
   seedAll
 } from "./phase2b-fixtures.js";
@@ -45,18 +47,42 @@ test.beforeAll(async () => {
   seeded = await seedAll();
 });
 
+test.afterAll(async () => {
+  await cleanupFixtures();
+});
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
 async function gotoApp(page) {
   await page.goto("/");
+
+  // The harness installs BEFORE the application module, so harness readiness
+  // proves nothing about the app. index.html is one large inline module: a
+  // top-level ReferenceError aborts the whole thing silently (exactly the
+  // updateStudent regression fixed in 19ec8a7). The real gate is therefore a
+  // window export written at the END of that module.
+  await expect
+    .poll(() => page.evaluate(() => typeof window.updateStudent === "function"), { timeout: 20_000 })
+    .toBe(true);
+
   await expect
     .poll(() => page.evaluate(() => window.__PHASE2B_TEST__?.ready === true), { timeout: 20_000 })
     .toBe(true);
+
   // The harness must have reused the app's singleton and connected to the demo
   // project. If this fails, the injected config never reached firebase.js.
   expect(await page.evaluate(() => window.__PHASE2B_TEST__.projectId())).toBe(PROJECT_ID);
+
+  // Auth must be the emulator-connected NAMED app, never the default production
+  // app. This is the standing guard against the bare-getAuth() class of mistake.
+  expect(await page.evaluate(() => window.__PHASE2B_TEST__.authAppName())).toBe(
+    "phase2b-emulator-app"
+  );
+
+  // No uncaught error may have occurred during boot.
+  expect(await page.evaluate(() => window.__PHASE2B_TEST__.lastError())).toBeNull();
 }
 
 // Installs a MutationObserver BEFORE the action under test, recording every
@@ -108,21 +134,46 @@ async function waitForQuiescence(page) {
   return last;
 }
 
+// Auth always goes through the harness, which closes over firebase.js's live
+// `auth` binding. A bare getAuth() would resolve the DEFAULT app — production
+// morgan-bank — and authenticate against production while asserting against
+// emulator data.
 async function signIn(page, tenant) {
-  await page.evaluate(
-    async ({ email, password }) => {
-      const { getAuth, signInWithEmailAndPassword } = await import("firebase/auth");
-      await signInWithEmailAndPassword(getAuth(), email, password);
-    },
+  return page.evaluate(
+    ({ email, password }) => window.__PHASE2B_TEST__.signInTeacher(email, password),
     { email: tenant.email, password: tenant.password }
   );
 }
 
 async function signOutPage(page) {
-  await page.evaluate(async () => {
-    const { getAuth, signOut } = await import("firebase/auth");
-    await signOut(getAuth());
-  });
+  await page.evaluate(() => window.__PHASE2B_TEST__.signOutCurrent());
+}
+
+// Positive proof that a sign-in actually established the expected tenant.
+// Without this, every "foreign sentinel absent" assertion below could pass
+// vacuously on a page that simply never resolved anything.
+async function assertTenantEstablished(page, tenant, uid) {
+  await expect
+    .poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid()), { timeout: 20_000 })
+    .toBe(uid);
+
+  await expect
+    .poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentClassroomId()), { timeout: 20_000 })
+    .toBe(tenant.classroomId);
+
+  const key = cacheKey(PROJECT_ID, uid, tenant.classroomId);
+  const envelope = await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), key);
+  expect(envelope, `${tenant.label}: a cache envelope must exist after resolution`).not.toBeNull();
+  const parsed = JSON.parse(envelope);
+  expect(parsed.ownerUid, `${tenant.label}: envelope must be owned by this teacher`).toBe(uid);
+  expect(parsed.projectId).toBe(PROJECT_ID);
+
+  // The tenant's own sentinel must be present, and the foreign one absent.
+  const text = await pageText(page);
+  expect(text, `${tenant.label}: own sentinel must render`).toContain(tenant.studentMarker);
+  expect(text, `${tenant.label}: foreign sentinel must not render`).not.toContain(
+    foreign(tenant).studentMarker
+  );
 }
 
 function foreign(tenant) {
@@ -214,12 +265,17 @@ for (const [outgoing, incoming] of [
     const before = await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), incomingKey);
     expect(before, "Precondition: incoming cache envelope exists").not.toBeNull();
 
-    // A genuine storage-event delivery for the OUTGOING tenant.
-    await page.evaluate((payload) => {
+    // A storage event only fires in OTHER same-origin pages, never in the page
+    // that performed the write. So the late invalidation is delivered from a
+    // second real page in the same context.
+    const writer = await page.context().newPage();
+    await gotoApp(writer);
+    await writer.evaluate((payload) => {
       window.__PHASE2B_TEST__.localSet("morganBank:v2:invalidation", payload);
     }, JSON.stringify({ type: "session-invalidated", uidDigest: digest, epoch: 1 }));
 
     await waitForQuiescence(page);
+    await writer.close();
 
     expect(
       await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), incomingKey),
@@ -291,9 +347,14 @@ test("a sign-out in tab 1 invalidates tab 2, and tab 2 cannot restore A by refre
   await gotoApp(tab1);
   await signIn(tab1, TENANT_A);
   await waitForQuiescence(tab1);
+  await assertTenantEstablished(tab1, TENANT_A, seeded.aUid);
 
+  // Tab 2 must be EXPLICITLY signed in as A and positively confirmed, otherwise
+  // "A is gone from tab 2" could pass on a tab that never had A at all.
   await gotoApp(tab2);
+  await signIn(tab2, TENANT_A);
   await waitForQuiescence(tab2);
+  await assertTenantEstablished(tab2, TENANT_A, seeded.aUid);
 
   await startDomRecorder(tab2);
 
@@ -332,9 +393,15 @@ test("an invalidation arriving before tab 2's first Auth observation is quaranti
   await signIn(tab1, TENANT_A);
   await waitForQuiescence(tab1);
 
-  // Pre-seed the quarantine for A in a NEW tab before it ever observes Auth.
-  // This is the exact pre-Auth window that commit 0fecba0 closed.
+  // The target tab must FIRST genuinely hold a persisted A session, otherwise
+  // "A never resolved" is trivially true and the test proves nothing about the
+  // pre-Auth window.
   const tab2 = await context.newPage();
+  await gotoApp(tab2);
+  await signIn(tab2, TENANT_A);
+  await waitForQuiescence(tab2);
+  await assertTenantEstablished(tab2, TENANT_A, seeded.aUid);
+
   const digest = await tab1.evaluate(async (uid) => {
     const mod = await import("/src/phase2b/tenantCache.js");
     return mod.computeSha256Digest(uid);
@@ -350,6 +417,9 @@ test("an invalidation arriving before tab 2's first Auth observation is quaranti
     { d: digest }
   );
 
+  // Reload: Auth persistence still holds A, and the quarantine (installed by the
+  // init script before any document script) must block it.
+  await tab2.reload();
   await gotoApp(tab2);
   await waitForQuiescence(tab2);
 
@@ -421,11 +491,15 @@ test("a genuinely malformed payload fails closed, survives refresh, and blocks t
   await signIn(page, TENANT_A);
   await waitForQuiescence(page);
 
-  // A real storage-event delivery of an unparseable payload.
-  await page.evaluate(() => {
+  // A real cross-page storage event carrying an unparseable payload. Written
+  // from a SECOND page, because a page never receives its own storage events.
+  const writer = await context.newPage();
+  await gotoApp(writer);
+  await writer.evaluate(() => {
     window.__PHASE2B_TEST__.localSet("morganBank:v2:invalidation", "{ not valid json");
   });
   await waitForQuiescence(page);
+  await writer.close();
 
   // Current tenant purged, fail-closed.
   let text = await pageText(page);
@@ -567,10 +641,13 @@ test("duplicate BroadcastChannel + storage delivery settles once and never rebro
     return mod.computeSha256Digest(uid);
   }, seeded.aUid);
 
-  const sentBefore = await page.evaluate(() => window.__PHASE2B_TEST__.counters().broadcastsSent);
+  const before = await page.evaluate(() => window.__PHASE2B_TEST__.counters());
 
-  // The same invalidation twice, over both transports.
-  await page.evaluate((d) => {
+  // The SAME invalidation over BOTH transports, sent from a second real page so
+  // the storage event genuinely fires in the receiver.
+  const sender = await context.newPage();
+  await gotoApp(sender);
+  await sender.evaluate((d) => {
     const msg = JSON.stringify({ type: "session-invalidated", uidDigest: d, epoch: 3 });
     const ch = new BroadcastChannel("morgan_bank_v2_invalidation");
     ch.postMessage(JSON.parse(msg));
@@ -580,10 +657,27 @@ test("duplicate BroadcastChannel + storage delivery settles once and never rebro
 
   const stableTotal = await waitForQuiescence(page);
 
-  // Bounded, not an exact delta: the auth observer double-invalidates by design.
-  const sentAfter = await page.evaluate(() => window.__PHASE2B_TEST__.counters().broadcastsSent);
+  // Both transports must actually have reached the receiver, otherwise
+  // "duplicate delivery is idempotent" would be untested.
+  const after = await page.evaluate(() => window.__PHASE2B_TEST__.counters());
   expect(
-    sentAfter - sentBefore,
+    after.broadcastsReceived,
+    "the BroadcastChannel transport must have delivered"
+  ).toBeGreaterThan(before.broadcastsReceived);
+  expect(
+    after.storageEventsReceived,
+    "the storage transport must have delivered"
+  ).toBeGreaterThan(before.storageEventsReceived);
+
+  // The old tenant must not have returned.
+  for (const sentinel of sentinelsOf(TENANT_A)) {
+    expect(await pageText(page)).not.toContain(sentinel);
+  }
+
+  // Bounded, not an exact delta: the auth observer double-invalidates by design.
+  const sentAfter = after.broadcastsSent;
+  expect(
+    sentAfter - before.broadcastsSent,
     "An inbound invalidation must not cause an outbound rebroadcast beyond the one we injected"
   ).toBeLessThanOrEqual(1);
 
@@ -591,6 +685,7 @@ test("duplicate BroadcastChannel + storage delivery settles once and never rebro
   const secondTotal = await page.evaluate(() => window.__PHASE2B_TEST__.activityTotal());
   expect(secondTotal).toBe(stableTotal);
 
+  await sender.close();
   await page.close();
 });
 
@@ -680,19 +775,160 @@ test("an already-accepted outgoing save is reported honestly rather than claimed
   expect(text).not.toContain("A_ACCEPTED_WRITE");
 });
 
-test("a student session never persists teacher data to the V2 cache", async ({ page }) => {
+test("a REAL student session (custom claims) never writes a teacher V2 cache envelope", async ({
+  page
+}) => {
+  // The previous version of this test signed in a TEACHER and merely inspected
+  // cache keys, so it never exercised a student session at all. This uses a
+  // genuine student identity with role/classroomId/studentId claims.
+  const student = await createStudentToken({
+    classroomId: TENANT_A.classroomId,
+    studentId: TENANT_A.studentId
+  });
+
+  await gotoApp(page);
+  await page.evaluate(
+    ({ email, password }) => window.__PHASE2B_TEST__.signInTeacher(email, password),
+    { email: student.email, password: student.password }
+  );
+  await waitForQuiescence(page);
+
+  // Confirm the session really is the student identity.
+  expect(await page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBe(student.uid);
+
+  // No teacher-role V2 cache envelope may exist for any uid.
+  const keys = await page.evaluate(() => window.__PHASE2B_TEST__.localKeys());
+  const dataKeys = keys.filter((k) => k.startsWith("morganBank:v2:") && k.endsWith(":data:v1"));
+  for (const k of dataKeys) {
+    const raw = await page.evaluate((key) => window.__PHASE2B_TEST__.localGet(key), k);
+    if (!raw) continue;
+    const parsed = JSON.parse(raw);
+    expect(
+      parsed.ownerUid,
+      "a student session must not persist a teacher's tenant cache"
+    ).not.toBe(seeded.aUid);
+    expect(parsed.ownerUid).not.toBe(seeded.bUid);
+  }
+
+  // And the legacy key must not be written either.
+  expect(
+    await page.evaluate(() => window.__PHASE2B_TEST__.localGet("mrMorganClassCashDataV5"))
+  ).toBeNull();
+});
+
+test("a transient failure may serve ONLY an exactly-matching cache, and labels it offline", async ({
+  page
+}) => {
   await gotoApp(page);
   await signIn(page, TENANT_A);
   await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_A, seeded.aUid);
 
-  const keys = await page.evaluate(() => window.__PHASE2B_TEST__.localKeys());
-  const v2Keys = keys.filter((k) => k.startsWith("morganBank:v2:"));
+  const key = cacheKey(PROJECT_ID, seeded.aUid, TENANT_A.classroomId);
+  const good = await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), key);
+  expect(good).not.toBeNull();
 
-  for (const k of v2Keys) {
-    const raw = await page.evaluate((key) => window.__PHASE2B_TEST__.localGet(key), k);
-    if (!raw || k.includes("invalidation")) continue;
-    const parsed = JSON.parse(raw);
-    // Only teacher-role envelopes may exist, and only for the signed-in teacher.
-    expect(parsed.ownerUid).toBe(seeded.aUid);
+  // Force the next load to fail transiently (offline-shaped), then reload.
+  await page.evaluate(() => window.__PHASE2B_TEST__.failNextLoad("unavailable"));
+  await page.reload();
+  await gotoApp(page);
+  await waitForQuiescence(page);
+
+  const text = await pageText(page);
+  // The exactly-matching cache may be used, and must be surfaced as offline.
+  expect(text).toContain(TENANT_A.studentMarker);
+  expect(text.toLowerCase()).toMatch(/offline|cached/);
+  // Never the other tenant.
+  expect(text).not.toContain(TENANT_B.studentMarker);
+});
+
+test("a permission/integrity failure never falls back to cache, and fails closed", async ({
+  page
+}) => {
+  await gotoApp(page);
+  await signIn(page, TENANT_A);
+  await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_A, seeded.aUid);
+
+  // A permission-denied load must NOT be satisfied from cache, even though a
+  // perfectly valid matching envelope exists.
+  await page.evaluate(() => window.__PHASE2B_TEST__.failNextLoad("permission-denied"));
+  await page.reload();
+  await gotoApp(page);
+  await waitForQuiescence(page);
+
+  const text = await pageText(page);
+  expect(
+    text,
+    "a permission/integrity failure must never serve cached tenant data"
+  ).not.toContain(TENANT_A.studentMarker);
+  expect(text).not.toContain(TENANT_B.studentMarker);
+});
+
+test("a missing matching cache under transient failure fails closed rather than showing another tenant", async ({
+  page
+}) => {
+  await gotoApp(page);
+  await signIn(page, TENANT_B);
+  await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_B, seeded.bUid);
+
+  // Remove B's envelope, leave A's absent too, then fail transiently.
+  const bKey = cacheKey(PROJECT_ID, seeded.bUid, TENANT_B.classroomId);
+  await page.evaluate((k) => window.__PHASE2B_TEST__.localRemove(k), bKey);
+  await page.evaluate(() => window.__PHASE2B_TEST__.failNextLoad("unavailable"));
+  await page.reload();
+  await gotoApp(page);
+  await waitForQuiescence(page);
+
+  const text = await pageText(page);
+  expect(text).not.toContain(TENANT_A.studentMarker);
+  expect(text).not.toContain(TENANT_B.studentMarker);
+});
+
+test("a released stale SAVE completion cannot affect the incoming tenant's client state", async ({
+  page
+}) => {
+  await gotoApp(page);
+  await signIn(page, TENANT_A);
+  await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_A, seeded.aUid);
+
+  // Park a real save inside the harness barrier.
+  await page.evaluate(() => window.__PHASE2B_TEST__.hold("classroomSave"));
+  await page.evaluate(
+    ({ classroomId }) =>
+      void window.V2_TENANT_DATA_SAVE_ADAPTER({
+        classroomId,
+        settings: { label: "A_STALE_SAVE" }
+      }),
+    { classroomId: TENANT_A.classroomId }
+  );
+  await expect
+    .poll(() => page.evaluate(() => window.__PHASE2B_TEST__.counters().saveAdapterCalls))
+    .toBeGreaterThan(0);
+
+  await startDomRecorder(page);
+
+  // Switch to B, then release A's save.
+  await signOutPage(page);
+  await signIn(page, TENANT_B);
+  await waitForQuiescence(page);
+  await page.evaluate(() => window.__PHASE2B_TEST__.release("classroomSave"));
+  await waitForQuiescence(page);
+
+  const log = (await domLog(page)).join("\n");
+  const text = await pageText(page);
+  expect(log).not.toContain("A_STALE_SAVE");
+  expect(text).not.toContain("A_STALE_SAVE");
+  for (const sentinel of sentinelsOf(TENANT_A)) {
+    expect(text).not.toContain(sentinel);
+  }
+
+  // B's envelope must still be B's.
+  const bKey = cacheKey(PROJECT_ID, seeded.bUid, TENANT_B.classroomId);
+  const bEnvelope = await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), bKey);
+  if (bEnvelope !== null) {
+    expect(JSON.parse(bEnvelope).ownerUid).toBe(seeded.bUid);
   }
 });

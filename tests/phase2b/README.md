@@ -11,56 +11,103 @@
 | `npm run test:phase2b:server` | yes | no |
 | `npm run test:rules` | yes | no |
 
-## Item 10 status — what is and is not verified
+## Item 10 status
 
-Two blockers prevent the emulator-backed suites from running on this machine.
-Both are environmental or pre-existing; neither was introduced by Item 10.
+A Java runtime is required for the Firestore/Auth emulators and is installed
+(Temurin JDK 21). All emulator-backed suites run.
 
-### 1. No Java runtime (blocks every emulator suite)
+### Verified — actually executed and passing
 
-`firebase emulators:exec` requires a JRE. This machine has only the macOS
-`/usr/bin/java` stub:
+| Command | Result |
+| --- | --- |
+| `npm run test:phase2b:client` | 83/83 |
+| `npm run test:phase2b:build-contract` | 6/6 |
+| `npm run test:phase2b:rules` | 29/29 |
+| `npm run test:rules` (hardened) | 36/36 |
+| `npm run test:phase2b:server` | 9/9 gate-off + gate-on |
+| `npm run test:phase2b:browser` | **1/20 — see below, not green** |
+| `npm run lint` | clean |
+| `npm run build` | clean, both gate states |
+
+The proposed-rules contract has teeth: reintroducing the recursive
+`classrooms/{document=**}` allow into the fixture fails **16 of 29** tests,
+including the scoped-credential lockout assertions the plan calls out.
+
+### `npm run test:phase2b:browser` — RUNS, NOT YET GREEN
+
+The suite now executes end-to-end against real emulators (auth, functions,
+firestore) with a real Chromium. **1 of 20 passes**: `switching A -> B purges
+outgoing state with no intermediate outgoing render`. That one passing test is
+genuine — it drives a real account switch and asserts no outgoing sentinel
+appears in any MutationObserver record.
+
+The remaining 19 are blocked by one unresolved fixture problem, not 19 separate
+problems. Teacher resolution ends in `DENIED_OR_INCONSISTENT` ("Access Denied or
+Tenant Inconsistent"), so no cache envelope is written and every downstream
+assertion fails on its precondition.
+
+What is established about it so far:
+
+* Auth is correct — the signed-in UID matches the seeded teacher UID, and
+  `authAppName()` is `phase2b-emulator-app`, so this is not the bare-`getAuth()`
+  bug.
+* `resolveTeacherTenantV2` is loaded, invoked, and *returns successfully*
+  (~46ms, no thrown error in the Functions log).
+* The V2 gate is on for this project via
+  `functions/.env.demo-morgan-bank-phase2b-server-test`.
+* Collection names and status values in the fixture match
+  `functions/phase1/firestoreSchema.js` exactly (`teachers`, `classrooms`,
+  `active`), and the resolver's required `teachers/{uid}.uid == uid` field is
+  seeded.
+
+So the resolver returns a state the client does not treat as `active` — most
+likely `onboarding-required` (whose UI text matches what renders) rather than a
+hard error. Confirming that requires capturing the callable's actual return
+value, which is the next step. It is a **fixture/seeding** issue inside Item 10's
+test scope, not evidence of a production defect, and it must not be reported as
+either passing or as a product bug until the return value is read.
+
+### Boot regression this work depended on
+
+`index.html:3453` exported `window.updateStudent = updateStudent`, but commit
+`d1765f2` had renamed the definition to `toggleStudentFrozen` while leaving both
+the roster Save button and the export on the old name. The resulting top-level
+`ReferenceError` aborted the entire inline module, so the app never booted in a
+browser — invisible to unit tests, which import the extracted modules instead of
+executing `index.html`.
+
+Fixed in a separate commit (`19ec8a7`), with two regression guards in
+`tenantClient.test.js`: a general one requiring every `window.X = X` export to
+have a matching definition, and a specific one pinning `updateStudent`'s wiring
+and Save behavior.
+
+### Emulator project and rules used by the browser suite
+
+The browser suite runs under `demo-morgan-bank-phase2b-server-test` with
+`auth,functions,firestore`, reusing the gate-on server project's `.env` contract
+so V2 Functions activate. It loads `firestore.phase2b.proposed.rules`, so the
+browser and rules suites exercise the same rules.
+
+Seeding goes through `@firebase/rules-unit-testing`'s
+`withSecurityRulesDisabled()`, not plain REST. Unauthenticated REST writes are
+rejected once the proposed rules load — verified directly:
 
 ```
-$ java -version
-The operation couldn't be completed. Unable to locate a Java Runtime.
+POST .../documents/things?documentId=x
+-> 403 {"error":{"code":403,"message":"No matching allow statements"}}
 ```
 
-This is **pre-existing**, not caused by Item 10 — the already-committed
-`npm run test:rules` fails with the identical error. It blocks:
+Auth user creation stays on REST, since the Auth emulator has no rules layer.
 
-* `test:phase2b:rules` (new)
-* `test:phase2b:browser` (new — needs Auth + Firestore emulators)
-* `test:rules`, `test:phase2b:server` (pre-existing)
+### Auth-app hazard
 
-Fix: install a JDK (e.g. `brew install --cask temurin`), then re-run.
-
-### 2. `updateStudent is not defined` (blocks the browser suite specifically)
-
-`index.html:3453` does `window.updateStudent = updateStudent;` but
-`updateStudent` is **defined nowhere in the repository**. The resulting
-`ReferenceError` aborts the inline application module, so the app never finishes
-booting in a real browser.
-
-Verified pre-existing: present identically at `b3e8800` and `b756f75`, before any
-Item 10 file existed.
-
-This matters for Item 10's acceptance: the browser specs in
-`tests/browser/tenant-isolation.spec.js` cannot pass against this baseline no
-matter how they are written, because the application under test does not reach a
-ready state. Repairing it is a **production** change to `index.html`, which
-Item 10's tests-only boundary forbids. It needs a separate corrective brief.
-
-### What IS verified
-
-* **Harness injection contract** — confirmed working in real Chromium: the
-  harness module executes before the application module, reuses the
-  `src/firebase/firebase.js` singleton without a second `initializeApp`, rebinds
-  to the demo project, and defines both V2 data adapters. This is the constraint
-  the brief flagged as hardest, and it holds.
-* **Build-artifact contract** — 6/6 passing, no emulator needed.
-* **Client suite** — 81/81 passing.
-* **Lint** — clean, including all new `tests/**` files.
+Specs must never call a bare `getAuth()`. With no argument it resolves the
+**default** app — production `morgan-bank`, initialized at `firebase.js` import
+time — not the named `phase2b-emulator-app` that the emulator connection rebinds.
+A spec doing that would authenticate against production while asserting against
+emulator data. All auth goes through `__PHASE2B_TEST__.signInTeacher` /
+`signOutCurrent`, which close over `firebase.js`'s live `auth` binding, and
+`gotoApp()` asserts `authAppName() === "phase2b-emulator-app"` on every load.
 
 ### Harness gotcha worth preserving
 

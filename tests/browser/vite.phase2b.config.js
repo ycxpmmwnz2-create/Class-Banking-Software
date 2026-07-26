@@ -18,7 +18,10 @@ export const PHASE2B_BROWSER_PORT = 5273;
 //   Auth 9099, Functions 5001, Firestore 8080.
 export const PHASE2B_EMULATOR_CONFIG = {
   enabled: true,
-  projectId: "demo-morgan-bank-phase2b-browser-test",
+  // Must match PROJECT_ID in tests/browser/phase2b-fixtures.js and the
+  // --project passed to emulators:exec by test:phase2b:browser. Reusing the
+  // gate-on server project means its .env contract activates V2 Functions.
+  projectId: "demo-morgan-bank-phase2b-server-test",
   host: "127.0.0.1",
   authPort: 9099,
   firestorePort: 8080,

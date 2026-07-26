@@ -21,6 +21,13 @@
 //  5. Activates ONLY under an explicit browser-test flag, so this file can never
 //     alter behavior of a normal dev or production build.
 
+import {
+  browserSessionPersistence,
+  setPersistence,
+  signInWithCustomToken,
+  signInWithEmailAndPassword,
+  signOut
+} from "firebase/auth";
 import { collection, doc, getDoc, getDocs, setDoc } from "firebase/firestore";
 import { app, auth, db } from "../../src/firebase/firebase.js";
 
@@ -95,10 +102,37 @@ function installHarness() {
   // assertion vacuous, since it could not observe a rules denial or a
   // cross-tenant read.
   // ---------------------------------------------------------------------------
+  // One-shot injected failure, used to distinguish transient (cache-eligible)
+  // from permission/integrity (never-cache-eligible) load failures. The error
+  // shape matches what the client's classifier reads, so the classification
+  // under test is the real one.
+  //
+  // Stored in sessionStorage because the specs arm it and then RELOAD: an
+  // in-memory flag would not survive to the load it is meant to fail.
+  const FAIL_KEY = "__phase2b_fail_next_load__";
+  const takeNextLoadFailure = () => {
+    try {
+      const v = sessionStorage.getItem(FAIL_KEY);
+      if (v) sessionStorage.removeItem(FAIL_KEY);
+      return v;
+    } catch {
+      return null;
+    }
+  };
+
   window.V2_TENANT_DATA_ADAPTER = async ({ uid, classroomId }) => {
     obs.counters.loadAdapterCalls++;
     record("loadAdapter:start", { uid, classroomId });
     await gate("classroomLoad");
+
+    const injected = takeNextLoadFailure();
+    if (injected) {
+      const code = injected;
+      record("loadAdapter:injectedFailure", { code });
+      const err = new Error(`harness injected ${code}`);
+      err.code = code;
+      throw err;
+    }
 
     if (!classroomId) throw new Error("harness: missing classroomId");
 
@@ -186,6 +220,16 @@ function installHarness() {
     activityTotal: () =>
       Object.values(obs.counters).reduce((a, b) => a + b, 0) + obs.events.length,
 
+    // Arms a one-shot load failure that survives a reload. "unavailable" is
+    // transient (cache-eligible); "permission-denied" must never serve cache.
+    failNextLoad: (code) => {
+      try {
+        sessionStorage.setItem(FAIL_KEY, String(code));
+      } catch {
+        // ignore
+      }
+    },
+
     hold: (name) => { barrier(name).held = true; },
     release: (name) => {
       const b = barrier(name);
@@ -202,6 +246,32 @@ function installHarness() {
     // the cache keys the app writes, and the DOM. That is a real limitation —
     // the specs assert user-visible and storage-visible effects, not internal
     // session fields.
+    // Auth control MUST go through these, never through a bare getAuth() in a
+    // spec. getAuth() with no argument resolves the DEFAULT app — which is the
+    // production morgan-bank app initialized at firebase.js import time — not the
+    // named "phase2b-emulator-app" that connectPhase2bEmulatorsIfConfigured()
+    // rebinds to the emulator. A spec calling getAuth() would authenticate
+    // against production while asserting against emulator data.
+    //
+    // `auth` here is the ES live binding from firebase.js, so it observes the
+    // rebind performed during emulator connection.
+    signInTeacher: async (email, password) => {
+      // Matches production (index.html sets this before its own sign-ins), and
+      // it is the persistence mode the cross-tab reanimation tests depend on.
+      await setPersistence(auth, browserSessionPersistence);
+      const cred = await signInWithEmailAndPassword(auth, email, password);
+      return cred.user.uid;
+    },
+    signInWithToken: async (token) => {
+      await setPersistence(auth, browserSessionPersistence);
+      const cred = await signInWithCustomToken(auth, token);
+      return cred.user.uid;
+    },
+    signOutCurrent: async () => {
+      await signOut(auth);
+    },
+    authAppName: () => auth.app.name,
+
     currentUid: () => auth.currentUser?.uid || null,
 
     // Recovered from the V2 cache key the app writes:

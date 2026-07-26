@@ -75,8 +75,8 @@ async function seed() {
     const db = context.firestore();
 
     // --- two fully independent, active tenants ---
-    await db.doc(`teachers/${A_UID}`).set({ status: "active", classroomId: A_ROOM });
-    await db.doc(`teachers/${B_UID}`).set({ status: "active", classroomId: B_ROOM });
+    await db.doc(`teachers/${A_UID}`).set({ uid: A_UID, status: "active", classroomId: A_ROOM });
+    await db.doc(`teachers/${B_UID}`).set({ uid: B_UID, status: "active", classroomId: B_ROOM });
 
     await db.doc(`classrooms/${A_ROOM}`).set({
       ownerUid: A_UID,
@@ -100,8 +100,8 @@ async function seed() {
     await db.doc(`classrooms/${A_ROOM}/loginHistory/h-a`).set({ marker: "A-only" });
     await db.doc(`classrooms/${B_ROOM}/loginHistory/h-b`).set({ marker: "B-only" });
 
-    await db.doc(`classrooms/${A_ROOM}/studentAuthLogs/log-a`).set({ marker: "A-only" });
-    await db.doc(`classrooms/${B_ROOM}/studentAuthLogs/log-b`).set({ marker: "B-only" });
+    await db.doc(`studentAuthLogs/${A_ROOM}/logs/log-a`).set({ marker: "A-only" });
+    await db.doc(`studentAuthLogs/${B_ROOM}/logs/log-b`).set({ marker: "B-only" });
 
     await db.doc(`classrooms/${A_ROOM}/studentCredentials/${SHARED_LOGIN_ID}`)
       .set({ hash: "a-hash" });
@@ -111,32 +111,32 @@ async function seed() {
     // --- negative-path identities, each failing for a DIFFERENT reason ---
 
     // Teacher doc present but disabled.
-    await db.doc(`teachers/${DISABLED_UID}`).set({ status: "disabled", classroomId: A_ROOM });
+    await db.doc(`teachers/${DISABLED_UID}`).set({ uid: DISABLED_UID, status: "disabled", classroomId: A_ROOM });
 
     // No teacher doc at all for NO_TEACHER_DOC_UID (deliberately not written).
 
     // Teacher doc active, but the classroom root does not exist.
     await db.doc(`teachers/${NO_CLASSROOM_UID}`)
-      .set({ status: "active", classroomId: "classroom-that-does-not-exist" });
+      .set({ uid: NO_CLASSROOM_UID, status: "active", classroomId: "classroom-that-does-not-exist" });
 
-    // Teacher doc points at A's classroom, but A's classroom is owned by A.
-    await db.doc(`teachers/${MISMATCH_UID}`).set({ status: "active", classroomId: A_ROOM });
+    // Embedded uid does NOT match the document id: teachers/{uid}.uid == uid fails.
+    await db.doc(`teachers/${MISMATCH_UID}`).set({ uid: "some-other-uid-entirely", status: "active", classroomId: A_ROOM });
 
     // Classroom exists and teacher doc points at it, but ownerUid is someone else.
     await db.doc(`teachers/${OWNER_MISMATCH_UID}`)
-      .set({ status: "active", classroomId: "classroom-owner-mismatch" });
+      .set({ uid: OWNER_MISMATCH_UID, status: "active", classroomId: "classroom-owner-mismatch" });
     await db.doc("classrooms/classroom-owner-mismatch")
       .set({ ownerUid: "somebody-else-entirely", marker: "MISMATCH" });
 
     // Status is neither active nor a recognized value.
     await db.doc(`teachers/${INVALID_STATUS_UID}`)
-      .set({ status: "pending-review", classroomId: A_ROOM });
+      .set({ uid: INVALID_STATUS_UID, status: "pending-review", classroomId: A_ROOM });
 
     // Server-only collections.
     await db.doc("teacherInvitations/invite-1").set({ email: "x@y.z" });
-    await db.doc("studentLoginCodeIndex/code-1").set({ classroomId: A_ROOM });
-    await db.doc("authThrottles/throttle-1").set({ count: 1 });
-    await db.doc("studentAuthLogs/unscoped-1").set({ marker: "unscoped" });
+    await db.doc("classroomLoginCodes/code-1").set({ classroomId: A_ROOM });
+    await db.doc("studentLoginThrottle/throttle-1").set({ count: 1 });
+    await db.doc("studentAuthUnresolvedLogs/unresolved-1").set({ marker: "unresolved" });
     await db.doc(`studentCredentials/${SHARED_LOGIN_ID}`).set({ hash: "flat" });
   });
 }
@@ -168,20 +168,41 @@ describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
   });
 
   test("STRUCTURAL: the proposed fixture contains no recursive classrooms/{document=**} client allow", () => {
-    const src = readFileSync(PROPOSED_RULES_PATH, "utf8");
+    // Comments in the fixture legitimately DISCUSS the recursive match that was
+    // removed, so a naive scan of the raw text produces a false positive. Strip
+    // comments first and scan only executable rule statements.
+    const stripComments = (text) =>
+      text
+        .split("\n")
+        .filter((line) => !line.trim().startsWith("//"))
+        .join("\n")
+        .replace(/\/\*[\s\S]*?\*\//g, "");
+
+    const RECURSIVE_CLASSROOMS = /match\s+\/classrooms\/\{\s*document\s*=\s*\*\*\s*\}/;
+
+    const src = stripComments(readFileSync(PROPOSED_RULES_PATH, "utf8"));
 
     // The exact hole the multi-teacher gate requires removing. The checked-in
     // baseline has it at firestore.rules:21-23; the proposal must not.
     assert.ok(
-      !/match\s+\/classrooms\/\{\s*document\s*=\s*\*\*\s*\}/.test(src),
+      !RECURSIVE_CLASSROOMS.test(src),
       "The proposed rules must NOT contain a recursive classrooms/{document=**} match"
     );
 
+    // Every classrooms subcollection must be matched explicitly, so the absence
+    // above cannot be satisfied by simply having no classroom rules at all.
+    for (const sub of ["students", "transactions", "loginHistory", "studentCredentials"]) {
+      assert.ok(
+        new RegExp(`match\\s+/${sub}/\\{`).test(src),
+        `The proposed rules must match /classrooms/{classroomId}/${sub} explicitly`
+      );
+    }
+
     // And prove the assertion above is meaningful by confirming the baseline
     // really does contain what we are asserting the proposal lacks.
-    const baseline = readFileSync("firestore.rules", "utf8");
+    const baseline = stripComments(readFileSync("firestore.rules", "utf8"));
     assert.ok(
-      /match\s+\/classrooms\/\{\s*document\s*=\s*\*\*\s*\}/.test(baseline),
+      RECURSIVE_CLASSROOMS.test(baseline),
       "Baseline rules were expected to contain the recursive classrooms allow this contract removes"
     );
   });
@@ -263,14 +284,14 @@ describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
       });
 
       test("owner reads only their scoped auth logs; all client auth-log writes are denied", async () => {
-        await assertSucceeds(teacherCtx(d.owner).collection(`classrooms/${d.room}/studentAuthLogs`).get());
-        await assertFails(teacherCtx(d.intruder).collection(`classrooms/${d.room}/studentAuthLogs`).get());
+        await assertSucceeds(teacherCtx(d.owner).collection(`studentAuthLogs/${d.room}/logs`).get());
+        await assertFails(teacherCtx(d.intruder).collection(`studentAuthLogs/${d.room}/logs`).get());
 
         await assertFails(
-          teacherCtx(d.owner).doc(`classrooms/${d.room}/studentAuthLogs/forged`).set({ marker: "forged" })
+          teacherCtx(d.owner).doc(`studentAuthLogs/${d.room}/logs/forged`).set({ marker: "forged" })
         );
         await assertFails(
-          teacherCtx(d.owner).doc(`classrooms/${d.room}/studentAuthLogs/log-a`).delete()
+          teacherCtx(d.owner).doc(`studentAuthLogs/${d.room}/logs/log-a`).delete()
         );
       });
 
@@ -288,7 +309,7 @@ describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
         await assertFails(other.collection(`classrooms/${d.room}/students`).get());
         await assertFails(other.collection(`classrooms/${d.room}/transactions`).get());
         await assertFails(other.collection(`classrooms/${d.room}/loginHistory`).get());
-        await assertFails(other.collection(`classrooms/${d.room}/studentAuthLogs`).get());
+        await assertFails(other.collection(`studentAuthLogs/${d.room}/logs`).get());
       });
     });
   }
@@ -334,8 +355,9 @@ describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
       teacherCtx(NO_CLASSROOM_UID).doc("classrooms/classroom-that-does-not-exist").get()
     );
 
-    // Teacher doc points at A's room, but A's room names A as owner.
+    // teachers/{uid}.uid does not equal the document id.
     await assertFails(teacherCtx(MISMATCH_UID).doc(`classrooms/${A_ROOM}`).get());
+    await assertFails(teacherCtx(MISMATCH_UID).doc(`teachers/${MISMATCH_UID}`).get());
 
     // Classroom exists, pointer matches, but ownerUid is a third party.
     await assertFails(
@@ -356,9 +378,9 @@ describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
   test("server-only collections deny every client identity", async () => {
     const paths = [
       "teacherInvitations/invite-1",
-      "studentLoginCodeIndex/code-1",
-      "authThrottles/throttle-1",
-      "studentAuthLogs/unscoped-1",
+      "classroomLoginCodes/code-1",
+      "studentLoginThrottle/throttle-1",
+      "studentAuthUnresolvedLogs/unresolved-1",
       `studentCredentials/${SHARED_LOGIN_ID}`
     ];
     for (const uid of [A_UID, B_UID]) {
@@ -368,5 +390,49 @@ describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
         await assertFails(ctx.doc(p).set({ tampered: true }));
       }
     }
+  });
+  test("teachers/{uid}.uid must equal the document id, or the identity confers nothing", async () => {
+    // Seeded with uid: "some-other-uid-entirely" at document id MISMATCH_UID.
+    await assertFails(teacherCtx(MISMATCH_UID).doc(`teachers/${MISMATCH_UID}`).get());
+    await assertFails(teacherCtx(MISMATCH_UID).doc(`classrooms/${A_ROOM}`).get());
+    await assertFails(teacherCtx(MISMATCH_UID).collection(`classrooms/${A_ROOM}/students`).get());
+  });
+
+  test("scoped classroom credentials deny the ACTIVE OWNER, both read and write, in both directions", async () => {
+    // This is the specific assertion MULTI_TEACHER_ARCHITECTURE_PLAN.md calls
+    // out: it is what the deleted recursive classrooms/** allow would have
+    // granted, and it defeats the login lockout if it regresses.
+    for (const [uid, room] of [[A_UID, A_ROOM], [B_UID, B_ROOM]]) {
+      const ctx = teacherCtx(uid);
+      await assertFails(ctx.doc(`classrooms/${room}/studentCredentials/${SHARED_LOGIN_ID}`).get());
+      await assertFails(ctx.collection(`classrooms/${room}/studentCredentials`).get());
+      await assertFails(
+        ctx.doc(`classrooms/${room}/studentCredentials/${SHARED_LOGIN_ID}`).set({ pinHash: "x" })
+      );
+      await assertFails(
+        ctx.doc(`classrooms/${room}/studentCredentials/${SHARED_LOGIN_ID}`).update({ failedAttempts: 0 })
+      );
+      await assertFails(
+        ctx.doc(`classrooms/${room}/studentCredentials/${SHARED_LOGIN_ID}`).delete()
+      );
+    }
+  });
+
+  test("students cannot read scoped credentials or auth logs in their own or another classroom", async () => {
+    const aStudent = studentCtx("auth-a-student", A_ROOM, A_STUDENT);
+    await assertFails(aStudent.doc(`classrooms/${A_ROOM}/studentCredentials/${SHARED_LOGIN_ID}`).get());
+    await assertFails(aStudent.collection(`studentAuthLogs/${A_ROOM}/logs`).get());
+    await assertFails(aStudent.collection(`studentAuthLogs/${B_ROOM}/logs`).get());
+    await assertFails(aStudent.doc(`classrooms/${A_ROOM}`).get());
+    await assertFails(aStudent.doc(`teachers/${A_UID}`).get());
+  });
+
+  test("the legacy morganBank store stays restricted to the original hardcoded teacher", async () => {
+    // Deliberately NOT broadened to all active teachers.
+    await assertFails(teacherCtx(A_UID).doc("morganBank/classroomData").get());
+    await assertFails(teacherCtx(B_UID).doc("morganBank/classroomData").get());
+    await assertSucceeds(
+      teacherCtx("YkYUzIzy0aW7roolM1VaLcIJPuN2").doc("morganBank/classroomData").get()
+    );
   });
 });
