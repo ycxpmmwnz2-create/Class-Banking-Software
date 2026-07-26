@@ -1,4 +1,4 @@
-// Phase 3 Commit 1 — command-safety SOURCE contract.
+// Phase 3 — command-safety SOURCE contract (added Commit 1; expands per commit).
 //
 // EVIDENCE LAYER: static analysis of package.json script text. This suite proves
 // that every emulator-launching script *carries* the credential-isolation
@@ -10,7 +10,7 @@
 //
 // Authority: PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md Sections 12 and 14.
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
@@ -235,13 +235,17 @@ describe('Phase 3 command-safety source contract', () => {
   })
 
   /**
-   * Section 12/14 forbid adding the five future behavioral gate names as
-   * passing placeholders. Their absence is the assertion: a placeholder that
-   * exits 0 would report green for work that does not exist.
+   * Section 12 forbids adding a behavioral gate name before the suite it
+   * executes exists. A gate is therefore permitted only once its suite is
+   * present, and each entry below records which commit earned it.
+   *
+   * `test:phase3:unit` was added in Commit 2 alongside the colocated
+   * `functions/phase3/*.test.js` guard suite it genuinely runs. The remaining
+   * four stay absent: a placeholder exiting 0 would report green for work that
+   * does not exist.
    */
-  it('source contract: future behavioral gate names are not yet declared', () => {
+  it('source contract: no behavioral gate exists without the suite it runs', () => {
     for (const name of [
-      'test:phase3:unit',
       'test:phase3:rules',
       'test:phase3:migration',
       'test:phase3:release-rehearsal',
@@ -253,6 +257,31 @@ describe('Phase 3 command-safety source contract', () => {
         `${name} must not exist until its behavioral suite does`,
       )
     }
+
+    // test:phase3:unit must exist AND must actually execute the colocated
+    // Phase 3 unit suites, so the gate name cannot drift away from its suite.
+    const unitGate = scripts['test:phase3:unit']
+    assert.equal(typeof unitGate, 'string', 'test:phase3:unit must exist in Commit 2')
+    assert.match(unitGate, /node --test/)
+    assert.match(unitGate, /functions\/phase3/)
+
+    // Section 12 as amended: this gate is emulator-free and therefore needs no
+    // isolation wrapper. It must not start the Firebase CLI or an emulator.
+    assert.ok(
+      !/emulators:exec/.test(unitGate),
+      'the Phase 3 unit gate must not start an emulator',
+    )
+    assert.ok(
+      !/\bfirebase\b/.test(unitGate),
+      'the Phase 3 unit gate must not invoke the Firebase CLI',
+    )
+
+    const suiteFiles = readdirSync(new URL('../../functions/phase3/', import.meta.url))
+      .filter(name => name.endsWith('.test.js'))
+    assert.ok(
+      suiteFiles.length > 0,
+      'test:phase3:unit must have at least one colocated suite to execute',
+    )
   })
 
   // -------------------------------------------------------------------------

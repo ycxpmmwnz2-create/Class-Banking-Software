@@ -1,4 +1,4 @@
-// Phase 3 Commit 1 — release-order SOURCE contract.
+// Phase 3 — release-order SOURCE contract (added Commit 1; expands per commit).
 //
 // EVIDENCE LAYER: static analysis of PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md
 // plus filesystem/checksum facts. This suite proves the brief still *states* the
@@ -9,7 +9,7 @@
 // Authority: PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md Sections 2, 9, 11, 14.
 
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
@@ -204,12 +204,68 @@ describe('Phase 3 release-order source contract', () => {
     }
   })
 
-  it('boundary: functions/phase3 and src/phase3 remain absent in Commit 1', () => {
-    for (const dir of ['functions/phase3', 'src/phase3']) {
-      assert.equal(
-        existsSync(new URL(`../../${dir}`, import.meta.url)),
-        false,
-        `${dir} belongs to a later commit`,
+  it('boundary: src/phase3 remains absent until its client commit', () => {
+    // src/phase3 is Commit 7 (tenant data projection/service). functions/phase3
+    // legitimately exists from Commit 2 onward, so it is scoped by content in
+    // the next assertion rather than by absence.
+    assert.equal(
+      existsSync(new URL('../../src/phase3', import.meta.url)),
+      false,
+      'src/phase3 belongs to the client data commit',
+    )
+  })
+
+  it('boundary: functions/phase3 contains only modules earned by completed commits', () => {
+    const directory = new URL('../../functions/phase3/', import.meta.url)
+    if (!existsSync(directory)) {
+      // Before Commit 2 the directory is absent, which is also in-bounds.
+      return
+    }
+
+    // Every file permitted by Section 11's functions/phase3 list. Presence here
+    // means "allowed to exist eventually"; the sets below pin what the CURRENT
+    // commit has actually earned, so a later commit's module cannot appear early.
+    const SECTION_11_PERMITTED = new Set([
+      'productionEnvironment.js', 'productionEnvironment.test.js',
+      'productionPreflight.js', 'productionPreflight.test.js',
+      'productionProjection.js', 'productionProjection.test.js',
+      'productionManifest.js', 'productionManifest.test.js',
+      'productionWriter.js', 'productionWriter.test.js',
+      'productionReconciliation.js', 'productionReconciliation.test.js',
+      'preflight.js', 'write.js', 'reverify.js',
+      'studentLifecycle.js', 'studentLifecycle.test.js',
+    ])
+
+    const actual = readdirSync(directory)
+    for (const name of actual) {
+      assert.ok(
+        SECTION_11_PERMITTED.has(name),
+        `functions/phase3/${name} is outside Section 11's permitted file list`,
+      )
+    }
+
+    // Commit 2 earns exactly the environment guard module and its test. The
+    // entrypoints, preflight, projection, manifest, writer, reconciliation, and
+    // lifecycle modules belong to Commits 3-6 and must not appear yet.
+    const NOT_YET_EARNED = [
+      'productionPreflight.js', 'productionProjection.js', 'productionManifest.js',
+      'productionWriter.js', 'productionReconciliation.js',
+      'preflight.js', 'write.js', 'reverify.js', 'studentLifecycle.js',
+    ]
+    for (const name of NOT_YET_EARNED) {
+      assert.ok(
+        !actual.includes(name),
+        `functions/phase3/${name} belongs to a later commit than the current one`,
+      )
+    }
+
+    // Every implementation module present must have its colocated test in the
+    // same commit, per the Section 11 amendment.
+    for (const name of actual.filter(f => f.endsWith('.js') && !f.endsWith('.test.js'))) {
+      const expectedTest = name.replace(/\.js$/, '.test.js')
+      assert.ok(
+        actual.includes(expectedTest),
+        `${name} must ship with ${expectedTest} in the same commit`,
       )
     }
   })

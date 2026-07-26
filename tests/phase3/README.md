@@ -1,25 +1,36 @@
 # Phase 3 test suites
 
-## Commit 1 scope
+## Progress against Section 13
 
-Commit 1 adds **acceptance contracts and credential-isolated emulator
-commands** only. It contains no Phase 3 production implementation: no runner, no
-student lifecycle service, no client data projection, no rules artifacts, and no
-deployment logic. Those arrive in Commits 2–11 per
-`PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` Section 13.
+| Commit | Scope | State |
+| --- | --- | --- |
+| 1 | Acceptance contracts and credential-isolated commands | complete |
+| 2 | Production environment, project, and authorization guards | complete |
+| 3–11 | Preflight, projection, writer, lifecycle, client, rules, rehearsal | not started |
 
-## Command
+No Phase 3 production runner, migration, projection, reconciliation, client
+wiring, rules artifact, or deployment logic exists yet. Commit 2 added only
+fail-closed guards; it performs no I/O.
+
+## Commands
 
 | Command | Needs Java/emulator | Needs Chromium |
 | --- | --- | --- |
 | `npm run test:phase3:contracts` | no | no |
+| `npm run test:phase3:unit` | no | no |
 
-The five future behavioral gates named in Section 12 —
-`test:phase3:unit`, `test:phase3:rules`, `test:phase3:migration`,
-`test:phase3:release-rehearsal`, `test:phase3:rollback-rehearsal` — are
-**deliberately not declared yet**. A passing placeholder under one of those
-names would report green for work that does not exist.
-`command-safety.contract.test.js` asserts their absence.
+`test:phase3:unit` runs the colocated `functions/phase3/*.test.js` suites. Per
+Section 12 as amended it is **emulator-free** and therefore needs no Firebase CLI
+isolation wrapper — it must not start the CLI, an emulator, or any network-backed
+operation. `command-safety.contract.test.js` asserts that: the gate must execute
+`functions/phase3`, must have at least one suite to run, and must contain neither
+`emulators:exec` nor a bare `firebase` invocation.
+
+Four Section 12 gates remain **deliberately undeclared** —
+`test:phase3:rules`, `test:phase3:migration`, `test:phase3:release-rehearsal`,
+`test:phase3:rollback-rehearsal`. A passing placeholder under any of those names
+would report green for work that does not exist; the command-safety contract
+asserts their absence and will admit each one only alongside the suite it runs.
 
 ## Evidence layer — read this before citing these tests
 
@@ -133,6 +144,29 @@ through `normalizeData`, and `addStudent` placing a plaintext `pin` on the roste
 object. They are pinned so the Section 4/5 requirements that depend on them
 cannot be quietly dropped. When Commits 6–8 fix these, the owning commit is
 expected to **update** these assertions to the new contract — not delete them.
+
+## Commit 2 — production guard unit suite
+
+`functions/phase3/productionEnvironment.test.js` is **behavioral**, not static:
+every case invokes the real guard functions and asserts the actual outcome and
+error category. Environments are injected rather than read from `process.env`, so
+the negative cases are exhaustive without contaminating the test runner.
+
+It proves the guards' decisions — exact-project allowlist (rejecting
+`morgan-bank-staging`, case variants, and padded lookalikes), emulator
+host/flag leakage into production, ambiguous or unparseable project sources,
+loopback-only emulator hosts, strict `v2Enabled === true`, release-ID matching,
+complete write authorization with every prohibited override key refused by name,
+and redacted telemetry that never carries a project or release value.
+
+It does **not** prove that any future runner calls these guards, that production
+state matches any assumption, or that a release executes correctly. Wiring the
+guards into an entrypoint is a later commit's evidence.
+
+One assertion deserves note for reviewers: an explicitly passed
+`environment: undefined` must throw rather than silently fall back to
+`process.env`. A parameter default would have made `validate(maybeEnv)` check the
+ambient process while the caller believed it supplied a constrained context.
 
 ## Relationship to the Phase 2B matrix
 
