@@ -46,6 +46,87 @@ const VALID_TRANSITIONS = {
   [SESSION_STATES.DENIED_OR_INCONSISTENT]: [SESSION_STATES.SIGNED_OUT, SESSION_STATES.AUTHENTICATING, SESSION_STATES.RESOLVING]
 };
 
+export function createDefaultGlobalState() {
+  return {
+    data: {
+      students: [],
+      transactions: [],
+      loginHistory: [],
+      settings: {
+        studentRequestsEnabled: true,
+        studentAddRequestsEnabled: true,
+        studentSubtractRequestsEnabled: true,
+        purchaseRequestsEnabled: true,
+        requireTeacherApproval: true,
+        reasons: [],
+        purchaseCategories: [],
+        addMoneyCategories: [],
+        subtractMoneyCategories: []
+      },
+      lastBackupAt: null
+    },
+    screen: "login",
+    loginTab: "teacher",
+    showTeacherPasswordLogin: false,
+    isTeacher: false,
+    loggedInStudentId: null,
+    teacherProfileStudentId: null,
+    message: "",
+    studentLoginIdDraft: "",
+    studentLoginPending: false,
+    studentAuthLogs: [],
+    studentAuthLogsLoading: false,
+    studentAuthLogsError: "",
+    studentPinResetPending: false,
+    bulkOperationPending: false,
+    messageTimeout: null,
+    resolvedClassroom: null,
+    resolvedTeacher: null,
+    transactionTarget: "all",
+    teacherTransactionFilter: "all"
+  };
+}
+
+export function resetGlobalApplicationState(stateObj, defaultDataFn = null) {
+  if (!stateObj || typeof stateObj !== "object") return;
+
+  const defaults = createDefaultGlobalState();
+  if (typeof defaultDataFn === "function") {
+    defaults.data = defaultDataFn();
+  }
+
+  stateObj.data = defaults.data;
+  stateObj.screen = defaults.screen;
+  stateObj.loginTab = defaults.loginTab;
+  stateObj.showTeacherPasswordLogin = defaults.showTeacherPasswordLogin;
+  stateObj.isTeacher = defaults.isTeacher;
+  stateObj.loggedInStudentId = defaults.loggedInStudentId;
+  stateObj.teacherProfileStudentId = defaults.teacherProfileStudentId;
+  stateObj.message = defaults.message;
+  stateObj.studentLoginIdDraft = defaults.studentLoginIdDraft;
+  stateObj.studentLoginPending = defaults.studentLoginPending;
+  stateObj.studentAuthLogs = defaults.studentAuthLogs;
+  stateObj.studentAuthLogsLoading = defaults.studentAuthLogsLoading;
+  stateObj.studentAuthLogsError = defaults.studentAuthLogsError;
+  stateObj.studentPinResetPending = defaults.studentPinResetPending;
+  stateObj.bulkOperationPending = defaults.bulkOperationPending;
+
+  if (stateObj.messageTimeout !== null && stateObj.messageTimeout !== undefined) {
+    try {
+      clearTimeout(stateObj.messageTimeout);
+    } catch {
+      // ignore
+    }
+  }
+  stateObj.messageTimeout = null;
+  stateObj.resolvedClassroom = defaults.resolvedClassroom;
+  stateObj.resolvedTeacher = defaults.resolvedTeacher;
+  stateObj.transactionTarget = defaults.transactionTarget;
+  stateObj.teacherTransactionFilter = defaults.teacherTransactionFilter;
+
+  return stateObj;
+}
+
 export class TenantSession {
   constructor(options = {}) {
     this.storageAdapter = options.storageAdapter || (typeof localStorage !== "undefined" ? localStorage : null);

@@ -754,13 +754,11 @@ import { auth, db, functions } from "./src/firebase/firebase.js";
 import { browserSessionPersistence, GoogleAuthProvider, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { TenantSession, SESSION_STATES } from "./src/phase2b/tenantSession.js";
-import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache } from "./src/phase2b/tenantCache.js";
-import { mapSafeClientError, orchestrateTeacherResolution, orchestrateTeacherOnboarding, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
+import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
+import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
+import { mapSafeClientError, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
 
-const IS_MULTI_TEACHER_V2_ENABLED = Boolean(
-  typeof window !== "undefined" && window.MULTI_TEACHER_V2_ENABLED
-);
+const IS_MULTI_TEACHER_V2_ENABLED = typeof window !== "undefined" && window.MULTI_TEACHER_V2_ENABLED === true;
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
     const defaultSettings = {
@@ -827,6 +825,9 @@ const IS_MULTI_TEACHER_V2_ENABLED = Boolean(
     let studentPinResetPending = false;
 
     function requireTeacher() {
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        return v2TenantSession.requireTeacher(auth.currentUser?.uid);
+      }
       const hasTeacherAccess = isTeacher && auth.currentUser?.uid === TEACHER_UID;
       if (!hasTeacherAccess) {
         console.warn("Teacher authentication required.");
@@ -2928,61 +2929,91 @@ if (screen === "editSettingsLists" && isTeacher) {
       document.getElementById("app").innerHTML = html;
     }
 
+    const windowAppGlobals = {
+      get data() { return data; },
+      set data(val) { data = val; },
+      get screen() { return screen; },
+      set screen(val) { screen = val; },
+      get loginTab() { return loginTab; },
+      set loginTab(val) { loginTab = val; },
+      get showTeacherPasswordLogin() { return showTeacherPasswordLogin; },
+      set showTeacherPasswordLogin(val) { showTeacherPasswordLogin = val; },
+      get isTeacher() { return isTeacher; },
+      set isTeacher(val) { isTeacher = val; },
+      get loggedInStudentId() { return loggedInStudentId; },
+      set loggedInStudentId(val) { loggedInStudentId = val; },
+      get teacherProfileStudentId() { return teacherProfileStudentId; },
+      set teacherProfileStudentId(val) { teacherProfileStudentId = val; },
+      get message() { return message; },
+      set message(val) { message = val; },
+      get studentLoginIdDraft() { return studentLoginIdDraft; },
+      set studentLoginIdDraft(val) { studentLoginIdDraft = val; },
+      get studentLoginPending() { return studentLoginPending; },
+      set studentLoginPending(val) { studentLoginPending = val; },
+      get studentAuthLogs() { return studentAuthLogs; },
+      set studentAuthLogs(val) { studentAuthLogs = val; },
+      get studentAuthLogsLoading() { return studentAuthLogsLoading; },
+      set studentAuthLogsLoading(val) { studentAuthLogsLoading = val; },
+      get studentAuthLogsError() { return studentAuthLogsError; },
+      set studentAuthLogsError(val) { studentAuthLogsError = val; },
+      get studentPinResetPending() { return studentPinResetPending; },
+      set studentPinResetPending(val) { studentPinResetPending = val; },
+      get bulkOperationPending() { return bulkOperationPending; },
+      set bulkOperationPending(val) { bulkOperationPending = val; },
+      get messageTimeout() { return messageTimeout; },
+      set messageTimeout(val) { messageTimeout = val; },
+      get resolvedClassroom() { return resolvedClassroom; },
+      set resolvedClassroom(val) { resolvedClassroom = val; },
+      get resolvedTeacher() { return resolvedTeacher; },
+      set resolvedTeacher(val) { resolvedTeacher = val; },
+      get transactionTarget() { return transactionTarget; },
+      set transactionTarget(val) { transactionTarget = val; },
+      get teacherTransactionFilter() { return teacherTransactionFilter; },
+      set teacherTransactionFilter(val) { teacherTransactionFilter = val; }
+    };
+
     function resetAllGlobalState() {
-      data = cloneDefault();
-      isTeacher = false;
-      loggedInStudentId = null;
-      teacherProfileStudentId = null;
-      studentLoginIdDraft = "";
-      showTeacherPasswordLogin = false;
-      message = "";
-      studentAuthLogs = [];
-      studentAuthLogsError = "";
-      studentAuthLogsLoading = false;
-      studentPinResetPending = false;
-      clearTimeout(messageTimeout);
-      messageTimeout = null;
+      resetGlobalApplicationState(windowAppGlobals, cloneDefault);
     }
 
     const v2TenantSession = new TenantSession({
+      storageAdapter: localStorage,
+      cacheModule: { purgeTenantCache, purgeLegacyCache, buildCacheKey },
+      projectId: "morgan-bank",
       onResetGlobals: resetAllGlobalState,
       authAdapter: { signOut: () => signOut(auth) }
     });
 
+    const v2MultiTabInvalidator = new MultiTabInvalidator(v2TenantSession, {
+      storageAdapter: typeof window !== "undefined" ? window : null,
+      onInvalidated: () => render()
+    });
+
+    if (IS_MULTI_TEACHER_V2_ENABLED) {
+      v2MultiTabInvalidator.start();
+    }
+
     let authStateVersion = 0;
     onAuthStateChanged(auth, async user => {
       if (IS_MULTI_TEACHER_V2_ENABLED) {
-        if (!user) {
-          await v2TenantSession.signOut();
-          render();
-          return;
-        }
-
-        const tokenResult = await user.getIdTokenResult().catch(() => ({ claims: {} }));
-        const role = tokenResult?.claims?.role || "teacher";
-
-        if (role === "student") {
-          // V2 student session handling (memory-only, no teacher cache/state)
-          v2TenantSession.transitionTo(SESSION_STATES.AUTHENTICATING, { uid: user.uid, role: "student" });
-          render();
-          return;
-        }
-
+        const tokenResult = user ? await user.getIdTokenResult().catch(() => ({ claims: {} })) : null;
         const callAdapter = async (name, payload) => {
           const callable = httpsCallable(functions, name);
           return await callable(payload);
         };
+        const loadNetworkFn = async () => {
+          return await loadData();
+        };
 
-        v2TenantSession.transitionTo(SESSION_STATES.AUTHENTICATING, { uid: user.uid, role: "teacher" });
-        const res = await orchestrateTeacherResolution(v2TenantSession, callAdapter);
+        const res = await handleAuthTransition(v2TenantSession, user, tokenResult, {
+          callAdapter,
+          loadNetworkFn,
+          storageAdapter: localStorage,
+          projectId: "morgan-bank"
+        });
 
-        if (res.success && v2TenantSession.getState() === SESSION_STATES.ACTIVE) {
-          v2TenantSession.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
-          const cached = readTeacherCache(localStorage, v2TenantSession, v2TenantSession.projectId);
-          if (cached) {
-            data = cached.data;
-          }
-          v2TenantSession.transitionTo(SESSION_STATES.READY);
+        if (res.executed && res.data) {
+          data = res.data;
         }
         render();
         return;

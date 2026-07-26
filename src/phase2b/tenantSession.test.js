@@ -1,25 +1,16 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { TenantSession, SESSION_STATES } from "./tenantSession.js";
+import { TenantSession, SESSION_STATES, createDefaultGlobalState, resetGlobalApplicationState } from "./tenantSession.js";
 
 describe("TenantSession State Machine and Epoch Isolation", () => {
-  test("refresh/bootstrap path begins with no trusted tenant and epoch 0", () => {
-    // Exercises the refresh/bootstrap path
+  test("initializes in signed-out state with epoch 0", () => {
     const session = new TenantSession();
-    assert.equal(
-      session.getState(),
-      SESSION_STATES.SIGNED_OUT,
-      "Detects failure if bootstrap state is not signed-out"
-    );
-    assert.equal(
-      session.getEpoch(),
-      0,
-      "Detects failure if bootstrap epoch is not 0"
-    );
-    assert.equal(session.uid, null, "Detects failure of bootstrap path to have null UID");
-    assert.equal(session.classroomId, null, "Detects failure of bootstrap path to have null classroomId");
-    assert.equal(session.teacher, null, "Detects failure of bootstrap path to have null teacher");
-    assert.equal(session.classroom, null, "Detects failure of bootstrap path to have null classroom");
+    assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT);
+    assert.equal(session.getEpoch(), 0);
+    assert.equal(session.uid, null);
+    assert.equal(session.classroomId, null);
+    assert.equal(session.teacher, null);
+    assert.equal(session.classroom, null);
   });
 
   test("valid state transitions: signed-out -> authenticating -> resolving", () => {
@@ -177,103 +168,66 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
       }
     };
 
-    // Invoke signOut, which begins async signOut execution
     const signOutPromise = session.signOut(pendingAuthAdapter);
 
-    // PROVE that BEFORE signOut promise resolves, state/cache/reset have ALREADY cleared synchronously
     assert.equal(signOutResolved, false, "SignOut promise should still be pending");
     assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT, "State must be signed-out BEFORE signOut resolves");
     assert.equal(session.getEpoch(), 1, "Epoch must be incremented BEFORE signOut resolves");
     assert.equal(resetGlobalsCalled, true, "onResetGlobals must be called BEFORE signOut resolves");
     assert.equal("mrMorganClassCashDataV5" in mockStorage.items, false, "Legacy storage key must be removed BEFORE signOut resolves");
 
-    // Now resolve pending signOut promise
     resolveSignOutPromise();
     const result = await signOutPromise;
     assert.equal(result.success, true);
     assert.equal(signOutResolved, true);
   });
 
-  test("resets every global listed in the architecture on invalidation", () => {
-    // Architectural list of globals:
-    // data, isTeacher, loggedInStudentId, teacherProfileStudentId, transactionTarget, teacherTransactionFilter,
-    // studentLoginIdDraft, showTeacherPasswordLogin, resolvedClassroom, resolvedTeacher, screen, loginTab,
-    // message, messageTimeout, studentAuthLogs, studentAuthLogsError, studentAuthLogsLoading,
-    // studentPinResetPending, bulkOperationPending, listeners, controllers, timeouts, pendingTokens
+  test("resetGlobalApplicationState resets every real application global to fresh defaults", () => {
     const globalState = {
       data: { students: [{ id: "st1", name: "Alice" }], settings: { test: 1 } },
+      screen: "teacher",
+      loginTab: "student",
+      showTeacherPasswordLogin: true,
       isTeacher: true,
       loggedInStudentId: "st1",
       teacherProfileStudentId: "st1",
-      transactionTarget: "st1",
-      teacherTransactionFilter: "credit",
+      message: "Active session loaded",
       studentLoginIdDraft: "draft_123",
-      showTeacherPasswordLogin: true,
+      studentLoginPending: true,
+      studentAuthLogs: [{ time: 100 }],
+      studentAuthLogsLoading: true,
+      studentAuthLogsError: "Error log",
+      studentPinResetPending: true,
+      bulkOperationPending: true,
+      messageTimeout: 999,
       resolvedClassroom: { id: "c1", name: "Class 1" },
       resolvedTeacher: { uid: "t1", name: "Mr. T" },
-      screen: "teacher",
-      loginTab: "student",
-      message: "Active session loaded",
-      messageTimeout: 999,
-      studentAuthLogs: [{ time: 100 }],
-      studentAuthLogsError: "Error log",
-      studentAuthLogsLoading: true,
-      studentPinResetPending: true,
-      bulkOperationPending: true
+      transactionTarget: "st1",
+      teacherTransactionFilter: "credit"
     };
 
-    function resetAllArchitectureGlobals() {
-      globalState.data = { students: [], transactions: [], loginHistory: [], settings: {}, lastBackupAt: null };
-      globalState.isTeacher = false;
-      globalState.loggedInStudentId = null;
-      globalState.teacherProfileStudentId = null;
-      globalState.transactionTarget = "all";
-      globalState.teacherTransactionFilter = "all";
-      globalState.studentLoginIdDraft = "";
-      globalState.showTeacherPasswordLogin = false;
-      globalState.resolvedClassroom = null;
-      globalState.resolvedTeacher = null;
-      globalState.screen = "login";
-      globalState.loginTab = "teacher";
-      globalState.message = "";
-      globalState.messageTimeout = null;
-      globalState.studentAuthLogs = [];
-      globalState.studentAuthLogsError = "";
-      globalState.studentAuthLogsLoading = false;
-      globalState.studentPinResetPending = false;
-      globalState.bulkOperationPending = false;
-    }
+    resetGlobalApplicationState(globalState, () => createDefaultGlobalState().data);
 
-    const session = new TenantSession({
-      onResetGlobals: resetAllArchitectureGlobals
-    });
-
-    session.transitionTo(SESSION_STATES.AUTHENTICATING);
-    session.transitionTo(SESSION_STATES.RESOLVING);
-    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "t1", role: "teacher", classroomId: "c1" });
-
-    session.invalidate("reset-all-globals-test");
-
-    // Inspect every required global
-    assert.deepEqual(globalState.data, { students: [], transactions: [], loginHistory: [], settings: {}, lastBackupAt: null });
+    assert.deepEqual(globalState.data, createDefaultGlobalState().data);
+    assert.equal(globalState.screen, "login");
+    assert.equal(globalState.loginTab, "teacher");
+    assert.equal(globalState.showTeacherPasswordLogin, false);
     assert.equal(globalState.isTeacher, false);
     assert.equal(globalState.loggedInStudentId, null);
     assert.equal(globalState.teacherProfileStudentId, null);
-    assert.equal(globalState.transactionTarget, "all");
-    assert.equal(globalState.teacherTransactionFilter, "all");
-    assert.equal(globalState.studentLoginIdDraft, "");
-    assert.equal(globalState.showTeacherPasswordLogin, false);
-    assert.equal(globalState.resolvedClassroom, null);
-    assert.equal(globalState.resolvedTeacher, null);
-    assert.equal(globalState.screen, "login");
-    assert.equal(globalState.loginTab, "teacher");
     assert.equal(globalState.message, "");
-    assert.equal(globalState.messageTimeout, null);
+    assert.equal(globalState.studentLoginIdDraft, "");
+    assert.equal(globalState.studentLoginPending, false);
     assert.deepEqual(globalState.studentAuthLogs, []);
-    assert.equal(globalState.studentAuthLogsError, "");
     assert.equal(globalState.studentAuthLogsLoading, false);
+    assert.equal(globalState.studentAuthLogsError, "");
     assert.equal(globalState.studentPinResetPending, false);
     assert.equal(globalState.bulkOperationPending, false);
+    assert.equal(globalState.messageTimeout, null);
+    assert.equal(globalState.resolvedClassroom, null);
+    assert.equal(globalState.resolvedTeacher, null);
+    assert.equal(globalState.transactionTarget, "all");
+    assert.equal(globalState.teacherTransactionFilter, "all");
   });
 
   test("requireTeacher enforces strict ready state, current auth UID, teacher role, and classroomId", () => {
@@ -286,40 +240,19 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
       classroomId: "room_123"
     });
 
-    assert.equal(
-      session.requireTeacher("teacher_uid_123"),
-      false,
-      "Detects failure to reject ACTIVE state before READY state in requireTeacher"
-    );
+    assert.equal(session.requireTeacher("teacher_uid_123"), false);
 
     session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
     session.transitionTo(SESSION_STATES.READY);
 
-    assert.equal(
-      session.requireTeacher("teacher_uid_123"),
-      true,
-      "Detects failure to approve teacher when state is READY and Auth UID matches"
-    );
-
-    assert.equal(
-      session.requireTeacher("different_auth_uid"),
-      false,
-      "Detects failure to reject when current Auth UID differs from resolved session UID"
-    );
+    assert.equal(session.requireTeacher("teacher_uid_123"), true);
+    assert.equal(session.requireTeacher("different_auth_uid"), false);
 
     session.role = "student";
-    assert.equal(
-      session.requireTeacher("teacher_uid_123"),
-      false,
-      "Detects failure to reject non-teacher role in requireTeacher"
-    );
+    assert.equal(session.requireTeacher("teacher_uid_123"), false);
 
     session.role = "teacher";
     session.classroomId = "";
-    assert.equal(
-      session.requireTeacher("teacher_uid_123"),
-      false,
-      "Detects failure to reject empty classroomId in requireTeacher"
-    );
+    assert.equal(session.requireTeacher("teacher_uid_123"), false);
   });
 });

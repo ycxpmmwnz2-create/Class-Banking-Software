@@ -19,12 +19,17 @@ let db = getFirestore(app);
 let functions = getFunctions(app);
 let isEmulatorConnected = false;
 
+export function isPortValid(port) {
+  if (typeof port !== "number" || !Number.isInteger(port)) return false;
+  return port > 0 && port <= 65535;
+}
+
 export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
   const config = testConfig || (typeof window !== "undefined" && window.PHASE2B_EMULATOR_TEST_CONFIG);
-  if (!config || !config.enabled) return;
+  if (!config || !config.enabled) return { connected: false, reason: "disabled" };
 
   if (isEmulatorConnected) {
-    return;
+    return { connected: true, reason: "already-connected" };
   }
 
   const projectId = config.projectId || "";
@@ -37,7 +42,17 @@ export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
     throw new Error("Emulator connection must use loopback host.");
   }
 
-  // Ensure the actual app instance uses the demo projectId
+  if (config.authPort && !isPortValid(config.authPort)) {
+    throw new Error(`Invalid Auth emulator port: ${config.authPort}`);
+  }
+  if (config.firestorePort && !isPortValid(config.firestorePort)) {
+    throw new Error(`Invalid Firestore emulator port: ${config.firestorePort}`);
+  }
+  if (config.functionsPort && !isPortValid(config.functionsPort)) {
+    throw new Error(`Invalid Functions emulator port: ${config.functionsPort}`);
+  }
+
+  // Ensure the actual app instance used by exported auth/db/functions has the demo projectId
   if (app.options.projectId !== projectId) {
     const demoConfig = { ...firebaseConfig, projectId };
     app = initializeApp(demoConfig, "phase2b-emulator-app");
@@ -57,6 +72,7 @@ export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
   }
 
   isEmulatorConnected = true;
+  return { connected: true, app, auth, db, functions };
 }
 
 export { app, auth, db, functions };

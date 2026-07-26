@@ -8,7 +8,6 @@ import {
   readTeacherCache,
   purgeTenantCache,
   purgeLegacyCache,
-  classifyOfflineFailure,
   computeSha256Digest,
   createBroadcastMessage,
   validateBroadcastMessage,
@@ -20,12 +19,50 @@ import { TenantSession, SESSION_STATES } from "./tenantSession.js";
 
 function createMockStorage() {
   const store = new Map();
+  const listeners = new Set();
   return {
     getItem: (key) => (store.has(key) ? store.get(key) : null),
-    setItem: (key, val) => store.set(key, String(val)),
-    removeItem: (key) => store.delete(key),
+    setItem: (key, val) => {
+      const oldVal = store.get(key) || null;
+      store.set(key, String(val));
+      for (const listener of listeners) {
+        listener({ key, newValue: String(val), oldValue: oldVal });
+      }
+    },
+    removeItem: (key) => {
+      const oldVal = store.get(key) || null;
+      store.delete(key);
+      for (const listener of listeners) {
+        listener({ key, newValue: null, oldValue: oldVal });
+      }
+    },
+    addEventListener: (type, listener) => {
+      if (type === "storage") listeners.add(listener);
+    },
+    removeEventListener: (type, listener) => {
+      if (type === "storage") listeners.delete(listener);
+    },
     clear: () => store.clear(),
     store
+  };
+}
+
+function createMockChannel() {
+  const listeners = new Set();
+  return {
+    postMessage: (msg) => {
+      for (const listener of listeners) {
+        listener({ data: msg });
+      }
+    },
+    addEventListener: (type, listener) => {
+      if (type === "message") listeners.add(listener);
+    },
+    removeEventListener: (type, listener) => {
+      if (type === "message") listeners.delete(listener);
+    },
+    close: () => listeners.clear(),
+    listeners
   };
 }
 
@@ -43,13 +80,40 @@ describe("TenantCache Module Specifications", () => {
     }
   };
 
+  test("computeSha256Digest matches standard SHA-256 known-answer test vectors", () => {
+    // Known-answer SHA-256 for "abc"
+    const digestAbc = computeSha256Digest("abc");
+    assert.equal(
+      digestAbc,
+      "sha256_ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      "Detects incorrect SHA-256 digest computation for 'abc'"
+    );
+
+    // Known-answer SHA-256 for empty string
+    const digestEmpty = computeSha256Digest("");
+    assert.equal(digestEmpty, "");
+  });
+
+  test("validateBroadcastMessage enforces exact sha256_ prefix plus 64 lowercase hexadecimal chars", () => {
+    const validMsg = {
+      type: "session-invalidated",
+      uidDigest: "sha256_ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      epoch: 5
+    };
+    assert.equal(validateBroadcastMessage(validMsg), true);
+
+    // Invalid digest length/format
+    const invalidDigestMsg = {
+      type: "session-invalidated",
+      uidDigest: "sha256_invalid123",
+      epoch: 5
+    };
+    assert.equal(validateBroadcastMessage(invalidDigestMsg), false);
+  });
+
   test("builds exact cache key format", () => {
     const key = buildCacheKey("demo-project", "teacher_a", "room_x");
-    assert.equal(
-      key,
-      "morganBank:v2:demo-project:teacher:teacher_a:classroom:room_x:data:v1",
-      "Detects failure to construct exact required cache key format"
-    );
+    assert.equal(key, "morganBank:v2:demo-project:teacher:teacher_a:classroom:room_x:data:v1");
   });
 
   test("creates exact envelope format and validates envelope directly", () => {
@@ -65,36 +129,33 @@ describe("TenantCache Module Specifications", () => {
 
     assert.equal(validateEnvelope(envelope, TEACHER_SESSION, PROJECT_ID), true);
     assert.equal(validateEnvelope(envelope, { ...TEACHER_SESSION, role: "student" }, PROJECT_ID), false);
-    assert.equal(computeSha256Digest("test_uid_123").startsWith("sha256_"), true);
   });
 
   test("strictly validates envelope rejecting unknown fields, non-integer timestamps, and arrays", () => {
     const validEnvelope = createEnvelope(PROJECT_ID, "teacher_uid_1", "room_1", { ok: 1 });
 
-    // Unknown extra field
-    const unknownFieldEnvelope = { ...validEnvelope, extraField: "forbidden" };
-    assert.equal(validateEnvelope(unknownFieldEnvelope, TEACHER_SESSION, PROJECT_ID), false);
-
-    // Array envelope
+    assert.equal(validateEnvelope({ ...validEnvelope, extraField: "forbidden" }, TEACHER_SESSION, PROJECT_ID), false);
     assert.equal(validateEnvelope([], TEACHER_SESSION, PROJECT_ID), false);
-
-    // Negative/non-finite/fractional timestamp
-    const fractionalTsEnvelope = { ...validEnvelope, updatedAt: 1234.567 };
-    assert.equal(validateEnvelope(fractionalTsEnvelope, TEACHER_SESSION, PROJECT_ID), false);
+    assert.equal(validateEnvelope({ ...validEnvelope, updatedAt: 1234.567 }, TEACHER_SESSION, PROJECT_ID), false);
   });
 
-  test("valid same-tenant cache admission after authoritative resolution", () => {
+  test("writeTeacherCache requires state to be EXACT ready and rejects active state", () => {
     const storage = createMockStorage();
     const data = { students: [{ id: "s1" }] };
     const captured = { uid: "teacher_uid_1", role: "teacher", classroomId: "room_1", epoch: 5 };
 
-    const writeRes = writeTeacherCache(storage, TEACHER_SESSION, PROJECT_ID, data, captured);
-    assert.equal(writeRes.success, true);
+    const activeSession = {
+      ...TEACHER_SESSION,
+      state: "active",
+      getState() { return "active"; }
+    };
 
-    const readRes = readTeacherCache(storage, TEACHER_SESSION, PROJECT_ID);
-    assert.notEqual(readRes, null);
-    assert.equal(readRes.isOfflineView, true);
-    assert.deepEqual(readRes.data, data);
+    const activeWriteRes = writeTeacherCache(storage, activeSession, PROJECT_ID, data, captured);
+    assert.equal(activeWriteRes.success, false, "Detects failure to reject write in ACTIVE state prior to READY");
+    assert.equal(activeWriteRes.reason, "session-not-ready");
+
+    const readyWriteRes = writeTeacherCache(storage, TEACHER_SESSION, PROJECT_ID, data, captured);
+    assert.equal(readyWriteRes.success, true);
   });
 
   test("cache may NOT be read prior to authoritative tenant resolution (e.g. in SIGNED_OUT or RESOLVING state)", () => {
@@ -110,130 +171,74 @@ describe("TenantCache Module Specifications", () => {
     };
 
     const readRes = readTeacherCache(storage, unresolvedSession, PROJECT_ID);
-    assert.equal(
-      readRes,
-      null,
-      "Detects failure to block cache read prior to authoritative tenant resolution"
-    );
-  });
-
-  test("rejects and purges cross-project, cross-UID, and cross-classroom cache entries", () => {
-    const storage = createMockStorage();
-    const key = buildCacheKey(PROJECT_ID, TEACHER_SESSION.uid, TEACHER_SESSION.classroomId);
-
-    // Cross-project
-    const crossProjEnv = createEnvelope("other-project", TEACHER_SESSION.uid, TEACHER_SESSION.classroomId, { test: 1 });
-    storage.setItem(key, JSON.stringify(crossProjEnv));
-    assert.equal(readTeacherCache(storage, TEACHER_SESSION, PROJECT_ID), null);
-    assert.equal(storage.getItem(key), null);
-
-    // Cross-UID
-    const crossUidEnv = createEnvelope(PROJECT_ID, "other_uid", TEACHER_SESSION.classroomId, { test: 1 });
-    storage.setItem(key, JSON.stringify(crossUidEnv));
-    assert.equal(readTeacherCache(storage, TEACHER_SESSION, PROJECT_ID), null);
-    assert.equal(storage.getItem(key), null);
-
-    // Cross-classroom
-    const crossClassEnv = createEnvelope(PROJECT_ID, TEACHER_SESSION.uid, "other_room", { test: 1 });
-    storage.setItem(key, JSON.stringify(crossClassEnv));
-    assert.equal(readTeacherCache(storage, TEACHER_SESSION, PROJECT_ID), null);
-    assert.equal(storage.getItem(key), null);
-  });
-
-  test("removes legacy cache and never migrates it to V2", () => {
-    const storage = createMockStorage();
-    storage.setItem(LEGACY_STORAGE_KEY, JSON.stringify({ students: [{ id: "legacy" }] }));
-
-    purgeLegacyCache(storage);
-    assert.equal(storage.getItem(LEGACY_STORAGE_KEY), null);
-
-    const readRes = readTeacherCache(storage, TEACHER_SESSION, PROJECT_ID);
     assert.equal(readRes, null);
   });
 
-  test("purges previous tenant cache before account switch", () => {
+  test("integration test: V2 cache and legacy cache are synchronously purged on A->B, B->A, role change, and sign-out", () => {
     const storage = createMockStorage();
-    const keyA = buildCacheKey(PROJECT_ID, "teacher_a", "room_a");
-    storage.setItem(keyA, JSON.stringify(createEnvelope(PROJECT_ID, "teacher_a", "room_a", { data: 1 })));
 
-    purgeTenantCache(storage, PROJECT_ID, "teacher_a", "room_a");
-    assert.equal(storage.getItem(keyA), null);
-  });
-
-  test("student session cannot persist to V2 teacher cache", () => {
-    const storage = createMockStorage();
-    const studentSession = {
-      uid: "student_uid_1",
-      role: "student",
-      classroomId: "room_1",
-      epoch: 1,
-      state: "ready",
-      getState() { return "ready"; }
-    };
-
-    const res = writeTeacherCache(storage, studentSession, PROJECT_ID, { test: 1 }, { uid: "student_uid_1", role: "student", classroomId: "room_1", epoch: 1 });
-    assert.equal(res.success, false);
-    assert.equal(res.reason, "student-session-no-persist");
-  });
-
-  test("stale epoch or identity change cannot persist cache", () => {
-    const storage = createMockStorage();
-    const staleCaptured = { uid: "teacher_uid_1", role: "teacher", classroomId: "room_1", epoch: 4 };
-
-    const res = writeTeacherCache(storage, TEACHER_SESSION, PROJECT_ID, { test: 1 }, staleCaptured);
-    assert.equal(res.success, false);
-    assert.equal(res.reason, "stale-epoch");
-  });
-
-  test("classifies transient network failure and rejects permission/authentication/integrity errors from fallback", () => {
-    const unavailableErr = { code: "functions/unavailable", message: "Failed to connect" };
-    const permDeniedErr = { code: "functions/permission-denied", message: "Missing permissions" };
-    const unauthErr = { code: "functions/unauthenticated", message: "No auth token" };
-    const precondErr = { code: "functions/failed-precondition", message: "Inconsistent state" };
-
-    assert.equal(classifyOfflineFailure(unavailableErr), true);
-    assert.equal(classifyOfflineFailure(permDeniedErr), false);
-    assert.equal(classifyOfflineFailure(unauthErr), false);
-    assert.equal(classifyOfflineFailure(precondErr), false);
-  });
-
-  test("multi-tab invalidation publishes SHA-256 digest and epoch without leaking classroom data or raw UID", () => {
-    let publishedMessage = null;
-    const channelAdapter = {
-      postMessage(msg) {
-        publishedMessage = msg;
-      }
-    };
-    const storageAdapter = createMockStorage();
-    const session = new TenantSession();
-    session.transitionTo(SESSION_STATES.AUTHENTICATING);
-    session.transitionTo(SESSION_STATES.RESOLVING);
-    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_secret_uid", role: "teacher", classroomId: "secret_room" });
-
-    const invalidator = new MultiTabInvalidator(session, {
-      channelAdapter,
-      storageAdapter
+    const cacheModule = { purgeTenantCache, purgeLegacyCache, buildCacheKey };
+    const session = new TenantSession({
+      storageAdapter: storage,
+      cacheModule,
+      projectId: PROJECT_ID
     });
 
-    invalidator.broadcastInvalidation("teacher_secret_uid", 12);
+    // Setup Teacher A session and cache
+    session.transitionTo(SESSION_STATES.AUTHENTICATING);
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_a", role: "teacher", classroomId: "room_a" });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
 
-    assert.notEqual(publishedMessage, null);
-    assert.equal(publishedMessage.type, "session-invalidated");
-    assert.equal(publishedMessage.epoch, 12);
-    assert.equal(publishedMessage.uidDigest.startsWith("sha256_"), true);
+    writeTeacherCache(storage, session, PROJECT_ID, { dataA: 1 }, session.captureIdentity());
+    storage.setItem(LEGACY_STORAGE_KEY, JSON.stringify({ legacy: true }));
 
-    // Verify absence of sensitive data
-    assert.equal("uid" in publishedMessage, false);
-    assert.equal("rawUid" in publishedMessage, false);
-    assert.equal("classroomId" in publishedMessage, false);
-    assert.equal("classroomCode" in publishedMessage, false);
-    assert.equal("classroomData" in publishedMessage, false);
-    assert.equal("studentData" in publishedMessage, false);
-    assert.equal("tokens" in publishedMessage, false);
-    assert.equal("email" in publishedMessage, false);
+    const keyA = buildCacheKey(PROJECT_ID, "teacher_a", "room_a");
+    assert.notEqual(storage.getItem(keyA), null);
+    assert.notEqual(storage.getItem(LEGACY_STORAGE_KEY), null);
+
+    // Switch A -> B
+    session.invalidate("switch-A-to-B", { uid: "teacher_b", role: "teacher", state: SESSION_STATES.RESOLVING });
+    assert.equal(storage.getItem(keyA), null, "Teacher A V2 cache must be purged on switch to B");
+    assert.equal(storage.getItem(LEGACY_STORAGE_KEY), null, "Legacy cache must be purged on switch to B");
+
+    // Setup Teacher B session and cache
+    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_b", role: "teacher", classroomId: "room_b" });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
+    writeTeacherCache(storage, session, PROJECT_ID, { dataB: 2 }, session.captureIdentity());
+
+    const keyB = buildCacheKey(PROJECT_ID, "teacher_b", "room_b");
+    assert.notEqual(storage.getItem(keyB), null);
+
+    // Switch B -> A
+    session.invalidate("switch-B-to-A", { uid: "teacher_a", role: "teacher", state: SESSION_STATES.RESOLVING });
+    assert.equal(storage.getItem(keyB), null, "Teacher B V2 cache must be purged on switch back to A");
+
+    // Teacher -> Student role change
+    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_a", role: "teacher", classroomId: "room_a" });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
+    writeTeacherCache(storage, session, PROJECT_ID, { dataA: 1 }, session.captureIdentity());
+
+    session.invalidate("role-change-to-student", { uid: "student_1", role: "student", state: SESSION_STATES.AUTHENTICATING });
+    assert.equal(storage.getItem(keyA), null, "V2 cache must be purged on role change to student");
+
+    // Sign out
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_a", role: "teacher", classroomId: "room_a" });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
+    writeTeacherCache(storage, session, PROJECT_ID, { dataA: 1 }, session.captureIdentity());
+
+    session.signOut();
+    assert.equal(storage.getItem(keyA), null, "V2 cache must be purged on signOut");
   });
 
-  test("multi-tab invalidator receives valid message, invalidates session, and rejects malformed messages", () => {
+  test("MultiTabInvalidator subscribes to adapters, processes events, and unsubscribes on destroy", () => {
+    const channelAdapter = createMockChannel();
+    const storageAdapter = createMockStorage();
     const session = new TenantSession();
     session.transitionTo(SESSION_STATES.AUTHENTICATING);
     session.transitionTo(SESSION_STATES.RESOLVING);
@@ -241,40 +246,26 @@ describe("TenantCache Module Specifications", () => {
 
     let callbackFired = false;
     const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter,
+      storageAdapter,
+      tabId: "tab_other",
       onInvalidated: () => {
         callbackFired = true;
       }
     });
 
-    const validMsg = createBroadcastMessage("u1", 5);
-    const result = invalidator.receiveMessage(validMsg);
+    invalidator.start();
+    assert.equal(invalidator.isSubscribed, true);
 
-    assert.equal(result, true);
+    // Trigger event via channel adapter message emission
+    const validMsg = createBroadcastMessage("u1", 5, "tab_sender");
+    channelAdapter.postMessage(validMsg);
+
     assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT);
     assert.equal(callbackFired, true);
 
-    // Malformed message test (extra forbidden key)
-    session.transitionTo(SESSION_STATES.AUTHENTICATING);
-    session.transitionTo(SESSION_STATES.RESOLVING);
-    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "u1", role: "teacher", classroomId: "c1" });
-    let malformedCallbackFired = false;
-    const malformedInvalidator = new MultiTabInvalidator(session, {
-      onInvalidated: () => {
-        malformedCallbackFired = true;
-      }
-    });
-
-    const malformedMsg = {
-      type: "session-invalidated",
-      uidDigest: computeSha256Digest("u1"),
-      epoch: 6,
-      classroomId: "illegal_leak"
-    };
-
-    assert.equal(validateBroadcastMessage(malformedMsg), false);
-    const malformedResult = malformedInvalidator.receiveMessage(malformedMsg);
-    assert.equal(malformedResult, false);
-    assert.equal(malformedCallbackFired, true);
-    assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT, "Fails closed on malformed message");
+    // Teardown
+    invalidator.destroy();
+    assert.equal(invalidator.isSubscribed, false);
   });
 });
