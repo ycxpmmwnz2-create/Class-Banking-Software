@@ -37,7 +37,8 @@ const OBSERVED_AT = '2026-07-26T18:00:00.000Z'
 function sourceEntries(label, count, overrides = []) {
   const entries = Array.from({ length: count }, (unused, index) => ({
     pathHash: createHash('sha256').update(`${label}/path/${index}`).digest('hex'),
-    updateTime: `2026-07-2${(index % 9) + 1}T12:00:00.000Z`,
+    // Exact Firestore precision, not an ISO millisecond string.
+    updateTime: { seconds: 1_785_000_000 + index, nanoseconds: 123_456_789 },
     documentHash: createHash('sha256').update(`${label}/body/${index}`).digest('hex'),
   }))
   overrides.forEach((override, index) => {
@@ -102,7 +103,8 @@ function readers(overrides = {}) {
       loginHistoryStudentIds: ['3'],
       noncanonicalValueCount: 0,
       anomalies: [],
-      sourceEntries: sourceEntries('legacy', 18),
+      present: true,
+      sourceEntries: sourceEntries('legacy', 1),
     }),
     readFlatCredentials: async () => complete({
       count: 3,
@@ -130,7 +132,9 @@ function readers(overrides = {}) {
     readDestinationPaths: async () => complete({
       counts: { scopedCredentials: 0, scopedLogs: 0, classroomStudents: 0 },
       studentIds: [],
-      sourceEntries: [],
+      sourceEntriesBySurface: {
+        scopedCredentials: [], scopedLogs: [], classroomStudents: [],
+      },
     }),
     readAuthCompatibility: async () => complete({
       uidCollisions: 0,
@@ -632,6 +636,11 @@ describe('Phase 3 production preflight', () => {
             readDestinationPaths: async () => complete({
               counts: { scopedCredentials: 3, scopedLogs: 0, classroomStudents: 0 },
               studentIds: [],
+              sourceEntriesBySurface: {
+                scopedCredentials: sourceEntries('destCreds', 3),
+                scopedLogs: [],
+                classroomStudents: [],
+              },
             }),
           }),
         },
@@ -646,7 +655,11 @@ describe('Phase 3 production preflight', () => {
           readDestinationPaths: async () => complete({
             counts: { classroomStudents: 3, scopedCredentials: 0, scopedLogs: 0 },
             studentIds: ['1', '2', '3'],
-            sourceEntries: sourceEntries('destination', 3),
+            sourceEntriesBySurface: {
+              classroomStudents: sourceEntries('destStudents', 3),
+              scopedCredentials: [],
+              scopedLogs: [],
+            },
           }),
         }),
         expectations: expectations({
@@ -847,12 +860,61 @@ describe('Phase 3 production preflight', () => {
       assert.equal(watermark.nextStudentNumber, 1)
     })
 
-    it('aborts on a normalization collision between spellings', () => {
-      assert.throws(
-        () => deriveStudentIdWatermark({ roster: ['7'], credentials: [7] }),
-        error => error.category === PREFLIGHT_ABORT_CATEGORIES.IDENTITY_COLLISION,
-        'string 7 and numeric 7 must not silently share a slot',
-      )
+    it('normalizes numeric/string equivalents of one student across sources', () => {
+      // The brief's own expected shape: the legacy roster stores `id: 7` while a
+      // credential stores `studentId: "7"` and a transaction cites 7. That is ONE
+      // student referenced three ways, and Section 5 requires it be normalized.
+      //
+      // An earlier version pooled all sources and compared `typeof:String(raw)`,
+      // so this exact shape aborted as a collision — the emulator suite only
+      // passed because its readers pre-stringified every ID, hiding the behavior.
+      const watermark = deriveStudentIdWatermark({
+        roster: [7],
+        credentials: ['7'],
+        transactions: [7],
+        loginHistory: ['7'],
+        authLogs: [7],
+        destinationStudents: [],
+      })
+      assert.equal(watermark.observedMaximum, 7)
+      assert.equal(watermark.nextStudentNumber, 8)
+      assert.equal(watermark.distinctCount, 1, 'one student, not five')
+    })
+
+    it('aborts when two distinct records in one identity set share a normalized ID', () => {
+      // Within an identity set, one entry is one student record. Two roster
+      // students normalizing to 7 are two students claiming one identity, whatever
+      // their spelling.
+      for (const roster of [[7, '7'], ['7', 7], [7, 7], ['7', '7']]) {
+        assert.throws(
+          () => deriveStudentIdWatermark({ roster }),
+          error => {
+            assert.equal(
+              error.category,
+              PREFLIGHT_ABORT_CATEGORIES.IDENTITY_COLLISION,
+            )
+            assert.match(error.message, /identity set/)
+            return true
+          },
+          `roster ${JSON.stringify(roster)} holds two records for one identity`,
+        )
+      }
+
+      // Credentials and destination students are identity sets too.
+      for (const source of ['credentials', 'destinationStudents']) {
+        assert.throws(
+          () => deriveStudentIdWatermark({ [source]: [4, '4'] }),
+          error => error.category === PREFLIGHT_ABORT_CATEGORIES.IDENTITY_COLLISION,
+          `${source} is an identity set`,
+        )
+      }
+
+      // Reference sources are NOT identity sets: a student is cited repeatedly by
+      // design, so a repeat there must not block.
+      for (const source of ['transactions', 'loginHistory', 'authLogs']) {
+        const watermark = deriveStudentIdWatermark({ [source]: [4, '4', 4] })
+        assert.equal(watermark.observedMaximum, 4, `${source} may repeat a citation`)
+      }
     })
 
     it('aborts on a malformed historical ID', async () => {
@@ -868,6 +930,8 @@ describe('Phase 3 production preflight', () => {
               studentIds: ['007'],
               noncanonicalValueCount: 0,
               anomalies: [],
+              present: true,
+              sourceEntries: sourceEntries('legacy', 1),
             }),
           }),
         },
@@ -1091,8 +1155,12 @@ describe('Phase 3 production preflight', () => {
             duplicateStudentIds: 0,
             noncanonicalLoginIds: 0,
             anomalies: [],
+            // A NANOSECOND-only change, within the same millisecond. An ISO
+            // millisecond representation would have discarded this entirely, so
+            // two writes inside one millisecond restoring the same body would
+            // have produced identical evidence.
             sourceEntries: sourceEntries('credentials', 3, [
-              { updateTime: '2026-07-26T23:59:59.999Z' },
+              { updateTime: { seconds: 1_785_000_000, nanoseconds: 123_456_790 } },
             ]),
           }),
         }),
@@ -1229,6 +1297,232 @@ describe('Phase 3 production preflight', () => {
         },
         PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
         'destination absence without evidence must abort',
+      )
+    })
+  })
+
+  describe('evidence cardinality is bound for every surface', () => {
+    /**
+     * An earlier version bound only flatCredentials and flatAuthLogs, so a reader
+     * could report ten examined Auth users while supplying nine hashes and the
+     * manifest would retain evidence that never covered the omitted state.
+     */
+    it('binds every declared count to its evidence, not just the flat collections', async () => {
+      const cases = [
+        ['authUsers', {
+          readAuthCompatibility: async () => complete({
+            uidCollisions: 0, incompatibleUsers: 0,
+            examinedUserCount: 10,
+            sourceEntries: sourceEntries('authUsers', 9),
+          }),
+        }],
+        ['legacyClassroom', {
+          readLegacyClassroomAggregate: async () => complete({
+            counts: { students: 3, transactions: 10, loginHistory: 5 },
+            studentIds: ['1'], transactionStudentIds: [], loginHistoryStudentIds: [],
+            noncanonicalValueCount: 0, anomalies: [],
+            // Claims the aggregate exists but supplies no document evidence.
+            present: true, sourceEntries: [],
+          }),
+        }],
+        ['foundationPresent', {
+          readFoundation: async () => complete({
+            present: true, reciprocal: true, teacherStatus: 'active',
+            classroomId: 'abc123', anomalies: [],
+            // Present means teacher + reciprocal classroom: two documents.
+            sourceEntries: sourceEntries('foundation', 1),
+          }),
+        }],
+        ['foundationAbsent', {
+          readFoundation: async () => complete({
+            present: false, anomalies: [],
+            // Absent must mean nothing was hashed.
+            sourceEntries: sourceEntries('foundation', 1),
+          }),
+        }],
+      ]
+
+      for (const [label, override] of cases) {
+        await assertAborts(
+          { readers: readers(override) },
+          PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+          `${label} must bind its declared count to its evidence`,
+        )
+      }
+    })
+
+    it('requires an explicit boolean presence rather than treating absent as proven', async () => {
+      for (const present of [undefined, null, 'yes', 0]) {
+        await assertAborts(
+          {
+            readers: readers({
+              readLegacyClassroomAggregate: async () => complete({
+                counts: { students: 3 }, studentIds: ['1'],
+                transactionStudentIds: [], loginHistoryStudentIds: [],
+                noncanonicalValueCount: 0, anomalies: [],
+                present,
+                sourceEntries: sourceEntries('legacy', 1),
+              }),
+            }),
+          },
+          PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+          `present=${String(present)} must not be read as a determination`,
+        )
+      }
+    })
+
+    it('binds destination surfaces individually, not as one pooled total', async () => {
+      // The counts SUM correctly (2 total) but are individually wrong: two scoped
+      // logs were found and reported as classroomStudents. A pooled total check
+      // would accept this, so only per-surface binding catches it.
+      //
+      // The all-zero-vs-nonzero case would pass under pooling too, which is why
+      // this fixture is deliberately sum-preserving.
+      await assertAborts(
+        {
+          readers: readers({
+            readDestinationPaths: async () => complete({
+              counts: { scopedCredentials: 0, scopedLogs: 0, classroomStudents: 2 },
+              studentIds: [],
+              sourceEntriesBySurface: {
+                scopedCredentials: [],
+                scopedLogs: sourceEntries('scopedLogs', 2),
+                classroomStudents: [],
+              },
+            }),
+            // classroomStudents: 2 would otherwise abort as destination data
+            // present, masking the binding failure this test is about.
+          }),
+          expectations: expectations({
+            acknowledgedDestinationCounts: {
+              scopedCredentials: 0, scopedLogs: 0, classroomStudents: 2,
+            },
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'a per-surface count must match that surface\'s own evidence',
+      )
+    })
+
+    it('requires every scoped surface to be enumerated', async () => {
+      const cases = [
+        ['missing scopedLogs entirely', {
+          scopedCredentials: [], classroomStudents: [],
+        }],
+        ['missing classroomStudents', {
+          scopedCredentials: [], scopedLogs: [],
+        }],
+        ['an unrecognized surface', {
+          scopedCredentials: [], scopedLogs: [], classroomStudents: [],
+          somethingElse: [],
+        }],
+      ]
+      for (const [label, sourceEntriesBySurface] of cases) {
+        await assertAborts(
+          {
+            readers: readers({
+              readDestinationPaths: async () => complete({
+                counts: { scopedCredentials: 0, scopedLogs: 0, classroomStudents: 0 },
+                studentIds: [],
+                sourceEntriesBySurface,
+              }),
+            }),
+          },
+          PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+          `${label} must abort`,
+        )
+      }
+    })
+
+    it('requires a count for exactly the contract surfaces', async () => {
+      for (const counts of [
+        { scopedCredentials: 0, scopedLogs: 0 },
+        { scopedCredentials: 0, scopedLogs: 0, classroomStudents: 0, extra: 0 },
+        'none',
+      ]) {
+        await assertAborts(
+          {
+            readers: readers({
+              readDestinationPaths: async () => complete({
+                counts,
+                studentIds: [],
+                sourceEntriesBySurface: {
+                  scopedCredentials: [], scopedLogs: [], classroomStudents: [],
+                },
+              }),
+            }),
+          },
+          PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+          `counts ${JSON.stringify(counts)} must abort`,
+        )
+      }
+    })
+
+    it('gives each destination surface its own retained digest', async () => {
+      let captured
+      await run({
+        persistManifest: async (manifest) => { captured = manifest; return echo(manifest) },
+      })
+      assert.match(captured.domainChecksums.destinationAbsence, /^[0-9a-f]{64}$/)
+    })
+  })
+
+  describe('exact Firestore update-time precision', () => {
+    async function withUpdateTime(updateTime) {
+      return run({
+        readers: readers({
+          readFlatCredentials: async () => complete({
+            count: 1, studentIds: ['1'],
+            duplicateLoginIds: 0, duplicateStudentIds: 0, noncanonicalLoginIds: 0,
+            anomalies: [],
+            sourceEntries: [{
+              pathHash: 'a'.repeat(64),
+              updateTime,
+              documentHash: 'b'.repeat(64),
+            }],
+          }),
+        }),
+      })
+    }
+
+    it('rejects an ISO millisecond string, which would discard nanoseconds', async () => {
+      await assert.rejects(
+        () => withUpdateTime('2026-07-26T12:00:00.000Z'),
+        error => {
+          assert.equal(error.category, PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE)
+          assert.match(error.message, /exact \{seconds, nanoseconds\}/)
+          return true
+        },
+      )
+    })
+
+    it('rejects malformed or out-of-range components', async () => {
+      for (const updateTime of [
+        { seconds: 1, nanoseconds: 1_000_000_000 },
+        { seconds: 1, nanoseconds: -1 },
+        { seconds: -1, nanoseconds: 0 },
+        { seconds: 1.5, nanoseconds: 0 },
+        { seconds: 1 },
+        { nanoseconds: 0 },
+        { seconds: 1, nanoseconds: 0, extra: true },
+        { seconds: '1', nanoseconds: 0 },
+        null,
+      ]) {
+        await assert.rejects(
+          () => withUpdateTime(updateTime),
+          error => error.category === PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+          `updateTime ${JSON.stringify(updateTime)} must be refused`,
+        )
+      }
+    })
+
+    it('distinguishes two writes inside the same millisecond', async () => {
+      const first = await withUpdateTime({ seconds: 1_785_000_000, nanoseconds: 1_000_000 })
+      const second = await withUpdateTime({ seconds: 1_785_000_000, nanoseconds: 1_000_001 })
+      assert.notEqual(
+        first.domainChecksums.legacySourceState,
+        second.domainChecksums.legacySourceState,
+        'a one-nanosecond difference must change the digest',
       )
     })
   })

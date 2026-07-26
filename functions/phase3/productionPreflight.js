@@ -111,7 +111,6 @@ function isPlainObject(value) {
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
 const CANONICAL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/
 
 /** Hashes an artifact's raw bytes for authorization binding. */
 export function hashArtifactBytes(contents) {
@@ -293,8 +292,9 @@ export function validateReadAuthorization({
  *                  NEVER retained: a path like
  *                  `classrooms/x/studentCredentials/ada.smith` embeds student
  *                  identity, and the manifest must not carry it.
- *  - `updateTime`— the exact canonical Firestore update time, so a same-shape
- *                  rewrite is still detected.
+ *  - `updateTime`— the exact Firestore update time as {seconds, nanoseconds}, so
+ *                  a same-shape rewrite inside one millisecond is still detected.
+ *                  An ISO-8601 millisecond string would discard nanoseconds.
  *  - `documentHash` — SHA-256 over the document's canonically encoded body,
  *                  computed IN MEMORY by the reader. Secret-bearing values may
  *                  enter that hash preimage; none of them are retained.
@@ -303,6 +303,54 @@ export function validateReadAuthorization({
  * digests, with no raw credential material ever present in the manifest.
  */
 const SOURCE_ENTRY_FIELDS = Object.freeze(['pathHash', 'updateTime', 'documentHash'])
+
+/** Nanoseconds are sub-second by definition. */
+const NANOSECONDS_PER_SECOND = 1_000_000_000
+
+/**
+ * Validates a Firestore update time at full precision.
+ *
+ * Firestore timestamps carry nanosecond resolution. Representing one as an
+ * ISO-8601 millisecond string discards up to six digits, so two distinct writes
+ * inside the same millisecond become indistinguishable — and a body restored to a
+ * previous value would then produce byte-identical evidence.
+ */
+function requireExactUpdateTime(value, surface) {
+  if (!isPlainObject(value)) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'A source entry updateTime must be an exact {seconds, nanoseconds} value.',
+      { surface },
+    )
+  }
+  const extra = Object.keys(value).filter(
+    key => key !== 'seconds' && key !== 'nanoseconds',
+  )
+  if (extra.length > 0) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'A source entry updateTime carries unsupported fields.',
+      { surface, extra },
+    )
+  }
+  const { seconds, nanoseconds } = value
+  if (!Number.isSafeInteger(seconds) || seconds < 0) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'A source entry updateTime has non-integer or negative seconds.',
+      { surface },
+    )
+  }
+  if (!Number.isSafeInteger(nanoseconds) ||
+      nanoseconds < 0 || nanoseconds >= NANOSECONDS_PER_SECOND) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'A source entry updateTime has out-of-range nanoseconds.',
+      { surface },
+    )
+  }
+  return Object.freeze({ seconds, nanoseconds })
+}
 
 /**
  * Validates and canonically orders one hashed source's entries.
@@ -349,17 +397,14 @@ export function normalizeSourceEntries(entries, surface) {
         )
       }
     }
-    if (typeof entry.updateTime !== 'string' ||
-        !ISO_INSTANT.test(entry.updateTime)) {
-      abort(
-        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
-        'A source entry updateTime is not a canonical ISO-8601 UTC instant.',
-        { surface },
-      )
-    }
+    // EXACT Firestore precision. An ISO-8601 string built via
+    // `toDate().toISOString()` truncates to milliseconds, so two writes within one
+    // millisecond that restore the same body would produce identical evidence and
+    // a rewrite would go undetected.
+    const updateTime = requireExactUpdateTime(entry.updateTime, surface)
     return Object.freeze({
       pathHash: entry.pathHash,
-      updateTime: entry.updateTime,
+      updateTime,
       documentHash: entry.documentHash,
     })
   })
@@ -388,14 +433,105 @@ export function normalizeSourceEntries(entries, surface) {
  */
 export function summarizeHashedSource(entries, surface) {
   const normalized = normalizeSourceEntries(entries, surface)
+  // Both timestamp components enter the preimage at full precision.
   const preimage = normalized
-    .map(entry => `${entry.pathHash}:${entry.updateTime}:${entry.documentHash}`)
+    .map(entry => [
+      entry.pathHash,
+      entry.updateTime.seconds,
+      entry.updateTime.nanoseconds,
+      entry.documentHash,
+    ].join(':'))
     .join('\n')
 
   return Object.freeze({
     documentCount: normalized.length,
     entriesHash: createHash('sha256').update(preimage, 'utf8').digest('hex'),
   })
+}
+
+/**
+ * The destination and scoped surfaces whose absence preflight must establish.
+ *
+ * Each gets its OWN evidence set, so a reader cannot satisfy a pooled total while
+ * leaving one surface unenumerated.
+ */
+export const DESTINATION_SURFACES = Object.freeze([
+  'scopedCredentials',
+  'scopedLogs',
+  'classroomStudents',
+])
+
+/**
+ * Requires a separate, schema-valid evidence set per destination surface, and
+ * refuses any surface the contract does not name.
+ */
+function requireDestinationEvidence(destination) {
+  const sets = destination.sourceEntriesBySurface
+  if (!isPlainObject(sets)) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'The destination reader must supply per-surface evidence sets.',
+    )
+  }
+  const unexpected = Object.keys(sets).filter(
+    key => !DESTINATION_SURFACES.includes(key),
+  )
+  if (unexpected.length > 0) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'The destination reader reported an unrecognized surface.',
+      { unexpected },
+    )
+  }
+  const missing = DESTINATION_SURFACES.filter(surface => !Object.hasOwn(sets, surface))
+  if (missing.length > 0) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'The destination reader did not enumerate every scoped surface.',
+      { missing },
+    )
+  }
+  return sets
+}
+
+/**
+ * Requires an unambiguous boolean presence classification.
+ *
+ * `undefined` is not "absent": a reader that could not determine presence must not
+ * be read as having proven absence.
+ */
+function requireExplicitPresence(result, surface) {
+  if (typeof result.present !== 'boolean') {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'A reader must state presence explicitly as a boolean.',
+      { surface },
+    )
+  }
+  return result.present
+}
+
+/**
+ * Binds each declared count to the number of documents actually hashed for it.
+ */
+function bindEvidenceCardinality(bindings) {
+  for (const [surface, declared, entries] of bindings) {
+    if (!Number.isInteger(declared) || declared < 0) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'A declared count is not a non-negative integer.',
+        { surface },
+      )
+    }
+    const { documentCount } = summarizeHashedSource(entries, surface)
+    if (declared !== documentCount) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'A declared document count disagrees with the hashed evidence for that source.',
+        { surface, declared, documentCount },
+      )
+    }
+  }
 }
 
 /**
@@ -497,11 +633,30 @@ export function numericStudentId(value) {
 }
 
 /**
+ * Sources that constitute IDENTITY SETS: one entry means one distinct student
+ * record. Two entries here normalizing to the same number are two students
+ * claiming one identity, which blocks.
+ *
+ * Every other source holds REFERENCES to students (a transaction cites a student,
+ * a log line cites a student). The same student is referenced many times by
+ * design, and different subsystems spell the reference differently — the legacy
+ * roster stores `id: 7` while a credential stores `studentId: "7"`. Section 5 of
+ * the brief is explicit that "Numeric/string equivalents are normalized", so a
+ * repeated cross-source reference must NOT block.
+ */
+const IDENTITY_SET_SOURCES = Object.freeze(['roster', 'credentials', 'destinationStudents'])
+
+/**
  * Derives the historical student-ID watermark across every required source.
  *
- * Any malformed ID or numeric/string collision blocks: the watermark is what a
- * later allocator starts above, so an unexplained ID here would let a future
- * student reuse a historical identity.
+ * A malformed ID blocks, and a duplicate WITHIN one identity set blocks. A
+ * numeric/string equivalent of the same student across sources is normalized, per
+ * Section 5.
+ *
+ * An earlier version compared `${typeof raw}:${String(raw)}` across ALL sources
+ * pooled together, which made the brief's own expected shape — roster `7`,
+ * credential `"7"` — abort as a collision. The type is still what distinguishes
+ * two spellings, but it is no longer grounds to reject a cross-source reference.
  */
 export function deriveStudentIdWatermark(sources) {
   if (!isPlainObject(sources)) {
@@ -511,7 +666,7 @@ export function deriveStudentIdWatermark(sources) {
     )
   }
 
-  const seenNumeric = new Map()
+  const seenNumeric = new Set()
   let maximum = null
   const malformed = []
 
@@ -524,6 +679,13 @@ export function deriveStudentIdWatermark(sources) {
       )
     }
 
+    // Duplicate detection is per identity set, on the NORMALIZED value: two
+    // roster students spelled `7` and `"7"` are still two students claiming one
+    // identity, so normalizing first is what catches them.
+    const identitySet = IDENTITY_SET_SOURCES.includes(sourceName)
+      ? new Set()
+      : null
+
     for (const raw of ids) {
       const numeric = numericStudentId(raw)
       if (numeric === null) {
@@ -531,24 +693,18 @@ export function deriveStudentIdWatermark(sources) {
         continue
       }
 
-      // Two different raw representations mapping to one number is a
-      // normalization collision: the string "7" and the number 7 would silently
-      // share an allocation slot, so a later allocator could hand the same
-      // identity to two students.
-      //
-      // The comparison must include the TYPE, not just the text: comparing
-      // String(raw) would make '7' and 7 look identical and never trip, which is
-      // exactly the case this check exists to catch.
-      const spelling = `${typeof raw}:${String(raw)}`
-      const existing = seenNumeric.get(numeric)
-      if (existing !== undefined && existing !== spelling) {
-        abort(
-          PREFLIGHT_ABORT_CATEGORIES.IDENTITY_COLLISION,
-          'Two distinct student-ID representations normalize to the same number.',
-          { source: sourceName, numeric },
-        )
+      if (identitySet !== null) {
+        if (identitySet.has(numeric)) {
+          abort(
+            PREFLIGHT_ABORT_CATEGORIES.IDENTITY_COLLISION,
+            'Two distinct student records in one identity set share a normalized ID.',
+            { source: sourceName, numeric },
+          )
+        }
+        identitySet.add(numeric)
       }
-      seenNumeric.set(numeric, spelling)
+
+      seenNumeric.add(numeric)
       maximum = maximum === null ? numeric : Math.max(maximum, numeric)
     }
   }
@@ -769,7 +925,27 @@ export async function runProductionPreflight({
   // Scoped credentials, scoped logs, or destination classroom data before bridge
   // rules would mean something already wrote V2 state. That must be explained,
   // not migrated over.
-  for (const [surface, count] of Object.entries(destination.counts ?? {})) {
+  // Iterating exactly the contract surfaces, not whatever the reader happened to
+  // report: `Object.entries(destination.counts)` would silently skip a surface the
+  // reader omitted entirely.
+  if (!isPlainObject(destination.counts)) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'The destination reader must report a count per scoped surface.',
+    )
+  }
+  const unexpectedCounts = Object.keys(destination.counts).filter(
+    key => !DESTINATION_SURFACES.includes(key),
+  )
+  if (unexpectedCounts.length > 0) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'The destination reader reported a count for an unrecognized surface.',
+      { unexpected: unexpectedCounts },
+    )
+  }
+  for (const surface of DESTINATION_SURFACES) {
+    const count = destination.counts[surface]
     if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
       abort(
         PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
@@ -846,23 +1022,39 @@ export async function runProductionPreflight({
     )
   }
 
-  // A declared count that disagrees with the number of documents actually hashed
-  // means the reader reported a summary it did not substantiate. Checked before
-  // the manifest is built so such a run aborts rather than retaining a record
-  // whose counts and digests describe different sets of documents.
-  for (const [surface, declared, entries] of [
+  // EVERY declared count and presence classification is bound to its evidence
+  // cardinality. A reader that reports ten examined Auth users but supplies nine
+  // hashes has retained evidence that never covered the omitted state, so the
+  // summary and the digests would describe different sets of documents.
+  //
+  // An earlier version bound only flatCredentials and flatAuthLogs, leaving Auth
+  // users, the destination surfaces, the foundation, and the legacy singleton
+  // unbound.
+  bindEvidenceCardinality([
     ['flatCredentials', credentials.count, credentials.sourceEntries],
     ['flatAuthLogs', authLogs.count, authLogs.sourceEntries],
-  ]) {
-    const { documentCount } = summarizeHashedSource(entries, surface)
-    if (declared !== documentCount) {
-      abort(
-        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
-        'A declared document count disagrees with the hashed evidence for that source.',
-        { surface, declared, documentCount },
-      )
-    }
-  }
+    ['authUsers', authCompatibility.examinedUserCount, authCompatibility.sourceEntries],
+    // The legacy aggregate is a singleton document: present means exactly one
+    // entry, absent exactly none. Presence must be stated explicitly — inferring
+    // it from the entry count would make this binding circular.
+    ['legacyClassroom', requireExplicitPresence(legacy, 'legacyClassroom') ? 1 : 0,
+      legacy.sourceEntries],
+    // The foundation is the teacher record plus its reciprocal classroom when
+    // present, and nothing when absent.
+    ['foundation', foundation.present === true ? 2 : 0, foundation.sourceEntries],
+  ])
+
+  // Destination surfaces are bound INDIVIDUALLY. One pooled evidence set would
+  // let a reader satisfy the total while omitting a whole surface — for example
+  // reporting scoped auth logs as zero without ever enumerating them.
+  const destinationSurfaces = requireDestinationEvidence(destination)
+  bindEvidenceCardinality(
+    DESTINATION_SURFACES.map(surface => [
+      `destination.${surface}`,
+      destination.counts[surface],
+      destinationSurfaces[surface],
+    ]),
+  )
 
   const watermark = deriveStudentIdWatermark({
     roster: legacy.studentIds ?? [],
@@ -887,6 +1079,7 @@ export async function runProductionPreflight({
     // are what make this domain able to detect a changed balance, transaction
     // body, PIN hash, or update time while counts stay constant.
     legacySourceState: {
+      present: legacy.present,
       counts: legacy.counts,
       credentialCount: credentials.count,
       authLogCount: authLogs.count,
@@ -907,12 +1100,13 @@ export async function runProductionPreflight({
       ]),
     },
     // Absence is asserted with evidence, not just a zero. If anything IS present
-    // the run has already aborted; these digests record exactly what was examined.
+    // the run has already aborted; these digests record exactly what was examined,
+    // per surface, so a later writer can tell which surface was proven empty.
     destinationAbsence: {
-      counts: destination.counts ?? {},
-      sources: hashedSourceSummaries([
-        ['destinationPaths', destination.sourceEntries],
-      ]),
+      counts: destination.counts,
+      sources: hashedSourceSummaries(
+        DESTINATION_SURFACES.map(surface => [surface, destinationSurfaces[surface]]),
+      ),
     },
     authCompatibility: {
       uidCollisions: authCompatibility.uidCollisions,

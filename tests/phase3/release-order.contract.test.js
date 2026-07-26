@@ -430,6 +430,41 @@ describe('Phase 3 release-order source contract', () => {
     )
   })
 
+  it('invariant: the emulator readers preserve raw ID types and read every scoped surface', () => {
+    // Two regressions this pins, both found in delta review of correction A:
+    //
+    // 1. The readers coerced every student ID with String(...), which hid the
+    //    cross-source numeric/string equivalence the watermark must normalize —
+    //    the live suite therefore did not exercise the claimed behavior.
+    // 2. `scopedLogs` was hardcoded to 0 with no read at all, so preflight would
+    //    report absence for a surface nobody examined.
+    const source = readFileSync(
+      new URL('./production-runner.emulator.test.js', import.meta.url),
+      'utf8',
+    )
+    const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
+
+    assert.ok(
+      !/String\(\s*(?:student\.id|entry\.studentId|doc\.data\(\)\.studentId)\s*\)/
+        .test(code),
+      'the emulator readers must preserve raw student-ID types, not stringify them',
+    )
+    assert.ok(
+      !/scopedLogs:\s*0\b/.test(code),
+      'scopedLogs must be enumerated, never hardcoded to zero',
+    )
+    assert.ok(
+      /collection\('studentAuthLogs'\)\s*\n?\s*\.listDocuments\(\)|collection\('studentAuthLogs'\)\.listDocuments\(\)/
+        .test(code),
+      'scoped auth logs must be enumerated with listDocuments()',
+    )
+    // Full timestamp precision, not an ISO millisecond string.
+    assert.ok(
+      !/updateTime:\s*[^,\n]*toISOString\(\)/.test(code),
+      'evidence update times must carry exact nanoseconds, not an ISO millisecond string',
+    )
+  })
+
   it('boundary: the checked-in firestore.rules is byte-for-byte unchanged', () => {
     const contents = readFileSync(
       new URL('../../firestore.rules', import.meta.url),

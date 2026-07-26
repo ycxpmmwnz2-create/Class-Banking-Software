@@ -43,7 +43,11 @@ const { runPreflightMain, PREFLIGHT_EXIT_CODES, parsePreflightArguments } =
 // Admin handles come from a module under functions/, so `firebase-admin`
 // resolves from functions/node_modules and never becomes a root dependency —
 // the same convention functions/phase2/seedRehearsal.js established.
-const { PREFLIGHT_ABORT_CATEGORIES, createReadOnlyAdminHandles } = await import(
+const {
+  PREFLIGHT_ABORT_CATEGORIES,
+  createReadOnlyAdminHandles,
+  numericStudentId,
+} = await import(
   '../../functions/phase3/productionPreflight.js'
 )
 // The real persister and the real state directory — this suite installs an actual
@@ -54,7 +58,7 @@ const {
   readProductionManifest,
   resolveManifestPath,
 } = await import('../../functions/phase3/productionManifest.js')
-const { serializeCanonicalState } = await import(
+const { serializeCanonicalState, encodeCanonicalFirestoreValue } = await import(
   '../../functions/phase2/canonicalState.js'
 )
 
@@ -169,6 +173,18 @@ function identityBearingSeedStrings() {
 }
 
 /**
+ * Splits a millisecond epoch into exact {seconds, nanoseconds}.
+ *
+ * Auth metadata is only millisecond-resolution, so the nanosecond component is
+ * exact-but-coarse here. Firestore snapshots carry true nanoseconds and use their
+ * own components directly.
+ */
+function exactUpdateTimeFromMillis(millis) {
+  const seconds = Math.floor(millis / 1000)
+  return { seconds, nanoseconds: (millis - seconds * 1000) * 1_000_000 }
+}
+
+/**
  * Builds one per-document evidence entry from a real Firestore snapshot.
  *
  * This is the shape a later writer recomputes under the freeze. Note what is and
@@ -182,9 +198,19 @@ function evidenceEntry(snapshot) {
   return {
     pathHash: createHash('sha256')
       .update(snapshot.ref.path, 'utf8').digest('hex'),
-    updateTime: snapshot.updateTime.toDate().toISOString(),
+    // Full Firestore precision. `toDate().toISOString()` truncates to
+    // milliseconds, so two writes inside one millisecond restoring the same body
+    // would produce identical evidence.
+    updateTime: {
+      seconds: snapshot.updateTime.seconds,
+      nanoseconds: snapshot.updateTime.nanoseconds,
+    },
+    // Bodies hold native Firestore Timestamps, so the Phase 2A canonical
+    // Firestore-value encoder is what hashes them faithfully.
     documentHash: createHash('sha256')
-      .update(serializeCanonicalState(snapshot.data() ?? {}), 'utf8')
+      .update(serializeCanonicalState(
+        encodeCanonicalFirestoreValue(snapshot.data() ?? {}),
+      ), 'utf8')
       .digest('hex'),
   }
 }
@@ -210,15 +236,22 @@ function liveReaders() {
           transactions: transactions.length,
           loginHistory: loginHistory.length,
         },
-        studentIds: students.map(student => String(student.id)),
+        // Raw source types are preserved deliberately. Coercing with String()
+        // here would hide exactly the cross-source numeric/string equivalence the
+        // watermark must normalize (roster `id: 7`, credential `studentId: "7"`),
+        // so the live suite would not exercise the real behavior.
+        studentIds: students.map(student => student.id),
         transactionStudentIds: transactions
           .filter(entry => entry.studentId != null)
-          .map(entry => String(entry.studentId)),
+          .map(entry => entry.studentId),
         loginHistoryStudentIds: loginHistory
           .filter(entry => entry.studentId != null)
-          .map(entry => String(entry.studentId)),
+          .map(entry => entry.studentId),
         noncanonicalValueCount: 0,
         anomalies: [],
+        // Stated explicitly, so the singleton's presence is bound to its evidence
+        // cardinality rather than inferred from it.
+        present: snapshot.exists,
         sourceEntries: snapshot.exists ? [evidenceEntry(snapshot)] : [],
       }
     },
@@ -226,13 +259,17 @@ function liveReaders() {
     readFlatCredentials: async () => {
       const snapshot = await firestore.collection('studentCredentials').get()
       const loginIds = snapshot.docs.map(doc => doc.id)
-      const studentIds = snapshot.docs.map(doc => String(doc.data().studentId))
+      const studentIds = snapshot.docs.map(doc => doc.data().studentId)
       return {
         complete: true,
         count: snapshot.size,
         studentIds,
         duplicateLoginIds: loginIds.length - new Set(loginIds).size,
-        duplicateStudentIds: studentIds.length - new Set(studentIds).size,
+        // Compared on the NORMALIZED value: credentials are an identity set, so
+        // `7` and `"7"` here are two credentials claiming one student, which a
+        // raw-value Set would miss.
+        duplicateStudentIds: studentIds.length -
+          new Set(studentIds.map(id => numericStudentId(id) ?? `raw:${String(id)}`)).size,
         noncanonicalLoginIds: loginIds.filter(
           id => !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(id),
         ).length,
@@ -250,7 +287,7 @@ function liveReaders() {
         count: snapshot.size,
         studentIds: snapshot.docs
           .filter(doc => doc.data().studentId != null)
-          .map(doc => String(doc.data().studentId)),
+          .map(doc => doc.data().studentId),
         anomalies: [],
         sourceEntries: snapshot.docs.map(evidenceEntry),
       }
@@ -289,29 +326,44 @@ function liveReaders() {
       // precisely the pre-existing V2 data this check must catch. Verified
       // against the emulator: get() saw 0, listDocuments() saw 1.
       const classroomRefs = await firestore.collection('classrooms').listDocuments()
-      let scopedCredentials = 0
-      let classroomStudents = 0
       const studentIds = []
-      const sourceEntries = []
+      // Each surface keeps its OWN evidence set: a pooled set would let one
+      // surface go unenumerated while the total still matched.
+      const bySurface = {
+        scopedCredentials: [],
+        scopedLogs: [],
+        classroomStudents: [],
+      }
+
       for (const classroomRef of classroomRefs) {
         const credentials = await classroomRef
           .collection('studentCredentials').get()
-        scopedCredentials += credentials.size
         const students = await classroomRef.collection('students').get()
-        classroomStudents += students.size
         studentIds.push(...students.docs.map(doc => doc.id))
-        // Evidence of what was examined. Absence is asserted with digests of the
-        // scoped paths actually enumerated, not a bare zero.
-        sourceEntries.push(
-          ...credentials.docs.map(evidenceEntry),
-          ...students.docs.map(evidenceEntry),
-        )
+        bySurface.scopedCredentials.push(...credentials.docs.map(evidenceEntry))
+        bySurface.classroomStudents.push(...students.docs.map(evidenceEntry))
       }
+
+      // Scoped auth logs live at studentAuthLogs/{classroomId}/logs/{logId}, so
+      // they must be enumerated through the same phantom-parent-safe path. This
+      // was previously hardcoded to zero and never read at all, which would have
+      // reported absence for a surface nobody looked at.
+      const scopedLogParents = await firestore
+        .collection('studentAuthLogs').listDocuments()
+      for (const parentRef of scopedLogParents) {
+        const logs = await parentRef.collection('logs').get()
+        bySurface.scopedLogs.push(...logs.docs.map(evidenceEntry))
+      }
+
       return {
         complete: true,
-        counts: { scopedCredentials, classroomStudents, scopedLogs: 0 },
+        counts: {
+          scopedCredentials: bySurface.scopedCredentials.length,
+          scopedLogs: bySurface.scopedLogs.length,
+          classroomStudents: bySurface.classroomStudents.length,
+        },
         studentIds,
-        sourceEntries,
+        sourceEntriesBySurface: bySurface,
       }
     },
 
@@ -328,9 +380,9 @@ function liveReaders() {
         sourceEntries: listed.users.map(user => ({
           pathHash: createHash('sha256')
             .update(`auth/users/${user.uid}`, 'utf8').digest('hex'),
-          updateTime: new Date(
+          updateTime: exactUpdateTimeFromMillis(Date.parse(
             user.metadata.lastRefreshTime ?? user.metadata.creationTime,
-          ).toISOString(),
+          )),
           documentHash: createHash('sha256')
             .update(serializeCanonicalState({
               uid: user.uid,
@@ -761,6 +813,67 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
     await firestore
       .doc('classrooms/unexpected-classroom/studentCredentials/ada').delete()
     await firestore.doc('classrooms/unexpected-classroom').delete()
+  })
+
+  test('scoped auth logs are genuinely enumerated, not reported as zero', async () => {
+    // This surface was previously hardcoded to `scopedLogs: 0` with no read at
+    // all, so preflight would have reported absence for state nobody examined.
+    // Seeded under a phantom parent so the enumeration path is also exercised:
+    // studentAuthLogs/{classroomId} holds no document of its own.
+    await firestore
+      .doc('studentAuthLogs/unexpected-classroom/logs/log-1')
+      .set({ studentId: '1', outcome: 'success' })
+
+    const firestoreBefore = await snapshotFirestore()
+
+    // The reader must SEE it.
+    const observed = await liveReaders().readDestinationPaths()
+    assert.equal(observed.counts.scopedLogs, 1, 'the scoped log must be counted')
+    assert.equal(
+      observed.sourceEntriesBySurface.scopedLogs.length,
+      1,
+      'the scoped log must carry its own evidence entry',
+    )
+
+    const credentialPath = writeArtifact('cred6.json', {
+      type: 'service_account', project_id: EMULATOR_PROJECT_ID,
+    })
+    const expectationsPath = writeArtifact('exp6.json', expectationsArtifact())
+    const credentialSha = createHash('sha256')
+      .update(fs.readFileSync(credentialPath, 'utf8'), 'utf8').digest('hex')
+    const expectationsSha = createHash('sha256')
+      .update(fs.readFileSync(expectationsPath, 'utf8'), 'utf8').digest('hex')
+    const authorizationPath = writeArtifact('auth6.json', authorizationArtifact({
+      credentialSha256: credentialSha,
+      expectationsSha256: expectationsSha,
+    }))
+
+    let persisted = 0
+    const { exitCode, error } = await runPreflightMain([
+      '--teacher-uid', TEACHER_UID,
+      '--authorization-file', authorizationPath,
+      '--expectations-file', expectationsPath,
+      '--credential-file', credentialPath,
+    ], {
+      environment: emulatorEnvironment(),
+      readers: liveReaders(),
+      logger: { log() {}, error() {} },
+      persistManifest: async () => {
+        persisted += 1
+        throw new Error('the persister must not be reached for an aborted preflight')
+      },
+    })
+
+    assert.equal(exitCode, PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED)
+    assert.equal(
+      error.category,
+      PREFLIGHT_ABORT_CATEGORIES.DESTINATION_DATA_PRESENT,
+      'an unacknowledged scoped auth log must abort',
+    )
+    assert.equal(persisted, 0)
+    assert.equal(await snapshotFirestore(), firestoreBefore)
+
+    await firestore.doc('studentAuthLogs/unexpected-classroom/logs/log-1').delete()
   })
 
   test('a malformed credential file is rejected without reading Firestore', async () => {
