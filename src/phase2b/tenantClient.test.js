@@ -1190,12 +1190,44 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
 
     const ctorAt = source.indexOf("new MultiTabInvalidator(");
     assert.notEqual(ctorAt, -1, "Expected the production MultiTabInvalidator construction");
-    const ctorBlock = source.slice(ctorAt, ctorAt + 800);
+    const ctorBlock = source.slice(ctorAt, ctorAt + 1600);
 
     assert.match(
       ctorBlock,
       /localAuthAdapter:\s*\{\s*signOut:\s*\(\)\s*=>\s*signOut\(auth\)\s*\}/,
       "The production invalidator must receive a local Firebase Auth sign-out adapter"
+    );
+
+    // The quarantine marker is what survives a refresh; without a real
+    // sessionStorage transport in production the pre-Auth and rejected-sign-out
+    // windows reopen silently.
+    assert.match(
+      ctorBlock,
+      /sessionStorageAdapter:\s*typeof sessionStorage !== "undefined" \? sessionStorage : null/,
+      "The production invalidator must receive a per-tab sessionStorage quarantine adapter"
+    );
+  });
+
+  // The Auth observer is the only place a quarantined identity can be stopped
+  // before classroom data resolves, so the gate must be wired ahead of the token
+  // lookup and the resolution call.
+  test("SOURCE GUARD: the Auth observer consumes the quarantine before resolving any classroom data", () => {
+    const { source } = readV2Branches();
+
+    const gateAt = source.indexOf("consumeQuarantineForObservedUid");
+    assert.notEqual(gateAt, -1, "Expected the Auth observer quarantine gate");
+
+    const tokenAt = source.indexOf("getIdTokenResult");
+    const transitionAt = source.indexOf("handleAuthTransition(v2TenantSession");
+    assert.notEqual(transitionAt, -1, "Expected the V2 auth transition call");
+
+    assert.ok(
+      gateAt < tokenAt,
+      "The quarantine gate must run BEFORE the ID token lookup"
+    );
+    assert.ok(
+      gateAt < transitionAt,
+      "The quarantine gate must run BEFORE handleAuthTransition resolves classroom data"
     );
   });
 

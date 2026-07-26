@@ -3278,6 +3278,10 @@ if (screen === "editSettingsLists" && isTeacher) {
           storageAdapter: localStorage,
           windowAdapter: typeof window !== "undefined" ? window : null,
           onInvalidated: () => render(),
+          // Per-tab quarantine transport. Survives a same-tab refresh, which is
+          // what stops a pre-Auth or sign-out-rejected invalidation from being
+          // lost and letting the old teacher resolve.
+          sessionStorageAdapter: typeof sessionStorage !== "undefined" ? sessionStorage : null,
           // Ends THIS tab's Firebase Auth session after the cross-tab purge, so
           // a refresh cannot re-resolve the invalidated teacher. Separate from
           // authAdapter above because it must not trigger a rebroadcast.
@@ -3305,6 +3309,16 @@ if (screen === "editSettingsLists" && isTeacher) {
           uid: user?.uid || null,
           state: user ? SESSION_STATES.AUTHENTICATING : SESSION_STATES.SIGNED_OUT
         });
+
+        // A cross-tab invalidation may have arrived before this observer ever
+        // established an identity, or its local sign-out may have rejected, or
+        // the tab may have been refreshed in between. Apply the quarantine here,
+        // BEFORE any token lookup or classroom data resolution, so the
+        // invalidated teacher can never be rendered.
+        if (v2MultiTabInvalidator.consumeQuarantineForObservedUid(user?.uid || null)) {
+          render();
+          return;
+        }
 
         let tokenResult = null;
         if (user) {

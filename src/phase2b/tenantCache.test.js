@@ -13,7 +13,10 @@ import {
   validateBroadcastMessage,
   MultiTabInvalidator,
   LEGACY_STORAGE_KEY,
-  CACHE_SCHEMA_VERSION
+  CACHE_SCHEMA_VERSION,
+  PENDING_INVALIDATION_KEY,
+  readPendingInvalidation,
+  isUidQuarantined
 } from "./tenantCache.js";
 import { TenantSession, SESSION_STATES } from "./tenantSession.js";
 
@@ -545,7 +548,11 @@ describe("TenantCache Module Specifications", () => {
     return session;
   }
 
-  test("a matching cross-tab invalidation purges tenant state AND invokes local Firebase Auth sign-out so a refresh cannot reanimate the account", () => {
+  // NOTE ON TITLES: these unit tests assert adapter INVOCATION and quarantine
+  // bookkeeping. They cannot prove that Firebase browser persistence was
+  // actually cleared or that a real refresh fails to reanimate the account —
+  // that proof belongs to Item 10's browser suite.
+  test("a matching cross-tab invalidation purges tenant state AND invokes the local Firebase Auth sign-out adapter", () => {
     const storage = createMockStorage();
     const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
     const cacheKey = buildCacheKey(PROJECT_ID, "teacher_a", "room_a");
@@ -722,6 +729,213 @@ describe("TenantCache Module Specifications", () => {
     assert.equal(session.getEpoch(), epochAfterSwitch, "B's epoch must not move");
     assert.notEqual(storage.getItem(keyB), null, "B's cache must NOT be purged by a late A invalidation");
     assert.equal(signOutCalls, 0, "A late A invalidation must not sign B out");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Item 9 correction, round 2: a valid invalidation must not be LOST when it
+  // arrives before onAuthStateChanged has established session.uid, and must not
+  // be lost when the local Auth sign-out rejects. Both are closed by a per-tab
+  // quarantine marker the Auth observer consumes before resolving any data.
+  // ---------------------------------------------------------------------------
+
+  test("a valid invalidation arriving BEFORE the Auth observer establishes identity is quarantined, not discarded", () => {
+    const storage = createMockStorage();
+    const quarantine = createMockStorage();
+
+    // Session exists but has no identity yet: the invalidator starts before the
+    // first onAuthStateChanged callback, while Auth persistence still holds A.
+    const session = new TenantSession({
+      storageAdapter: storage,
+      cacheModule: { purgeTenantCache, purgeLegacyCache, buildCacheKey },
+      projectId: PROJECT_ID
+    });
+    assert.equal(session.uid, null, "Precondition: no identity established yet");
+
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      sessionStorageAdapter: quarantine,
+      localAuthAdapter: { signOut: () => Promise.resolve() }
+    });
+
+    const applied = invalidator.receiveMessage({
+      type: "session-invalidated",
+      uidDigest: computeSha256Digest("teacher_a"),
+      epoch: 5
+    });
+
+    assert.equal(applied, false, "Nothing to purge yet, so the message is not applied inline");
+    const entry = readPendingInvalidation(quarantine);
+    assert.deepEqual(
+      entry,
+      { scope: "digest", uidDigest: computeSha256Digest("teacher_a") },
+      "The invalidation MUST be retained as a digest-scoped quarantine"
+    );
+  });
+
+  test("the Auth observer gate applies a quarantined invalidation to the matching UID instead of resolving it", () => {
+    const storage = createMockStorage();
+    const quarantine = createMockStorage();
+    const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+    const cacheKey = buildCacheKey(PROJECT_ID, "teacher_a", "room_a");
+    writeTeacherCache(storage, session, PROJECT_ID, { dataA: 1 }, session.captureIdentity());
+
+    let signOutCalls = 0;
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      sessionStorageAdapter: quarantine,
+      localAuthAdapter: { signOut: () => { signOutCalls++; return Promise.resolve(); } }
+    });
+
+    quarantine.setItem(
+      PENDING_INVALIDATION_KEY,
+      JSON.stringify({ scope: "digest", uidDigest: computeSha256Digest("teacher_a") })
+    );
+
+    // Simulates onAuthStateChanged firing with the quarantined teacher A.
+    const blocked = invalidator.consumeQuarantineForObservedUid("teacher_a");
+
+    assert.equal(blocked, true, "The observer MUST be told to stop before resolving classroom data");
+    assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT, "Quarantined identity must be purged");
+    assert.equal(storage.getItem(cacheKey), null, "Quarantined tenant's cache must be purged");
+    assert.equal(signOutCalls, 1, "Local Auth sign-out must be retried at observation time");
+    assert.notEqual(
+      readPendingInvalidation(quarantine),
+      null,
+      "Marker must persist while Auth is still signed in, so a refresh stays protected"
+    );
+  });
+
+  test("a quarantine for teacher A does NOT block teacher B, and is cleared once B is observed", () => {
+    const storage = createMockStorage();
+    const quarantine = createMockStorage();
+    const sessionB = readyTeacherSession("teacher_b", "room_b", { storageAdapter: storage });
+    const keyB = buildCacheKey(PROJECT_ID, "teacher_b", "room_b");
+    writeTeacherCache(storage, sessionB, PROJECT_ID, { dataB: 2 }, sessionB.captureIdentity());
+
+    let signOutCalls = 0;
+    const invalidator = new MultiTabInvalidator(sessionB, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      sessionStorageAdapter: quarantine,
+      localAuthAdapter: { signOut: () => { signOutCalls++; return Promise.resolve(); } }
+    });
+
+    quarantine.setItem(
+      PENDING_INVALIDATION_KEY,
+      JSON.stringify({ scope: "digest", uidDigest: computeSha256Digest("teacher_a") })
+    );
+
+    const blocked = invalidator.consumeQuarantineForObservedUid("teacher_b");
+
+    assert.equal(blocked, false, "A's quarantine must not block B");
+    assert.equal(sessionB.getState(), SESSION_STATES.READY, "B must remain ready");
+    assert.notEqual(storage.getItem(keyB), null, "B's cache must survive A's quarantine");
+    assert.equal(signOutCalls, 0, "B must not be signed out by A's quarantine");
+    assert.equal(readPendingInvalidation(quarantine), null, "A's stale digest marker must be cleared");
+  });
+
+  test("a rejected local Auth sign-out leaves a durable quarantine that re-applies on the next observation", async () => {
+    const storage = createMockStorage();
+    const quarantine = createMockStorage();
+    const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+
+    let signOutCalls = 0;
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      sessionStorageAdapter: quarantine,
+      localAuthAdapter: {
+        signOut: () => { signOutCalls++; return Promise.reject(new Error("network down")); }
+      }
+    });
+
+    invalidator.receiveMessage({
+      type: "session-invalidated",
+      uidDigest: computeSha256Digest("teacher_a"),
+      epoch: 3
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(signOutCalls, 1, "First sign-out attempt happened and rejected");
+    assert.notEqual(
+      readPendingInvalidation(quarantine),
+      null,
+      "A rejected sign-out MUST leave the quarantine in place"
+    );
+
+    // Refresh: Auth persistence still resolves teacher A.
+    const blocked = invalidator.consumeQuarantineForObservedUid("teacher_a");
+    assert.equal(blocked, true, "The still-signed-in quarantined teacher must be blocked again");
+    assert.equal(signOutCalls, 2, "Sign-out must be retried, not abandoned after one rejection");
+  });
+
+  test("the quarantine is cleared only once the Auth observer confirms a signed-out state", () => {
+    const storage = createMockStorage();
+    const quarantine = createMockStorage();
+    const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      sessionStorageAdapter: quarantine,
+      localAuthAdapter: { signOut: () => Promise.resolve() }
+    });
+
+    quarantine.setItem(PENDING_INVALIDATION_KEY, JSON.stringify({ scope: "generic" }));
+
+    const blocked = invalidator.consumeQuarantineForObservedUid(null);
+    assert.equal(blocked, false, "A confirmed signed-out observation is not blocked");
+    assert.equal(readPendingInvalidation(quarantine), null, "Quarantine must be cleared once Auth is signed out");
+  });
+
+  test("a malformed message records a fail-closed generic quarantine that blocks the next observed identity", () => {
+    const storage = createMockStorage();
+    const quarantine = createMockStorage();
+    const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+
+    let signOutCalls = 0;
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      sessionStorageAdapter: quarantine,
+      localAuthAdapter: { signOut: () => { signOutCalls++; return Promise.resolve(); } }
+    });
+
+    invalidator.receiveMessage({ type: "session-invalidated", uidDigest: "not-a-digest", epoch: 1 });
+
+    assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT, "Malformed message still fails closed");
+    assert.equal(signOutCalls, 1, "Malformed message still terminates local Auth");
+    assert.deepEqual(
+      readPendingInvalidation(quarantine),
+      { scope: "generic" },
+      "A payload naming no tenant must quarantine generically"
+    );
+
+    // Documented consequence of failing closed: a generic marker blocks whatever
+    // identity appears next, including a different teacher.
+    assert.equal(isUidQuarantined({ scope: "generic" }, "teacher_b"), true);
+  });
+
+  test("an unreadable quarantine marker is treated as a generic quarantine, never as 'no quarantine'", () => {
+    const quarantine = createMockStorage();
+    quarantine.setItem(PENDING_INVALIDATION_KEY, "{not json");
+    assert.deepEqual(readPendingInvalidation(quarantine), { scope: "generic" });
+
+    quarantine.setItem(PENDING_INVALIDATION_KEY, JSON.stringify({ scope: "digest", uidDigest: "bogus" }));
+    assert.deepEqual(
+      readPendingInvalidation(quarantine),
+      { scope: "generic" },
+      "A digest marker failing shape validation must degrade closed"
+    );
   });
 
   test("a BroadcastChannel delivery followed by its identical storage-event duplicate causes exactly one effective reset, one sign-out, and no rebroadcast", () => {

@@ -276,6 +276,69 @@ export function validateBroadcastMessage(msg) {
   return true;
 }
 
+// Tab-scoped quarantine key. sessionStorage is deliberate: it is per-tab and it
+// SURVIVES a same-tab refresh, which is exactly the window that has to be
+// closed. localStorage would leak the quarantine to unrelated tabs; an
+// in-memory flag would evaporate on the refresh it is meant to block.
+export const PENDING_INVALIDATION_KEY = "morganBank:v2:pendingInvalidation";
+
+// A quarantine entry is either digest-scoped (a valid message naming one tenant)
+// or generic (a malformed message, which by construction names no tenant and so
+// must fail closed against whatever identity appears next).
+export function readPendingInvalidation(sessionStorageAdapter) {
+  if (!sessionStorageAdapter || typeof sessionStorageAdapter.getItem !== "function") return null;
+  let raw;
+  try {
+    raw = sessionStorageAdapter.getItem(PENDING_INVALIDATION_KEY);
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // An unreadable quarantine marker must not be treated as "no quarantine".
+    return { scope: "generic" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { scope: "generic" };
+  if (parsed.scope === "digest" && typeof parsed.uidDigest === "string" && /^sha256_[0-9a-f]{64}$/.test(parsed.uidDigest)) {
+    return { scope: "digest", uidDigest: parsed.uidDigest };
+  }
+  return { scope: "generic" };
+}
+
+export function writePendingInvalidation(sessionStorageAdapter, entry) {
+  if (!sessionStorageAdapter || typeof sessionStorageAdapter.setItem !== "function") return;
+  try {
+    sessionStorageAdapter.setItem(PENDING_INVALIDATION_KEY, JSON.stringify(entry));
+  } catch (err) {
+    console.error("Pending invalidation quarantine write failed:", err);
+  }
+}
+
+export function clearPendingInvalidation(sessionStorageAdapter) {
+  if (!sessionStorageAdapter || typeof sessionStorageAdapter.removeItem !== "function") return;
+  try {
+    sessionStorageAdapter.removeItem(PENDING_INVALIDATION_KEY);
+  } catch (err) {
+    console.error("Pending invalidation quarantine clear failed:", err);
+  }
+}
+
+// Decides, at Auth-observation time, whether an observed UID is quarantined.
+// A digest-scoped marker for teacher A must NOT block teacher B. A generic
+// (malformed-message) marker blocks the next observed identity regardless of
+// UID: that is the cost of failing closed on a payload that names no tenant.
+export function isUidQuarantined(entry, uid) {
+  if (!entry) return false;
+  if (entry.scope === "generic") return true;
+  if (!uid) return false;
+  const digest = computeSha256Digest(uid);
+  return Boolean(digest) && digest === entry.uidDigest;
+}
+
 export class MultiTabInvalidator {
   constructor(session, options = {}) {
     this.session = session;
@@ -299,6 +362,12 @@ export class MultiTabInvalidator {
     // separate injected adapter rather than session.signOut(), because
     // session.signOut() invalidates with reason "sign-out", which rebroadcasts.
     this.localAuthAdapter = options.localAuthAdapter || null;
+    // Per-tab durable quarantine transport. Present-but-null means "explicitly
+    // none", matching the other adapters, so tests can assert the no-transport
+    // path without touching a real sessionStorage.
+    this.sessionStorageAdapter = hasOption("sessionStorageAdapter")
+      ? (options.sessionStorageAdapter || null)
+      : (typeof sessionStorage !== "undefined" ? sessionStorage : null);
     this.isSubscribed = false;
 
     this.onMessageListener = (event) => this.handleChannelMessage(event);
@@ -405,10 +474,45 @@ export class MultiTabInvalidator {
   // the local Auth session, so a malformed message can never leave a
   // refresh-reanimatable account behind.
   invalidateAsMalformed() {
+    // Recorded BEFORE the purge so a refresh mid-handler still finds it. Generic
+    // scope: a malformed payload names no tenant, so it must block whatever
+    // identity the Auth observer resolves next.
+    writePendingInvalidation(this.sessionStorageAdapter, { scope: "generic" });
     this.session.invalidate("malformed-broadcast-message");
     this.terminateLocalAuth();
     if (typeof this.onInvalidated === "function") this.onInvalidated();
     return false;
+  }
+
+  // Called by the Auth observer on every observation, before any classroom data
+  // is resolved. Returns true when the observed identity is quarantined, in
+  // which case the caller must purge, retry sign-out, and NOT resolve data.
+  // The marker is cleared only once Auth is confirmed signed out (uid null), so
+  // it survives both a rejected sign-out and a refresh.
+  consumeQuarantineForObservedUid(uid) {
+    const entry = readPendingInvalidation(this.sessionStorageAdapter);
+    if (!entry) return false;
+
+    if (!uid) {
+      // Auth has confirmed signed-out state: the quarantine has done its job.
+      clearPendingInvalidation(this.sessionStorageAdapter);
+      return false;
+    }
+
+    if (!isUidQuarantined(entry, uid)) {
+      // A digest marker for teacher A must not block teacher B, and must not
+      // linger to ambush a later A observation either — B being signed in means
+      // A's session is gone.
+      if (entry.scope === "digest") clearPendingInvalidation(this.sessionStorageAdapter);
+      return false;
+    }
+
+    // Still signed in as the quarantined identity: purge again and retry the
+    // sign-out that either never ran or previously rejected.
+    this.session.invalidate("multi-tab-invalidation", { state: "signed-out" });
+    this.terminateLocalAuth();
+    if (typeof this.onInvalidated === "function") this.onInvalidated();
+    return true;
   }
 
   receiveMessage(rawMsg) {
@@ -432,10 +536,23 @@ export class MultiTabInvalidator {
     // on the digest makes the duplicate inert: the first delivery clears
     // session.uid, so the second no longer matches any current identity.
     const currentUid = this.session?.uid;
-    if (!currentUid) return false;
+
+    // The message may arrive BEFORE onAuthStateChanged has established
+    // session.uid — the invalidator starts before the first Auth callback, and
+    // browserSessionPersistence means the old teacher is still resolvable.
+    // Discarding it here would let the observer go on to render that teacher, so
+    // the digest is quarantined for the Auth observer to apply instead.
+    if (!currentUid) {
+      writePendingInvalidation(this.sessionStorageAdapter, { scope: "digest", uidDigest: msg.uidDigest });
+      return false;
+    }
 
     const currentDigest = computeSha256Digest(currentUid);
     if (!currentDigest || currentDigest !== msg.uidDigest) return false;
+
+    // Recorded before the purge so a refresh mid-handler still finds it, and so
+    // a rejected local sign-out leaves durable evidence behind.
+    writePendingInvalidation(this.sessionStorageAdapter, { scope: "digest", uidDigest: msg.uidDigest });
 
     // Purge/reset happens synchronously BEFORE local Auth sign-out begins.
     this.session.invalidate("multi-tab-invalidation", { state: "signed-out" });
