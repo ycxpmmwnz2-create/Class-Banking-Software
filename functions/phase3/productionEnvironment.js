@@ -173,16 +173,30 @@ export const PROJECT_ROUTING_VARIABLES = Object.freeze([
 ])
 
 /**
- * A canonical project ID: already exact, with no surrounding whitespace. This
- * guard never normalizes a routing value — trimming would accept
+ * A canonical project ID: a nonempty string, already exact, with no surrounding
+ * whitespace.
+ *
+ * This guard never normalizes a routing value — trimming would accept
  * `" morgan-bank"` as production despite the exact-string requirement, and the
  * padded value is evidence of a misconfigured caller, not a formatting nicety.
+ *
+ * A present-but-blank value is equally a misconfiguration and must NOT be
+ * silently treated as absent: `GOOGLE_CLOUD_PROJECT=""` alongside a valid
+ * `GCLOUD_PROJECT` means something set that variable and failed, and the failure
+ * has to surface rather than vanish behind the source that happens to be valid.
  */
 function requireCanonicalProjectValue(value, source) {
   if (typeof value !== 'string') {
     fail(
       PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
       'A project routing value must be a string.',
+      { variable: source },
+    )
+  }
+  if (value === '' || value.trim() === '') {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+      'A project routing value is present but blank.',
       { variable: source },
     )
   }
@@ -218,39 +232,73 @@ export function resolveRuntimeProjectId(...args) {
   /** @type {{ source: string, value: string }[]} */
   const found = []
 
+  // ONLY an actually absent source may be ignored. `undefined` means nothing set
+  // the variable; anything else — including `""`, `"   "`, `null`, an array, or a
+  // number — means something set it and got it wrong, which blocks. Using a
+  // blankness test here instead would let a malformed source disappear whenever
+  // another source happened to be valid.
   for (const variable of PROJECT_ROUTING_VARIABLES) {
+    if (!Object.hasOwn(environment, variable)) continue
     const raw = environment[variable]
-    if (isBlank(raw)) continue
+    if (raw === undefined) continue
     found.push({
       source: variable,
       value: requireCanonicalProjectValue(raw, variable),
     })
   }
 
-  const rawFirebaseConfig = environment.FIREBASE_CONFIG
-  if (!isBlank(rawFirebaseConfig)) {
-    let parsed
-    try {
-      parsed = typeof rawFirebaseConfig === 'string'
-        ? JSON.parse(rawFirebaseConfig)
-        : rawFirebaseConfig
-    } catch {
+  if (Object.hasOwn(environment, 'FIREBASE_CONFIG') &&
+      environment.FIREBASE_CONFIG !== undefined) {
+    const rawFirebaseConfig = environment.FIREBASE_CONFIG
+
+    // A present FIREBASE_CONFIG must be usable. Blank, unparseable, non-object,
+    // or projectId-less values are all misconfigurations rather than absence.
+    if (typeof rawFirebaseConfig === 'string' && rawFirebaseConfig.trim() === '') {
       fail(
         PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
-        'FIREBASE_CONFIG is present but is not parseable JSON.',
+        'FIREBASE_CONFIG is present but blank.',
         { variable: 'FIREBASE_CONFIG' },
       )
     }
-    if (parsed !== null && typeof parsed === 'object' &&
-        !isBlank(parsed.projectId)) {
-      found.push({
-        source: 'FIREBASE_CONFIG.projectId',
-        value: requireCanonicalProjectValue(
-          parsed.projectId,
-          'FIREBASE_CONFIG.projectId',
-        ),
-      })
+
+    let parsed
+    if (typeof rawFirebaseConfig === 'string') {
+      try {
+        parsed = JSON.parse(rawFirebaseConfig)
+      } catch {
+        fail(
+          PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+          'FIREBASE_CONFIG is present but is not parseable JSON.',
+          { variable: 'FIREBASE_CONFIG' },
+        )
+      }
+    } else {
+      parsed = rawFirebaseConfig
     }
+
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      fail(
+        PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+        'FIREBASE_CONFIG is present but is not a JSON object.',
+        { variable: 'FIREBASE_CONFIG' },
+      )
+    }
+
+    if (!Object.hasOwn(parsed, 'projectId') || parsed.projectId === undefined) {
+      fail(
+        PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+        'FIREBASE_CONFIG is present but declares no projectId.',
+        { variable: 'FIREBASE_CONFIG' },
+      )
+    }
+
+    found.push({
+      source: 'FIREBASE_CONFIG.projectId',
+      value: requireCanonicalProjectValue(
+        parsed.projectId,
+        'FIREBASE_CONFIG.projectId',
+      ),
+    })
   }
 
   if (found.length === 0) {

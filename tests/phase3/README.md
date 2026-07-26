@@ -171,6 +171,23 @@ caller. `GOOGLE_CLOUD_PROJECT` is included because the repository's isolation
 contract already classifies it as project-routing — omitting it would let a
 contradictory value pass here while another SDK layer honored it.
 
+**Absent and present-but-blank are different.** Only a genuinely absent source —
+one nothing set, or whose value is `undefined` — may be ignored. A defined
+routing variable holding `""`, `"   "`, `null`, an array, or a number blocks, and
+so does a present `FIREBASE_CONFIG` that is blank, unparseable, not an object, or
+carries no usable `projectId`. This matters because a malformed source would
+otherwise vanish behind whichever source happened to be valid: something set that
+variable and failed, and the failure has to surface. The suite pins the specific
+guard by message, since several of these checks share one error category and
+asserting the category alone cannot tell them apart.
+
+A contract assertion in `command-safety.contract.test.js` couples every
+`PROJECT_ROUTING_VARIABLES` member, plus `FIREBASE_CONFIG`, to
+`REQUIRED_SCRUBBED_VARIABLES` and to the actual text of every discovered emulator
+command. The two lists are related by intent rather than derivation, so without
+that check a future commit could teach the guard about a new routing variable and
+forget the scrub.
+
 Reviewed release identifiers must already be canonical strings. Coercion is
 deliberately absent: `String(123)` would let a numeric `expectedReleaseId`
 authorize release `"123"`, so a caller reading the value from JSON or a

@@ -227,6 +227,53 @@ describe('Phase 3 command-safety source contract', () => {
     }
   })
 
+  /**
+   * Couples the guard's project-routing list to the emulator isolation list.
+   *
+   * These two lists are related by intent, not by derivation: any variable the
+   * production guard treats as project-routing can also redirect a "local"
+   * emulator run at a real project, so it must be scrubbed. Without this
+   * assertion a future commit could add a routing variable to the guard and
+   * forget the scrub — the exact drift that let GOOGLE_CLOUD_PROJECT be ignored
+   * by the guard while already being scrubbed here.
+   */
+  it('source contract: every project-routing variable the guard knows is also scrubbed', async () => {
+    const { PROJECT_ROUTING_VARIABLES } = await import(
+      '../../functions/phase3/productionEnvironment.js'
+    )
+
+    assert.ok(
+      Array.isArray(PROJECT_ROUTING_VARIABLES) && PROJECT_ROUTING_VARIABLES.length > 0,
+      'the guard must export a nonempty project-routing list',
+    )
+
+    for (const variable of PROJECT_ROUTING_VARIABLES) {
+      assert.ok(
+        REQUIRED_SCRUBBED_VARIABLES.includes(variable),
+        `${variable} routes a project in the guard and must also be scrubbed by ` +
+          'every emulator command',
+      )
+    }
+
+    // FIREBASE_CONFIG carries projectId, so it is a routing source too even
+    // though it is not a bare project variable.
+    assert.ok(
+      REQUIRED_SCRUBBED_VARIABLES.includes('FIREBASE_CONFIG'),
+      'FIREBASE_CONFIG carries projectId and must be scrubbed',
+    )
+
+    // And the scrub must actually be present in every discovered command, not
+    // merely listed in the contract.
+    for (const name of ISOLATED_EMULATOR_COMMANDS) {
+      for (const variable of [...PROJECT_ROUTING_VARIABLES, 'FIREBASE_CONFIG']) {
+        assert.ok(
+          scrubsVariable(scripts[name], variable),
+          `${name} must unset the routing variable ${variable}`,
+        )
+      }
+    }
+  })
+
   it('source contract: the Phase 3 contracts command exists and needs no emulator', () => {
     const command = scripts['test:phase3:contracts']
     assert.equal(typeof command, 'string', 'test:phase3:contracts must exist')

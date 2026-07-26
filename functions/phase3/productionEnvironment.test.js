@@ -250,21 +250,180 @@ describe('Phase 3 production environment guards', () => {
     })
 
     it('rejects a non-string routing value', () => {
-      for (const value of [42, true, {}]) {
+      // `[]` is included here rather than treated as absent: a present variable
+      // holding a non-string is a misconfiguration regardless of how it
+      // stringifies.
+      for (const value of [42, true, {}, [], ['morgan-bank']]) {
         assertRejects(
           () => resolveRuntimeProjectId({ GCLOUD_PROJECT: value }),
           PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
-          `non-string ${String(value)} must block`,
+          `non-string ${JSON.stringify(value)} must block`,
         )
       }
+    })
 
-      // `[]` stringifies to "" and is therefore treated as absent, not as a
-      // conflicting value — so it blocks as a missing project rather than an
-      // ambiguous one. Either way it never resolves to a project.
+    it('distinguishes an absent source from a present but blank one', () => {
+      // Absence is the ONLY reason a source may be ignored. A variable that is
+      // set-but-empty means something tried to configure it and failed, and that
+      // failure must surface even when another source is valid — otherwise the
+      // malformed source silently disappears behind the good one.
+      const malformedSecondary = [
+        { label: 'empty string', value: '' },
+        { label: 'whitespace only', value: '   ' },
+        { label: 'tab only', value: '\t' },
+        { label: 'null', value: null },
+        { label: 'empty array', value: [] },
+        { label: 'number', value: 42 },
+        { label: 'boolean', value: true },
+        { label: 'object', value: {} },
+      ]
+
+      for (const { label, value } of malformedSecondary) {
+        // Paired with a VALID production source, so the only reason to block is
+        // the malformed secondary.
+        const environment = {
+          GCLOUD_PROJECT: ALLOWED_PRODUCTION_PROJECT_ID,
+          GOOGLE_CLOUD_PROJECT: value,
+        }
+        assertRejects(
+          () => resolveRuntimeProjectId(environment),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+          `GOOGLE_CLOUD_PROJECT=${label} must not disappear behind a valid GCLOUD_PROJECT`,
+        )
+        assertRejects(
+          () => validateExecutionEnvironment(environment),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+          `GOOGLE_CLOUD_PROJECT=${label} must block the full guard too`,
+        )
+
+        // And in the mirror position: valid GOOGLE_CLOUD_PROJECT, malformed GCLOUD.
+        assertRejects(
+          () => resolveRuntimeProjectId({
+            GCLOUD_PROJECT: value,
+            GOOGLE_CLOUD_PROJECT: ALLOWED_PRODUCTION_PROJECT_ID,
+          }),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+          `GCLOUD_PROJECT=${label} must not disappear behind a valid GOOGLE_CLOUD_PROJECT`,
+        )
+      }
+    })
+
+    it('treats an absent or undefined-valued source as genuinely absent', () => {
+      // The permitted case: nothing set the variable at all.
+      assert.equal(
+        resolveRuntimeProjectId({ GCLOUD_PROJECT: ALLOWED_PRODUCTION_PROJECT_ID }),
+        ALLOWED_PRODUCTION_PROJECT_ID,
+      )
+      // An explicitly `undefined` value is indistinguishable from unset in a
+      // real process environment, so it is also treated as absent.
+      assert.equal(
+        resolveRuntimeProjectId({
+          GCLOUD_PROJECT: ALLOWED_PRODUCTION_PROJECT_ID,
+          GOOGLE_CLOUD_PROJECT: undefined,
+          FIREBASE_CONFIG: undefined,
+        }),
+        ALLOWED_PRODUCTION_PROJECT_ID,
+      )
+    })
+
+    it('treats a present but unusable FIREBASE_CONFIG as blocking, not absent', () => {
+      const unusableConfigs = [
+        { label: 'empty string', value: '' },
+        { label: 'whitespace only', value: '   ' },
+        { label: 'unparseable', value: '{not json' },
+        { label: 'JSON null', value: 'null' },
+        { label: 'JSON array', value: '[]' },
+        { label: 'JSON string', value: '"morgan-bank"' },
+        { label: 'JSON number', value: '42' },
+        { label: 'object without projectId', value: '{}' },
+        { label: 'object with other keys only', value: JSON.stringify({ databaseURL: 'x' }) },
+        { label: 'projectId null', value: JSON.stringify({ projectId: null }) },
+        { label: 'projectId empty', value: JSON.stringify({ projectId: '' }) },
+        { label: 'projectId blank', value: JSON.stringify({ projectId: '   ' }) },
+        { label: 'projectId padded', value: JSON.stringify({ projectId: ' morgan-bank' }) },
+        { label: 'projectId numeric', value: JSON.stringify({ projectId: 42 }) },
+        { label: 'projectId array', value: JSON.stringify({ projectId: [] }) },
+      ]
+
+      for (const { label, value } of unusableConfigs) {
+        const environment = {
+          GCLOUD_PROJECT: ALLOWED_PRODUCTION_PROJECT_ID,
+          FIREBASE_CONFIG: value,
+        }
+        assertRejects(
+          () => resolveRuntimeProjectId(environment),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+          `FIREBASE_CONFIG ${label} must not disappear behind a valid GCLOUD_PROJECT`,
+        )
+        assertRejects(
+          () => validateExecutionEnvironment(environment),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+          `FIREBASE_CONFIG ${label} must block the full guard too`,
+        )
+      }
+    })
+
+    it('names the specific FIREBASE_CONFIG defect rather than a downstream one', () => {
+      // Several checks share the ambiguous-project-id category, so asserting the
+      // category alone cannot tell them apart: removing the blank check still
+      // trips the JSON-parse check, and removing the projectId check still trips
+      // the value-type check. Pinning the message identifies which guard fired.
+      // Verified by mutation.
+      const expectations = [
+        { value: '', message: /present but blank/ },
+        { value: '   ', message: /present but blank/ },
+        { value: '{not json', message: /not parseable JSON/ },
+        { value: 'null', message: /not a JSON object/ },
+        { value: '[]', message: /not a JSON object/ },
+        { value: '42', message: /not a JSON object/ },
+        { value: '"morgan-bank"', message: /not a JSON object/ },
+        { value: '{}', message: /declares no projectId/ },
+        { value: JSON.stringify({ databaseURL: 'x' }), message: /declares no projectId/ },
+        { value: JSON.stringify({ projectId: null }), message: /must be a string/ },
+        { value: JSON.stringify({ projectId: '' }), message: /present but blank/ },
+        { value: JSON.stringify({ projectId: '  ' }), message: /present but blank/ },
+        { value: JSON.stringify({ projectId: ' morgan-bank' }), message: /surrounding whitespace/ },
+      ]
+
+      for (const { value, message } of expectations) {
+        try {
+          resolveRuntimeProjectId({
+            GCLOUD_PROJECT: ALLOWED_PRODUCTION_PROJECT_ID,
+            FIREBASE_CONFIG: value,
+          })
+          assert.fail(`FIREBASE_CONFIG=${value} should have blocked`)
+        } catch (error) {
+          assert.ok(
+            error instanceof ProductionEnvironmentError,
+            `FIREBASE_CONFIG=${value}: wrong error type`,
+          )
+          assert.match(
+            error.message,
+            message,
+            `FIREBASE_CONFIG=${value} must be rejected by the guard that owns it`,
+          )
+        }
+      }
+    })
+
+    it('accepts a pre-parsed FIREBASE_CONFIG object with a canonical projectId', () => {
+      // Functions passes FIREBASE_CONFIG as a JSON string, but the guard also
+      // accepts an already-parsed object; it must apply identical rules.
+      assert.equal(
+        resolveRuntimeProjectId({
+          FIREBASE_CONFIG: { projectId: ALLOWED_PRODUCTION_PROJECT_ID },
+        }),
+        ALLOWED_PRODUCTION_PROJECT_ID,
+      )
       assertRejects(
-        () => resolveRuntimeProjectId({ GCLOUD_PROJECT: [] }),
-        PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_PROJECT_ID,
-        'an empty array must not resolve to a project',
+        () => resolveRuntimeProjectId({ FIREBASE_CONFIG: { projectId: '' } }),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+        'a parsed config with a blank projectId must block',
+      )
+      assertRejects(
+        () => resolveRuntimeProjectId({ FIREBASE_CONFIG: {} }),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+        'a parsed config without projectId must block',
       )
     })
 
@@ -314,10 +473,13 @@ describe('Phase 3 production environment guards', () => {
         PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_PROJECT_ID,
         'absent project must block',
       )
+      // A whitespace-only value is PRESENT but blank, so it is a misconfigured
+      // source (ambiguous) rather than an absent one (missing). The distinction
+      // matters: only genuine absence may be ignored.
       assertRejects(
         () => resolveRuntimeProjectId({ GCLOUD_PROJECT: '   ' }),
-        PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_PROJECT_ID,
-        'whitespace-only project must block',
+        PRODUCTION_ENVIRONMENT_CATEGORIES.AMBIGUOUS_PROJECT_ID,
+        'whitespace-only project must block as a present-but-blank source',
       )
     })
   })
