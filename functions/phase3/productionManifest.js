@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto'
 import { randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rename } from 'node:fs/promises'
+import { link, mkdir, open, readFile, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath, URL } from 'node:url'
 
 import { serializeCanonicalState } from '../phase2/canonicalState.js'
+import { ALLOWED_EMULATOR_PROJECT_ID } from './productionEnvironment.js'
 
 /**
  * Phase 3 Commit 3 — production preflight manifest.
@@ -34,6 +35,17 @@ export const PRODUCTION_MANIFEST_SCHEMA_VERSION = 1
 /** The only production project a manifest may name. */
 export const PRODUCTION_PROJECT_ID = 'morgan-bank'
 export const PRODUCTION_PREFLIGHT_KIND = 'phase3-production-preflight'
+
+/**
+ * The exact project IDs a retained manifest may name — no prefix matching. The
+ * emulator project is included so the rehearsal exercises the real validation and
+ * install path; see `validateProductionManifest` for why that cannot authorize a
+ * production write.
+ */
+export const ALLOWED_MANIFEST_PROJECT_IDS = Object.freeze(new Set([
+  PRODUCTION_PROJECT_ID,
+  ALLOWED_EMULATOR_PROJECT_ID,
+]))
 
 /**
  * Module-anchored state directory. Deliberately not configurable: a
@@ -363,18 +375,19 @@ export function validateProductionManifest(manifest) {
   // The project is pinned in the manifest itself so a retained record cannot be
   // reinterpreted against a different project later.
   //
-  // A `demo-` project is accepted so the emulator rehearsal exercises this exact
-  // validation and persistence path rather than a weaker variant. That does not
-  // let a rehearsal manifest authorize a production write: the future writer
-  // requires `projectId === PRODUCTION_PROJECT_ID`, and a rehearsal manifest
-  // carries a demo project ID, so it can never satisfy that check. Restricting
-  // this function to production only would mean the rehearsal proved nothing
-  // about the real code path.
-  if (manifest.projectId !== PRODUCTION_PROJECT_ID &&
-      !manifest.projectId.startsWith('demo-')) {
+  // Exactly two values are accepted: the production project, and the single
+  // permitted emulator project so the rehearsal exercises this exact validation
+  // and persistence path rather than a weaker variant. A `demo-` PREFIX test was
+  // rejected as too broad — it admitted an unbounded project family for no
+  // rehearsal benefit, since the rehearsal only ever uses one project.
+  //
+  // Accepting the emulator project does not let a rehearsal manifest authorize a
+  // production write: the future writer requires
+  // `projectId === PRODUCTION_PROJECT_ID`, which a rehearsal manifest never has.
+  if (!ALLOWED_MANIFEST_PROJECT_IDS.has(manifest.projectId)) {
     fail(
       PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
-      'A preflight manifest must name the production project or a demo project.',
+      'A preflight manifest must name the production project or the permitted emulator project.',
     )
   }
   if (!CANONICAL_ID.test(manifest.projectId)) {
@@ -560,7 +573,8 @@ export async function persistProductionManifest(manifest, dependencies = {}) {
   const fs = {
     mkdir: dependencies.mkdir ?? mkdir,
     open: dependencies.open ?? open,
-    rename: dependencies.rename ?? rename,
+    link: dependencies.link ?? link,
+    unlink: dependencies.unlink ?? unlink,
     syncDirectory: dependencies.syncDirectory ?? syncDirectory,
   }
 
@@ -570,6 +584,7 @@ export async function persistProductionManifest(manifest, dependencies = {}) {
   )
 
   let handle
+  let temporaryCreated = false
   try {
     await fs.mkdir(PRODUCTION_STATE_DIRECTORY, { recursive: true, mode: 0o700 })
 
@@ -591,17 +606,24 @@ export async function persistProductionManifest(manifest, dependencies = {}) {
       )
     }
 
+    // The complete bytes are written and flushed to stable storage BEFORE the
+    // target name exists. This is what makes the install atomic: the target is
+    // never a partially written file, because it only ever comes into existence
+    // as a second name for an already-durable inode.
     handle = await fs.open(temporaryPath, 'wx', 0o400)
+    temporaryCreated = true
     await handle.writeFile(serialized, 'utf8')
     await handle.sync()
     await handle.close()
     handle = undefined
 
-    // Exclusive create on the destination: if another process installed the same
-    // content address concurrently, this throws EEXIST instead of overwriting.
-    let destination
+    // `link` is the install. It is atomic and it FAILS on an existing target
+    // rather than replacing it, which `rename` would do silently. The target path
+    // is never opened for writing anywhere in this function — a crash at any
+    // point either leaves the target absent (retryable) or fully correct, never
+    // truncated at an address that can never be rewritten.
     try {
-      destination = await fs.open(targetPath, 'wx', 0o400)
+      await fs.link(temporaryPath, targetPath)
     } catch (error) {
       if (error?.code === 'EEXIST') {
         fail(
@@ -612,10 +634,8 @@ export async function persistProductionManifest(manifest, dependencies = {}) {
       }
       throw error
     }
-    await destination.writeFile(serialized, 'utf8')
-    await destination.sync()
-    await destination.close()
 
+    // Directory fsync makes the new link itself durable, not just its contents.
     await fs.syncDirectory(PRODUCTION_STATE_DIRECTORY)
   } catch (error) {
     try {
@@ -629,6 +649,19 @@ export async function persistProductionManifest(manifest, dependencies = {}) {
       'The production preflight manifest could not be durably persisted.',
       { preflightManifestId: validated.preflightManifestId },
     )
+  } finally {
+    // Drop the temporary name whenever it was created. On success the inode
+    // survives under the target name, so unlinking the temp name does not remove
+    // the manifest. On failure the partial write is discarded. An unlink failure
+    // must never mask the real result or turn a durable success into a failure.
+    if (temporaryCreated) {
+      try {
+        await fs.unlink(temporaryPath)
+      } catch {
+        // A stale .tmp file is inert: it is never read, and its name embeds a
+        // UUID so it can never collide with a future install.
+      }
+    }
   }
 
   return Object.freeze({

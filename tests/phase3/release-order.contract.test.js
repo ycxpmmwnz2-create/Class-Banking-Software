@@ -236,13 +236,43 @@ describe('Phase 3 release-order source contract', () => {
       'studentLifecycle.js', 'studentLifecycle.test.js',
     ])
 
-    const actual = readdirSync(directory)
-    for (const name of actual) {
+    /**
+     * The canonical runtime state directory the Section 11 amendment permits. It
+     * holds retained manifests, not source, so it is excluded from the source
+     * boundary below — but it must be a DIRECTORY, and it must be gitignored, so a
+     * stray file of that name cannot smuggle content in.
+     */
+    const RUNTIME_STATE_DIRECTORY = '.state'
+
+    const entries = readdirSync(directory, { withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.name === RUNTIME_STATE_DIRECTORY) {
+        assert.ok(
+          entry.isDirectory(),
+          'functions/phase3/.state must be the runtime state directory, not a file',
+        )
+        continue
+      }
       assert.ok(
-        SECTION_11_PERMITTED.has(name),
-        `functions/phase3/${name} is outside Section 11's permitted file list`,
+        SECTION_11_PERMITTED.has(entry.name),
+        `functions/phase3/${entry.name} is outside Section 11's permitted file list`,
       )
     }
+
+    const actual = entries.map(entry => entry.name)
+
+    // The source boundary above exempts .state/ from the permitted-file list, so
+    // the ignore rule is what keeps a retained manifest — which records production
+    // observations — from becoming committable. Coupled here deliberately: the
+    // exemption and the ignore rule must stand or fall together.
+    const gitignore = readFileSync(
+      new URL('../../.gitignore', import.meta.url), 'utf8',
+    )
+    assert.ok(
+      gitignore.split('\n').map(line => line.trim())
+        .includes('functions/phase3/.state/'),
+      '.gitignore must ignore functions/phase3/.state/ so retained manifests are never committed',
+    )
 
     // Commit 2 earns exactly the environment guard module and its test.
     // Everything else in Section 11's list belongs to Commits 3-6. Both the
@@ -346,6 +376,58 @@ describe('Phase 3 release-order source contract', () => {
         `${sibling} belongs to a later commit`,
       )
     }
+  })
+
+  it('invariant: the manifest installs by link and never opens the target for writing', () => {
+    // The original implementation wrote a temp file and then INDEPENDENTLY opened
+    // and wrote the target, leaving the temp file uninstalled. A crash after the
+    // target was created left a truncated file at a content address that the
+    // never-overwrite rule then made permanent. Pinned here because the behavioral
+    // tests use an injected fs double, so only a source guard catches a revert to
+    // a direct target write or to a clobbering rename.
+    const source = readFileSync(
+      new URL('../../functions/phase3/productionManifest.js', import.meta.url),
+      'utf8',
+    )
+    const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
+
+    assert.ok(
+      /fs\.link\(\s*temporaryPath\s*,\s*targetPath\s*\)/.test(code),
+      'the manifest must be installed by linking the temp file onto the target',
+    )
+    assert.ok(
+      !/fs\.open\(\s*targetPath\s*,\s*'wx'/.test(code),
+      'the target must never be opened for writing; only link() may create it',
+    )
+    assert.ok(
+      !/\brename\b/.test(code),
+      'rename() silently replaces an existing file and must not be used',
+    )
+  })
+
+  it('invariant: a successful preflight cannot skip manifest persistence', () => {
+    // An earlier version treated the persister as optional and a test REQUIRED
+    // success with `persisted: null`, which would let a later writer believe a
+    // preflight occurred that left no verifiable record.
+    const source = readFileSync(
+      new URL('../../functions/phase3/productionPreflight.js', import.meta.url),
+      'utf8',
+    )
+    const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
+
+    assert.ok(
+      !/typeof\s+persistManifest\s*===\s*'function'\s*\n?\s*\?/.test(code),
+      'persistence must not be conditional on a persister being supplied',
+    )
+    assert.ok(
+      /const\s+persisted\s*=\s*await\s+persistManifest\(/.test(code),
+      'the persister must be invoked unconditionally',
+    )
+    // And the domain must carry the raw artifact digest, not a field subset.
+    assert.ok(
+      /authorizationArtifact:\s*\{\s*sha256:\s*authorizationSha256\s*\}/.test(code),
+      'the authorization domain must be the pre-parse digest of the artifact bytes',
+    )
   })
 
   it('boundary: the checked-in firestore.rules is byte-for-byte unchanged', () => {

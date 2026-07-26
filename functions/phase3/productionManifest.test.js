@@ -6,6 +6,7 @@
 
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import path from 'node:path'
 import { describe, it } from 'node:test'
 import { Timestamp } from 'firebase-admin/firestore'
 
@@ -16,6 +17,7 @@ import {
   encodeCanonicalFirestoreValue,
 } from '../phase2/canonicalState.js'
 import {
+  ALLOWED_MANIFEST_PROJECT_IDS,
   CHECKSUM_DOMAINS,
   PRODUCTION_MANIFEST_CATEGORIES,
   PRODUCTION_MANIFEST_SCHEMA_VERSION,
@@ -86,7 +88,14 @@ async function assertRejectsAsync(fn, category, message) {
 }
 
 /** Minimal in-memory fs double recording every call. */
-function fsDouble({ existing = new Set(), failSync = false, failWrite = false } = {}) {
+function fsDouble({
+  existing = new Set(),
+  failSync = false,
+  failWrite = false,
+  failLink = false,
+  failUnlink = false,
+  failDirSync = false,
+} = {}) {
   const calls = []
   const files = new Map()
 
@@ -130,7 +139,38 @@ function fsDouble({ existing = new Set(), failSync = false, failWrite = false } 
 
       throw new Error(`unexpected flags ${flags}`)
     },
-    syncDirectory: async (dir) => { calls.push({ op: 'syncDirectory', dir }) },
+    // Models real hard-link semantics: the target becomes a second name for the
+    // SAME bytes, and linking onto an existing name fails rather than replacing
+    // it. Verified against the real filesystem before this double was written.
+    link: async (from, to) => {
+      calls.push({ op: 'link', from, to })
+      if (failLink) {
+        const error = new Error('link failed')
+        error.code = failLink === true ? 'EIO' : failLink
+        throw error
+      }
+      if (existing.has(to) || files.has(to)) {
+        const error = new Error('EEXIST')
+        error.code = 'EEXIST'
+        throw error
+      }
+      if (!files.has(from)) {
+        const error = new Error('ENOENT')
+        error.code = 'ENOENT'
+        throw error
+      }
+      files.set(to, files.get(from))
+    },
+    unlink: async (filePath) => {
+      calls.push({ op: 'unlink', filePath })
+      if (failUnlink) throw new Error('unlink failed')
+      // Removing one name never affects the other name's bytes.
+      files.delete(filePath)
+    },
+    syncDirectory: async (dir) => {
+      calls.push({ op: 'syncDirectory', dir })
+      if (failDirSync) throw new Error('directory fsync failed')
+    },
   }
 }
 
@@ -282,12 +322,52 @@ describe('Phase 3 production manifest', () => {
       )
     })
 
-    it('rejects a non-production project', () => {
+    it('accepts exactly the production and permitted emulator projects, by exact match', () => {
       const manifest = buildValidManifest()
-      assertRejects(
-        () => validateProductionManifest({ ...manifest, projectId: 'demo-x' }),
-        PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
-        'non-production project must block',
+
+      // Message-pinned, not category-pinned. Several guards in this function share
+      // INVALID_SCHEMA, and a rejected project is ALSO caught downstream by the
+      // content-address check — so asserting the category alone would still pass if
+      // the project check were removed entirely. That is what happened when a
+      // `demo-` PREFIX test was mutated back in: the assertion held for the wrong
+      // reason.
+      const assertProjectRejected = (projectId) => {
+        assert.throws(
+          () => validateProductionManifest({ ...manifest, projectId }),
+          error => {
+            assert.ok(error instanceof ProductionManifestError)
+            assert.equal(error.category, PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA)
+            assert.match(
+              error.message,
+              /must name the production project or the permitted emulator project/,
+              `projectId ${projectId} must be refused BY THE PROJECT CHECK`,
+            )
+            return true
+          },
+        )
+      }
+
+      // A prefix test would admit this entire family for no rehearsal benefit.
+      for (const projectId of [
+        'demo-x', 'demo-', 'demo-morgan-bank', 'demo-attacker-project',
+        'demo-morgan-bank-phase2b-server-tes',
+        'demo-morgan-bank-phase2b-server-test-2',
+        'morgan-bank-staging', 'not-morgan-bank', 'MORGAN-BANK',
+      ]) {
+        assertProjectRejected(projectId)
+      }
+
+      // And exactly the two permitted values reach the later checks rather than
+      // being refused here.
+      for (const projectId of [...ALLOWED_MANIFEST_PROJECT_IDS]) {
+        const candidate = { ...manifest, projectId }
+        candidate.preflightManifestId = deriveManifestId(candidate)
+        const validated = validateProductionManifest(candidate)
+        assert.equal(validated.projectId, projectId)
+      }
+      assert.deepEqual(
+        [...ALLOWED_MANIFEST_PROJECT_IDS].sort(),
+        ['demo-morgan-bank-phase2b-server-test', 'morgan-bank'],
       )
     })
 
@@ -491,7 +571,7 @@ describe('Phase 3 production manifest', () => {
   })
 
   describe('durable atomic install', () => {
-    it('writes through a temp file, fsyncs, installs, and fsyncs the directory', async () => {
+    it('installs the temp inode under the target name and fsyncs the directory', async () => {
       const manifest = buildValidManifest()
       const fs = fsDouble()
       const result = await persistProductionManifest(manifest, fs)
@@ -502,20 +582,74 @@ describe('Phase 3 production manifest', () => {
       assert.ok(ops.includes('mkdir'), 'must ensure the state directory')
       assert.ok(ops.includes('writeFile'), 'must write')
       assert.ok(ops.includes('fsync'), 'must flush to disk')
+      assert.ok(ops.includes('link'), 'must install by link')
       assert.ok(ops.includes('syncDirectory'), 'must fsync the directory')
 
-      // A temp file is used, and it is a sibling in the same directory so the
-      // install is atomic on one filesystem.
-      const tempWrite = fs.calls.find(
+      const targetPath = resolveManifestPath(manifest.preflightManifestId)
+      const tempOpen = fs.calls.find(
         call => call.op === 'open' && call.filePath.endsWith('.tmp'),
       )
-      assert.ok(tempWrite, 'must write through a temporary file')
-      assert.equal(tempWrite.flags, 'wx', 'temp file must be created exclusively')
+      assert.ok(tempOpen, 'must write through a temporary file')
+      assert.equal(tempOpen.flags, 'wx', 'temp file must be created exclusively')
+      assert.equal(
+        path.dirname(tempOpen.filePath),
+        path.dirname(targetPath),
+        'temp file must be a sibling so the link is same-filesystem',
+      )
 
-      // Ordering: fsync precedes the final install.
-      const firstSync = ops.indexOf('fsync')
-      const dirSync = ops.indexOf('syncDirectory')
-      assert.ok(firstSync < dirSync, 'file fsync must precede directory fsync')
+      // THE load-bearing assertion, and the one the previous version of this test
+      // was missing: the temp file's exact bytes became the target. Observing that
+      // "a temp write happened" proves nothing about what landed at the target.
+      const link = fs.calls.find(call => call.op === 'link')
+      assert.equal(link.from, tempOpen.filePath)
+      assert.equal(link.to, targetPath)
+      assert.equal(
+        fs.files.get(targetPath),
+        serializeCanonicalState(manifest),
+        'the target must hold the exact canonical bytes that were fsynced',
+      )
+
+      // Ordering: the bytes are durable BEFORE the target name exists.
+      assert.ok(
+        ops.indexOf('fsync') < ops.indexOf('link'),
+        'file fsync must precede the install so the target is never a partial file',
+      )
+      assert.ok(
+        ops.indexOf('link') < ops.indexOf('syncDirectory'),
+        'the new link must be fsynced after it is created',
+      )
+
+      // The temporary name is cleaned up, and doing so does not remove the
+      // manifest, because both names referred to one inode.
+      assert.ok(
+        fs.calls.some(call => call.op === 'unlink' && call.filePath === tempOpen.filePath),
+        'the temporary name must be released',
+      )
+      assert.ok(!fs.files.has(tempOpen.filePath), 'no .tmp file may be left behind')
+      assert.ok(fs.files.has(targetPath), 'unlinking the temp name must not remove the manifest')
+    })
+
+    it('never writes the target path directly under any flag', async () => {
+      const manifest = buildValidManifest()
+      const fs = fsDouble()
+      await persistProductionManifest(manifest, fs)
+
+      const targetPath = resolveManifestPath(manifest.preflightManifestId)
+
+      // The target may only ever be brought into existence by link(). If it were
+      // opened for writing, a crash mid-write would leave a truncated file at a
+      // content address that the immutability rule then makes permanent.
+      const directWrite = fs.calls.find(
+        call => call.op === 'open' && call.filePath === targetPath &&
+          call.flags !== 'r',
+      )
+      assert.equal(
+        directWrite,
+        undefined,
+        'the target must never be opened for writing; only link() may create it',
+      )
+      // rename() would silently replace an existing file; it must not be used.
+      assert.ok(!fs.calls.some(call => call.op === 'rename'))
     })
 
     it('never overwrites an existing manifest', async () => {
@@ -533,22 +667,50 @@ describe('Phase 3 production manifest', () => {
       assert.ok(!fs.calls.some(call => call.op === 'writeFile'))
     })
 
-    it('uses exclusive create on the destination, not a clobbering rename', async () => {
+    it('refuses to replace a manifest that appears between the pre-check and the install', async () => {
+      // The pre-check is a fast path, not the guarantee. link() is what enforces
+      // immutability against a concurrent writer.
       const manifest = buildValidManifest()
-      const fs = fsDouble()
-      await persistProductionManifest(manifest, fs)
+      const fs = fsDouble({ failLink: 'EEXIST' })
 
-      const targetPath = resolveManifestPath(manifest.preflightManifestId)
-      const destinationOpen = fs.calls.find(
-        call => call.op === 'open' && call.filePath === targetPath &&
-          call.flags === 'wx',
+      await assertRejectsAsync(
+        () => persistProductionManifest(manifest, fs),
+        PRODUCTION_MANIFEST_CATEGORIES.ALREADY_EXISTS,
+        'a concurrently installed manifest must not be replaced',
       )
-      assert.ok(
-        destinationOpen,
-        'destination must be created exclusively so a concurrent writer cannot be clobbered',
-      )
-      // rename() would silently replace an existing file; it must not be used.
-      assert.ok(!fs.calls.some(call => call.op === 'rename'))
+    })
+
+    describe('crash points leave no partial manifest', () => {
+      // At every failure point the target is either absent or complete. It is
+      // never present-but-truncated, which under the never-overwrite rule would
+      // permanently poison that content address.
+      for (const [label, options] of [
+        ['during the temp write', { failWrite: true }],
+        ['during the temp fsync', { failSync: true }],
+        ['during the install link', { failLink: true }],
+        ['during the directory fsync', { failDirSync: true }],
+      ]) {
+        it(label, async () => {
+          const manifest = buildValidManifest()
+          const targetPath = resolveManifestPath(manifest.preflightManifestId)
+          const fs = fsDouble(options)
+
+          await assertRejectsAsync(
+            () => persistProductionManifest(manifest, fs),
+            PRODUCTION_MANIFEST_CATEGORIES.WRITE_FAILED,
+            `${label} must not be reported as success`,
+          )
+
+          const installed = fs.files.get(targetPath)
+          if (installed !== undefined) {
+            // If the name exists at all it must hold the complete document —
+            // only reachable when the failure was after a successful link.
+            assert.equal(installed, serializeCanonicalState(manifest))
+          }
+          const leftovers = [...fs.files.keys()].filter(key => key.endsWith('.tmp'))
+          assert.deepEqual(leftovers, [], 'no temporary file may be left behind')
+        })
+      }
     })
 
     it('surfaces an fsync failure as a write failure', async () => {

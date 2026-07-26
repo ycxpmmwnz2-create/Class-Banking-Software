@@ -6,6 +6,7 @@
 // network, no process.env mutation — environments are constructed inline.
 
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { describe, it } from 'node:test'
 
 import {
@@ -17,14 +18,33 @@ import {
   runProductionPreflight,
   validateReadAuthorization,
 } from './productionPreflight.js'
-import { CHECKSUM_DOMAINS } from './productionManifest.js'
+import { CHECKSUM_DOMAINS, hashDomain } from './productionManifest.js'
 
 const PRODUCTION_ENVIRONMENT = Object.freeze({ GCLOUD_PROJECT: 'morgan-bank' })
 const TEACHER_UID = 'YkYUzIzy0aW7roolM1VaLcIJPuN2'
 const CREDENTIAL_SHA = 'c'.repeat(64)
 const EXPECTATIONS_SHA = 'e'.repeat(64)
+const AUTHORIZATION_SHA = 'd'.repeat(64)
 const NOW = Date.parse('2026-07-26T18:00:00.000Z')
 const OBSERVED_AT = '2026-07-26T18:00:00.000Z'
+
+/**
+ * Builds `n` valid per-document evidence entries.
+ *
+ * Digests are derived from a label so they are distinct and reproducible without
+ * embedding any identity-bearing string.
+ */
+function sourceEntries(label, count, overrides = []) {
+  const entries = Array.from({ length: count }, (unused, index) => ({
+    pathHash: createHash('sha256').update(`${label}/path/${index}`).digest('hex'),
+    updateTime: `2026-07-2${(index % 9) + 1}T12:00:00.000Z`,
+    documentHash: createHash('sha256').update(`${label}/body/${index}`).digest('hex'),
+  }))
+  overrides.forEach((override, index) => {
+    if (override !== undefined) entries[index] = { ...entries[index], ...override }
+  })
+  return entries
+}
 
 function authorization(overrides = {}) {
   return {
@@ -82,6 +102,7 @@ function readers(overrides = {}) {
       loginHistoryStudentIds: ['3'],
       noncanonicalValueCount: 0,
       anomalies: [],
+      sourceEntries: sourceEntries('legacy', 18),
     }),
     readFlatCredentials: async () => complete({
       count: 3,
@@ -90,11 +111,13 @@ function readers(overrides = {}) {
       duplicateStudentIds: 0,
       noncanonicalLoginIds: 0,
       anomalies: [],
+      sourceEntries: sourceEntries('credentials', 3),
     }),
     readFlatAuthLogs: async () => complete({
       count: 12,
       studentIds: ['1'],
       anomalies: [],
+      sourceEntries: sourceEntries('authLogs', 12),
     }),
     readFoundation: async () => complete({
       present: true,
@@ -102,18 +125,30 @@ function readers(overrides = {}) {
       teacherStatus: 'active',
       classroomId: 'abc123',
       anomalies: [],
+      sourceEntries: sourceEntries('foundation', 2),
     }),
     readDestinationPaths: async () => complete({
       counts: { scopedCredentials: 0, scopedLogs: 0, classroomStudents: 0 },
       studentIds: [],
+      sourceEntries: [],
     }),
     readAuthCompatibility: async () => complete({
       uidCollisions: 0,
       incompatibleUsers: 0,
       examinedUserCount: 3,
+      sourceEntries: sourceEntries('authUsers', 3),
     }),
   }
   return { ...base, ...overrides }
+}
+
+/** The report a conforming persister returns for a manifest it retained. */
+function echo(manifest) {
+  return {
+    preflightManifestId: manifest.preflightManifestId,
+    preflightChecksum: manifest.preflightChecksum,
+    manifestPath: `/state/preflight-${manifest.preflightManifestId}.json`,
+  }
 }
 
 async function run(overrides = {}) {
@@ -124,10 +159,13 @@ async function run(overrides = {}) {
     expectations: expectations(),
     credentialSha256: CREDENTIAL_SHA,
     expectationsSha256: EXPECTATIONS_SHA,
+    authorizationSha256: AUTHORIZATION_SHA,
     teacherUid: TEACHER_UID,
     nowMillis: NOW,
     observedAt: OBSERVED_AT,
-    persistManifest: async () => ({ persisted: true }),
+    // A conforming persister echoes the identity of the manifest it was handed,
+    // as the real one does. Persistence is mandatory, so this cannot be omitted.
+    persistManifest: async manifest => echo(manifest),
     ...overrides,
   })
 }
@@ -182,6 +220,7 @@ describe('Phase 3 production preflight', () => {
         readers: readers({
           readFlatAuthLogs: async () => complete({
             count: 13, studentIds: ['1'], anomalies: [],
+            sourceEntries: sourceEntries('authLogs', 13),
           }),
         }),
       })
@@ -536,7 +575,7 @@ describe('Phase 3 production preflight', () => {
       const result = await run({
         readers: readers({
           readFoundation: async () => complete({
-            present: false, anomalies: [],
+            present: false, anomalies: [], sourceEntries: [],
           }),
         }),
       })
@@ -607,6 +646,7 @@ describe('Phase 3 production preflight', () => {
           readDestinationPaths: async () => complete({
             counts: { classroomStudents: 3, scopedCredentials: 0, scopedLogs: 0 },
             studentIds: ['1', '2', '3'],
+            sourceEntries: sourceEntries('destination', 3),
           }),
         }),
         expectations: expectations({
@@ -755,6 +795,7 @@ describe('Phase 3 production preflight', () => {
           readFlatAuthLogs: async () => complete({
             count: 12, studentIds: ['1'],
             anomalies: ['auth-log-missing-classroom-id'],
+            sourceEntries: sourceEntries('authLogs', 12),
           }),
         }),
         expectations: expectations({
@@ -904,7 +945,7 @@ describe('Phase 3 production preflight', () => {
         persistManifest: async (manifest) => {
           calls += 1
           assert.equal(manifest.outcome, 'succeeded')
-          return { persisted: true }
+          return echo(manifest)
         },
       })
       assert.equal(calls, 1)
@@ -943,10 +984,301 @@ describe('Phase 3 production preflight', () => {
       assert.equal(calls, 0, 'a failed preflight must never write a manifest')
     })
 
-    it('omits persistence entirely when no persister is supplied', async () => {
-      const result = await run({ persistManifest: undefined })
-      assert.equal(result.persisted, null)
-      assert.equal(result.outcome, 'succeeded')
+    it('refuses to succeed without a persister', async () => {
+      // The Commit 3 contract is that a SUCCESSFUL preflight produces a retained
+      // record. An earlier version of this test asserted the opposite — success
+      // with `persisted: null` — which would let a later writer believe a
+      // preflight occurred that left no verifiable evidence.
+      for (const persistManifest of [undefined, null, {}, 'persist']) {
+        await assertAborts(
+          { persistManifest },
+          PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+          `persister ${String(persistManifest)} must not be accepted`,
+        )
+      }
+    })
+
+    it('aborts when the persister reports a different record than was built', async () => {
+      // The retained record and the reported one must be the same document.
+      await assertAborts(
+        {
+          persistManifest: async manifest => ({
+            preflightManifestId: 'f'.repeat(64),
+            preflightChecksum: manifest.preflightChecksum,
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'a mismatched manifest ID must abort',
+      )
+      await assertAborts(
+        {
+          persistManifest: async manifest => ({
+            preflightManifestId: manifest.preflightManifestId,
+            preflightChecksum: 'f'.repeat(64),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'a mismatched preflight checksum must abort',
+      )
+      for (const reported of [undefined, null, 'ok', []]) {
+        await assertAborts(
+          { persistManifest: async () => reported },
+          PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+          `persister report ${String(reported)} must abort`,
+        )
+      }
+    })
+
+    it('returns the retained record on success', async () => {
+      const result = await run()
+      assert.equal(result.persisted.preflightManifestId, result.preflightManifestId)
+      assert.equal(result.persisted.preflightChecksum, result.preflightChecksum)
+    })
+  })
+
+  describe('per-document source hashing', () => {
+    /**
+     * A count-only domain cannot detect a changed balance, transaction body, PIN
+     * hash, or update time while counts stay constant — which would let a later
+     * writer operate on state that never passed preflight. These tests are the
+     * teeth on that requirement.
+     */
+    async function captureDomains(overrides = {}) {
+      let captured
+      await run({
+        persistManifest: async (manifest) => { captured = manifest; return echo(manifest) },
+        ...overrides,
+      })
+      return captured
+    }
+
+    it('changes the domain checksum when a document body changes but counts do not', async () => {
+      const baseline = await captureDomains()
+      const changed = await captureDomains({
+        readers: readers({
+          readFlatCredentials: async () => complete({
+            count: 3,
+            studentIds: ['1', '2', '3'],
+            duplicateLoginIds: 0,
+            duplicateStudentIds: 0,
+            noncanonicalLoginIds: 0,
+            anomalies: [],
+            // Same count, same paths, same update times — one body differs.
+            sourceEntries: sourceEntries('credentials', 3, [
+              undefined,
+              { documentHash: 'a'.repeat(64) },
+            ]),
+          }),
+        }),
+      })
+
+      assert.notEqual(
+        baseline.domainChecksums.legacySourceState,
+        changed.domainChecksums.legacySourceState,
+        'a changed document body must change the domain checksum',
+      )
+      assert.notEqual(baseline.preflightManifestId, changed.preflightManifestId)
+    })
+
+    it('changes the domain checksum when only an update time changes', async () => {
+      const baseline = await captureDomains()
+      const changed = await captureDomains({
+        readers: readers({
+          readFlatCredentials: async () => complete({
+            count: 3,
+            studentIds: ['1', '2', '3'],
+            duplicateLoginIds: 0,
+            duplicateStudentIds: 0,
+            noncanonicalLoginIds: 0,
+            anomalies: [],
+            sourceEntries: sourceEntries('credentials', 3, [
+              { updateTime: '2026-07-26T23:59:59.999Z' },
+            ]),
+          }),
+        }),
+      })
+      assert.notEqual(
+        baseline.domainChecksums.legacySourceState,
+        changed.domainChecksums.legacySourceState,
+        'a same-shape rewrite must still be detected',
+      )
+    })
+
+    it('is independent of reader iteration order', async () => {
+      const forward = sourceEntries('credentials', 3)
+      const baseline = await captureDomains()
+      const reversed = await captureDomains({
+        readers: readers({
+          readFlatCredentials: async () => complete({
+            count: 3,
+            studentIds: ['1', '2', '3'],
+            duplicateLoginIds: 0,
+            duplicateStudentIds: 0,
+            noncanonicalLoginIds: 0,
+            anomalies: [],
+            sourceEntries: [...forward].reverse(),
+          }),
+        }),
+      })
+      assert.equal(
+        baseline.domainChecksums.legacySourceState,
+        reversed.domainChecksums.legacySourceState,
+        'the same documents in a different order must hash identically',
+      )
+    })
+
+    it('retains no raw path, and no entry field beyond the hashed schema', async () => {
+      const captured = await captureDomains()
+      const serialized = JSON.stringify(captured)
+
+      // A raw path like classrooms/x/studentCredentials/ada.smith embeds student
+      // identity; only its hash may be retained.
+      assert.ok(!serialized.includes('studentCredentials/'), 'no raw path may appear')
+      assert.ok(!/"path"\s*:/.test(serialized), 'no raw path field may appear')
+
+      const summary = captured.domainChecksums.legacySourceState
+      assert.match(summary, /^[0-9a-f]{64}$/)
+    })
+
+    it('records document counts alongside the digests for audit visibility', async () => {
+      const captured = await captureDomains()
+      assert.equal(typeof captured.observations.counts.flatCredentials, 'number')
+    })
+
+    it('rejects a source entry that is malformed or carries extra fields', async () => {
+      const cases = [
+        ['not an array', 'nope'],
+        ['a missing array', undefined],
+        ['a non-object entry', ['x']],
+        ['a bad pathHash', [{ pathHash: 'short', updateTime: '2026-07-26T12:00:00.000Z', documentHash: 'a'.repeat(64) }]],
+        ['a bad documentHash', [{ pathHash: 'a'.repeat(64), updateTime: '2026-07-26T12:00:00.000Z', documentHash: 'NOTHEX' }]],
+        ['a non-canonical updateTime', [{ pathHash: 'a'.repeat(64), updateTime: '2026-07-26 12:00:00', documentHash: 'b'.repeat(64) }]],
+        ['a missing updateTime', [{ pathHash: 'a'.repeat(64), documentHash: 'b'.repeat(64) }]],
+        // The route by which raw material would reach the manifest.
+        ['an extra field', [{ pathHash: 'a'.repeat(64), updateTime: '2026-07-26T12:00:00.000Z', documentHash: 'b'.repeat(64), path: 'classrooms/x/studentCredentials/ada' }]],
+        ['a duplicate path', [
+          { pathHash: 'a'.repeat(64), updateTime: '2026-07-26T12:00:00.000Z', documentHash: 'b'.repeat(64) },
+          { pathHash: 'a'.repeat(64), updateTime: '2026-07-26T12:00:00.000Z', documentHash: 'c'.repeat(64) },
+        ]],
+      ]
+
+      for (const [label, entries] of cases) {
+        await assertAborts(
+          {
+            readers: readers({
+              readFoundation: async () => complete({
+                present: false, anomalies: [], sourceEntries: entries,
+              }),
+            }),
+          },
+          PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+          `${label} must abort`,
+        )
+      }
+    })
+
+    it('aborts when a declared count disagrees with the hashed evidence', async () => {
+      // A count reported independently of the documents actually hashed would let
+      // the manifest's counts and digests describe different sets of documents.
+      await assertAborts(
+        {
+          readers: readers({
+            readFlatCredentials: async () => complete({
+              count: 99,
+              studentIds: ['1', '2', '3'],
+              duplicateLoginIds: 0,
+              duplicateStudentIds: 0,
+              noncanonicalLoginIds: 0,
+              anomalies: [],
+              sourceEntries: sourceEntries('credentials', 3),
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'an unsubstantiated count must abort',
+      )
+      await assertAborts(
+        {
+          readers: readers({
+            readFlatAuthLogs: async () => complete({
+              count: 12,
+              studentIds: ['1'],
+              anomalies: [],
+              sourceEntries: sourceEntries('authLogs', 11),
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'an auth-log count mismatch must abort',
+      )
+    })
+
+    it('evidences destination absence rather than asserting a bare zero', async () => {
+      const captured = await captureDomains()
+      assert.match(captured.domainChecksums.destinationAbsence, /^[0-9a-f]{64}$/)
+      // A destination reader that reported zero counts but refused to say what it
+      // examined is not evidence of absence.
+      await assertAborts(
+        {
+          readers: readers({
+            readDestinationPaths: async () => complete({
+              counts: { scopedCredentials: 0, scopedLogs: 0, classroomStudents: 0 },
+              studentIds: [],
+            }),
+          }),
+        },
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'destination absence without evidence must abort',
+      )
+    })
+  })
+
+  describe('raw authorization-artifact binding', () => {
+    it('binds the digest of the authorization file bytes, not a field subset', async () => {
+      let captured
+      await run({
+        persistManifest: async (manifest) => { captured = manifest; return echo(manifest) },
+      })
+
+      // The domain must be exactly the pre-parse digest the entrypoint computed —
+      // the artifact's raw bytes, carried through untouched.
+      assert.equal(
+        captured.domainChecksums.authorizationArtifact,
+        hashDomain({ sha256: AUTHORIZATION_SHA }),
+      )
+    })
+
+    it('changes the domain when a field the preflight never interprets changes', async () => {
+      // A reconstruction from selected fields left projectId, teacherUid,
+      // credentialProvenance, notBefore and notAfter out of the checksum, so
+      // altering provenance or expiry changed nothing. Two different artifact
+      // bytes must produce two different domains.
+      let first
+      await run({
+        persistManifest: async (manifest) => { first = manifest; return echo(manifest) },
+      })
+      let second
+      await run({
+        authorizationSha256: 'b'.repeat(64),
+        persistManifest: async (manifest) => { second = manifest; return echo(manifest) },
+      })
+      assert.notEqual(
+        first.domainChecksums.authorizationArtifact,
+        second.domainChecksums.authorizationArtifact,
+      )
+      assert.notEqual(first.preflightManifestId, second.preflightManifestId)
+    })
+
+    it('requires the raw digest and rejects a non-digest', async () => {
+      for (const authorizationSha256 of [
+        undefined, null, '', 'short', 'A'.repeat(64), 'g'.repeat(64), 42,
+      ]) {
+        await assertAborts(
+          { authorizationSha256 },
+          PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+          `digest ${String(authorizationSha256)} must be refused`,
+        )
+      }
     })
   })
 
@@ -954,7 +1286,7 @@ describe('Phase 3 production preflight', () => {
     it('records only counts, classifications, and hashes', async () => {
       let captured
       await run({
-        persistManifest: async (manifest) => { captured = manifest; return {} },
+        persistManifest: async (manifest) => { captured = manifest; return echo(manifest) },
       })
 
       const serialized = JSON.stringify(captured)
@@ -971,12 +1303,9 @@ describe('Phase 3 production preflight', () => {
     it('binds the expectations checksum into its own domain', async () => {
       let captured
       await run({
-        persistManifest: async (manifest) => { captured = manifest; return {} },
+        persistManifest: async (manifest) => { captured = manifest; return echo(manifest) },
       })
-      const other = await run({
-        expectationsSha256: EXPECTATIONS_SHA,
-        persistManifest: async () => ({}),
-      })
+      const other = await run({ expectationsSha256: EXPECTATIONS_SHA })
       assert.match(captured.domainChecksums.expectationsArtifact, /^[0-9a-f]{64}$/)
       assert.equal(other.outcome, 'succeeded')
     })

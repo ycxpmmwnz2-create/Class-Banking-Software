@@ -17,7 +17,7 @@
 // observation is genuine.
 
 import assert from 'node:assert/strict'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -45,6 +45,17 @@ const { runPreflightMain, PREFLIGHT_EXIT_CODES, parsePreflightArguments } =
 // the same convention functions/phase2/seedRehearsal.js established.
 const { PREFLIGHT_ABORT_CATEGORIES, createReadOnlyAdminHandles } = await import(
   '../../functions/phase3/productionPreflight.js'
+)
+// The real persister and the real state directory — this suite installs an actual
+// manifest and then removes only its own, per the amended retention policy.
+const {
+  PRODUCTION_STATE_DIRECTORY,
+  persistProductionManifest,
+  readProductionManifest,
+  resolveManifestPath,
+} = await import('../../functions/phase3/productionManifest.js')
+const { serializeCanonicalState } = await import(
+  '../../functions/phase2/canonicalState.js'
 )
 
 // MUST be the single demo project Commit 2's allowlist permits. Widening
@@ -135,6 +146,50 @@ function injectedDeploymentReaders() {
 }
 
 /**
+ * Secret-bearing values this suite seeds into the emulator. Distinctive strings so
+ * a leak into the retained manifest is unambiguous rather than coincidental.
+ */
+const SEEDED_PIN_HASHES = Object.freeze({
+  ada: 'seededpinhash-ada-1f4b9c2e7d5a8306',
+  grace: 'seededpinhash-grace-9c3e6b1a04f7d582',
+})
+
+/**
+ * Strings that must never appear in a retained manifest: the PIN hashes above,
+ * the raw login IDs, and the raw scoped document paths that embed student
+ * identity.
+ */
+function identityBearingSeedStrings() {
+  return [
+    ...Object.values(SEEDED_PIN_HASHES),
+    'studentCredentials/ada',
+    'studentCredentials/grace',
+    'morganBank/classroomData',
+  ]
+}
+
+/**
+ * Builds one per-document evidence entry from a real Firestore snapshot.
+ *
+ * This is the shape a later writer recomputes under the freeze. Note what is and
+ * is not retained: the document's full path is HASHED (a path such as
+ * `classrooms/x/studentCredentials/ada.smith` embeds student identity), the body
+ * is hashed through the Phase 2A canonical encoder so secret-bearing fields enter
+ * the preimage but never the manifest, and `updateTime` is carried exactly so a
+ * same-shape rewrite is still detected.
+ */
+function evidenceEntry(snapshot) {
+  return {
+    pathHash: createHash('sha256')
+      .update(snapshot.ref.path, 'utf8').digest('hex'),
+    updateTime: snapshot.updateTime.toDate().toISOString(),
+    documentHash: createHash('sha256')
+      .update(serializeCanonicalState(snapshot.data() ?? {}), 'utf8')
+      .digest('hex'),
+  }
+}
+
+/**
  * Real Firestore/Auth readers. Every one issues only `get`/`list` operations
  * through the Admin SDK.
  */
@@ -164,6 +219,7 @@ function liveReaders() {
           .map(entry => String(entry.studentId)),
         noncanonicalValueCount: 0,
         anomalies: [],
+        sourceEntries: snapshot.exists ? [evidenceEntry(snapshot)] : [],
       }
     },
 
@@ -181,6 +237,9 @@ function liveReaders() {
           id => !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(id),
         ).length,
         anomalies: [],
+        // Credential bodies carry PIN hashes. They enter the hash preimage in
+        // memory; only the digest is retained.
+        sourceEntries: snapshot.docs.map(evidenceEntry),
       }
     },
 
@@ -193,13 +252,14 @@ function liveReaders() {
           .filter(doc => doc.data().studentId != null)
           .map(doc => String(doc.data().studentId)),
         anomalies: [],
+        sourceEntries: snapshot.docs.map(evidenceEntry),
       }
     },
 
     readFoundation: async () => {
       const teacherSnapshot = await firestore.doc(`teachers/${TEACHER_UID}`).get()
       if (!teacherSnapshot.exists) {
-        return { complete: true, present: false, anomalies: [] }
+        return { complete: true, present: false, anomalies: [], sourceEntries: [] }
       }
       const teacher = teacherSnapshot.data()
       const classroomSnapshot = await firestore
@@ -213,6 +273,10 @@ function liveReaders() {
         teacherStatus: teacher.status,
         classroomId: teacher.classroomId,
         anomalies: [],
+        sourceEntries: [
+          evidenceEntry(teacherSnapshot),
+          ...(classroomSnapshot.exists ? [evidenceEntry(classroomSnapshot)] : []),
+        ],
       }
     },
 
@@ -228,6 +292,7 @@ function liveReaders() {
       let scopedCredentials = 0
       let classroomStudents = 0
       const studentIds = []
+      const sourceEntries = []
       for (const classroomRef of classroomRefs) {
         const credentials = await classroomRef
           .collection('studentCredentials').get()
@@ -235,11 +300,18 @@ function liveReaders() {
         const students = await classroomRef.collection('students').get()
         classroomStudents += students.size
         studentIds.push(...students.docs.map(doc => doc.id))
+        // Evidence of what was examined. Absence is asserted with digests of the
+        // scoped paths actually enumerated, not a bare zero.
+        sourceEntries.push(
+          ...credentials.docs.map(evidenceEntry),
+          ...students.docs.map(evidenceEntry),
+        )
       }
       return {
         complete: true,
         counts: { scopedCredentials, classroomStudents, scopedLogs: 0 },
         studentIds,
+        sourceEntries,
       }
     },
 
@@ -250,6 +322,24 @@ function liveReaders() {
         uidCollisions: 0,
         incompatibleUsers: 0,
         examinedUserCount: listed.users.length,
+        // Auth users have no Firestore updateTime, so the evidence is built from
+        // Auth metadata. The UID and email are hashed, never retained: an email is
+        // directly identifying.
+        sourceEntries: listed.users.map(user => ({
+          pathHash: createHash('sha256')
+            .update(`auth/users/${user.uid}`, 'utf8').digest('hex'),
+          updateTime: new Date(
+            user.metadata.lastRefreshTime ?? user.metadata.creationTime,
+          ).toISOString(),
+          documentHash: createHash('sha256')
+            .update(serializeCanonicalState({
+              uid: user.uid,
+              disabled: user.disabled,
+              providers: user.providerData.map(entry => entry.providerId).sort(),
+              emailPresent: typeof user.email === 'string',
+            }), 'utf8')
+            .digest('hex'),
+        })),
       }
     },
   }
@@ -313,11 +403,16 @@ before(async () => {
     loginHistory: [{ id: 200, studentId: 2, result: 'success' }],
     settings: { reasons: ['Quick Cash'] },
   })
+  // pinHash values are seeded deliberately: they are exactly the secret-bearing
+  // field that must enter the document hash preimage in memory and never appear
+  // in the retained manifest. identityBearingSeedStrings() asserts that.
   await firestore.doc('studentCredentials/ada').set({
     loginId: 'ada', studentId: '1', classroomId: 'morgan', active: true,
+    pinHash: SEEDED_PIN_HASHES.ada,
   })
   await firestore.doc('studentCredentials/grace').set({
     loginId: 'grace', studentId: '2', classroomId: 'morgan', active: true,
+    pinHash: SEEDED_PIN_HASHES.grace,
   })
   await firestore.collection('studentAuthLogs').add({
     studentId: '1', outcome: 'success',
@@ -431,7 +526,11 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       expectationsSha256: expectationsSha,
     }))
 
+    // REAL persistence through the real persister and the real, non-overridable
+    // state directory. Capturing the manifest instead would leave the atomic
+    // install path unexercised end to end.
     let persistedManifest
+    let installedPath
     const { exitCode, result, error } = await runPreflightMain([
       '--teacher-uid', TEACHER_UID,
       '--authorization-file', authorizationPath,
@@ -441,38 +540,106 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       environment: emulatorEnvironment(),
       readers: liveReaders(),
       logger: { log() {}, error() {} },
-      // The manifest is captured rather than installed, so the suite never
-      // creates an operator manifest in the repository state directory.
       persistManifest: async (manifest) => {
         persistedManifest = manifest
-        return { preflightManifestId: manifest.preflightManifestId }
+        const record = await persistProductionManifest(manifest)
+        installedPath = record.manifestPath
+        createdManifestPaths.push(record.manifestPath)
+        return record
       },
     })
 
-    assert.equal(
-      exitCode,
-      PREFLIGHT_EXIT_CODES.SUCCESS,
-      `preflight should succeed; got ${error?.category ?? ''} ${error?.message ?? ''}`,
-    )
+    try {
+      assert.equal(
+        exitCode,
+        PREFLIGHT_EXIT_CODES.SUCCESS,
+        `preflight should succeed; got ${error?.category ?? ''} ${error?.message ?? ''}`,
+      )
 
-    // Live Firestore observations reached the manifest: three seeded students,
-    // two credentials, and a watermark above the maximum seeded ID (5).
-    assert.equal(result.watermark.observedMaximum, 5)
-    assert.equal(result.watermark.nextStudentNumber, 6)
-    assert.equal(persistedManifest.observations.counts.legacy.students, 3)
-    assert.equal(persistedManifest.observations.counts.flatCredentials, 2)
+      // Live Firestore observations reached the manifest: three seeded students,
+      // two credentials, and a watermark above the maximum seeded ID (5).
+      assert.equal(result.watermark.observedMaximum, 5)
+      assert.equal(result.watermark.nextStudentNumber, 6)
+      assert.equal(persistedManifest.observations.counts.legacy.students, 3)
+      assert.equal(persistedManifest.observations.counts.flatCredentials, 2)
 
-    // Zero remote writes.
-    assert.equal(
-      await snapshotFirestore(),
-      firestoreBefore,
-      'preflight must not modify any Firestore document',
-    )
-    assert.equal(
-      await snapshotAuth(),
-      authBefore,
-      'preflight must not modify any Auth user',
-    )
+      // The manifest is genuinely on disk, canonical, and re-readable by content
+      // address through the real reader.
+      assert.equal(installedPath, resolveManifestPath(result.preflightManifestId))
+      assert.ok(fs.existsSync(installedPath), 'the manifest must be installed on disk')
+      const reread = await readProductionManifest(result.preflightManifestId)
+      assert.equal(reread.preflightChecksum, result.preflightChecksum)
+      assert.equal(
+        fs.readFileSync(installedPath, 'utf8'),
+        serializeCanonicalState(persistedManifest),
+        'the installed bytes must be the exact canonical serialization',
+      )
+
+      // Real per-document hashes of real Firestore documents, with real update
+      // times, reached the domains.
+      assert.match(persistedManifest.domainChecksums.legacySourceState, /^[0-9a-f]{64}$/)
+      assert.match(persistedManifest.domainChecksums.destinationAbsence, /^[0-9a-f]{64}$/)
+
+      // No identity-bearing material is on disk. The seeded PIN hashes and login
+      // IDs entered the hash preimages in memory only.
+      const onDisk = fs.readFileSync(installedPath, 'utf8')
+      for (const forbidden of identityBearingSeedStrings()) {
+        assert.ok(
+          !onDisk.includes(forbidden),
+          `the retained manifest must not contain ${forbidden}`,
+        )
+      }
+
+      // Immutability holds against the real filesystem: a second install of the
+      // same content address is refused rather than silently replacing it.
+      await assert.rejects(
+        () => persistProductionManifest(persistedManifest),
+        rejection => rejection.category === 'manifest-already-exists',
+        'a retained manifest must be immutable',
+      )
+
+      // Zero remote writes.
+      assert.equal(
+        await snapshotFirestore(),
+        firestoreBefore,
+        'preflight must not modify any Firestore document',
+      )
+      assert.equal(
+        await snapshotAuth(),
+        authBefore,
+        'preflight must not modify any Auth user',
+      )
+    } finally {
+      // Cleanup is permitted only for the exact manifest THIS run produced, under
+      // the disposable emulator identity. Every guard is asserted before the
+      // unlink, so a bug in this suite cannot delete an operator's record: the path
+      // must be the canonical one for this run's content address, it must sit
+      // inside the module-anchored state directory, and the manifest must name the
+      // permitted emulator project rather than production.
+      if (installedPath !== undefined) {
+        assert.equal(
+          installedPath,
+          resolveManifestPath(persistedManifest.preflightManifestId),
+          'refusing to delete a non-canonical path',
+        )
+        const directory = PRODUCTION_STATE_DIRECTORY.endsWith(path.sep)
+          ? PRODUCTION_STATE_DIRECTORY
+          : `${PRODUCTION_STATE_DIRECTORY}${path.sep}`
+        assert.ok(
+          installedPath.startsWith(directory) &&
+            path.dirname(installedPath) === path.resolve(PRODUCTION_STATE_DIRECTORY),
+          'refusing to delete outside the canonical state directory',
+        )
+        assert.equal(
+          persistedManifest.projectId,
+          EMULATOR_PROJECT_ID,
+          'refusing to delete a manifest that does not name the emulator project',
+        )
+        assert.notEqual(persistedManifest.projectId, 'morgan-bank')
+        fs.rmSync(installedPath, { force: true })
+        assert.ok(!fs.existsSync(installedPath), 'test-owned manifest must be removed')
+      }
+    }
   })
 
   test('the environment guard rejects a production project against emulators', async () => {
@@ -528,7 +695,10 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       environment: emulatorEnvironment(),
       readers: liveReaders(),
       logger: { log() {}, error() {} },
-      persistManifest: async () => { persisted += 1; return {} },
+      persistManifest: async () => {
+        persisted += 1
+        throw new Error('the persister must not be reached for an aborted preflight')
+      },
     })
 
     assert.equal(exitCode, PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED)
@@ -572,7 +742,10 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       environment: emulatorEnvironment(),
       readers: liveReaders(),
       logger: { log() {}, error() {} },
-      persistManifest: async () => { persisted += 1; return {} },
+      persistManifest: async () => {
+        persisted += 1
+        throw new Error('the persister must not be reached for an aborted preflight')
+      },
     })
 
     assert.equal(exitCode, PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED)
@@ -624,7 +797,10 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       environment: emulatorEnvironment(),
       readers: liveReaders(),
       logger: { log() {}, error() {} },
-      persistManifest: async () => { persisted += 1; return {} },
+      persistManifest: async () => {
+        persisted += 1
+        throw new Error('the persister must not be reached for an aborted preflight')
+      },
     })
     assert.equal(exitCode, PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED)
     assert.equal(persisted, 0)

@@ -352,6 +352,9 @@ export async function runPreflightMain(argv = process.argv.slice(2), dependencie
       expectations,
       credentialSha256,
       expectationsSha256: expectationsArtifact.sha256,
+      // The authorization file's raw bytes, hashed before parsing, so the manifest
+      // binds the whole artifact rather than a reconstruction of selected fields.
+      authorizationSha256: authorizationArtifact.sha256,
       teacherUid: parsed.teacherUid,
       nowMillis: dependencies.nowMillis ?? Date.now(),
       observedAt: dependencies.observedAt ?? new Date().toISOString(),

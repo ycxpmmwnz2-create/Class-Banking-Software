@@ -111,6 +111,7 @@ function isPlainObject(value) {
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
 const CANONICAL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/
 
 /** Hashes an artifact's raw bytes for authorization binding. */
 export function hashArtifactBytes(contents) {
@@ -278,6 +279,139 @@ export function validateReadAuthorization({
   }
 
   return Object.freeze({ ...authorization })
+}
+
+/**
+ * The per-document evidence entry every hashed source must supply.
+ *
+ * This is the shape that makes a domain checksum meaningful. A count-only domain
+ * cannot detect a changed balance, PIN hash, transaction body, or update time, so
+ * a later writer could not prove it is operating on the state that passed
+ * preflight. Each entry instead carries:
+ *
+ *  - `pathHash`  — SHA-256 of the document's full canonical path. The raw path is
+ *                  NEVER retained: a path like
+ *                  `classrooms/x/studentCredentials/ada.smith` embeds student
+ *                  identity, and the manifest must not carry it.
+ *  - `updateTime`— the exact canonical Firestore update time, so a same-shape
+ *                  rewrite is still detected.
+ *  - `documentHash` — SHA-256 over the document's canonically encoded body,
+ *                  computed IN MEMORY by the reader. Secret-bearing values may
+ *                  enter that hash preimage; none of them are retained.
+ *
+ * A later writer recomputes these same three values under the freeze and compares
+ * digests, with no raw credential material ever present in the manifest.
+ */
+const SOURCE_ENTRY_FIELDS = Object.freeze(['pathHash', 'updateTime', 'documentHash'])
+
+/**
+ * Validates and canonically orders one hashed source's entries.
+ *
+ * Sorting is by `pathHash` — a stable, identity-free key. Reader iteration order
+ * must not change the domain checksum, or two runs over identical state would
+ * disagree.
+ */
+export function normalizeSourceEntries(entries, surface) {
+  if (!Array.isArray(entries)) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'A hashed source must supply an array of per-document entries.',
+      { surface },
+    )
+  }
+
+  const normalized = entries.map(entry => {
+    if (!isPlainObject(entry)) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'A source entry is not an object.',
+        { surface },
+      )
+    }
+    const unexpected = Object.keys(entry).filter(
+      key => !SOURCE_ENTRY_FIELDS.includes(key),
+    )
+    if (unexpected.length > 0) {
+      // An extra field is refused rather than dropped: it is the route by which a
+      // raw path, login ID, or credential body would reach the manifest.
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'A source entry carries fields beyond the hashed evidence schema.',
+        { surface, unexpected },
+      )
+    }
+    for (const field of ['pathHash', 'documentHash']) {
+      if (typeof entry[field] !== 'string' || !SHA256_HEX.test(entry[field])) {
+        abort(
+          PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+          'A source entry hash is not a SHA-256 hex digest.',
+          { surface, field },
+        )
+      }
+    }
+    if (typeof entry.updateTime !== 'string' ||
+        !ISO_INSTANT.test(entry.updateTime)) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'A source entry updateTime is not a canonical ISO-8601 UTC instant.',
+        { surface },
+      )
+    }
+    return Object.freeze({
+      pathHash: entry.pathHash,
+      updateTime: entry.updateTime,
+      documentHash: entry.documentHash,
+    })
+  })
+
+  // Two entries for one path means the reader double-counted or paged
+  // incorrectly; the resulting checksum would be order-dependent.
+  const pathHashes = new Set(normalized.map(entry => entry.pathHash))
+  if (pathHashes.size !== normalized.length) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'A hashed source reported the same document path twice.',
+      { surface },
+    )
+  }
+
+  normalized.sort((left, right) => (left.pathHash < right.pathHash ? -1 : 1))
+  return Object.freeze(normalized)
+}
+
+/**
+ * Reduces a source's entries to one digest plus its count.
+ *
+ * The count is retained alongside the digest for cost and audit visibility, per
+ * the Section 9 read-volume requirement — but it is never a substitute for the
+ * digest.
+ */
+export function summarizeHashedSource(entries, surface) {
+  const normalized = normalizeSourceEntries(entries, surface)
+  const preimage = normalized
+    .map(entry => `${entry.pathHash}:${entry.updateTime}:${entry.documentHash}`)
+    .join('\n')
+
+  return Object.freeze({
+    documentCount: normalized.length,
+    entriesHash: createHash('sha256').update(preimage, 'utf8').digest('hex'),
+  })
+}
+
+/**
+ * Summarizes several named sources into one deterministic map.
+ *
+ * Keys are emitted in sorted order so the domain checksum cannot change because a
+ * caller listed sources differently.
+ */
+function hashedSourceSummaries(namedEntries) {
+  const summaries = {}
+  for (const [surface, entries] of [...namedEntries].sort(
+    ([left], [right]) => (left < right ? -1 : 1),
+  )) {
+    summaries[surface] = summarizeHashedSource(entries, surface)
+  }
+  return summaries
 }
 
 /**
@@ -450,6 +584,7 @@ export async function runProductionPreflight({
   expectations,
   credentialSha256,
   expectationsSha256,
+  authorizationSha256,
   teacherUid,
   nowMillis,
   persistManifest,
@@ -457,6 +592,25 @@ export async function runProductionPreflight({
 }) {
   // ---- 1. environment, before anything else ----
   const validatedEnvironment = validateExecutionEnvironment(environment)
+
+  // The raw authorization digest is required, not optional: it is what binds the
+  // manifest to the exact artifact bytes an operator presented.
+  if (!SHA256_HEX.test(String(authorizationSha256))) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+      'The raw authorization-artifact digest is required and must be a SHA-256 hex digest.',
+    )
+  }
+
+  // Persistence is mandatory. The Commit 3 contract is that a SUCCESSFUL preflight
+  // produces a retained authorization record; returning success with nothing on
+  // disk would let a later writer believe a preflight it cannot verify occurred.
+  if (typeof persistManifest !== 'function') {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'A manifest persister is required; a successful preflight must be retained.',
+    )
+  }
 
   if (validatedEnvironment.context !== EXECUTION_CONTEXT.PRODUCTION &&
       validatedEnvironment.context !== EXECUTION_CONTEXT.EMULATOR) {
@@ -692,6 +846,24 @@ export async function runProductionPreflight({
     )
   }
 
+  // A declared count that disagrees with the number of documents actually hashed
+  // means the reader reported a summary it did not substantiate. Checked before
+  // the manifest is built so such a run aborts rather than retaining a record
+  // whose counts and digests describe different sets of documents.
+  for (const [surface, declared, entries] of [
+    ['flatCredentials', credentials.count, credentials.sourceEntries],
+    ['flatAuthLogs', authLogs.count, authLogs.sourceEntries],
+  ]) {
+    const { documentCount } = summarizeHashedSource(entries, surface)
+    if (declared !== documentCount) {
+      abort(
+        PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+        'A declared document count disagrees with the hashed evidence for that source.',
+        { surface, declared, documentCount },
+      )
+    }
+  }
+
   const watermark = deriveStudentIdWatermark({
     roster: legacy.studentIds ?? [],
     credentials: credentials.studentIds ?? [],
@@ -711,23 +883,44 @@ export async function runProductionPreflight({
       gateParameters: deployment.gateParameters,
       activeWriters: [...(activeWriters.writers ?? [])].sort(),
     },
+    // Counts are retained for cost/audit visibility, but the per-source digests
+    // are what make this domain able to detect a changed balance, transaction
+    // body, PIN hash, or update time while counts stay constant.
     legacySourceState: {
       counts: legacy.counts,
       credentialCount: credentials.count,
       authLogCount: authLogs.count,
       noncanonicalValueCount: legacy.noncanonicalValueCount,
+      sources: hashedSourceSummaries([
+        ['legacyClassroom', legacy.sourceEntries],
+        ['flatCredentials', credentials.sourceEntries],
+        ['flatAuthLogs', authLogs.sourceEntries],
+      ]),
     },
     foundationState: {
       present: foundation.present,
       reciprocal: foundation.present === true ? foundation.reciprocal : null,
       teacherStatus: foundation.present === true ? foundation.teacherStatus : null,
       classroomIdPresent: Boolean(foundation.classroomId),
+      sources: hashedSourceSummaries([
+        ['foundation', foundation.sourceEntries],
+      ]),
     },
-    destinationAbsence: { counts: destination.counts ?? {} },
+    // Absence is asserted with evidence, not just a zero. If anything IS present
+    // the run has already aborted; these digests record exactly what was examined.
+    destinationAbsence: {
+      counts: destination.counts ?? {},
+      sources: hashedSourceSummaries([
+        ['destinationPaths', destination.sourceEntries],
+      ]),
+    },
     authCompatibility: {
       uidCollisions: authCompatibility.uidCollisions,
       incompatibleUsers: authCompatibility.incompatibleUsers,
       examinedUserCount: authCompatibility.examinedUserCount,
+      sources: hashedSourceSummaries([
+        ['authUsers', authCompatibility.sourceEntries],
+      ]),
     },
     identityWatermark: {
       observedMaximum: watermark.observedMaximum,
@@ -735,17 +928,13 @@ export async function runProductionPreflight({
       distinctCount: watermark.distinctCount,
     },
     expectationsArtifact: { sha256: expectationsSha256 },
-    authorizationArtifact: {
-      sha256: hashArtifactBytes(
-        JSON.stringify({
-          authorizationId: validatedAuthorization.authorizationId,
-          changeId: validatedAuthorization.changeId,
-          releaseId: validatedAuthorization.releaseId,
-          credentialSha256: validatedAuthorization.credentialSha256,
-          expectationsSha256: validatedAuthorization.expectationsSha256,
-        }),
-      ),
-    },
+    // The digest of the authorization file's RAW BYTES, hashed before parsing.
+    // A reconstruction from selected fields was rejected: it silently excluded
+    // projectId, teacherUid, credentialProvenance, notBefore and notAfter, so
+    // altering the provenance or the expiry left this checksum unchanged. The
+    // pre-parse digest covers the whole artifact, including fields this module
+    // does not itself interpret.
+    authorizationArtifact: { sha256: authorizationSha256 },
   }
 
   // Every declared domain must be populated; a silently absent domain would
@@ -782,9 +971,24 @@ export async function runProductionPreflight({
     },
   })
 
-  const persisted = typeof persistManifest === 'function'
-    ? await persistManifest(manifest)
-    : null
+  const persisted = await persistManifest(manifest)
+
+  // The persister's own report must agree with what was built. A persister that
+  // returned a different content address than the manifest it was handed would
+  // mean the retained record and the reported one are not the same document.
+  if (!isPlainObject(persisted)) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'The manifest persister did not report a retained record.',
+    )
+  }
+  if (persisted.preflightManifestId !== manifest.preflightManifestId ||
+      persisted.preflightChecksum !== manifest.preflightChecksum) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'The retained manifest does not match the manifest this preflight built.',
+    )
+  }
 
   return Object.freeze({
     outcome: 'succeeded',
