@@ -60,6 +60,13 @@ function isPlainObject(value) {
   return prototype === Object.prototype || prototype === null
 }
 
+function isExactUpdateTime(value) {
+  return typeof value?.toMillis === 'function' &&
+    Number.isSafeInteger(value.seconds) && value.seconds >= 0 &&
+    Number.isSafeInteger(value.nanoseconds) &&
+    value.nanoseconds >= 0 && value.nanoseconds <= 999_999_999
+}
+
 function requireOptions(options) {
   if (!isPlainObject(options)) {
     fail(
@@ -106,10 +113,7 @@ function requireOptions(options) {
   ]
   for (const [surface, entry] of timestampSources) {
     const updateTime = entry?.updateTime
-    if (!Number.isSafeInteger(updateTime?.seconds) ||
-        !Number.isInteger(updateTime?.nanoseconds) ||
-        updateTime.nanoseconds < 0 ||
-        updateTime.nanoseconds > 999_999_999) {
+    if (!isExactUpdateTime(updateTime)) {
       fail(
         PRODUCTION_PROJECTION_CATEGORIES.INVALID_ARGUMENTS,
         'Every production source must carry an exact update time.',
@@ -171,7 +175,10 @@ function sortedFrozenEntries(entries) {
     if (left.path > right.path) return 1
     return 0
   })
-  entries.forEach(Object.freeze)
+  entries.forEach(entry => {
+    if (isPlainObject(entry.data)) Object.freeze(entry.data)
+    Object.freeze(entry)
+  })
   return Object.freeze(entries)
 }
 
@@ -242,6 +249,10 @@ function assertCopyOnlyBoundary(projection, sources) {
   for (const destination of projection.scopedCredentials) {
     const source = credentialsByPath.get(destination.sourcePath)
     if (!source || destination.sourcePath !== source.path ||
+        !firestoreValuesEqual(
+          destination.sourceUpdateTime,
+          source.updateTime,
+        ) ||
         !source.path.startsWith(FLAT_CREDENTIAL_PREFIX) ||
         !destination.path.startsWith(expectedCredentialPrefix) ||
         destination.data.classroomId !== projection.classroomId ||
@@ -262,6 +273,10 @@ function assertCopyOnlyBoundary(projection, sources) {
   for (const destination of projection.scopedAuthLogs) {
     const source = authLogsByPath.get(destination.sourcePath)
     if (!source || destination.sourcePath !== source.path ||
+        !firestoreValuesEqual(
+          destination.sourceUpdateTime,
+          source.updateTime,
+        ) ||
         !source.path.startsWith(FLAT_AUTH_LOG_PREFIX) ||
         !destination.path.startsWith(expectedAuthLogPrefix) ||
         Object.hasOwn(destination.data, 'classroomId') ||
@@ -292,6 +307,10 @@ export function buildProductionProjection(rawOptions) {
   const students = destinationEntries(legacy.students)
   const transactions = destinationEntries(legacy.transactions)
   const loginHistory = destinationEntries(legacy.loginHistory)
+  const classroom = Object.freeze({
+    ...legacy.classroom,
+    data: Object.freeze(legacy.classroom.data),
+  })
 
   const scopedCredentials = sortedFrozenEntries(
     credentialResult.projections.map(credential => ({
@@ -321,7 +340,7 @@ export function buildProductionProjection(rawOptions) {
 
   const projection = Object.freeze({
     classroomId: legacy.classroomId,
-    classroom: legacy.classroom,
+    classroom,
     students,
     transactions,
     loginHistory,

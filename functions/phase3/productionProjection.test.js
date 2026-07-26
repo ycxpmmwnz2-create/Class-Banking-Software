@@ -304,6 +304,12 @@ test('retains Phase 2A student, transaction, history, and log semantics', () => 
       Object.hasOwn(entry.data, 'classroomId')),
     false,
   )
+  for (const destination of projection.scopedAuthLogs) {
+    const original = source.studentAuthLogs.find(
+      entry => entry.path === destination.sourcePath,
+    )
+    assert.strictEqual(destination.sourceUpdateTime, original.updateTime)
+  }
 })
 
 test('does not mutate frozen source envelopes or bodies', () => {
@@ -333,6 +339,31 @@ test('does not mutate frozen source envelopes or bodies', () => {
   )
 })
 
+test('freezes every projected top-level document body', () => {
+  const source = fixture()
+  const projection = build(source)
+
+  assert.equal(Object.isFrozen(projection.classroom.data), true)
+  for (const surface of PRODUCTION_PROJECTION_SURFACES) {
+    for (const entry of projection[surface]) {
+      assert.equal(Object.isFrozen(entry.data), true, `${entry.path} data`)
+    }
+  }
+
+  assert.throws(
+    () => {
+      projection.students[0].data.balance = 999
+    },
+    TypeError,
+  )
+
+  assert.equal(Object.isFrozen(source.classroomData.data), false)
+  assert.equal(Object.isFrozen(source.classroomData.data.students[0]), false)
+  assert.equal(Object.isFrozen(source.classroomData.data.transactions[0]), false)
+  assert.equal(Object.isFrozen(source.studentCredentials[0].data), false)
+  assert.equal(Object.isFrozen(source.studentAuthLogs[0].data), false)
+})
+
 test('rejects unknown arguments and malformed collection inputs', () => {
   const source = fixture()
   assert.throws(
@@ -351,6 +382,12 @@ test('rejects unknown arguments and malformed collection inputs', () => {
 
 test('requires exact source update times before carrying preconditions', () => {
   const cases = [
+    source => {
+      source.classroomData.updateTime = {
+        seconds: 1_780_000_000,
+        nanoseconds: 987_654_321,
+      }
+    },
     source => {
       source.classroomData.updateTime = '2026-07-26T00:00:00.000Z'
     },

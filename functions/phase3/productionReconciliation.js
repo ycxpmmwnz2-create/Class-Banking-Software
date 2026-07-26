@@ -114,8 +114,9 @@ function requireSource(source) {
 }
 
 function isExactUpdateTime(value) {
-  return Number.isSafeInteger(value?.seconds) &&
-    Number.isInteger(value?.nanoseconds) &&
+  return typeof value?.toMillis === 'function' &&
+    Number.isSafeInteger(value.seconds) && value.seconds >= 0 &&
+    Number.isSafeInteger(value.nanoseconds) &&
     value.nanoseconds >= 0 && value.nanoseconds <= 999_999_999
 }
 
@@ -160,6 +161,16 @@ function requireFoundation(foundation) {
     fail(
       PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
       'Foundation envelope paths do not match their declared identities.',
+      { argument: 'foundation' },
+    )
+  }
+  if (teacher.data.uid !== value.teacherUid ||
+      teacher.data.classroomId !== value.classroomId ||
+      teacher.data.status !== 'active' ||
+      classroom.data.ownerUid !== value.teacherUid) {
+    fail(
+      PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
+      'Foundation documents do not form an active reciprocal identity.',
       { argument: 'foundation' },
     )
   }
@@ -329,10 +340,17 @@ function compareStudents(source, expected, actual, issues) {
   compareCollection(expected, actual, 'students', issues)
   const allowed = [...STUDENT_DESTINATION_FIELDS].sort()
   let actualBalance = 0
+  let balancesAreFiniteNumbers = true
   for (const entry of actual) {
     if (!isPlainObject(entry?.data)) continue
     if (!firestoreValuesEqual(Object.keys(entry.data).sort(), allowed)) {
       issue(issues, 'students', 'forbidden-or-unlisted-key', entry.path)
+    }
+    if (typeof entry.data.balance !== 'number' ||
+        !Number.isFinite(entry.data.balance)) {
+      balancesAreFiniteNumbers = false
+      issue(issues, 'students', 'invalid-balance', entry.path)
+      continue
     }
     actualBalance += entry.data.balance
   }
@@ -340,7 +358,8 @@ function compareStudents(source, expected, actual, issues) {
     (total, student) => total + Number(student.balance || 0),
     0,
   )
-  if (!Object.is(actualBalance, sourceBalance)) {
+  if (!balancesAreFiniteNumbers || !Number.isFinite(sourceBalance) ||
+      !Object.is(actualBalance, sourceBalance)) {
     issue(issues, 'students', 'total-balance-mismatch')
   }
 }
@@ -391,12 +410,13 @@ function compareWriteRun(state, issues) {
   const {
     source,
     foundation,
+    projection,
     expectedProjection,
     actual,
   } = state
 
-  if (expectedProjection.classroomId !== foundation.classroomId ||
-      expectedProjection.classroom.path !== foundation.classroom.path) {
+  if (projection.classroomId !== foundation.classroomId ||
+      projection.classroom?.path !== foundation.classroom.path) {
     issue(issues, 'foundation', 'classroom-identity-mismatch')
   }
 

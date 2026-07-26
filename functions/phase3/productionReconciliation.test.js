@@ -251,6 +251,33 @@ test('write-run verifies every destination and immutable source surface', () => 
   })
 })
 
+test('write-run attributes caller projection identity drift to foundation', () => {
+  const state = scenario()
+  state.projection = {
+    ...state.projection,
+    classroomId: 'different-classroom',
+    classroom: {
+      ...state.projection.classroom,
+      path: 'classrooms/different-classroom',
+    },
+  }
+
+  assert.throws(
+    () => writeRun(state),
+    assertReconciliationError(
+      PRODUCTION_RECONCILIATION_CATEGORIES.WRITE_RUN_MISMATCH,
+      error => {
+        assert.ok(error.details.issues.some(issue =>
+          issue.area === 'projection' &&
+          issue.reason === 'projection-does-not-match-source'))
+        assert.ok(error.details.issues.some(issue =>
+          issue.area === 'foundation' &&
+          issue.reason === 'classroom-identity-mismatch'))
+      },
+    ),
+  )
+})
+
 test('write-run blocks missing, extra, and divergent destination documents', () => {
   const cases = [
     {
@@ -313,6 +340,40 @@ test('write-run blocks missing, extra, and divergent destination documents', () 
       ),
     )
   }
+})
+
+test('write-run blocks duplicate and path-only destination divergence', () => {
+  const duplicate = scenario()
+  duplicate.actual.transactions[1] = clone(duplicate.actual.transactions[0])
+  assert.throws(
+    () => writeRun(duplicate),
+    assertReconciliationError(
+      PRODUCTION_RECONCILIATION_CATEGORIES.WRITE_RUN_MISMATCH,
+      error => {
+        assert.ok(error.details.issues.some(issue =>
+          issue.area === 'transactions' &&
+          issue.reason === 'duplicate-document-path'))
+        assert.ok(error.details.issues.some(issue =>
+          issue.area === 'transactions' &&
+          issue.reason === 'document-path-set-mismatch'))
+      },
+    ),
+  )
+
+  const pathDrift = scenario()
+  pathDrift.actual.loginHistory[0].path =
+    `classrooms/${CLASSROOM_ID}/loginHistory/different`
+  assert.throws(
+    () => writeRun(pathDrift),
+    assertReconciliationError(
+      PRODUCTION_RECONCILIATION_CATEGORIES.WRITE_RUN_MISMATCH,
+      error => {
+        assert.ok(error.details.issues.some(issue =>
+          issue.area === 'login-history' &&
+          issue.reason === 'document-path-set-mismatch'))
+      },
+    ),
+  )
 })
 
 test('flat credential bodies and exact update times are immutable', () => {
@@ -474,6 +535,24 @@ test('student allowlist and total balance are checked independently', () => {
       },
     ),
   )
+
+  for (const invalidBalance of ['12', Number.NaN]) {
+    const invalid = scenario()
+    invalid.actual.students[0].data.balance = invalidBalance
+    assert.throws(
+      () => writeRun(invalid),
+      assertReconciliationError(
+        PRODUCTION_RECONCILIATION_CATEGORIES.WRITE_RUN_MISMATCH,
+        error => {
+          assert.ok(error.details.issues.some(issue =>
+            issue.area === 'students' && issue.reason === 'invalid-balance'))
+          assert.ok(error.details.issues.some(issue =>
+            issue.area === 'students' &&
+            issue.reason === 'total-balance-mismatch'))
+        },
+      ),
+    )
+  }
 })
 
 test('source collection reconciliation is path-based rather than order-based', () => {
@@ -525,6 +604,43 @@ test('malformed and unknown option surfaces fail before comparison', () => {
       PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
     ),
   )
+
+  const plainMapFoundationTime = scenario()
+  plainMapFoundationTime.foundation.teacher.updateTime = {
+    seconds: 1_780_000_010,
+    nanoseconds: 10,
+  }
+  assert.throws(
+    () => writeRun(plainMapFoundationTime),
+    assertReconciliationError(
+      PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
+    ),
+  )
+
+  const foundationDrifts = [
+    state => {
+      state.foundation.teacher.data.uid = 'different-teacher'
+    },
+    state => {
+      state.foundation.teacher.data.classroomId = 'different-classroom'
+    },
+    state => {
+      state.foundation.teacher.data.status = 'disabled'
+    },
+    state => {
+      state.foundation.classroom.data.ownerUid = 'different-teacher'
+    },
+  ]
+  for (const mutate of foundationDrifts) {
+    const invalidFoundation = scenario()
+    mutate(invalidFoundation)
+    assert.throws(
+      () => writeRun(invalidFoundation),
+      assertReconciliationError(
+        PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
+      ),
+    )
+  }
 })
 
 test('module remains local and exposes no reader, writer, or manifest surface', async () => {
