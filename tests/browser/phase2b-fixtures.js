@@ -34,12 +34,24 @@ export const PROJECT_ID = "demo-morgan-bank-phase2b-server-test";
 
 export const PROPOSED_RULES_PATH = "firestore.phase2b.proposed.rules";
 
+// resolveTeacherTenantV2 REQUIRES classrooms/{id}.studentLoginCode to be a
+// nonempty, canonical, display-formatted code
+// (functions/phase2b/teacherOnboarding.js:645-665). Without it the resolver
+// throws failed-precondition, the client lands in DENIED_OR_INCONSISTENT, no
+// cache envelope is written, and every downstream assertion fails on its
+// precondition. That was the single root cause of the 19 browser failures.
+//
+// Canonical form: exactly 8 characters from the unambiguous alphabet
+// (2-9 A-Z minus I/O/0/1), displayed as XXXX-XXXX.
 export const TENANT_A = {
   label: "A",
   email: "teacher-a@example.test",
   password: "test-password-a",
   classroomId: "classroom-a",
   studentId: "student-a-1",
+  sharedStudentId: "shared-student-a",
+  classroomName: "Room A Morning",
+  studentLoginCode: "AAAA-2345",
   classroomMarker: "A_ONLY_CLASSROOM",
   studentMarker: "A_ONLY_STUDENT",
   transactionMarker: "A-only-transaction",
@@ -53,6 +65,9 @@ export const TENANT_B = {
   password: "test-password-b",
   classroomId: "classroom-b",
   studentId: "student-b-1",
+  sharedStudentId: "shared-student-b",
+  classroomName: "Room B Afternoon",
+  studentLoginCode: "BBBB-6789",
   classroomMarker: "B_ONLY_CLASSROOM",
   studentMarker: "B_ONLY_STUDENT",
   transactionMarker: "B-only-transaction",
@@ -60,9 +75,33 @@ export const TENANT_B = {
   authLogMarker: "B-only-authlog"
 };
 
-// Both tenants use the SAME normalized login id, proving scoping is per
-// classroom rather than per globally-unique credential.
-export const SHARED_LOGIN_ID = "room1-student1";
+// The syncStudentProfiles trigger derives the scoped credential's loginId from
+// the STUDENT'S NAME. Each tenant therefore has a second student with this same
+// name, making the same normalized loginId arise naturally in both classrooms.
+// The primary students keep distinct visible names so the browser can positively
+// prove which tenant rendered instead of relying on an unused document field.
+//
+// Credentials are deliberately NOT hand-seeded: pre-seeding one races the real
+// trigger and makes it throw "Credential already exists for this student; a
+// recycled studentId is rejected."
+export const SHARED_STUDENT_NAME = "Shared Name";
+export const SHARED_LOGIN_ID = "shared-name";
+
+// The injected load adapter returns the V2 data contract directly; unlike the
+// legacy load path, the application does not run it through normalizeData().
+// Keep every renderer-required setting present so the harness proves real data
+// behavior instead of crashing on a deliberately partial fixture.
+const COMPLETE_SETTINGS = {
+  studentRequestsEnabled: true,
+  studentAddRequestsEnabled: true,
+  studentSubtractRequestsEnabled: true,
+  purchaseRequestsEnabled: true,
+  requireTeacherApproval: true,
+  reasons: ["Weekly payday", "Class job", "Other"],
+  purchaseCategories: ["School Store", "Other"],
+  addMoneyCategories: ["Homework", "Teacher's Choice"],
+  subtractMoneyCategories: ["Rent", "Teacher's Choice"]
+};
 
 const AUTH_BASE = `http://${EMULATOR_HOST}:${AUTH_PORT}/identitytoolkit.googleapis.com/v1`;
 // The Auth emulator accepts any non-empty API key.
@@ -108,40 +147,64 @@ export async function createUser(email, password) {
   return out.localId;
 }
 
-// Mints a student custom token via the Auth emulator, so the student-session
-// test uses a REAL student identity with role/classroomId/studentId claims
-// rather than a teacher session mislabeled as a student.
-export async function createStudentToken({ classroomId, studentId }) {
-  const uid = `student-auth-${classroomId}-${studentId}`;
-  // The Auth emulator honors custom claims supplied at account creation.
+// Creates a real Auth-emulator account and applies student custom claims, so
+// the student-session test does not use a teacher session mislabeled as one.
+export async function createStudentIdentity({ classroomId, studentId }) {
+  const requestedUid = `student-auth-${classroomId}-${studentId}`;
   const res = await fetch(`${AUTH_BASE}/accounts:signUp?key=${API_KEY}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      localId: uid,
-      email: `${uid}@example.test`,
+      email: `${requestedUid}@example.test`,
       password: "test-password-student",
       returnSecureToken: true
     })
   });
-  if (!res.ok && res.status !== 400) {
+  if (!res.ok) {
     throw new Error(`fixtures: student signUp -> ${res.status}: ${await res.text()}`);
+  }
+  // Patch the identity allocated by the emulator, never the email label.
+  const created = await res.json();
+  const uid = created.localId;
+  if (typeof uid !== "string" || !uid) {
+    throw new Error("fixtures: student signUp returned no localId");
   }
 
   // Apply the student claims the app's V2 path reads.
   const claims = { role: "student", classroomId, studentId };
   const upd = await fetch(
-    `http://${EMULATOR_HOST}:${AUTH_PORT}/emulator/v1/projects/${PROJECT_ID}/accounts/${uid}`,
+    `${AUTH_BASE}/projects/${PROJECT_ID}/accounts:update?key=${API_KEY}`,
     {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ customAttributes: JSON.stringify(claims) })
+      method: "POST",
+      headers: {
+        Authorization: "Bearer owner",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        localId: uid,
+        customAttributes: JSON.stringify(claims)
+      })
     }
   );
   if (!upd.ok) {
     throw new Error(`fixtures: student claims -> ${upd.status}: ${await upd.text()}`);
   }
-  return { uid, email: `${uid}@example.test`, password: "test-password-student", claims };
+  return {
+    uid,
+    email: `${requestedUid}@example.test`,
+    password: "test-password-student",
+    claims
+  };
+}
+
+export async function readClassroomWithRulesDisabled(classroomId) {
+  const te = await env();
+  let result = null;
+  await te.withSecurityRulesDisabled(async (context) => {
+    const snap = await context.firestore().doc(`classrooms/${classroomId}`).get();
+    if (snap.exists) result = snap.data();
+  });
+  return result;
 }
 
 async function seedTenantDocs(db, tenant, uid) {
@@ -154,16 +217,32 @@ async function seedTenantDocs(db, tenant, uid) {
 
   await db.doc(`classrooms/${tenant.classroomId}`).set({
     ownerUid: uid,
+    name: tenant.classroomName,
+    // Required by resolveTeacherTenantV2 in canonical display form.
+    studentLoginCode: tenant.studentLoginCode,
+    schemaVersion: 1,
     marker: tenant.classroomMarker,
-    settings: { label: tenant.classroomMarker }
+    settings: { ...COMPLETE_SETTINGS, label: tenant.classroomMarker }
+  });
+
+  // The login-code index the server maintains for code -> classroom lookup.
+  await db.doc(`classroomLoginCodes/${tenant.studentLoginCode.replace("-", "")}`).set({
+    classroomId: tenant.classroomId,
+    ownerUid: uid
   });
 
   await db.doc(`classrooms/${tenant.classroomId}/students/${tenant.studentId}`).set({
     id: tenant.studentId,
     name: tenant.studentMarker,
     balance: 10,
-    frozen: false,
-    loginId: SHARED_LOGIN_ID
+    frozen: false
+  });
+
+  await db.doc(`classrooms/${tenant.classroomId}/students/${tenant.sharedStudentId}`).set({
+    id: tenant.sharedStudentId,
+    name: SHARED_STUDENT_NAME,
+    balance: 5,
+    frozen: false
   });
 
   await db.doc(`classrooms/${tenant.classroomId}/transactions/tx-1`).set({
@@ -183,10 +262,46 @@ async function seedTenantDocs(db, tenant, uid) {
     studentId: tenant.studentId
   });
 
-  await db.doc(`classrooms/${tenant.classroomId}/studentCredentials/${SHARED_LOGIN_ID}`).set({
-    hash: `${tenant.label}-credential-hash`,
-    studentId: tenant.studentId
-  });
+  // Scoped credentials are deliberately NOT seeded here. The real
+  // syncStudentProfiles trigger creates them from the student write above, and a
+  // hand-seeded document races it into
+  // "Credential already exists for this student; a recycled studentId is
+  // rejected." Callers that need the credential must await
+  // waitForScopedCredential() below.
+}
+
+// Waits for the syncStudentProfiles trigger to finish creating the scoped
+// credential, so the fixture depends on observable trigger completion rather
+// than a sleep. Read with rules disabled, since the proposed rules deny scoped
+// credentials to every client identity — including the active owner.
+export async function waitForScopedCredential(
+  tenant,
+  studentId = tenant.studentId,
+  { timeoutMs = 20000 } = {}
+) {
+  const te = await env();
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    let found = null;
+    await te.withSecurityRulesDisabled(async (context) => {
+      const snap = await context
+        .firestore()
+        .collection(`classrooms/${tenant.classroomId}/studentCredentials`)
+        .where("studentId", "==", studentId)
+        .limit(1)
+        .get();
+      if (!snap.empty) found = { id: snap.docs[0].id, ...snap.docs[0].data() };
+    });
+    if (found) return found;
+
+    if (Date.now() > deadline) {
+      throw new Error(
+        `fixtures: scoped credential for ${tenant.classroomId}/${studentId} was not created within ${timeoutMs}ms`
+      );
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
 }
 
 export async function seedAll() {
@@ -233,6 +348,9 @@ export async function seedAll() {
     });
     await db.doc("classrooms/classroom-owner-mismatch").set({
       ownerUid: "somebody-else-entirely",
+      name: "Owner Mismatch Room",
+      studentLoginCode: "CCCC-2345",
+      schemaVersion: 1,
       marker: "OWNER_MISMATCH_CLASSROOM"
     });
 
@@ -254,12 +372,32 @@ export async function seedAll() {
     await db.doc("classroomLoginCodes/code-1").set({ classroomId: TENANT_A.classroomId });
     await db.doc("studentLoginThrottle/throttle-1").set({ count: 1 });
     await db.doc("studentAuthUnresolvedLogs/unresolved-1").set({ marker: "unresolved" });
-    await db.doc(`studentCredentials/${SHARED_LOGIN_ID}`).set({ hash: "flat" });
+    await db.doc(`studentCredentials/${SHARED_LOGIN_ID}`).set({ hash: "flat-legacy" });
   });
+
+  // All four student-create triggers must settle before the browser starts.
+  // This prevents trigger work from racing the suite or fixture cleanup.
+  const [aPrimaryCredential, aSharedCredential, bPrimaryCredential, bSharedCredential] =
+    await Promise.all([
+      waitForScopedCredential(TENANT_A, TENANT_A.studentId),
+      waitForScopedCredential(TENANT_A, TENANT_A.sharedStudentId),
+      waitForScopedCredential(TENANT_B, TENANT_B.studentId),
+      waitForScopedCredential(TENANT_B, TENANT_B.sharedStudentId)
+    ]);
+
+  if (aSharedCredential.id !== SHARED_LOGIN_ID || bSharedCredential.id !== SHARED_LOGIN_ID) {
+    throw new Error("fixtures: shared-name students did not receive the expected scoped loginId");
+  }
 
   return {
     aUid,
     bUid,
+    credentials: {
+      aPrimaryCredential,
+      aSharedCredential,
+      bPrimaryCredential,
+      bSharedCredential
+    },
     negative: {
       disabledUid,
       missingDocUid,

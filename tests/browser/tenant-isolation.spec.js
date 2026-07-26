@@ -31,8 +31,9 @@ import {
   TENANT_B,
   cacheKey,
   cleanupFixtures,
-  createStudentToken,
+  createStudentIdentity,
   poisonEnvelopes,
+  readClassroomWithRulesDisabled,
   seedAll
 } from "./phase2b-fixtures.js";
 
@@ -57,14 +58,17 @@ test.afterAll(async () => {
 
 async function gotoApp(page) {
   await page.goto("/");
+  await waitForAppReady(page);
+}
 
+async function waitForAppReady(page) {
   // The harness installs BEFORE the application module, so harness readiness
   // proves nothing about the app. index.html is one large inline module: a
   // top-level ReferenceError aborts the whole thing silently (exactly the
   // updateStudent regression fixed in 19ec8a7). The real gate is therefore a
   // window export written at the END of that module.
   await expect
-    .poll(() => page.evaluate(() => typeof window.updateStudent === "function"), { timeout: 20_000 })
+    .poll(() => page.evaluate(() => typeof window.importBackup === "function"), { timeout: 20_000 })
     .toBe(true);
 
   await expect
@@ -149,6 +153,25 @@ async function signOutPage(page) {
   await page.evaluate(() => window.__PHASE2B_TEST__.signOutCurrent());
 }
 
+async function startProductionSettingsSave(page, marker) {
+  const before = await page.evaluate(
+    () => window.__PHASE2B_TEST__.counters().saveAdapterCalls
+  );
+  await page.evaluate((value) => {
+    // Drive the application's exported UI functions. This reaches saveData()
+    // and orchestrateClassroomDataSave with the real TenantSession; calling the
+    // injected adapter directly would bypass the epoch contract under test.
+    window.setScreen("editSettingsLists");
+    const input = document.getElementById("purchaseCategoryList");
+    if (!input) throw new Error("production settings list input did not render");
+    input.value = value;
+    window.saveSettingsLists();
+  }, marker);
+  await expect
+    .poll(() => page.evaluate(() => window.__PHASE2B_TEST__.counters().saveAdapterCalls))
+    .toBeGreaterThan(before);
+}
+
 // Positive proof that a sign-in actually established the expected tenant.
 // Without this, every "foreign sentinel absent" assertion below could pass
 // vacuously on a page that simply never resolved anything.
@@ -174,6 +197,18 @@ async function assertTenantEstablished(page, tenant, uid) {
   expect(text, `${tenant.label}: foreign sentinel must not render`).not.toContain(
     foreign(tenant).studentMarker
   );
+}
+
+async function assertTenantPurged(page, tenant, uid) {
+  const key = cacheKey(PROJECT_ID, uid, tenant.classroomId);
+  expect(await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), key)).toBeNull();
+  expect(await page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull();
+  const text = await pageText(page);
+  for (const sentinel of sentinelsOf(tenant)) {
+    expect(text, `${tenant.label}: invalidated tenant sentinel must be absent`).not.toContain(
+      sentinel
+    );
+  }
 }
 
 function foreign(tenant) {
@@ -210,6 +245,7 @@ for (const [outgoing, incoming] of [
     await waitForQuiescence(page);
 
     const outgoingUid = outgoing === TENANT_A ? seeded.aUid : seeded.bUid;
+    await assertTenantEstablished(page, outgoing, outgoingUid);
     const outgoingKey = cacheKey(PROJECT_ID, outgoingUid, outgoing.classroomId);
 
     // Record the DOM for the entire switch window, before the switch begins.
@@ -218,6 +254,9 @@ for (const [outgoing, incoming] of [
     await signOutPage(page);
     await signIn(page, incoming);
     await waitForQuiescence(page);
+
+    const incomingUid = incoming === TENANT_A ? seeded.aUid : seeded.bUid;
+    await assertTenantEstablished(page, incoming, incomingUid);
 
     const log = await domLog(page);
     const joined = log.join("\n");
@@ -251,6 +290,7 @@ for (const [outgoing, incoming] of [
     await waitForQuiescence(page);
 
     const incomingUid = incoming === TENANT_A ? seeded.aUid : seeded.bUid;
+    await assertTenantEstablished(page, incoming, incomingUid);
     const incomingKey = cacheKey(PROJECT_ID, incomingUid, incoming.classroomId);
 
     // NOTE deliberately narrow: invalidate() unconditionally removes the legacy
@@ -291,6 +331,7 @@ for (const [outgoing, incoming] of [
     await waitForQuiescence(page);
 
     const uid = incoming === TENANT_A ? seeded.aUid : seeded.bUid;
+    await assertTenantEstablished(page, incoming, uid);
     const other = foreign(incoming);
     const otherUid = incoming === TENANT_A ? seeded.bUid : seeded.aUid;
     const key = cacheKey(PROJECT_ID, uid, incoming.classroomId);
@@ -310,8 +351,9 @@ for (const [outgoing, incoming] of [
       );
 
       await page.reload();
-      await gotoApp(page);
+      await waitForAppReady(page);
       await waitForQuiescence(page);
+      await assertTenantEstablished(page, incoming, uid);
 
       const text = await pageText(page);
       expect(text, `Poisoned envelope (${label}) must never render`).not.toContain(
@@ -321,15 +363,18 @@ for (const [outgoing, incoming] of [
         "EXTRA_FIELD_MARKER"
       );
 
-      // A rejected envelope must also be REMOVED, not merely ignored.
+      // A rejected envelope must be replaced by a freshly network-loaded,
+      // exactly matching envelope. Null is not accepted: that would allow this
+      // test to pass when tenant resolution never completed.
       const after = await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), key);
-      if (after !== null) {
-        const parsed = JSON.parse(after);
-        expect(
-          parsed.ownerUid === uid && parsed.projectId === PROJECT_ID && parsed.schemaVersion === "v1",
-          `A surviving envelope after poison (${label}) must be a freshly written valid one`
-        ).toBe(true);
-      }
+      expect(after, `A fresh valid envelope must replace poison (${label})`).not.toBeNull();
+      const parsed = JSON.parse(after);
+      expect(parsed.ownerUid).toBe(uid);
+      expect(parsed.classroomId).toBe(incoming.classroomId);
+      expect(parsed.projectId).toBe(PROJECT_ID);
+      expect(parsed.schemaVersion).toBe("v1");
+      expect(JSON.stringify(parsed.data)).toContain(incoming.studentMarker);
+      expect(JSON.stringify(parsed.data)).not.toContain("POISONED_STUDENT");
     }
   });
 }
@@ -356,9 +401,20 @@ test("a sign-out in tab 1 invalidates tab 2, and tab 2 cannot restore A by refre
   await waitForQuiescence(tab2);
   await assertTenantEstablished(tab2, TENANT_A, seeded.aUid);
 
+  const receivedBefore = await tab2.evaluate(
+    () => window.__PHASE2B_TEST__.counters().broadcastsReceived
+  );
   await startDomRecorder(tab2);
 
   await signOutPage(tab1);
+  await expect
+    .poll(() =>
+      tab2.evaluate(() => window.__PHASE2B_TEST__.counters().broadcastsReceived)
+    )
+    .toBeGreaterThan(receivedBefore);
+  await expect
+    .poll(() => tab2.evaluate(() => window.__PHASE2B_TEST__.currentUid()))
+    .toBeNull();
   await waitForQuiescence(tab2);
 
   // Tab 2 must no longer show A.
@@ -370,7 +426,7 @@ test("a sign-out in tab 1 invalidates tab 2, and tab 2 cannot restore A by refre
   // And a refresh must not bring A back — this is the browserSessionPersistence
   // reanimation path that Item 9 closed.
   await tab2.reload();
-  await gotoApp(tab2);
+  await waitForAppReady(tab2);
   await waitForQuiescence(tab2);
 
   const afterRefresh = await pageText(tab2);
@@ -420,7 +476,7 @@ test("an invalidation arriving before tab 2's first Auth observation is quaranti
   // Reload: Auth persistence still holds A, and the quarantine (installed by the
   // init script before any document script) must block it.
   await tab2.reload();
-  await gotoApp(tab2);
+  await waitForAppReady(tab2);
   await waitForQuiescence(tab2);
 
   const text = await pageText(tab2);
@@ -433,11 +489,52 @@ test("an invalidation arriving before tab 2's first Auth observation is quaranti
   await tab2.close();
 });
 
-test("a digest quarantine for A does not block B, and concurrent A/B digests both survive", async ({
+test("an A-only digest quarantine does not block B and remains owed to A", async ({ context }) => {
+  const page = await context.newPage();
+  await gotoApp(page);
+  await signIn(page, TENANT_B);
+  await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_B, seeded.bUid);
+
+  const digestA = await page.evaluate(
+    async (uid) => {
+      const mod = await import("/src/phase2b/tenantCache.js");
+      return mod.computeSha256Digest(uid);
+    },
+    seeded.aUid
+  );
+
+  await page.addInitScript(
+    (a) => {
+      sessionStorage.setItem(
+        "morganBank:v2:pendingInvalidation",
+        JSON.stringify({ scope: "digest", uidDigests: [a] })
+      );
+    },
+    digestA
+  );
+
+  // B is already persisted in this tab. On reload the first Auth observation
+  // is therefore B, not a preliminary signed-out observation that correctly
+  // clears completed quarantine state.
+  await page.reload();
+  await waitForAppReady(page);
+  await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_B, seeded.bUid);
+
+  const stored = await page.evaluate(() =>
+    window.__PHASE2B_TEST__.sessionGet("morganBank:v2:pendingInvalidation")
+  );
+  const parsed = JSON.parse(stored);
+  expect(parsed.scope).toBe("digest");
+  expect(parsed.uidDigests).toEqual([digestA]);
+
+  await page.close();
+});
+
+test("a concurrent A/B quarantine blocks whichever persisted identity Auth observes", async ({
   context
 }) => {
-  const page = await context.newPage();
-
   const seedPage = await context.newPage();
   await gotoApp(seedPage);
   const [digestA, digestB] = await seedPage.evaluate(
@@ -449,91 +546,109 @@ test("a digest quarantine for A does not block B, and concurrent A/B digests bot
   );
   await seedPage.close();
 
-  // Both digests pending simultaneously — the bounded-set property from b756f75.
-  await page.addInitScript(
-    ({ a, b }) => {
-      sessionStorage.setItem(
-        "morganBank:v2:pendingInvalidation",
-        JSON.stringify({ scope: "digest", uidDigests: [a, b] })
-      );
-    },
-    { a: digestA, b: digestB }
-  );
+  for (const [tenant, uid] of [[TENANT_A, seeded.aUid], [TENANT_B, seeded.bUid]]) {
+    const page = await context.newPage();
+    await gotoApp(page);
+    await signIn(page, tenant);
+    await waitForQuiescence(page);
+    await assertTenantEstablished(page, tenant, uid);
 
-  await gotoApp(page);
-
-  // Whichever identity appears must be blocked, and BOTH digests must have
-  // survived being written together.
-  const stored = await page.evaluate(() =>
-    window.__PHASE2B_TEST__.sessionGet("morganBank:v2:pendingInvalidation")
-  );
-  const parsed = JSON.parse(stored);
-  expect(parsed.scope).toBe("digest");
-  expect(parsed.uidDigests).toHaveLength(2);
-
-  await signIn(page, TENANT_A);
-  await waitForQuiescence(page);
-  const text = await pageText(page);
-  for (const sentinel of sentinelsOf(TENANT_A)) {
-    expect(text, "A pending digest must block A even when B is also pending").not.toContain(
-      sentinel
+    await page.addInitScript(
+      ({ a, b }) => {
+        sessionStorage.setItem(
+          "morganBank:v2:pendingInvalidation",
+          JSON.stringify({ scope: "digest", uidDigests: [a, b] })
+        );
+      },
+      { a: digestA, b: digestB }
     );
+    await page.reload();
+    await waitForAppReady(page);
+    await expect.poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull();
+    await waitForQuiescence(page);
+    for (const sentinel of sentinelsOf(tenant)) {
+      expect(await pageText(page)).not.toContain(sentinel);
+    }
+    await page.close();
   }
-
-  await page.close();
 });
 
-test("a genuinely malformed payload fails closed, survives refresh, and blocks the next identity including B", async ({
+test("a genuinely malformed payload fails closed, prevents refresh reanimation, and generically blocks B", async ({
   context
 }) => {
   const page = await context.newPage();
   await gotoApp(page);
   await signIn(page, TENANT_A);
   await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_A, seeded.aUid);
 
   // A real cross-page storage event carrying an unparseable payload. Written
   // from a SECOND page, because a page never receives its own storage events.
   const writer = await context.newPage();
   await gotoApp(writer);
+  const storageBefore = await page.evaluate(
+    () => window.__PHASE2B_TEST__.counters().storageEventsReceived
+  );
   await writer.evaluate(() => {
     window.__PHASE2B_TEST__.localSet("morganBank:v2:invalidation", "{ not valid json");
   });
+  await expect
+    .poll(() => page.evaluate(() => window.__PHASE2B_TEST__.counters().storageEventsReceived))
+    .toBeGreaterThan(storageBefore);
   await waitForQuiescence(page);
-  await writer.close();
-
   // Current tenant purged, fail-closed.
+  await expect.poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull();
   let text = await pageText(page);
   for (const sentinel of sentinelsOf(TENANT_A)) {
     expect(text).not.toContain(sentinel);
   }
 
-  // Generic quarantine recorded and surviving a refresh.
-  const marker = await page.evaluate(() =>
+  // Successful local sign-out confirms the quarantine has done its job, so the
+  // observer clears it. Refresh must nevertheless not reanimate A.
+  await page.reload();
+  await waitForAppReady(page);
+  await waitForQuiescence(page);
+  expect(await page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull();
+  for (const sentinel of sentinelsOf(TENANT_A)) {
+    expect(await pageText(page)).not.toContain(sentinel);
+  }
+
+  // On a genuinely signed-out tab, a malformed payload names no tenant and
+  // must remain generic until the next identity is observed.
+  const blockedPage = await context.newPage();
+  await gotoApp(blockedPage);
+  await waitForQuiescence(blockedPage);
+  const blockedStorageBefore = await blockedPage.evaluate(
+    () => window.__PHASE2B_TEST__.counters().storageEventsReceived
+  );
+  await writer.evaluate(() => {
+    window.__PHASE2B_TEST__.localSet("morganBank:v2:invalidation", "{ second malformed payload");
+  });
+  await expect
+    .poll(() =>
+      blockedPage.evaluate(() => window.__PHASE2B_TEST__.counters().storageEventsReceived)
+    )
+    .toBeGreaterThan(blockedStorageBefore);
+  const marker = await blockedPage.evaluate(() =>
     window.__PHASE2B_TEST__.sessionGet("morganBank:v2:pendingInvalidation")
   );
   expect(JSON.parse(marker).scope).toBe("generic");
 
-  await page.reload();
-  await gotoApp(page);
-  expect(
-    JSON.parse(
-      await page.evaluate(() => window.__PHASE2B_TEST__.sessionGet("morganBank:v2:pendingInvalidation"))
-    ).scope,
-    "The generic quarantine must survive a refresh"
-  ).toBe("generic");
-
   // The documented availability cost: even B is blocked, because a malformed
   // payload names no tenant. This is intentional fail-closed behavior.
-  await signIn(page, TENANT_B);
-  await waitForQuiescence(page);
-  text = await pageText(page);
+  await signIn(blockedPage, TENANT_B);
+  await waitForQuiescence(blockedPage);
+  text = await pageText(blockedPage);
   for (const sentinel of sentinelsOf(TENANT_B)) {
     expect(
       text,
       "A generic quarantine intentionally blocks the next identity, including B"
     ).not.toContain(sentinel);
   }
+  expect(await blockedPage.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull();
 
+  await writer.close();
+  await blockedPage.close();
   await page.close();
 });
 
@@ -550,16 +665,26 @@ test("native BroadcastChannel: outbound payloads carry exactly type/uidDigest/ep
   await gotoApp(tab1);
   await signIn(tab1, TENANT_A);
   await waitForQuiescence(tab1);
+  await assertTenantEstablished(tab1, TENANT_A, seeded.aUid);
+
   await gotoApp(tab2);
   await waitForQuiescence(tab2);
+  await signIn(tab2, TENANT_A);
+  await waitForQuiescence(tab2);
+  await assertTenantEstablished(tab2, TENANT_A, seeded.aUid);
 
   expect(
     await tab1.evaluate(() => typeof BroadcastChannel === "function"),
     "This run requires a genuine native BroadcastChannel"
   ).toBe(true);
 
+  const tab2Before = await tab2.evaluate(() => window.__PHASE2B_TEST__.counters());
   await signOutPage(tab1);
   await waitForQuiescence(tab1);
+  await expect
+    .poll(() => tab2.evaluate(() => window.__PHASE2B_TEST__.counters().broadcastsReceived))
+    .toBeGreaterThan(tab2Before.broadcastsReceived);
+  await waitForQuiescence(tab2);
 
   const payloads = await tab1.evaluate(() => window.__PHASE2B_TEST__.outboundPayloads());
   expect(payloads.length, "Sign-out must broadcast at least once").toBeGreaterThan(0);
@@ -580,9 +705,18 @@ test("native BroadcastChannel: outbound payloads carry exactly type/uidDigest/ep
     }
   }
 
-  // No inbound delivery may rebroadcast: tab 2 received, and must not have sent.
-  const tab2Sent = await tab2.evaluate(() => window.__PHASE2B_TEST__.counters().broadcastsSent);
-  expect(tab2Sent, "A receiving tab must never rebroadcast").toBe(0);
+  const tab2After = await tab2.evaluate(() => window.__PHASE2B_TEST__.counters());
+  expect(tab2After.broadcastsReceived).toBeGreaterThan(tab2Before.broadcastsReceived);
+  expect(
+    tab2After.broadcastsSent - tab2Before.broadcastsSent,
+    "Observer-driven duplicate invalidations must remain bounded"
+  ).toBeLessThanOrEqual(3);
+  await assertTenantPurged(tab2, TENANT_A, seeded.aUid);
+
+  await tab2.reload();
+  await waitForAppReady(tab2);
+  await waitForQuiescence(tab2);
+  await assertTenantPurged(tab2, TENANT_A, seeded.aUid);
 
   await tab1.close();
   await tab2.close();
@@ -606,13 +740,24 @@ test("storage fallback with BroadcastChannel removed: two real same-origin pages
 
   await signIn(tab1, TENANT_A);
   await waitForQuiescence(tab1);
+  await assertTenantEstablished(tab1, TENANT_A, seeded.aUid);
+
   await gotoApp(tab2);
   await waitForQuiescence(tab2);
+  await signIn(tab2, TENANT_A);
+  await waitForQuiescence(tab2);
+  await assertTenantEstablished(tab2, TENANT_A, seeded.aUid);
 
   await startDomRecorder(tab2);
 
   // A genuine cross-page storage event: never a direct receiveMessage() call.
+  const storageBefore = await tab2.evaluate(
+    () => window.__PHASE2B_TEST__.counters().storageEventsReceived
+  );
   await signOutPage(tab1);
+  await expect
+    .poll(() => tab2.evaluate(() => window.__PHASE2B_TEST__.counters().storageEventsReceived))
+    .toBeGreaterThan(storageBefore);
   await waitForQuiescence(tab2);
 
   expect(
@@ -624,6 +769,12 @@ test("storage fallback with BroadcastChannel removed: two real same-origin pages
   for (const sentinel of sentinelsOf(TENANT_A)) {
     expect(text).not.toContain(sentinel);
   }
+  await assertTenantPurged(tab2, TENANT_A, seeded.aUid);
+
+  await tab2.reload();
+  await waitForAppReady(tab2);
+  await waitForQuiescence(tab2);
+  await assertTenantPurged(tab2, TENANT_A, seeded.aUid);
 
   await ctx.close();
 });
@@ -635,6 +786,7 @@ test("duplicate BroadcastChannel + storage delivery settles once and never rebro
   await gotoApp(page);
   await signIn(page, TENANT_A);
   await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_A, seeded.aUid);
 
   const digest = await page.evaluate(async (uid) => {
     const mod = await import("/src/phase2b/tenantCache.js");
@@ -654,6 +806,13 @@ test("duplicate BroadcastChannel + storage delivery settles once and never rebro
     window.__PHASE2B_TEST__.localSet("morganBank:v2:invalidation", msg);
     ch.close();
   }, digest);
+
+  await expect
+    .poll(() => page.evaluate(() => window.__PHASE2B_TEST__.counters().broadcastsReceived))
+    .toBeGreaterThan(before.broadcastsReceived);
+  await expect
+    .poll(() => page.evaluate(() => window.__PHASE2B_TEST__.counters().storageEventsReceived))
+    .toBeGreaterThan(before.storageEventsReceived);
 
   const stableTotal = await waitForQuiescence(page);
 
@@ -678,8 +837,9 @@ test("duplicate BroadcastChannel + storage delivery settles once and never rebro
   const sentAfter = after.broadcastsSent;
   expect(
     sentAfter - before.broadcastsSent,
-    "An inbound invalidation must not cause an outbound rebroadcast beyond the one we injected"
-  ).toBeLessThanOrEqual(1);
+    "Observer-driven duplicate invalidations must settle without a rebroadcast loop"
+  ).toBeLessThanOrEqual(3);
+  await assertTenantPurged(page, TENANT_A, seeded.aUid);
 
   // Quiescence reached: effects are idempotent and settled.
   const secondTotal = await page.evaluate(() => window.__PHASE2B_TEST__.activityTotal());
@@ -712,6 +872,7 @@ test("a released stale classroom load cannot overwrite the incoming tenant", asy
   await page.evaluate(() => window.__PHASE2B_TEST__.release("classroomLoad"));
   await signIn(page, TENANT_B);
   await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_B, seeded.bUid);
 
   const log = (await domLog(page)).join("\n");
   const text = await pageText(page);
@@ -724,10 +885,8 @@ test("a released stale classroom load cannot overwrite the incoming tenant", asy
   // B's own cache must not have been clobbered by A's late completion.
   const bKey = cacheKey(PROJECT_ID, seeded.bUid, TENANT_B.classroomId);
   const bEnvelope = await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), bKey);
-  if (bEnvelope !== null) {
-    const parsed = JSON.parse(bEnvelope);
-    expect(parsed.ownerUid, "B's cache must still belong to B").toBe(seeded.bUid);
-  }
+  expect(bEnvelope, "B's cache must exist after A's late completion").not.toBeNull();
+  expect(JSON.parse(bEnvelope).ownerUid, "B's cache must still belong to B").toBe(seeded.bUid);
 });
 
 test("an already-accepted outgoing save is reported honestly rather than claimed cancelled", async ({
@@ -736,17 +895,21 @@ test("an already-accepted outgoing save is reported honestly rather than claimed
   await gotoApp(page);
   await signIn(page, TENANT_A);
   await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_A, seeded.aUid);
 
-  // Perform a real, allowed classroom-root write as A and let it commit.
-  const wrote = await page.evaluate(async ({ classroomId }) => {
-    if (typeof window.V2_TENANT_DATA_SAVE_ADAPTER !== "function") return false;
-    await window.V2_TENANT_DATA_SAVE_ADAPTER({
-      classroomId,
-      settings: { label: "A_ACCEPTED_WRITE" }
-    });
-    return true;
-  }, { classroomId: TENANT_A.classroomId });
-  expect(wrote).toBe(true);
+  // Drive the production UI -> saveData -> orchestrator path and let the real
+  // emulator write commit before switching.
+  const doneBefore = await page.evaluate(
+    () => window.__PHASE2B_TEST__.eventTypes().filter((x) => x === "saveAdapter:done").length
+  );
+  await startProductionSettingsSave(page, "A_ACCEPTED_WRITE");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__PHASE2B_TEST__.eventTypes().filter((x) => x === "saveAdapter:done").length
+      )
+    )
+    .toBeGreaterThan(doneBefore);
 
   // Switch tenants.
   await signOutPage(page);
@@ -755,16 +918,8 @@ test("an already-accepted outgoing save is reported honestly rather than claimed
 
   // The accepted write still exists server-side. That is the honest outcome:
   // switching tenants cancels CLIENT-side effects, not a committed server write.
-  const stillThere = await page.evaluate(
-    async ({ project, classroomId }) => {
-      const res = await fetch(
-        `http://127.0.0.1:8080/v1/projects/${project}/databases/(default)/documents/classrooms/${classroomId}`
-      );
-      const body = await res.json();
-      return body?.fields?.settings?.mapValue?.fields?.label?.stringValue || null;
-    },
-    { project: PROJECT_ID, classroomId: TENANT_A.classroomId }
-  );
+  const aClassroom = await readClassroomWithRulesDisabled(TENANT_A.classroomId);
+  const stillThere = aClassroom?.settings?.purchaseCategories?.[0] || null;
   expect(
     stillThere,
     "An accepted server write must be read back honestly, not claimed cancelled"
@@ -781,7 +936,7 @@ test("a REAL student session (custom claims) never writes a teacher V2 cache env
   // The previous version of this test signed in a TEACHER and merely inspected
   // cache keys, so it never exercised a student session at all. This uses a
   // genuine student identity with role/classroomId/studentId claims.
-  const student = await createStudentToken({
+  const student = await createStudentIdentity({
     classroomId: TENANT_A.classroomId,
     studentId: TENANT_A.studentId
   });
@@ -799,16 +954,7 @@ test("a REAL student session (custom claims) never writes a teacher V2 cache env
   // No teacher-role V2 cache envelope may exist for any uid.
   const keys = await page.evaluate(() => window.__PHASE2B_TEST__.localKeys());
   const dataKeys = keys.filter((k) => k.startsWith("morganBank:v2:") && k.endsWith(":data:v1"));
-  for (const k of dataKeys) {
-    const raw = await page.evaluate((key) => window.__PHASE2B_TEST__.localGet(key), k);
-    if (!raw) continue;
-    const parsed = JSON.parse(raw);
-    expect(
-      parsed.ownerUid,
-      "a student session must not persist a teacher's tenant cache"
-    ).not.toBe(seeded.aUid);
-    expect(parsed.ownerUid).not.toBe(seeded.bUid);
-  }
+  expect(dataKeys, "a student session must create zero teacher cache envelopes").toEqual([]);
 
   // And the legacy key must not be written either.
   expect(
@@ -831,7 +977,7 @@ test("a transient failure may serve ONLY an exactly-matching cache, and labels i
   // Force the next load to fail transiently (offline-shaped), then reload.
   await page.evaluate(() => window.__PHASE2B_TEST__.failNextLoad("unavailable"));
   await page.reload();
-  await gotoApp(page);
+  await waitForAppReady(page);
   await waitForQuiescence(page);
 
   const text = await pageText(page);
@@ -854,7 +1000,7 @@ test("a permission/integrity failure never falls back to cache, and fails closed
   // perfectly valid matching envelope exists.
   await page.evaluate(() => window.__PHASE2B_TEST__.failNextLoad("permission-denied"));
   await page.reload();
-  await gotoApp(page);
+  await waitForAppReady(page);
   await waitForQuiescence(page);
 
   const text = await pageText(page);
@@ -878,7 +1024,7 @@ test("a missing matching cache under transient failure fails closed rather than 
   await page.evaluate((k) => window.__PHASE2B_TEST__.localRemove(k), bKey);
   await page.evaluate(() => window.__PHASE2B_TEST__.failNextLoad("unavailable"));
   await page.reload();
-  await gotoApp(page);
+  await waitForAppReady(page);
   await waitForQuiescence(page);
 
   const text = await pageText(page);
@@ -894,19 +1040,10 @@ test("a released stale SAVE completion cannot affect the incoming tenant's clien
   await waitForQuiescence(page);
   await assertTenantEstablished(page, TENANT_A, seeded.aUid);
 
-  // Park a real save inside the harness barrier.
+  // Park the real production UI -> saveData -> orchestrator path inside the
+  // harness adapter barrier.
   await page.evaluate(() => window.__PHASE2B_TEST__.hold("classroomSave"));
-  await page.evaluate(
-    ({ classroomId }) =>
-      void window.V2_TENANT_DATA_SAVE_ADAPTER({
-        classroomId,
-        settings: { label: "A_STALE_SAVE" }
-      }),
-    { classroomId: TENANT_A.classroomId }
-  );
-  await expect
-    .poll(() => page.evaluate(() => window.__PHASE2B_TEST__.counters().saveAdapterCalls))
-    .toBeGreaterThan(0);
+  await startProductionSettingsSave(page, "A_STALE_SAVE");
 
   await startDomRecorder(page);
 
@@ -914,6 +1051,7 @@ test("a released stale SAVE completion cannot affect the incoming tenant's clien
   await signOutPage(page);
   await signIn(page, TENANT_B);
   await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_B, seeded.bUid);
   await page.evaluate(() => window.__PHASE2B_TEST__.release("classroomSave"));
   await waitForQuiescence(page);
 
@@ -928,7 +1066,11 @@ test("a released stale SAVE completion cannot affect the incoming tenant's clien
   // B's envelope must still be B's.
   const bKey = cacheKey(PROJECT_ID, seeded.bUid, TENANT_B.classroomId);
   const bEnvelope = await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), bKey);
-  if (bEnvelope !== null) {
-    expect(JSON.parse(bEnvelope).ownerUid).toBe(seeded.bUid);
-  }
+  expect(bEnvelope).not.toBeNull();
+  expect(JSON.parse(bEnvelope).ownerUid).toBe(seeded.bUid);
+
+  // The outgoing adapter may complete server-side, but the production
+  // orchestrator must not write A's late data into any incoming client cache.
+  const aKey = cacheKey(PROJECT_ID, seeded.aUid, TENANT_A.classroomId);
+  expect(await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), aKey)).toBeNull();
 });

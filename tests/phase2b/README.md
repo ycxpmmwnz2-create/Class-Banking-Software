@@ -20,52 +20,43 @@ A Java runtime is required for the Firestore/Auth emulators and is installed
 
 | Command | Result |
 | --- | --- |
-| `npm run test:phase2b:client` | 83/83 |
+| `npm run test:phase2b:client` | 84/84 |
 | `npm run test:phase2b:build-contract` | 6/6 |
 | `npm run test:phase2b:rules` | 29/29 |
 | `npm run test:rules` (hardened) | 36/36 |
-| `npm run test:phase2b:server` | 9/9 gate-off + gate-on |
-| `npm run test:phase2b:browser` | **1/20 — see below, not green** |
+| `npm run test:phase2b:server` | 9/9 gate-off + 56/56 gate-on |
+| `npm run test:phase2b:browser` | 21/21 |
 | `npm run lint` | clean |
-| `npm run build` | clean, both gate states |
+| `npm run build` | clean, default-off 450.95 kB; gate-on 467.56 kB |
 
 The proposed-rules contract has teeth: reintroducing the recursive
 `classrooms/{document=**}` allow into the fixture fails **16 of 29** tests,
 including the scoped-credential lockout assertions the plan calls out.
 
-### `npm run test:phase2b:browser` — RUNS, NOT YET GREEN
+### `npm run test:phase2b:browser` — GREEN
 
-The suite now executes end-to-end against real emulators (auth, functions,
-firestore) with a real Chromium. **1 of 20 passes**: `switching A -> B purges
-outgoing state with no intermediate outgoing render`. That one passing test is
-genuine — it drives a real account switch and asserts no outgoing sentinel
-appears in any MutationObserver record.
+The suite executes end-to-end against real Auth, Functions, and Firestore
+emulators with Chromium. It uses two independently owned teacher/classroom
+fixtures and proves both A→B and B→A switching, refresh/cache poisoning,
+sign-out reanimation prevention, pre-Auth quarantine behavior, malformed
+messages, native BroadcastChannel delivery, the storage-event fallback,
+duplicate-delivery boundedness, stale load/save completions, real student
+custom claims, and transient versus permission-failure cache behavior.
 
-The remaining 19 are blocked by one unresolved fixture problem, not 19 separate
-problems. Teacher resolution ends in `DENIED_OR_INCONSISTENT` ("Access Denied or
-Tenant Inconsistent"), so no cache envelope is written and every downstream
-assertion fails on its precondition.
+Every tenant test first proves the expected tenant positively (UID, classroom,
+cache envelope, own sentinel rendered, foreign sentinel absent), so an
+unresolved or blank page cannot make a denial assertion pass vacuously. Refresh
+tests wait on the actual reload instead of navigating a second time. Epoch and
+transport effects are asserted as monotonic and bounded rather than exact +1,
+because the known observer/orchestrator invalidation paths may legitimately
+advance more than once.
 
-What is established about it so far:
-
-* Auth is correct — the signed-in UID matches the seeded teacher UID, and
-  `authAppName()` is `phase2b-emulator-app`, so this is not the bare-`getAuth()`
-  bug.
-* `resolveTeacherTenantV2` is loaded, invoked, and *returns successfully*
-  (~46ms, no thrown error in the Functions log).
-* The V2 gate is on for this project via
-  `functions/.env.demo-morgan-bank-phase2b-server-test`.
-* Collection names and status values in the fixture match
-  `functions/phase1/firestoreSchema.js` exactly (`teachers`, `classrooms`,
-  `active`), and the resolver's required `teachers/{uid}.uid == uid` field is
-  seeded.
-
-So the resolver returns a state the client does not treat as `active` — most
-likely `onboarding-required` (whose UI text matches what renders) rather than a
-hard error. Confirming that requires capturing the callable's actual return
-value, which is the next step. It is a **fixture/seeding** issue inside Item 10's
-test scope, not evidence of a production defect, and it must not be reported as
-either passing or as a product bug until the return value is read.
+The fixtures include the canonical classroom login code and index required by
+`resolveTeacherTenantV2`. Scoped credentials are not hand-seeded: the real
+`syncStudentProfilesV2` trigger derives them, and the fixture polls for their
+observable completion. Two same-name students independently produce the same
+`shared-name` login ID in separate classrooms, proving the credential namespace
+is tenant-scoped.
 
 ### Boot regression this work depended on
 

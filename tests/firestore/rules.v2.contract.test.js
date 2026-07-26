@@ -157,6 +157,26 @@ const DIRECTIONS = [
   { name: "B owns, A intrudes", owner: B_UID, room: B_ROOM, student: B_STUDENT, intruder: A_UID, otherRoom: A_ROOM }
 ];
 
+async function assertDeniedDocumentAndCollectionCrud(db, collectionPath, existingId, suffix) {
+  const existing = db.doc(`${collectionPath}/${existingId}`);
+  const forged = db.doc(`${collectionPath}/forged-${suffix}`);
+  await assertFails(existing.get());
+  await assertFails(db.collection(collectionPath).get());
+  await assertFails(forged.set({ tampered: true }));
+  await assertFails(existing.update({ tampered: true }));
+  await assertFails(existing.delete());
+}
+
+async function assertOwnerDocumentAndCollectionCrud(db, collectionPath, existingId, suffix) {
+  const existing = db.doc(`${collectionPath}/${existingId}`);
+  const created = db.doc(`${collectionPath}/owner-created-${suffix}`);
+  await assertSucceeds(existing.get());
+  await assertSucceeds(db.collection(collectionPath).get());
+  await assertSucceeds(created.set({ marker: "created" }));
+  await assertSucceeds(created.update({ marker: "updated" }));
+  await assertSucceeds(created.delete());
+}
+
 describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
   test("the checked-in production firestore.rules is byte-identical to its pinned hash", () => {
     const actual = createHash("sha256").update(readFileSync("firestore.rules")).digest("hex");
@@ -227,6 +247,13 @@ describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
       test("owner reads owned classroom root; the other teacher is denied", async () => {
         await assertSucceeds(teacherCtx(d.owner).doc(`classrooms/${d.room}`).get());
         await assertFails(teacherCtx(d.intruder).doc(`classrooms/${d.room}`).get());
+        await assertFails(
+          teacherCtx(d.intruder).doc(`classrooms/${d.room}`).update({ settings: { theme: "x" } })
+        );
+        await assertFails(teacherCtx(d.intruder).doc(`classrooms/${d.room}`).delete());
+        await assertFails(
+          teacherCtx(d.intruder).doc(`classrooms/forged-${d.room}`).set({ ownerUid: d.intruder })
+        );
       });
 
       test("classroom create and delete are denied even for the owner", async () => {
@@ -260,38 +287,49 @@ describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
         );
       });
 
-      test("owner reads and writes owned students, transactions, and login history; other teacher denied", async () => {
+      test("owner CRUD succeeds and the other teacher is denied every verb on owned subcollections", async () => {
         const own = teacherCtx(d.owner);
         const other = teacherCtx(d.intruder);
 
-        await assertSucceeds(own.doc(`classrooms/${d.room}/students/${d.student}`).get());
-        await assertSucceeds(
-          own.doc(`classrooms/${d.room}/students/${d.student}`).update({ balance: 99 })
-        );
-        await assertFails(other.doc(`classrooms/${d.room}/students/${d.student}`).get());
-        await assertFails(
-          other.doc(`classrooms/${d.room}/students/${d.student}`).update({ balance: 1 })
-        );
-
-        await assertSucceeds(own.collection(`classrooms/${d.room}/transactions`).get());
-        await assertSucceeds(
-          own.doc(`classrooms/${d.room}/transactions/tx-new`).set({ amount: 5 })
-        );
-        await assertFails(other.collection(`classrooms/${d.room}/transactions`).get());
-
-        await assertSucceeds(own.collection(`classrooms/${d.room}/loginHistory`).get());
-        await assertFails(other.collection(`classrooms/${d.room}/loginHistory`).get());
+        const existingTx = d.room === A_ROOM ? "tx-a" : "tx-b";
+        const existingHistory = d.room === A_ROOM ? "h-a" : "h-b";
+        const rows = [
+          [`classrooms/${d.room}/students`, d.student, "student"],
+          [`classrooms/${d.room}/transactions`, existingTx, "transaction"],
+          [`classrooms/${d.room}/loginHistory`, existingHistory, "history"]
+        ];
+        for (const [collectionPath, existingId, suffix] of rows) {
+          await assertOwnerDocumentAndCollectionCrud(own, collectionPath, existingId, suffix);
+          await assertDeniedDocumentAndCollectionCrud(other, collectionPath, existingId, suffix);
+        }
       });
 
       test("owner reads only their scoped auth logs; all client auth-log writes are denied", async () => {
         await assertSucceeds(teacherCtx(d.owner).collection(`studentAuthLogs/${d.room}/logs`).get());
         await assertFails(teacherCtx(d.intruder).collection(`studentAuthLogs/${d.room}/logs`).get());
 
+        const existingLog = d.room === A_ROOM ? "log-a" : "log-b";
+        await assertFails(
+          teacherCtx(d.intruder).doc(`studentAuthLogs/${d.room}/logs/${existingLog}`).get()
+        );
+        await assertFails(
+          teacherCtx(d.intruder).doc(`studentAuthLogs/${d.room}/logs/forged`).set({ marker: "forged" })
+        );
+        await assertFails(
+          teacherCtx(d.intruder).doc(`studentAuthLogs/${d.room}/logs/${existingLog}`).update({ marker: "forged" })
+        );
+        await assertFails(
+          teacherCtx(d.intruder).doc(`studentAuthLogs/${d.room}/logs/${existingLog}`).delete()
+        );
+
         await assertFails(
           teacherCtx(d.owner).doc(`studentAuthLogs/${d.room}/logs/forged`).set({ marker: "forged" })
         );
         await assertFails(
-          teacherCtx(d.owner).doc(`studentAuthLogs/${d.room}/logs/log-a`).delete()
+          teacherCtx(d.owner).doc(`studentAuthLogs/${d.room}/logs/${existingLog}`).update({ marker: "forged" })
+        );
+        await assertFails(
+          teacherCtx(d.owner).doc(`studentAuthLogs/${d.room}/logs/${existingLog}`).delete()
         );
       });
 
@@ -321,24 +359,63 @@ describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
     }
   });
 
-  test("each student reads only their own exact claimed document, and never writes", async () => {
-    const aStudent = studentCtx("auth-a-student", A_ROOM, A_STUDENT);
-    const bStudent = studentCtx("auth-b-student", B_ROOM, B_STUDENT);
+  test("each student reads only their own exact profile; all other tenant CRUD is denied bidirectionally", async () => {
+    const students = [
+      { label: "student-a", db: studentCtx("auth-a-student", A_ROOM, A_STUDENT), room: A_ROOM, student: A_STUDENT },
+      { label: "student-b", db: studentCtx("auth-b-student", B_ROOM, B_STUDENT), room: B_ROOM, student: B_STUDENT }
+    ];
 
-    await assertSucceeds(aStudent.doc(`classrooms/${A_ROOM}/students/${A_STUDENT}`).get());
-    await assertSucceeds(bStudent.doc(`classrooms/${B_ROOM}/students/${B_STUDENT}`).get());
+    for (const identity of students) {
+      const otherRoom = identity.room === A_ROOM ? B_ROOM : A_ROOM;
+      const otherStudent = identity.room === A_ROOM ? B_STUDENT : A_STUDENT;
+      await assertSucceeds(
+        identity.db.doc(`classrooms/${identity.room}/students/${identity.student}`).get()
+      );
+      await assertFails(
+        identity.db.doc(`classrooms/${identity.room}/students/${identity.student}`).update({ balance: 9999 })
+      );
+      await assertFails(
+        identity.db.doc(`classrooms/${identity.room}/students/${identity.student}`).delete()
+      );
+      await assertFails(
+        identity.db.doc(`classrooms/${identity.room}/students/forged-${identity.label}`).set({ name: "forged" })
+      );
+      await assertFails(identity.db.collection(`classrooms/${identity.room}/students`).get());
 
-    // Cross-tenant, despite identical normalized login ids in both classrooms.
-    await assertFails(aStudent.doc(`classrooms/${B_ROOM}/students/${B_STUDENT}`).get());
-    await assertFails(bStudent.doc(`classrooms/${A_ROOM}/students/${A_STUDENT}`).get());
+      await assertDeniedDocumentAndCollectionCrud(
+        identity.db,
+        `classrooms/${otherRoom}/students`,
+        otherStudent,
+        identity.label
+      );
 
-    // Writes always denied.
-    await assertFails(
-      aStudent.doc(`classrooms/${A_ROOM}/students/${A_STUDENT}`).update({ balance: 9999 })
-    );
-
-    // Students may not enumerate their classmates.
-    await assertFails(aStudent.collection(`classrooms/${A_ROOM}/students`).get());
+      for (const room of [A_ROOM, B_ROOM]) {
+        const tx = room === A_ROOM ? "tx-a" : "tx-b";
+        const history = room === A_ROOM ? "h-a" : "h-b";
+        const log = room === A_ROOM ? "log-a" : "log-b";
+        await assertDeniedDocumentAndCollectionCrud(
+          identity.db,
+          `classrooms/${room}/transactions`,
+          tx,
+          `${identity.label}-${room}-tx`
+        );
+        await assertDeniedDocumentAndCollectionCrud(
+          identity.db,
+          `classrooms/${room}/loginHistory`,
+          history,
+          `${identity.label}-${room}-history`
+        );
+        await assertDeniedDocumentAndCollectionCrud(
+          identity.db,
+          `studentAuthLogs/${room}/logs`,
+          log,
+          `${identity.label}-${room}-log`
+        );
+        await assertFails(identity.db.doc(`classrooms/${room}`).get());
+        await assertFails(identity.db.doc(`classrooms/${room}`).update({ settings: {} }));
+        await assertFails(identity.db.doc(`classrooms/${room}`).delete());
+      }
+    }
   });
 
   test("disabled, missing-teacher-doc, missing-classroom, UID mismatch, owner mismatch, and invalid status each deny independently", async () => {
@@ -368,11 +445,24 @@ describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
     await assertFails(teacherCtx(INVALID_STATUS_UID).doc(`classrooms/${A_ROOM}`).get());
   });
 
-  test("unauthenticated access is denied everywhere", async () => {
+  test("unauthenticated access is denied every tenant verb in both classrooms", async () => {
     const anon = testEnv.unauthenticatedContext().firestore();
-    await assertFails(anon.doc(`classrooms/${A_ROOM}`).get());
+    for (const [room, student, tx, history, log] of [
+      [A_ROOM, A_STUDENT, "tx-a", "h-a", "log-a"],
+      [B_ROOM, B_STUDENT, "tx-b", "h-b", "log-b"]
+    ]) {
+      await assertFails(anon.doc(`classrooms/${room}`).get());
+      await assertFails(anon.doc(`classrooms/${room}`).update({ settings: {} }));
+      await assertFails(anon.doc(`classrooms/${room}`).delete());
+      await assertDeniedDocumentAndCollectionCrud(anon, `classrooms/${room}/students`, student, `anon-${room}-student`);
+      await assertDeniedDocumentAndCollectionCrud(anon, `classrooms/${room}/transactions`, tx, `anon-${room}-tx`);
+      await assertDeniedDocumentAndCollectionCrud(anon, `classrooms/${room}/loginHistory`, history, `anon-${room}-history`);
+      await assertDeniedDocumentAndCollectionCrud(anon, `studentAuthLogs/${room}/logs`, log, `anon-${room}-log`);
+    }
+    await assertFails(anon.doc(`classrooms/anonymous-forged`).set({ ownerUid: "anonymous" }));
+    await assertFails(anon.collection("classrooms").get());
     await assertFails(anon.doc(`teachers/${A_UID}`).get());
-    await assertFails(anon.collection(`classrooms/${A_ROOM}/students`).get());
+    await assertFails(anon.collection("teachers").get());
   });
 
   test("server-only collections deny every client identity", async () => {
@@ -383,11 +473,22 @@ describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
       "studentAuthUnresolvedLogs/unresolved-1",
       `studentCredentials/${SHARED_LOGIN_ID}`
     ];
-    for (const uid of [A_UID, B_UID]) {
-      const ctx = teacherCtx(uid);
+    const identities = [
+      ["teacher-a", teacherCtx(A_UID)],
+      ["teacher-b", teacherCtx(B_UID)],
+      ["student-a", studentCtx("auth-a-student", A_ROOM, A_STUDENT)],
+      ["student-b", studentCtx("auth-b-student", B_ROOM, B_STUDENT)],
+      ["anonymous", testEnv.unauthenticatedContext().firestore()]
+    ];
+    for (const [identity, ctx] of identities) {
       for (const p of paths) {
-        await assertFails(ctx.doc(p).get());
-        await assertFails(ctx.doc(p).set({ tampered: true }));
+        const slash = p.lastIndexOf("/");
+        await assertDeniedDocumentAndCollectionCrud(
+          ctx,
+          p.slice(0, slash),
+          p.slice(slash + 1),
+          identity
+        );
       }
     }
   });
@@ -398,23 +499,26 @@ describe("Phase 2B Item 10: proposed multi-teacher rules contract", () => {
     await assertFails(teacherCtx(MISMATCH_UID).collection(`classrooms/${A_ROOM}/students`).get());
   });
 
-  test("scoped classroom credentials deny the ACTIVE OWNER, both read and write, in both directions", async () => {
+  test("scoped credentials deny every client identity and every verb in both classrooms", async () => {
     // This is the specific assertion MULTI_TEACHER_ARCHITECTURE_PLAN.md calls
     // out: it is what the deleted recursive classrooms/** allow would have
     // granted, and it defeats the login lockout if it regresses.
-    for (const [uid, room] of [[A_UID, A_ROOM], [B_UID, B_ROOM]]) {
-      const ctx = teacherCtx(uid);
-      await assertFails(ctx.doc(`classrooms/${room}/studentCredentials/${SHARED_LOGIN_ID}`).get());
-      await assertFails(ctx.collection(`classrooms/${room}/studentCredentials`).get());
-      await assertFails(
-        ctx.doc(`classrooms/${room}/studentCredentials/${SHARED_LOGIN_ID}`).set({ pinHash: "x" })
-      );
-      await assertFails(
-        ctx.doc(`classrooms/${room}/studentCredentials/${SHARED_LOGIN_ID}`).update({ failedAttempts: 0 })
-      );
-      await assertFails(
-        ctx.doc(`classrooms/${room}/studentCredentials/${SHARED_LOGIN_ID}`).delete()
-      );
+    const identities = [
+      ["teacher-a", teacherCtx(A_UID)],
+      ["teacher-b", teacherCtx(B_UID)],
+      ["student-a", studentCtx("auth-a-student", A_ROOM, A_STUDENT)],
+      ["student-b", studentCtx("auth-b-student", B_ROOM, B_STUDENT)],
+      ["anonymous", testEnv.unauthenticatedContext().firestore()]
+    ];
+    for (const room of [A_ROOM, B_ROOM]) {
+      for (const [identity, ctx] of identities) {
+        await assertDeniedDocumentAndCollectionCrud(
+          ctx,
+          `classrooms/${room}/studentCredentials`,
+          SHARED_LOGIN_ID,
+          `${identity}-${room}`
+        );
+      }
     }
   });
 

@@ -151,12 +151,22 @@ function installHarness() {
     return result;
   };
 
-  window.V2_TENANT_DATA_SAVE_ADAPTER = async (payload) => {
+  window.V2_TENANT_DATA_SAVE_ADAPTER = async (payload, capturedIdentity) => {
     obs.counters.saveAdapterCalls++;
-    record("saveAdapter:start", { classroomId: payload?.classroomId || null });
+    record("saveAdapter:start", {
+      classroomId: capturedIdentity?.classroomId || payload?.classroomId || null
+    });
     await gate("classroomSave");
 
-    const classroomId = payload?.classroomId || window.__PHASE2B_TEST__?.currentClassroomId();
+    // The production orchestrator supplies the identity it captured before the
+    // await. Honor that target even if the browser switches accounts while this
+    // adapter is held, so an accepted outgoing write is attributed honestly to
+    // the outgoing tenant. The orchestrator—not this adapter—owns the later
+    // stale-epoch decision about client cache/state effects.
+    const classroomId =
+      capturedIdentity?.classroomId ||
+      payload?.classroomId ||
+      window.__PHASE2B_TEST__?.currentClassroomId();
     if (!classroomId) throw new Error("harness: missing classroomId for save");
 
     // Writes only the client-writable classroom-root fields the proposed rules
