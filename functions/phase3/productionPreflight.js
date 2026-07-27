@@ -22,6 +22,7 @@ import {
   encodeCanonicalFirestoreValue,
   serializeCanonicalState,
 } from '../phase2/canonicalState.js'
+import { normalizeClassroomCode } from '../phase2b/identityNormalization.js'
 
 /**
  * Phase 3 Commit 3 — strictly read-only production preflight.
@@ -149,9 +150,47 @@ const AUTHORIZATION_FIELDS = Object.freeze([
   'credentialProvenance',
   'credentialSha256',
   'expectationsSha256',
+  'studentLoginCode',
   'notBefore',
   'notAfter',
 ])
+
+/**
+ * Requires an already-canonical classroom login code.
+ *
+ * IMPORTANT: `normalizeClassroomCode` is a NORMALIZER, not a validator of
+ * canonical form. It accepts and rewrites lowercase, surrounding whitespace,
+ * internal spaces, and one formatting hyphen. Relying on it alone would let
+ * `abcd-efgh`, `ABCD-EFGH`, ` ABCDEFGH `, and `ABCD EFGH` all authorize the same
+ * write while the artifact an operator reviewed said something different.
+ *
+ * The rule enforced here is strictly stronger: normalization must SUCCEED and the
+ * supplied bytes must already equal the canonical eight-character result exactly.
+ * The reviewed artifact therefore states the code in exactly one form.
+ *
+ * The classroom root stores `formatClassroomCode(canonical)`; the login-code
+ * index uses the canonical unformatted value as its document ID.
+ */
+function requireCanonicalLoginCode(rawCode) {
+  let canonical
+  try {
+    canonical = normalizeClassroomCode(rawCode)
+  } catch {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+      'The authorized classroom login code is not a valid classroom code.',
+      { field: 'studentLoginCode' },
+    )
+  }
+  if (rawCode !== canonical) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+      'The authorized classroom login code is not already in canonical form.',
+      { field: 'studentLoginCode' },
+    )
+  }
+  return canonical
+}
 
 function parseInstant(value, field) {
   if (typeof value !== 'string') {
@@ -234,6 +273,14 @@ export function validateReadAuthorization({
     }
   }
 
+  // The classroom login code must be chosen and bound BEFORE any write exists.
+  // Binding it in the read authorization is what lets preflight prove the exact
+  // selected code is absent, and lets the writer recover the code later from the
+  // same artifact without the manifest ever retaining it.
+  const canonicalLoginCode = requireCanonicalLoginCode(
+    authorization.studentLoginCode,
+  )
+
   // The authorization must name the same project and teacher the run resolved,
   // so a record issued for one target cannot authorize reading another.
   if (authorization.projectId !== projectId) {
@@ -286,7 +333,10 @@ export function validateReadAuthorization({
     )
   }
 
-  return Object.freeze({ ...authorization })
+  // `canonicalLoginCode` is byte-identical to `authorization.studentLoginCode`
+  // by construction; it is surfaced separately so callers bind the value the
+  // canonical rule accepted rather than re-deriving it.
+  return Object.freeze({ ...authorization, canonicalLoginCode })
 }
 
 /**
@@ -470,6 +520,12 @@ export const DESTINATION_SURFACES = Object.freeze([
   'classroomLoginHistory',
   'scopedCredentials',
   'scopedLogs',
+  // The root login-code index. Added as a SEPARATELY BOUND surface rather than
+  // folded into an existing one: a pooled count would let a pre-existing code
+  // reservation hide behind another surface's zero. Reserving a code that already
+  // maps to some other classroom is exactly the collision the writer must never
+  // commit, so its absence needs its own evidence set.
+  'loginCodeIndex',
 ])
 
 /**
@@ -1150,7 +1206,9 @@ export async function runProductionPreflight({
     'foundation',
   )
   const destination = requireCompleteResult(
-    await readers.readDestinationPaths(),
+    await readers.readDestinationPaths({
+      canonicalLoginCode: validatedAuthorization.canonicalLoginCode,
+    }),
     'destinationPaths',
   )
   const authCompatibility = requireCompleteResult(
@@ -1248,6 +1306,18 @@ export async function runProductionPreflight({
       { unexpected: unexpectedCounts },
     )
   }
+  // Two distinct questions are answered here, and conflating them is what an
+  // earlier version got wrong:
+  //
+  //  1. May this preflight COMPLETE? An acknowledged nonzero count is still a
+  //     reviewed, explainable state, so it may complete and produce a manifest.
+  //     That preserves preflight's diagnostic value.
+  //  2. May the resulting manifest AUTHORIZE A WRITE? Only if every destination
+  //     surface is exactly zero. An acknowledged record is an unreviewed
+  //     assumption for a writer that is about to create documents beneath it.
+  //
+  // `writeEligible` is therefore computed independently of the abort criteria.
+  let destinationsAllEmpty = true
   for (const surface of DESTINATION_SURFACES) {
     const count = destination.counts[surface]
     if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
@@ -1257,6 +1327,8 @@ export async function runProductionPreflight({
         { surface },
       )
     }
+    if (count !== 0) destinationsAllEmpty = false
+
     const acknowledged = expectations.acknowledgedDestinationCounts?.[surface]
     const allowed = typeof acknowledged === 'number' ? acknowledged : 0
     if (count !== allowed) {
@@ -1266,6 +1338,25 @@ export async function runProductionPreflight({
         { surface },
       )
     }
+  }
+
+  // Checked after the per-surface counts so a surface-level problem reports its
+  // own specific category rather than being masked by this classification.
+  if (typeof destination.selectedCodePresent !== 'boolean') {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      'The destination reader did not classify the selected login code.',
+    )
+  }
+  // A present selected code is a live reservation. Even if it happens to point at
+  // this classroom, the writer must not proceed: preflight proved absence, and
+  // reusing an existing index entry is a collision the initialization transaction
+  // is explicitly forbidden to overwrite.
+  if (destination.selectedCodePresent === true) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.DESTINATION_DATA_PRESENT,
+      'The selected classroom login code is already reserved.',
+    )
   }
 
   if (authCompatibility.uidCollisions > 0) {
@@ -1384,6 +1475,31 @@ export async function runProductionPreflight({
   })
 
   // ---- 5. manifest, only after every check passed ----
+
+  // The RAW CODE IS NEVER RETAINED. Only its digest and the digest of the index
+  // document path are bound, which is enough for a later writer to prove the
+  // code it recovered from the re-presented authorization artifact is the same
+  // one this preflight proved absent — without the manifest itself becoming a
+  // document that discloses a live classroom credential.
+  const canonicalCode = validatedAuthorization.canonicalLoginCode
+  const canonicalCodeSha256 = createHash('sha256')
+    .update(canonicalCode, 'utf8')
+    .digest('hex')
+  const canonicalCodePathSha256 = createHash('sha256')
+    .update(`classroomLoginCodes/${canonicalCode}`, 'utf8')
+    .digest('hex')
+
+  // A manifest may only authorize Commit 5 writes when the foundation actually
+  // exists and reciprocates, every destination surface is exactly zero, the
+  // selected code is absent, and nothing was merely acknowledged. A
+  // foundation-absent or acknowledged-anomaly manifest remains diagnostic.
+  const writeEligible = foundation.present === true &&
+    foundation.reciprocal === true &&
+    destinationsAllEmpty &&
+    destination.selectedCodePresent === false &&
+    acknowledgedAnomalies.length === 0 &&
+    Object.keys(expectations.acknowledgedDestinationCounts ?? {}).length === 0
+
   const domains = {
     deploymentInventory: {
       rules: deployment.rules,
@@ -1427,6 +1543,12 @@ export async function runProductionPreflight({
     destinationAbsence: {
       counts: destination.counts,
       studentIdCoverage: destinationIdentity.coverage,
+      // The selected code's absence is part of the checksummed domain, not just
+      // a reported observation, so a writer cannot be handed a manifest whose
+      // digest matches while its code classification was altered.
+      selectedCodePresent: destination.selectedCodePresent,
+      selectedCodeSha256: canonicalCodeSha256,
+      selectedCodePathSha256: canonicalCodePathSha256,
       sources: hashedSourceSummaries(
         DESTINATION_SURFACES.map(surface => [surface, destinationSurfaces[surface]]),
       ),
@@ -1485,6 +1607,12 @@ export async function runProductionPreflight({
       },
       foundationPresent: foundation.present,
       acknowledgedAnomalyCount: acknowledgedAnomalies.length,
+      // Explicit, so a writer never has to re-derive eligibility from a
+      // scattering of counts — and so a manifest that was only ever diagnostic
+      // says so in one unambiguous field.
+      writeEligible,
+      selectedCodePresent: destination.selectedCodePresent,
+      destinationCounts: destination.counts,
     },
   })
 
@@ -2499,7 +2627,18 @@ export function createReadOnlyDataReaders({
     })
   }
 
-  async function readDestinationPaths() {
+  async function readDestinationPaths({ canonicalLoginCode } = {}) {
+    // The selected code is required: the login-code-index surface has to prove
+    // both that the whole collection is empty AND that the exact document the
+    // writer intends to create is absent. Deriving only the collection count
+    // would leave the specific reservation unproven if the count check ever
+    // loosened.
+    if (typeof canonicalLoginCode !== 'string' || canonicalLoginCode === '') {
+      failInspection(
+        'A canonical classroom login code is required to inspect the code index.',
+      )
+    }
+
     let classroomReferences
     let scopedLogParents
     try {
@@ -2608,6 +2747,25 @@ export function createReadOnlyDataReaders({
       }
     }
 
+    // The root login-code index is enumerated COMPLETELY, with the same bounded
+    // pagination every other surface uses, and the exact selected document is
+    // then read on its own. Both are required: a complete enumeration proves no
+    // reservation exists anywhere, and the exact read proves the specific
+    // document the writer will create is absent.
+    const loginCodeDocuments = await readPaginatedFirestoreCollection({
+      firestore,
+      collectionPath: 'classroomLoginCodes',
+      timeoutMs,
+    })
+    bySurface.loginCodeIndex.push(...loginCodeDocuments.map(document =>
+      firestoreEvidenceEntry(document, 'loginCodeIndex')))
+
+    const selectedCodeSnapshot = await readOptionalFirestoreDocument({
+      firestore,
+      documentPath: `classroomLoginCodes/${canonicalLoginCode}`,
+      timeoutMs,
+    })
+
     const scopedParentIds = new Set()
     for (const parent of scopedLogParents) {
       if (typeof parent?.id !== 'string' || parent.id === '' ||
@@ -2640,6 +2798,9 @@ export function createReadOnlyDataReaders({
       sourceEntriesBySurface: Object.freeze(bySurface),
       studentIdsBySurface: Object.freeze(idsBySurface),
       studentIdCoverageBySurface: Object.freeze(coverage),
+      // Stated explicitly rather than inferred from the collection count, so the
+      // selected-code check cannot be satisfied by a surface-level zero.
+      selectedCodePresent: selectedCodeSnapshot.exists === true,
     })
   }
 
@@ -2709,6 +2870,133 @@ export function createReadOnlyDataReaders({
     readFoundation,
     readDestinationPaths,
     readAuthCompatibility,
+  })
+}
+
+/**
+ * A complete raw Firestore envelope: identity, body, presence classification and
+ * exact update time. This is what the projection and reconciliation contracts
+ * consume, and it is deliberately NOT what the evidence readers above produce.
+ */
+function rawEnvelope(snapshot) {
+  const data = snapshot.data()
+  if (!isPlainObject(data)) {
+    failInspection('Firestore returned a document with a malformed body.', {
+      surface: 'rawEnvelope',
+    })
+  }
+  // Validated for exact seconds/nanoseconds, then the ORIGINAL Timestamp is
+  // returned rather than a plain {seconds, nanoseconds} copy. The projection and
+  // reconciliation contracts require a real Timestamp (they call `toMillis`),
+  // and a downgraded copy would silently fail their exactness check.
+  exactSnapshotUpdateTime(snapshot, 'rawEnvelope')
+
+  // `exists` is carried for the writer's presence checks but is NOT part of
+  // Phase 2B's strict source-envelope contract, which rejects unlisted keys.
+  // `toSourceEnvelope` below strips it before a projection ever sees it —
+  // widening the Phase 2B contract instead would mean editing Phase 2B.
+  return Object.freeze({
+    id: snapshot.id,
+    path: snapshot.ref.path,
+    data,
+    exists: true,
+    updateTime: snapshot.updateTime,
+  })
+}
+
+/**
+ * Narrows a raw envelope to exactly the keys Phase 2B's projection accepts.
+ *
+ * Kept as an explicit adapter so the writer can rely on `exists` while the pure
+ * projection still receives only its declared contract.
+ */
+export function toSourceEnvelope(envelope) {
+  if (!isPlainObject(envelope) || envelope.exists === false) return envelope
+  return Object.freeze({
+    id: envelope.id,
+    path: envelope.path,
+    data: envelope.data,
+    updateTime: envelope.updateTime,
+  })
+}
+
+/**
+ * Read-only readers that return COMPLETE RAW ENVELOPES.
+ *
+ * Why this exists as a separate family, and why it lives in this module rather
+ * than in `productionWriter.js`:
+ *
+ *  - The evidence readers above intentionally retain only hashes. A manifest must
+ *    never carry a raw path or body, and that property must not be weakened to
+ *    serve the writer.
+ *  - But `buildProductionProjection` and `reconcileProductionWriteRun` are pure
+ *    functions over raw `{id, path, data, updateTime}` envelopes. Something has to
+ *    supply those, and it must be a read-only component.
+ *  - Ownership sits here so `reverify.js` can consume these readers WITHOUT
+ *    importing `productionWriter.js`. If the writer owned them, a read-only
+ *    re-verifier could not read anything without importing mutation code.
+ *
+ * These functions issue only reads. They share the exact same private pagination
+ * and snapshot primitives as the evidence readers, so the two families cannot
+ * silently enumerate different document sets. Raw bodies and paths returned here
+ * are for in-memory comparison only; they never enter a manifest or a journal.
+ */
+export function createRawDataReaders({
+  firestore,
+  teacherUid,
+  timeoutMs = PRODUCTION_READER_TIMEOUT_MS,
+}) {
+  if (!firestore || typeof firestore.doc !== 'function' ||
+      typeof firestore.collection !== 'function' ||
+      typeof teacherUid !== 'string' || teacherUid === '' ||
+      !Number.isInteger(timeoutMs) || timeoutMs < 1 ||
+      timeoutMs > PRODUCTION_READER_TIMEOUT_MS) {
+    failInspection('The raw data-reader configuration is malformed.')
+  }
+
+  async function readDocument(documentPath) {
+    const snapshot = await readOptionalFirestoreDocument({
+      firestore,
+      documentPath,
+      timeoutMs,
+    })
+    if (snapshot.exists !== true) {
+      return Object.freeze({ path: documentPath, exists: false })
+    }
+    return rawEnvelope(snapshot)
+  }
+
+
+  async function readCollection(collectionPath) {
+    const documents = await readPaginatedFirestoreCollection({
+      firestore,
+      collectionPath,
+      timeoutMs,
+    })
+    return Object.freeze(documents.map(rawEnvelope))
+  }
+
+  return Object.freeze({
+    readDocument,
+    readCollection,
+    readLegacyClassroomAggregate: () => readDocument('morganBank/classroomData'),
+    readFlatCredentials: () => readCollection('studentCredentials'),
+    readFlatAuthLogs: () => readCollection('studentAuthLogs'),
+    readTeacher: () => readDocument(`teachers/${teacherUid}`),
+    readClassroom: classroomId => readDocument(`classrooms/${classroomId}`),
+    readLoginCodeIndexDocument: canonicalCode =>
+      readDocument(`classroomLoginCodes/${canonicalCode}`),
+    readLoginCodeIndex: () => readCollection('classroomLoginCodes'),
+    readClassroomStudents: classroomId =>
+      readCollection(`classrooms/${classroomId}/students`),
+    readClassroomTransactions: classroomId =>
+      readCollection(`classrooms/${classroomId}/transactions`),
+    readClassroomLoginHistory: classroomId =>
+      readCollection(`classrooms/${classroomId}/loginHistory`),
+    readScopedCredentials: classroomId =>
+      readCollection(`classrooms/${classroomId}/studentCredentials`),
+    readScopedAuthLogs: classroomId =>
+      readCollection(`studentAuthLogs/${classroomId}/logs`),
   })
 }
 

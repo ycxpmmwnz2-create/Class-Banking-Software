@@ -25,6 +25,10 @@ import {
   validateReadAuthorization,
 } from './productionPreflight.js'
 import { CHECKSUM_DOMAINS, hashDomain } from './productionManifest.js'
+import {
+  formatClassroomCode,
+  normalizeClassroomCode,
+} from '../phase2b/identityNormalization.js'
 
 const PRODUCTION_ENVIRONMENT = Object.freeze({ GCLOUD_PROJECT: 'morgan-bank' })
 const TEACHER_UID = 'YkYUzIzy0aW7roolM1VaLcIJPuN2'
@@ -33,6 +37,15 @@ const EXPECTATIONS_SHA = 'e'.repeat(64)
 const AUTHORIZATION_SHA = 'd'.repeat(64)
 const NOW = Date.parse('2026-07-26T18:00:00.000Z')
 const OBSERVED_AT = '2026-07-26T18:00:00.000Z'
+
+/**
+ * A canonical classroom login code: uppercase, unformatted, exactly eight
+ * characters drawn from the unambiguous alphabet. `normalizeClassroomCode` would
+ * happily NORMALIZE `bcdf-ghjk`, ` BCDFGHJK `, or `BCDF GHJK` into this same
+ * value — the read-authorization rule is stricter and requires the artifact to
+ * already state it in exactly this form.
+ */
+const CANONICAL_LOGIN_CODE = 'BCDFGHJK'
 
 /**
  * Builds `n` valid per-document evidence entries.
@@ -63,6 +76,9 @@ function authorization(overrides = {}) {
     credentialProvenance: 'operator-workstation-key-rotated',
     credentialSha256: CREDENTIAL_SHA,
     expectationsSha256: EXPECTATIONS_SHA,
+    // Already canonical: uppercase, unformatted, exactly eight unambiguous
+    // characters. Any other rendering of the same code must be rejected.
+    studentLoginCode: CANONICAL_LOGIN_CODE,
     notBefore: '2026-07-26T17:00:00.000Z',
     notAfter: '2026-07-26T23:00:00.000Z',
     ...overrides,
@@ -96,7 +112,13 @@ function expectations(overrides = {}) {
  * student-ID reference set. `counts` defaults to the evidence cardinality so a
  * fixture cannot accidentally declare an unsubstantiated count.
  */
-function destinationResult({ entries = {}, ids = {}, counts, coverage = {} } = {}) {
+function destinationResult({
+  entries = {},
+  ids = {},
+  counts,
+  coverage = {},
+  selectedCodePresent = false,
+} = {}) {
   const bySurface = Object.fromEntries(
     DESTINATION_SURFACES.map(surface => [surface, entries[surface] ?? []]),
   )
@@ -131,6 +153,7 @@ function destinationResult({ entries = {}, ids = {}, counts, coverage = {} } = {
         }]
       }),
     ),
+    selectedCodePresent,
   })
 }
 
@@ -346,6 +369,71 @@ describe('Phase 3 production preflight', () => {
         nowMillis: NOW,
       })
       assert.equal(validated.authorizationId, 'AUTH-2026-07-26-001')
+      assert.equal(validated.canonicalLoginCode, CANONICAL_LOGIN_CODE)
+    })
+
+    it('rejects every non-canonical rendering the normalizer would accept', () => {
+      // This is the crux of the canonical-code rule. `normalizeClassroomCode` is a
+      // NORMALIZER: each value below normalizes successfully to BCDFGHJK, so a
+      // check that merely called it would accept all of them. The authorization
+      // rule additionally requires byte-for-byte identity with the canonical form,
+      // so the reviewed artifact states the code in exactly one way.
+      for (const variant of [
+        'bcdfghjk',      // lowercase
+        'BCDF-GHJK',     // formatted with the display hyphen
+        'bcdf-ghjk',     // lowercase and formatted
+        ' BCDFGHJK',     // leading whitespace
+        'BCDFGHJK ',     // trailing whitespace
+        'BCDF GHJK',     // internal space
+      ]) {
+        // Prove the premise: the Phase 2B normalizer really does accept it.
+        assert.equal(
+          normalizeClassroomCode(variant),
+          CANONICAL_LOGIN_CODE,
+          `${JSON.stringify(variant)} must normalize to the canonical code`,
+        )
+        // And prove the authorization rule is strictly stronger.
+        assert.throws(
+          () => validateReadAuthorization({
+            authorization: authorization({ studentLoginCode: variant }),
+            credentialSha256: CREDENTIAL_SHA,
+            expectationsSha256: EXPECTATIONS_SHA,
+            teacherUid: TEACHER_UID,
+            projectId: 'morgan-bank',
+            nowMillis: NOW,
+          }),
+          error => error.category ===
+            PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+          `${JSON.stringify(variant)} must be rejected as non-canonical`,
+        )
+      }
+    })
+
+    it('rejects a code the normalizer itself refuses', () => {
+      // Ambiguous characters, wrong length, and invalid punctuation never reach
+      // the identity comparison at all.
+      for (const invalid of ['BCDFGHJ', 'BCDFGHJKL', 'BCDF0HJK', 'BCDF@HJK', '']) {
+        assert.throws(
+          () => validateReadAuthorization({
+            authorization: authorization({ studentLoginCode: invalid }),
+            credentialSha256: CREDENTIAL_SHA,
+            expectationsSha256: EXPECTATIONS_SHA,
+            teacherUid: TEACHER_UID,
+            projectId: 'morgan-bank',
+            nowMillis: NOW,
+          }),
+          error => error.category ===
+            PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+          `${JSON.stringify(invalid)} must be rejected`,
+        )
+      }
+    })
+
+    it('binds the classroom root format and index ID to the same code', () => {
+      // The classroom root stores the FORMATTED code; the index document ID is the
+      // canonical unformatted value. Pinned together so the two can never drift.
+      assert.equal(formatClassroomCode(CANONICAL_LOGIN_CODE), 'BCDF-GHJK')
+      assert.equal(normalizeClassroomCode('BCDF-GHJK'), CANONICAL_LOGIN_CODE)
     })
 
     it('aborts on each individually missing field', async () => {
@@ -1037,10 +1125,27 @@ describe('Phase 3 production preflight', () => {
         ]),
       )
       await run({ readers: spied })
-      // Readers are invoked with no arguments at all, so the preflight cannot
-      // hand them a mutable client.
+      // Readers receive only plain, inert data — never a Firestore/Auth handle,
+      // client, transaction, batch, or writer. The destination reader legitimately
+      // takes the canonical login code so it can inspect the exact index document;
+      // that is a string, not a capability.
       for (const args of seenArguments) {
-        assert.equal(args.length, 0, 'readers must be called with no arguments')
+        for (const arg of args) {
+          assert.ok(
+            arg === undefined || (
+              arg !== null && typeof arg === 'object' &&
+              Object.getPrototypeOf(arg) === Object.prototype
+            ),
+            'a reader argument must be a plain options object, never a handle',
+          )
+          for (const value of Object.values(arg ?? {})) {
+            assert.equal(
+              typeof value === 'function' ? 'function' : 'inert',
+              'inert',
+              'no reader argument may carry a callable capability',
+            )
+          }
+        }
       }
     })
   })
@@ -1515,10 +1620,14 @@ describe('Phase 3 production preflight', () => {
       // Sourced from Phase 2A's own destination model. Naming only students,
       // credentials and logs left a pre-existing transaction or login-history
       // document invisible while preflight reported absence.
+      // `loginCodeIndex` is the root code-reservation collection. It is a
+      // separately bound surface so a pre-existing reservation cannot hide behind
+      // another surface's zero.
       assert.deepEqual([...DESTINATION_SURFACES].sort(), [
         'classroomLoginHistory',
         'classroomStudents',
         'classroomTransactions',
+        'loginCodeIndex',
         'scopedCredentials',
         'scopedLogs',
       ])
@@ -1763,6 +1872,9 @@ describe('Phase 3 production preflight', () => {
                   DESTINATION_SURFACES.map(s => [s, []]),
                 ),
                 studentIdsBySurface: ids,
+                // Stated so the omitted ID set is what this case actually
+                // exercises, rather than the code classification firing first.
+                selectedCodePresent: false,
               }),
             }),
           },

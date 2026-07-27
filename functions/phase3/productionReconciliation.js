@@ -3,6 +3,11 @@ import {
   buildProductionProjection,
 } from './productionProjection.js'
 import { firestoreValuesEqual } from '../phase2b/scopedCredentialProjection.js'
+import {
+  formatClassroomCode,
+  normalizeClassroomCode,
+} from '../phase2b/identityNormalization.js'
+import { toSourceEnvelope } from './productionPreflight.js'
 
 /**
  * Phase 3 Commit 4 — pure dry-run and post-copy reconciliation.
@@ -47,6 +52,26 @@ const ACTUAL_KEYS = Object.freeze([
   'loginHistory',
   'scopedCredentials',
   'scopedAuthLogs',
+  // The reserved login-code index document. Included in write-run reconciliation
+  // because it is a document the writer creates; omitting it would let the copy
+  // reconcile as complete while the reservation was missing, wrong, or pointed at
+  // another classroom.
+  'loginCodeIndex',
+])
+
+/**
+ * The initialization inputs Release Order step 9 established, supplied to
+ * reconciliation so the expected classroom after copy includes them.
+ *
+ * Kept as an EXPLICIT input rather than derived inside the legacy projection:
+ * the login code and student counter are not properties of the legacy data, and
+ * mixing their derivation into `buildProductionProjection` would make a pure
+ * copy transformation responsible for identity allocation.
+ */
+const INITIALIZATION_KEYS = Object.freeze([
+  'canonicalLoginCode',
+  'formattedLoginCode',
+  'nextStudentNumber',
 ])
 
 export class ProductionReconciliationError extends Error {
@@ -235,21 +260,72 @@ function validateDryRunOptions(options) {
   }
 }
 
+/**
+ * Validates the initialization inputs and their mutual consistency.
+ *
+ * The formatted and canonical codes must be exactly the two renderings of one
+ * code — proven by normalizing the formatted value back and comparing — so a
+ * mismatched pair cannot describe a classroom root and an index document that
+ * disagree about which code was reserved.
+ */
+function requireInitialization(initialization) {
+  const value = requireExactKeys(
+    initialization,
+    INITIALIZATION_KEYS,
+    'initialization',
+  )
+  let canonical
+  try {
+    canonical = normalizeClassroomCode(value.canonicalLoginCode)
+  } catch {
+    fail(
+      PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
+      'The initialization login code is not a valid classroom code.',
+      { argument: 'initialization.canonicalLoginCode' },
+    )
+  }
+  if (value.canonicalLoginCode !== canonical) {
+    fail(
+      PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
+      'The initialization login code is not already canonical.',
+      { argument: 'initialization.canonicalLoginCode' },
+    )
+  }
+  if (value.formattedLoginCode !== formatClassroomCode(canonical)) {
+    fail(
+      PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
+      'The formatted login code does not correspond to the canonical code.',
+      { argument: 'initialization.formattedLoginCode' },
+    )
+  }
+  if (!Number.isSafeInteger(value.nextStudentNumber) ||
+      value.nextStudentNumber < 1) {
+    fail(
+      PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
+      'nextStudentNumber must be a safe positive integer.',
+      { argument: 'initialization.nextStudentNumber' },
+    )
+  }
+  return value
+}
+
 function validateWriteRunOptions(options) {
   const value = requireExactKeys(
     options,
-    ['source', 'foundation', 'projection', 'actual'],
+    ['source', 'foundation', 'projection', 'actual', 'initialization'],
     'options',
   )
   const source = requireSource(value.source)
   const foundation = requireFoundation(value.foundation)
   const projection = requireProjection(value.projection)
   const actual = requireActual(value.actual)
+  const initialization = requireInitialization(value.initialization)
   return {
     source,
     foundation,
     projection,
     actual,
+    initialization,
     expectedProjection: buildProductionProjection({
       classroomId: foundation.classroomId,
       ...source,
@@ -398,11 +474,50 @@ function compareScopedAuthLogs(expected, actual, issues) {
   }
 }
 
-function expectedClassroomAfterCopy(foundation, projection) {
+/**
+ * The exact classroom body expected after initialization AND copy.
+ *
+ * Every pre-existing foundation field is PRESERVED; initialization contributes
+ * the formatted login code and the student counter, and the copy contributes
+ * settings and `lastBackupAt`. Nothing else may change — notably `updatedAt` is
+ * not touched, because the default contract is preservation.
+ */
+function expectedClassroomAfterCopy(foundation, projection, initialization) {
   return {
     ...foundation.classroom.data,
+    studentLoginCode: initialization.formattedLoginCode,
+    nextStudentNumber: initialization.nextStudentNumber,
     settings: projection.classroom.data.settings,
     lastBackupAt: projection.classroom.data.lastBackupAt,
+  }
+}
+
+/**
+ * The login-code index document the writer reserved. Exactly three fields; the
+ * document ID is the canonical code and it must point at this classroom.
+ */
+function compareLoginCodeIndex(foundation, initialization, actual, issues) {
+  const path = `classroomLoginCodes/${initialization.canonicalLoginCode}`
+  if (!isPlainObject(actual) || typeof actual.id !== 'string' ||
+      typeof actual.path !== 'string' || !isPlainObject(actual.data)) {
+    issue(issues, 'login-code-index', 'missing-or-malformed-document', path)
+    return
+  }
+  if (actual.id !== initialization.canonicalLoginCode || actual.path !== path) {
+    issue(issues, 'login-code-index', 'identity-or-path-mismatch', path)
+  }
+  if (actual.data.classroomId !== foundation.classroomId) {
+    issue(issues, 'login-code-index', 'classroom-mismatch', path)
+  }
+  if (actual.data.status !== 'active') {
+    issue(issues, 'login-code-index', 'status-mismatch', path)
+  }
+  // Exactly the reviewed key set: an extra field here is an unreviewed write.
+  if (!firestoreValuesEqual(
+    Object.keys(actual.data).sort(),
+    ['classroomId', 'createdAt', 'status'],
+  )) {
+    issue(issues, 'login-code-index', 'forbidden-or-unlisted-key', path)
   }
 }
 
@@ -413,6 +528,7 @@ function compareWriteRun(state, issues) {
     projection,
     expectedProjection,
     actual,
+    initialization,
   } = state
 
   if (projection.classroomId !== foundation.classroomId ||
@@ -430,10 +546,20 @@ function compareWriteRun(state, issues) {
     {
       id: foundation.classroom.id,
       path: foundation.classroom.path,
-      data: expectedClassroomAfterCopy(foundation, expectedProjection),
+      data: expectedClassroomAfterCopy(
+        foundation,
+        expectedProjection,
+        initialization,
+      ),
     },
     actual.classroom,
     'classroom-root',
+    issues,
+  )
+  compareLoginCodeIndex(
+    foundation,
+    initialization,
+    actual.loginCodeIndex,
     issues,
   )
   compareSourceDocument(
@@ -499,6 +625,7 @@ function summary(mode, projection) {
         ? {
           foundation: true,
           classroomMetadata: true,
+          loginCodeIndex: true,
           students: true,
           transactions: true,
           loginHistory: true,
@@ -549,4 +676,81 @@ export function reconcileProductionWriteRun(options) {
   }
   compareWriteRun(state, issues)
   return finish(PRODUCTION_RECONCILIATION_MODES.WRITE_RUN, state, issues)
+}
+
+/**
+ * Reads every source and destination surface through injected READ-ONLY readers
+ * and invokes the pure write-run reconciliation above.
+ *
+ * Deliberately lives in this module rather than in `productionWriter.js`. Both
+ * the writer's final verification and `reverify.js` need exactly this behavior,
+ * and reverify must never import the writer — so the shared code has to sit in a
+ * module that contains no mutation capability at all. This function performs no
+ * write of any kind: it only calls reader functions and one pure comparison.
+ */
+export async function readAndReconcileWriteRun({
+  rawReaders,
+  foundation,
+  initialization,
+}) {
+  const classroomId = foundation.classroomId
+  const [
+    legacyClassroomData, flatCredentials, flatAuthLogs,
+    teacher, classroom, loginCodeIndex,
+    students, transactions, loginHistory, scopedCredentials, scopedAuthLogs,
+  ] = await Promise.all([
+    rawReaders.readLegacyClassroomAggregate(),
+    rawReaders.readFlatCredentials(),
+    rawReaders.readFlatAuthLogs(),
+    rawReaders.readTeacher(),
+    rawReaders.readClassroom(classroomId),
+    rawReaders.readLoginCodeIndexDocument(initialization.canonicalLoginCode),
+    rawReaders.readClassroomStudents(classroomId),
+    rawReaders.readClassroomTransactions(classroomId),
+    rawReaders.readClassroomLoginHistory(classroomId),
+    rawReaders.readScopedCredentials(classroomId),
+    rawReaders.readScopedAuthLogs(classroomId),
+  ])
+
+  // Narrowed to Phase 2B's declared source-envelope contract. The raw readers
+  // carry an `exists` marker for the writer's presence checks, which that strict
+  // contract would reject as an unlisted key.
+  const source = {
+    classroomData: toSourceEnvelope(legacyClassroomData),
+    studentCredentials: flatCredentials.map(toSourceEnvelope),
+    studentAuthLogs: flatAuthLogs.map(toSourceEnvelope),
+  }
+  const projection = buildProductionProjection({ classroomId, ...source })
+
+  return reconcileProductionWriteRun({
+    source,
+    // The foundation compared here is the CURRENT observed teacher plus the
+    // exact initialized-after classroom from the caller, not the
+    // pre-initialization manifest state.
+    foundation: {
+      teacherUid: foundation.teacherUid,
+      classroomId,
+      teacher,
+      classroom: foundation.classroom,
+    },
+    projection,
+    initialization: {
+      canonicalLoginCode: initialization.canonicalLoginCode,
+      formattedLoginCode: initialization.formattedLoginCode,
+      nextStudentNumber: initialization.nextStudentNumber,
+    },
+    actual: {
+      teacher,
+      classroom,
+      loginCodeIndex,
+      legacyClassroomData,
+      flatCredentials: [...flatCredentials],
+      flatAuthLogs: [...flatAuthLogs],
+      students: [...students],
+      transactions: [...transactions],
+      loginHistory: [...loginHistory],
+      scopedCredentials: [...scopedCredentials],
+      scopedAuthLogs: [...scopedAuthLogs],
+    },
+  })
 }

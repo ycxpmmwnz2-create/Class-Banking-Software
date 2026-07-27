@@ -37,6 +37,29 @@ import {
 
 const OBSERVED_AT = '2026-07-26T18:00:00.000Z'
 
+/**
+ * The v2 write-eligibility observation block. Kept as a helper so every fixture
+ * states a complete, self-consistent eligibility classification — a partial block
+ * is exactly what the v2 validator is supposed to reject.
+ */
+function eligibilityObservations(overrides = {}) {
+  return {
+    foundationPresent: true,
+    writeEligible: true,
+    selectedCodePresent: false,
+    acknowledgedAnomalyCount: 0,
+    destinationCounts: {
+      classroomStudents: 0,
+      classroomTransactions: 0,
+      classroomLoginHistory: 0,
+      scopedCredentials: 0,
+      scopedLogs: 0,
+      loginCodeIndex: 0,
+    },
+    ...overrides,
+  }
+}
+
 function domainPayloads(overrides = {}) {
   const base = {
     deploymentInventory: { rules: { release: 'r1' } },
@@ -60,7 +83,7 @@ function buildValidManifest(overrides = {}) {
     authorizationId: 'AUTH-2026-07-26-001',
     observedAt: OBSERVED_AT,
     domains: domainPayloads(),
-    observations: { foundationPresent: true },
+    observations: eligibilityObservations(),
     ...overrides,
   })
 }
@@ -524,10 +547,84 @@ describe('Phase 3 production manifest', () => {
       }))
     })
 
+    it('pins the schema version at 2 and rejects the earlier schema', () => {
+      assert.equal(PRODUCTION_MANIFEST_SCHEMA_VERSION, 2)
+
+      // A v1 manifest never examined the login-code index, so it must not be
+      // upgradable or acceptable — only rejected.
+      const manifest = buildValidManifest()
+      assertRejects(
+        () => validateProductionManifest({ ...manifest, schemaVersion: 1 }),
+        PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
+        'a v1 manifest must not validate under the v2 contract',
+      )
+    })
+
+    it('rejects a manifest claiming eligibility its observations contradict', () => {
+      const cases = [
+        ['foundationPresent', { foundationPresent: false }],
+        ['selectedCodePresent', { selectedCodePresent: true }],
+        ['acknowledgedAnomalyCount', { acknowledgedAnomalyCount: 1 }],
+        ['destinationCounts', {
+          destinationCounts: {
+            classroomStudents: 0,
+            classroomTransactions: 0,
+            classroomLoginHistory: 0,
+            scopedCredentials: 0,
+            scopedLogs: 0,
+            loginCodeIndex: 1,
+          },
+        }],
+      ]
+      for (const [label, override] of cases) {
+        assertRejects(
+          () => buildValidManifest({
+            observations: eligibilityObservations({
+              writeEligible: true,
+              ...override,
+            }),
+          }),
+          PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
+          `writeEligible must not survive a contradicting ${label}`,
+        )
+      }
+    })
+
+    it('rejects a non-boolean write-eligibility classification', () => {
+      // A truthy string is the dangerous case: "false" would read as eligible.
+      for (const value of ['false', 'true', 1, 0, null]) {
+        assertRejects(
+          () => buildValidManifest({
+            observations: eligibilityObservations({ writeEligible: value }),
+          }),
+          PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
+          'write eligibility must be a real boolean',
+        )
+      }
+    })
+
+    it('accepts a diagnostic-only manifest that does not claim eligibility', () => {
+      // A foundation-absent manifest is legitimate and must still persist; it
+      // simply must not claim it can authorize a write.
+      const manifest = buildValidManifest({
+        observations: eligibilityObservations({
+          foundationPresent: false,
+          writeEligible: false,
+        }),
+      })
+      assert.equal(manifest.observations.writeEligible, false)
+      assert.equal(manifest.schemaVersion, 2)
+    })
+
     it('blocks a manifest carrying a leak in observations', () => {
+      // The leak is added ALONGSIDE a complete, valid v2 eligibility block, so
+      // the secret scan is demonstrably what rejects this manifest rather than
+      // an earlier schema check firing first.
       assert.throws(
         () => buildValidManifest({
-          observations: { pinHash: '$2a$12$abcdefghijklmnopqrstuv' },
+          observations: eligibilityObservations({
+            pinHash: '$2a$12$abcdefghijklmnopqrstuv',
+          }),
         }),
         error => error.category === PRODUCTION_MANIFEST_CATEGORIES.SECRET_MATERIAL,
         'a leak in observations must block manifest construction',

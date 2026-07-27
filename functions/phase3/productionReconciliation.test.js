@@ -137,9 +137,25 @@ function destinationEntry(entry, sequence) {
   }
 }
 
+/**
+ * The Release Order step 9 initialization result: the reserved classroom code in
+ * both renderings, plus the monotonic student counter.
+ */
+const CANONICAL_LOGIN_CODE = 'BCDFGHJK'
+
+function initializationFixture(overrides = {}) {
+  return {
+    canonicalLoginCode: CANONICAL_LOGIN_CODE,
+    formattedLoginCode: 'BCDF-GHJK',
+    nextStudentNumber: 100,
+    ...overrides,
+  }
+}
+
 function scenario() {
   const source = sourceFixture()
   const foundation = foundationFixture()
+  const initialization = initializationFixture()
   const projection = buildProductionProjection({
     classroomId: CLASSROOM_ID,
     ...source,
@@ -151,8 +167,22 @@ function scenario() {
       path: `classrooms/${CLASSROOM_ID}`,
       data: {
         ...clone(foundation.classroom.data),
+        // Initialization contributes exactly these two fields; every other
+        // foundation field is preserved verbatim.
+        studentLoginCode: initialization.formattedLoginCode,
+        nextStudentNumber: initialization.nextStudentNumber,
         settings: clone(projection.classroom.data.settings),
         lastBackupAt: clone(projection.classroom.data.lastBackupAt),
+      },
+      updateTime: new FakeTimestamp(1_790_000_000, 1),
+    },
+    loginCodeIndex: {
+      id: CANONICAL_LOGIN_CODE,
+      path: `classroomLoginCodes/${CANONICAL_LOGIN_CODE}`,
+      data: {
+        classroomId: CLASSROOM_ID,
+        status: 'active',
+        createdAt: new FakeTimestamp(1_790_000_000, 1),
       },
       updateTime: new FakeTimestamp(1_790_000_000, 1),
     },
@@ -165,7 +195,7 @@ function scenario() {
     scopedCredentials: projection.scopedCredentials.map(destinationEntry),
     scopedAuthLogs: projection.scopedAuthLogs.map(destinationEntry),
   }
-  return { source, foundation, projection, actual }
+  return { source, foundation, projection, actual, initialization }
 }
 
 function assertReconciliationError(category, inspect = () => {}) {
@@ -240,6 +270,7 @@ test('write-run verifies every destination and immutable source surface', () => 
     uidMappings: true,
     foundation: true,
     classroomMetadata: true,
+    loginCodeIndex: true,
     students: true,
     transactions: true,
     loginHistory: true,
@@ -249,6 +280,89 @@ test('write-run verifies every destination and immutable source surface', () => 
     flatCredentialsSource: true,
     flatAuthLogsSource: true,
   })
+})
+
+test('write-run requires the initialized classroom fields and code index', () => {
+  // Initialization is reconciled as part of the copy result, so a copy that
+  // completed against a classroom missing its reserved code or counter cannot
+  // report success.
+  for (const mutate of [
+    state => { delete state.actual.classroom.data.studentLoginCode },
+    state => { delete state.actual.classroom.data.nextStudentNumber },
+    state => { state.actual.classroom.data.studentLoginCode = 'WXYZ-WXYZ' },
+    state => { state.actual.classroom.data.nextStudentNumber = 1 },
+  ]) {
+    const state = scenario()
+    mutate(state)
+    assert.throws(
+      () => writeRun(state),
+      assertReconciliationError(
+        PRODUCTION_RECONCILIATION_CATEGORIES.WRITE_RUN_MISMATCH,
+        error => {
+          assert.ok(error.details.issues.some(
+            issue => issue.area === 'classroom-root',
+          ))
+        },
+      ),
+      'a missing or wrong initialized classroom field must block',
+    )
+  }
+})
+
+test('write-run blocks a missing, misdirected, or over-wide code index', () => {
+  const cases = [
+    ['missing', state => { state.actual.loginCodeIndex = undefined }],
+    ['wrong classroom', state => {
+      state.actual.loginCodeIndex.data.classroomId = 'another-classroom'
+    }],
+    ['inactive status', state => {
+      state.actual.loginCodeIndex.data.status = 'revoked'
+    }],
+    ['extra field', state => {
+      state.actual.loginCodeIndex.data.note = 'unreviewed'
+    }],
+    ['wrong document id', state => {
+      state.actual.loginCodeIndex.id = 'WXYZWXYZ'
+      state.actual.loginCodeIndex.path = 'classroomLoginCodes/WXYZWXYZ'
+    }],
+  ]
+  for (const [label, mutate] of cases) {
+    const state = scenario()
+    mutate(state)
+    assert.throws(
+      () => writeRun(state),
+      assertReconciliationError(
+        PRODUCTION_RECONCILIATION_CATEGORIES.WRITE_RUN_MISMATCH,
+        error => {
+          assert.ok(error.details.issues.some(
+            issue => issue.area === 'login-code-index',
+          ))
+        },
+      ),
+      `${label} code index must block`,
+    )
+  }
+})
+
+test('write-run rejects inconsistent initialization inputs', () => {
+  const cases = [
+    ['non-canonical code', { canonicalLoginCode: 'bcdfghjk' }],
+    ['formatted mismatch', { formattedLoginCode: 'WXYZ-WXYZ' }],
+    ['invalid code', { canonicalLoginCode: 'BCDF0HJK' }],
+    ['zero counter', { nextStudentNumber: 0 }],
+    ['non-integer counter', { nextStudentNumber: 1.5 }],
+  ]
+  for (const [label, override] of cases) {
+    const state = scenario()
+    state.initialization = { ...state.initialization, ...override }
+    assert.throws(
+      () => writeRun(state),
+      assertReconciliationError(
+        PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
+      ),
+      `${label} must be rejected before comparison`,
+    )
+  }
 })
 
 test('write-run attributes caller projection identity drift to foundation', () => {

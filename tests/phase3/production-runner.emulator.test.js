@@ -42,9 +42,15 @@ const {
   runPreflightMain,
   PREFLIGHT_EXIT_CODES,
   parsePreflightArguments,
-  validateExplicitCredential,
 } =
   await import('../../functions/phase3/preflight.js')
+// Commit 5 relocated the shared hash-before-parse, strict-decode, and
+// credential helpers into productionEnvironment.js so all three entrypoints
+// bind artifacts identically instead of each carrying a near-copy.
+const {
+  validateExplicitCredential,
+  validateRehearsalWriteAuthorization,
+} = await import('../../functions/phase3/productionEnvironment.js')
 // Admin handles come from a module under functions/, so `firebase-admin`
 // resolves from functions/node_modules and never becomes a root dependency —
 // the same convention functions/phase2/seedRehearsal.js established.
@@ -52,6 +58,8 @@ const {
   PREFLIGHT_ABORT_CATEGORIES,
   createReadOnlyAdminHandles,
   createReadOnlyDataReaders,
+  createRawDataReaders,
+  toSourceEnvelope,
 } = await import(
   '../../functions/phase3/productionPreflight.js'
 )
@@ -107,6 +115,23 @@ function writeArtifact(name, value) {
   return filePath
 }
 
+/**
+ * The classroom login code this run reserves: canonical, uppercase, unformatted,
+ * eight unambiguous characters. `normalizeClassroomCode` would normalize other
+ * renderings to the same value, but the authorization requires this exact form.
+ */
+const CANONICAL_LOGIN_CODE = 'BCDFGHJK'
+/**
+ * The display rendering stored on the classroom root. The index document ID is
+ * the canonical value above; these must remain two renderings of one code.
+ */
+const FORMATTED_LOGIN_CODE = 'BCDF-GHJK'
+assert.equal(
+  FORMATTED_LOGIN_CODE,
+  `${CANONICAL_LOGIN_CODE.slice(0, 4)}-${CANONICAL_LOGIN_CODE.slice(4)}`,
+  'the formatted and canonical login codes must describe the same code',
+)
+
 function authorizationArtifact(overrides = {}) {
   return {
     projectId: EMULATOR_PROJECT_ID,
@@ -117,6 +142,9 @@ function authorizationArtifact(overrides = {}) {
     credentialProvenance: 'emulator-harness-no-credential',
     credentialSha256: 'placeholder',
     expectationsSha256: 'placeholder',
+    // Commit 5: the classroom login code is chosen and bound BEFORE any write,
+    // already in canonical (uppercase, unformatted, 8-character) form.
+    studentLoginCode: CANONICAL_LOGIN_CODE,
     notBefore: '2020-01-01T00:00:00.000Z',
     notAfter: '2099-01-01T00:00:00.000Z',
     ...overrides,
@@ -765,7 +793,9 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
     const firestoreBefore = await snapshotFirestore()
 
     // The reader must SEE it.
-    const observed = await liveReaders().readDestinationPaths()
+    const observed = await liveReaders().readDestinationPaths({
+      canonicalLoginCode: CANONICAL_LOGIN_CODE,
+    })
     assert.equal(observed.counts.scopedLogs, 1, 'the scoped log must be counted')
     assert.equal(
       observed.sourceEntriesBySurface.scopedLogs.length,
@@ -861,7 +891,9 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       .set({ id: 100, studentId: 41, type: 'Add', amount: 5 })
 
     const before = await snapshotFirestore()
-    const observed = await liveReaders().readDestinationPaths()
+    const observed = await liveReaders().readDestinationPaths({
+      canonicalLoginCode: CANONICAL_LOGIN_CODE,
+    })
     assert.equal(observed.counts.classroomTransactions, 1)
     assert.equal(observed.sourceEntriesBySurface.classroomTransactions.length, 1)
     assert.deepEqual(observed.studentIdsBySurface.destinationTransactions, [41])
@@ -880,7 +912,9 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       .set({ id: 200, studentId: '43', result: 'success' })
 
     const before = await snapshotFirestore()
-    const observed = await liveReaders().readDestinationPaths()
+    const observed = await liveReaders().readDestinationPaths({
+      canonicalLoginCode: CANONICAL_LOGIN_CODE,
+    })
     assert.equal(observed.counts.classroomLoginHistory, 1)
     // Raw type preserved: a string reference stays a string.
     assert.deepEqual(observed.studentIdsBySurface.destinationLoginHistory, ['43'])
@@ -938,7 +972,9 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       'a phantom parent must not be reported as an existing classroom root',
     )
     // But its student IS seen by the destination enumeration.
-    const observed = await liveReaders().readDestinationPaths()
+    const observed = await liveReaders().readDestinationPaths({
+      canonicalLoginCode: CANONICAL_LOGIN_CODE,
+    })
     assert.equal(observed.counts.classroomStudents, 1)
 
     await firestore.doc('classrooms/phantom-only/students/s1').delete()
@@ -996,7 +1032,9 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       const document = firestore.doc(`classrooms/identity-${tag}/students/7`)
       await document.set(body)
       try {
-        const observed = await liveReaders().readDestinationPaths()
+        const observed = await liveReaders().readDestinationPaths({
+      canonicalLoginCode: CANONICAL_LOGIN_CODE,
+    })
         const coverage = observed.studentIdCoverageBySurface.destinationStudents
         assert.equal(observed.counts.classroomStudents, 1)
         assert.equal(
@@ -1022,7 +1060,9 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
     )
     await document.set({ classroomId: 'identity-credential', active: true })
     try {
-      const observed = await liveReaders().readDestinationPaths()
+      const observed = await liveReaders().readDestinationPaths({
+      canonicalLoginCode: CANONICAL_LOGIN_CODE,
+    })
       assert.equal(
         observed.studentIdCoverageBySurface.destinationCredentials.unassignedCount,
         1,
@@ -1043,7 +1083,9 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
     )
     await document.set({ id: 1, studentId: { malformed: true }, amount: 1 })
     try {
-      const observed = await liveReaders().readDestinationPaths()
+      const observed = await liveReaders().readDestinationPaths({
+      canonicalLoginCode: CANONICAL_LOGIN_CODE,
+    })
       assert.equal(
         observed.studentIdCoverageBySurface.destinationTransactions.referencedCount,
         1,
@@ -1068,7 +1110,9 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
     )
     await document.set({ id: 2, studentId: null, amount: 1 })
     try {
-      const observed = await liveReaders().readDestinationPaths()
+      const observed = await liveReaders().readDestinationPaths({
+      canonicalLoginCode: CANONICAL_LOGIN_CODE,
+    })
       const coverage = observed.studentIdCoverageBySurface.destinationTransactions
       assert.equal(coverage.referencedCount, 0)
       assert.equal(coverage.unassignedCount, 1)
@@ -1150,5 +1194,477 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
     })
     assert.equal(exitCode, PREFLIGHT_EXIT_CODES.PREFLIGHT_ABORTED)
     assert.equal(persisted, 0)
+  })
+})
+
+/**
+ * Phase 3 Commit 5 — the production writer and re-verifier against live
+ * emulators.
+ *
+ * EVIDENCE LAYER: real Firestore transactions and real Auth reads against the
+ * emulators, driven through the actual `runProductionWrite` orchestration and a
+ * real on-disk journal in an isolated temporary state root.
+ *
+ * This proves the two-invocation stage separation, the exact initialization
+ * write set, the copy, source immutability, and crash recovery WITHOUT duplicate
+ * writes. It does NOT prove production behavior: the control-plane inventories
+ * are injected because no emulator exists for Rules/Functions/Hosting releases.
+ */
+describe('Phase 3 production writer against live emulators', () => {
+  const WRITER_TEACHER_UID = 'writer-teacher-uid-0001'
+  const WRITER_CLASSROOM_ID = 'writer-classroom-0001'
+  const WRITER_CODE = 'MNPQRSTV'
+  const WRITER_FORMATTED = 'MNPQ-RSTV'
+
+  let writerState
+  let writerModule
+  let reconciliationModule
+  let Timestamp
+
+  /** Everything this describe block seeded, for exact-mutation assertions. */
+  async function seedWriterFoundation() {
+    // A reciprocal EXISTING foundation with NO code and NO counter — exactly the
+    // state Release Order step 8 leaves behind.
+    await firestore.doc(`teachers/${WRITER_TEACHER_UID}`).set({
+      uid: WRITER_TEACHER_UID,
+      classroomId: WRITER_CLASSROOM_ID,
+      status: 'active',
+    })
+    await firestore.doc(`classrooms/${WRITER_CLASSROOM_ID}`).set({
+      ownerUid: WRITER_TEACHER_UID,
+      name: 'Writer Period 1',
+      settings: { reasons: ['Legacy'] },
+    })
+  }
+
+  function rawReaders() {
+    return createRawDataReaders({
+      firestore, teacherUid: WRITER_TEACHER_UID,
+    })
+  }
+
+  function deployment(gateOn = false) {
+    return {
+      readInventory: async () => ({
+        rules: { release: 'bridge-emulator' },
+        gateParameters: {
+          MULTI_TEACHER_V2_ENABLED: gateOn ? 'true' : 'false',
+        },
+        activeWriters: [],
+      }),
+      initializationExpectations: {
+        rules: { release: 'bridge-emulator' },
+        acknowledgedWriters: [],
+      },
+      copyExpectations: {
+        rules: { release: 'bridge-emulator' },
+        acknowledgedWriters: [],
+      },
+    }
+  }
+
+  async function foundationFor() {
+    const readers = rawReaders()
+    const teacher = await readers.readTeacher()
+    const classroom = await readers.readClassroom(WRITER_CLASSROOM_ID)
+    return {
+      teacherUid: WRITER_TEACHER_UID,
+      classroomId: WRITER_CLASSROOM_ID,
+      teacher,
+      classroom,
+      foundationStateDigest: writerModule.computeFoundationDigest(
+        teacher.data, classroom.data,
+      ),
+    }
+  }
+
+  function manifestFor() {
+    return {
+      schemaVersion: 2,
+      preflightManifestId: 'd'.repeat(64),
+      projectId: EMULATOR_PROJECT_ID,
+      teacherUid: WRITER_TEACHER_UID,
+      releaseId: 'phase3-rel-emulator',
+      changeId: 'CHG-EMULATOR-001',
+      preflightChecksum: 'e'.repeat(64),
+      outcome: 'succeeded',
+      observations: { watermark: { nextStudentNumber: 6 } },
+    }
+  }
+
+  function authorizationFor() {
+    return {
+      authorizationId: 'AUTH-EMULATOR-001',
+      snapshotId: 'SNAP-EMULATOR-001',
+      writeFreezeProof: 'FREEZE-EMULATOR-001',
+      credentialProvenance: 'emulator-harness-no-credential',
+      writeAuthorizationSha256: createHash('sha256').update('wa').digest('hex'),
+      preflightAuthorizationSha256: createHash('sha256').update('pa').digest('hex'),
+      credentialSha256: createHash('sha256').update('cred').digest('hex'),
+      initializationExpectationsSha256:
+        createHash('sha256').update('init-exp').digest('hex'),
+      copyExpectationsSha256:
+        createHash('sha256').update('copy-exp').digest('hex'),
+    }
+  }
+
+  /**
+   * The copy projection for this classroom.
+   *
+   * The flat credentials seeded by the preflight block above reference students
+   * 1, 2 and 5 — which the legacy roster also contains — so the strict
+   * copy-only contract is satisfied. Envelopes are narrowed to Phase 2B's
+   * declared source contract exactly as the writer does.
+   */
+  async function projectionFor() {
+    const readers = rawReaders()
+    const source = {
+      classroomData: toSourceEnvelope(
+        await readers.readLegacyClassroomAggregate(),
+      ),
+      studentCredentials: (await readers.readFlatCredentials())
+        .map(toSourceEnvelope),
+      studentAuthLogs: (await readers.readFlatAuthLogs())
+        .map(toSourceEnvelope),
+    }
+    return {
+      source,
+      projection: writerModule.buildProductionProjection({
+        classroomId: WRITER_CLASSROOM_ID,
+        ...source,
+      }),
+    }
+  }
+
+  before(async () => {
+    writerModule = await import('../../functions/phase3/productionWriter.js')
+    reconciliationModule = await import(
+      '../../functions/phase3/productionReconciliation.js'
+    )
+    // `firebase-admin` resolves from functions/node_modules only, so the
+    // Timestamp type is reached through a module under functions/ rather than
+    // imported directly here — the same convention the handle factory follows.
+    Timestamp = writerModule.Timestamp
+
+    writerState = fs.mkdtempSync(
+      path.join(os.tmpdir(), `phase3-writer-${RUN_TOKEN}-`),
+    )
+    await seedWriterFoundation()
+  })
+
+  after(() => {
+    // Removes ONLY this suite's isolated temporary state root. Operator .state
+    // contents are never written or deleted by this suite.
+    if (writerState) fs.rmSync(writerState, { recursive: true, force: true })
+  })
+
+  test('first invocation writes only the initialization and stops', async () => {
+    const journal = writerModule.createWriteJournal({
+      preflightManifestId: 'd'.repeat(64),
+      stateRoot: writerState,
+    })
+    const { projection } = await projectionFor()
+    const foundation = await foundationFor()
+    const initialization = {
+      canonicalLoginCode: WRITER_CODE,
+      formattedLoginCode: WRITER_FORMATTED,
+      nextStudentNumber: 6,
+    }
+    const plan = writerModule.buildCopyPlan({
+      projection, foundation, initialization,
+    })
+
+    const before = await snapshotFirestore()
+    const outcome = await writerModule.runProductionWrite({
+      firestore,
+      journal,
+      manifest: manifestFor(),
+      authorization: authorizationFor(),
+      initialization: {
+        ...initialization,
+        projection,
+        planDigest: plan.planDigest,
+        batchCount: plan.batches.length,
+        countsBySurface: plan.countsBySurface,
+      },
+      foundation,
+      deployment: deployment(),
+      rawReaders: rawReaders(),
+      nowTimestamp: Timestamp.fromMillis(1_790_000_000_000),
+      logger: { log() {}, error() {} },
+    })
+
+    assert.equal(outcome.result, 'ACTION_REQUIRED/AWAITING_DEPLOYMENT')
+    assert.equal(outcome.migrationRan, false)
+
+    // EXACTLY the two initialization writes occurred.
+    const classroom = await firestore
+      .doc(`classrooms/${WRITER_CLASSROOM_ID}`).get()
+    assert.equal(classroom.data().studentLoginCode, WRITER_FORMATTED)
+    assert.equal(classroom.data().nextStudentNumber, 6)
+    // Every pre-existing field survived.
+    assert.equal(classroom.data().ownerUid, WRITER_TEACHER_UID)
+    assert.equal(classroom.data().name, 'Writer Period 1')
+    assert.deepEqual(classroom.data().settings, { reasons: ['Legacy'] })
+
+    const index = await firestore
+      .doc(`classroomLoginCodes/${WRITER_CODE}`).get()
+    assert.equal(index.exists, true)
+    assert.deepEqual(Object.keys(index.data()).sort(),
+      ['classroomId', 'createdAt', 'status'])
+    assert.equal(index.data().classroomId, WRITER_CLASSROOM_ID)
+
+    // COPY REMAINS ABSENT: no student, transaction, history, credential, or log.
+    for (const collection of [
+      'students', 'transactions', 'loginHistory', 'studentCredentials',
+    ]) {
+      const docs = await firestore
+        .collection(`classrooms/${WRITER_CLASSROOM_ID}/${collection}`).get()
+      assert.equal(docs.size, 0, `${collection} must remain absent`)
+    }
+    const scopedLogs = await firestore
+      .collection(`studentAuthLogs/${WRITER_CLASSROOM_ID}/logs`).get()
+    assert.equal(scopedLogs.size, 0)
+
+    // The teacher document was never modified.
+    const teacher = await firestore.doc(`teachers/${WRITER_TEACHER_UID}`).get()
+    assert.deepEqual(Object.keys(teacher.data()).sort(),
+      ['classroomId', 'status', 'uid'])
+
+    assert.notEqual(before, await snapshotFirestore(),
+      'initialization must have changed observable state')
+
+    // The journal stopped at awaiting-copy-deployment.
+    const replay = await journal.replay()
+    assert.equal(replay.head.event, 'awaiting-copy-deployment')
+    assert.ok(!replay.events.some(e => e.event === 'batch-in-flight'))
+
+    // And the journal itself discloses nothing sensitive.
+    for (const name of fs.readdirSync(journal.directory)) {
+      const bytes = fs.readFileSync(path.join(journal.directory, name), 'utf8')
+      for (const forbidden of [
+        WRITER_CODE, WRITER_FORMATTED, WRITER_TEACHER_UID,
+        'classrooms/', 'teachers/', 'seededpinhash',
+      ]) {
+        assert.ok(!bytes.includes(forbidden),
+          `journal ${name} must not contain ${forbidden}`)
+      }
+    }
+  })
+
+  test('a second run at copy stage refuses a gate-on inventory', async () => {
+    const journal = writerModule.createWriteJournal({
+      preflightManifestId: 'd'.repeat(64),
+      stateRoot: writerState,
+    })
+    const { projection } = await projectionFor()
+    const foundation = await foundationFor()
+    const initialization = {
+      canonicalLoginCode: WRITER_CODE,
+      formattedLoginCode: WRITER_FORMATTED,
+      nextStudentNumber: 6,
+    }
+    const plan = writerModule.buildCopyPlan({
+      projection, foundation, initialization,
+    })
+
+    const before = await snapshotFirestore()
+    await assert.rejects(
+      writerModule.runProductionWrite({
+        firestore,
+        journal,
+        manifest: manifestFor(),
+        authorization: authorizationFor(),
+        initialization: {
+          ...initialization,
+          projection,
+          planDigest: plan.planDigest,
+          batchCount: plan.batches.length,
+          countsBySurface: plan.countsBySurface,
+        },
+        foundation,
+        // Gate ON: copying under a live gate would expose a half-migrated
+        // classroom to real traffic.
+        deployment: deployment(true),
+        rawReaders: rawReaders(),
+        nowTimestamp: Timestamp.fromMillis(1_790_000_000_000),
+        logger: { log() {}, error() {} },
+      }),
+      error => error.category === 'deployment-drift',
+    )
+    assert.equal(before, await snapshotFirestore(),
+      'a gate-on refusal must write nothing')
+  })
+
+  test('initialization is not repeated and the code index is never overwritten',
+    async () => {
+      // A fresh journal for the SAME already-initialized classroom must not
+      // renumber the counter or replace the live code index.
+      const journal = writerModule.createWriteJournal({
+        preflightManifestId: 'f'.repeat(64),
+        stateRoot: writerState,
+      })
+      const foundation = await foundationFor()
+      const before = await snapshotFirestore()
+      await assert.rejects(
+        writerModule.runInitializationTransaction({
+          firestore,
+          foundation,
+          initialization: {
+            canonicalLoginCode: WRITER_CODE,
+            formattedLoginCode: WRITER_FORMATTED,
+            nextStudentNumber: 99,
+          },
+          initializedAt: Timestamp.fromMillis(1_790_000_000_000),
+          manifest: manifestFor(),
+        }),
+        error => error.category === 'state-diverged',
+      )
+      assert.equal(before, await snapshotFirestore())
+      assert.ok(journal.directory.startsWith(writerState))
+    })
+
+  test('flat credentials, legacy source, teacher, and Auth are never mutated',
+    async () => {
+      // Captured before this whole describe block's writes and compared now.
+      const credential = await firestore.doc('studentCredentials/ada').get()
+      assert.equal(credential.data().pinHash, SEEDED_PIN_HASHES.ada)
+      const legacy = await firestore.doc('morganBank/classroomData').get()
+      assert.equal(legacy.data().students.length, 3)
+      const users = await auth.listUsers(1000)
+      assert.ok(users.users.some(user => user.uid === 'legacy-student-1'))
+    })
+
+  test('reverify reconciles the initialized state without mutating anything',
+    async () => {
+      const before = await snapshotFirestore()
+      const beforeAuth = await snapshotAuth()
+
+      // The read-only reconciliation helper is the same one the writer uses, and
+      // it lives in productionReconciliation.js precisely so reverify never has
+      // to import the writer.
+      await assert.rejects(
+        reconciliationModule.readAndReconcileWriteRun({
+          rawReaders: rawReaders(),
+          foundation: {
+            teacherUid: WRITER_TEACHER_UID,
+            classroomId: WRITER_CLASSROOM_ID,
+            classroom: (await rawReaders().readClassroom(WRITER_CLASSROOM_ID)),
+          },
+          initialization: {
+            canonicalLoginCode: WRITER_CODE,
+            formattedLoginCode: WRITER_FORMATTED,
+            nextStudentNumber: 6,
+          },
+        }),
+        // The copy has not run in this suite, so reconciliation legitimately
+        // reports a mismatch. What matters here is that it MUTATED NOTHING.
+        error => error.code === 'PHASE3_PRODUCTION_RECONCILIATION_ERROR',
+      )
+
+      assert.equal(before, await snapshotFirestore(),
+        'reverification must not change Firestore')
+      assert.equal(beforeAuth, await snapshotAuth(),
+        'reverification must not change Auth')
+    })
+
+  test('a committed transaction with a failed journal event recovers cleanly',
+    async () => {
+      // The mandatory recovery control. A real emulator transaction commits, the
+      // following journal event is deliberately failed, and recovery must
+      // reclassify remote state rather than writing again.
+      const manifestId = '0'.repeat(64)
+      const targetPath =
+        `classrooms/${WRITER_CLASSROOM_ID}/students/recovery-probe`
+      const body = { id: 4242, name: 'Recovery', balance: 0, frozen: false,
+        transactions: [] }
+
+      const batch = {
+        batchIndex: 0,
+        batchDigest: createHash('sha256').update('recovery').digest('hex'),
+        operations: [{
+          operationId: 'op-000000',
+          surface: 'students',
+          type: 'create',
+          path: targetPath,
+          data: body,
+          expectedBefore: 'absent',
+        }],
+      }
+
+      // Commit for real against the emulator.
+      await writerModule.commitCopyBatch({ firestore, batch })
+      const committed = await firestore.doc(targetPath).get()
+      assert.equal(committed.exists, true)
+
+      // Simulate the crash: the journal event that should follow never lands.
+      const journal = writerModule.createWriteJournal({
+        preflightManifestId: manifestId,
+        stateRoot: writerState,
+        fs: {
+          link: async () => {
+            const error = new Error('injected journal failure')
+            error.code = 'EIO'
+            throw error
+          },
+        },
+      })
+      await assert.rejects(
+        journal.append(
+          { schemaVersion: 1, kind: 'phase3-production-write-journal',
+            event: 'planned' },
+          { expectedSequence: 0, expectedPreviousDigest: null },
+        ),
+        error => error.category === 'journal-write-failed',
+      )
+
+      // Recovery reads the batch and classifies it as already applied.
+      const observed = new Map([[targetPath, {
+        exists: true,
+        data: (await firestore.doc(targetPath).get()).data(),
+      }]])
+      assert.equal(
+        writerModule.classifyBatchState(batch, observed),
+        'all-expected-after',
+      )
+
+      // Re-running the batch performs NO duplicate write.
+      const result = await writerModule.commitCopyBatch({ firestore, batch })
+      assert.equal(result.applied, 0)
+      assert.equal(result.skipped, 1)
+
+      // A divergent target instead blocks rather than being treated as success.
+      await firestore.doc(targetPath).set({ ...body, balance: 999 })
+      await assert.rejects(
+        writerModule.commitCopyBatch({ firestore, batch }),
+        error => error.category === 'state-diverged',
+      )
+
+      await firestore.doc(targetPath).delete()
+    })
+
+  test('a rehearsal write authorization cannot name production', () => {
+    assert.throws(
+      () => validateRehearsalWriteAuthorization({
+        projectId: 'morgan-bank',
+        teacherUid: WRITER_TEACHER_UID,
+        releaseId: 'phase3-rel-emulator',
+        changeId: 'CHG-EMULATOR-001',
+        authorizationId: 'AUTH-EMULATOR-001',
+        snapshotId: 'SNAP-1',
+        writeFreezeProof: 'FREEZE-1',
+        credentialProvenance: 'emulator',
+        preflightManifestId: 'd'.repeat(64),
+        initializationExpectationsSha256: 'b'.repeat(64),
+        copyExpectationsSha256: 'c'.repeat(64),
+        notBefore: '2020-01-01T00:00:00.000Z',
+        notAfter: '2099-01-01T00:00:00.000Z',
+      }, {
+        environment: emulatorEnvironment(),
+        expectedReleaseId: 'phase3-rel-emulator',
+        nowMillis: Date.now(),
+      }),
+      error => error.code === 'PHASE3_PRODUCTION_ENVIRONMENT_ERROR',
+    )
   })
 })

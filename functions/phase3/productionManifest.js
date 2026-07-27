@@ -30,7 +30,19 @@ import { ALLOWED_EMULATOR_PROJECT_ID } from './productionEnvironment.js'
  *    fixture test guards against encoder drift invalidating retained checksums.
  */
 
-export const PRODUCTION_MANIFEST_SCHEMA_VERSION = 1
+/**
+ * Schema version 2.
+ *
+ * Incremented because the RETAINED CONTRACT changed, not merely because code
+ * changed: v2 manifests bind a sixth destination surface (the root login-code
+ * index), the selected code's absence classification and digests, and an
+ * explicit `writeEligible` determination. A v1 manifest cannot express any of
+ * those, so it must never authorize a Commit 5 write — a writer that accepted one
+ * would be proceeding on evidence that never examined the login-code index at
+ * all. The version check is an equality test, so v1 files are rejected outright
+ * rather than upgraded in place.
+ */
+export const PRODUCTION_MANIFEST_SCHEMA_VERSION = 2
 
 /** The only production project a manifest may name. */
 export const PRODUCTION_PROJECT_ID = 'morgan-bank'
@@ -421,6 +433,53 @@ export function validateProductionManifest(manifest) {
       PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
       'observations must be a plain object.',
     )
+  }
+
+  // The v2 write-eligibility observations are strictly typed. Booleans are
+  // required to BE booleans: a truthy string like "false" would otherwise read as
+  // eligible, and this is the field a writer consults before touching production.
+  for (const field of [
+    'foundationPresent', 'writeEligible', 'selectedCodePresent',
+  ]) {
+    if (typeof manifest.observations[field] !== 'boolean') {
+      fail(
+        PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
+        'A v2 manifest must classify write eligibility with booleans.',
+        { field },
+      )
+    }
+  }
+  if (!Number.isInteger(manifest.observations.acknowledgedAnomalyCount) ||
+      manifest.observations.acknowledgedAnomalyCount < 0) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
+      'acknowledgedAnomalyCount must be a non-negative integer.',
+    )
+  }
+  if (!isPlainObject(manifest.observations.destinationCounts)) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
+      'A v2 manifest must record per-surface destination counts.',
+    )
+  }
+
+  // Internal consistency: a manifest cannot claim write eligibility while also
+  // recording an absent foundation, a present code, an acknowledged anomaly, or a
+  // nonzero destination surface. Recomputing the conjunction here means a
+  // hand-edited `writeEligible: true` is caught on read, not trusted.
+  if (manifest.observations.writeEligible === true) {
+    const countsAllZero = Object.values(
+      manifest.observations.destinationCounts,
+    ).every(count => count === 0)
+    if (manifest.observations.foundationPresent !== true ||
+        manifest.observations.selectedCodePresent !== false ||
+        manifest.observations.acknowledgedAnomalyCount !== 0 ||
+        !countsAllZero) {
+      fail(
+        PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
+        'A manifest claims write eligibility that its own observations contradict.',
+      )
+    }
   }
 
   assertNoSecretMaterial(manifest)

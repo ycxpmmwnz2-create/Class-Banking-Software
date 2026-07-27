@@ -1,17 +1,17 @@
-import { createHash } from 'node:crypto'
-import { Buffer } from 'node:buffer'
-import { readFile } from 'node:fs/promises'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
-import { TextDecoder } from 'node:util'
 
 import { cert } from 'firebase-admin/app'
 
 import {
   EXECUTION_CONTEXT,
+  PRODUCTION_ENVIRONMENT_CATEGORIES,
   ProductionEnvironmentError,
+  parseJsonArtifact,
+  readHashedArtifact,
   redactEnvironmentError,
   validateExecutionEnvironment,
+  validateExplicitCredential,
 } from './productionEnvironment.js'
 import {
   PreflightAbortError,
@@ -89,6 +89,17 @@ const FORBIDDEN_FLAGS = Object.freeze(new Set([
 /** Subcommands rejected outright: this binary has exactly one behavior. */
 const FORBIDDEN_SUBCOMMANDS = Object.freeze(new Set([
   'write', 'reverify', 'preflight', 'migrate', 'deploy',
+]))
+
+/**
+ * Environment-module categories that describe a rejected ARTIFACT rather than a
+ * rejected execution environment. Shared by all three entrypoints' exit-code
+ * classification.
+ */
+export const ARTIFACT_ERROR_CATEGORIES = Object.freeze(new Set([
+  PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_ARTIFACT,
+  PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_CREDENTIAL,
+  PRODUCTION_ENVIRONMENT_CATEGORIES.WRONG_PROJECT_CREDENTIAL,
 ]))
 
 export class PreflightArgumentError extends Error {
@@ -203,104 +214,6 @@ export function parsePreflightArguments(argv) {
     expectationsFile: values.expectationsFile,
     credentialFile: values.credentialFile,
   })
-}
-
-/**
- * Reads an artifact and returns its bytes plus SHA-256.
- *
- * Hash-before-parse: the digest covers the exact bytes on disk, so a credential
- * or expectations file cannot be bound to the authorization by one
- * representation and then interpreted as another.
- */
-async function readHashedArtifact(filePath, dependencies) {
-  const read = dependencies.readFile ?? readFile
-  const artifact = await read(filePath)
-  if (typeof artifact !== 'string' && !(artifact instanceof Uint8Array)) {
-    failArgument('malformed-artifact', 'An artifact reader returned no bytes.')
-  }
-  const bytes = typeof artifact === 'string'
-    ? Buffer.from(artifact, 'utf8')
-    : artifact
-  // Digest the bytes BEFORE any decoding or JSON interpretation. A non-fatal
-  // UTF-8 decode could otherwise map distinct invalid byte sequences to the same
-  // replacement character and make the authorization bind a reconstruction
-  // rather than the exact file the operator supplied.
-  const sha256 = createHash('sha256').update(bytes).digest('hex')
-  let contents
-  try {
-    contents = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-  } catch {
-    failArgument('malformed-artifact', 'An artifact is not valid UTF-8.')
-  }
-  return { contents, sha256 }
-}
-
-function parseJsonArtifact(contents, label) {
-  try {
-    return JSON.parse(contents)
-  } catch {
-    failArgument('malformed-artifact', `${label} is not parseable JSON.`, { label })
-  }
-}
-
-/**
- * Validates an explicit service-account credential.
- *
- * Only a service-account key naming exactly the production project is accepted.
- * The returned handle carries no private material beyond what the SDK factory
- * needs, and the caller never logs it.
- */
-export function validateExplicitCredential(parsed, credentialFactory = cert) {
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    failArgument('malformed-credential', 'The credential file must be a JSON object.')
-  }
-  if (parsed.type !== 'service_account') {
-    failArgument(
-      'malformed-credential',
-      'The credential file must be an explicit service-account key.',
-    )
-  }
-  if (parsed.project_id !== 'morgan-bank') {
-    failArgument(
-      'wrong-project-credential',
-      'The credential file does not name the production project.',
-    )
-  }
-  for (const field of ['client_email', 'private_key']) {
-    if (typeof parsed[field] !== 'string' || parsed[field].trim() === '') {
-      failArgument(
-        'malformed-credential',
-        'The credential file is missing a required service-account field.',
-        { field },
-      )
-    }
-  }
-  if (typeof credentialFactory !== 'function') {
-    failArgument(
-      'malformed-credential',
-      'The explicit credential factory is unavailable.',
-    )
-  }
-  let credential
-  try {
-    credential = credentialFactory({
-      projectId: parsed.project_id,
-      clientEmail: parsed.client_email,
-      privateKey: parsed.private_key,
-    })
-  } catch {
-    failArgument(
-      'malformed-credential',
-      'The credential file does not contain a usable service-account key.',
-    )
-  }
-  if (!credential || typeof credential.getAccessToken !== 'function') {
-    failArgument(
-      'malformed-credential',
-      'The credential file did not produce an explicit Admin credential.',
-    )
-  }
-  return credential
 }
 
 /**
@@ -448,9 +361,17 @@ export async function runPreflightMain(argv = process.argv.slice(2), dependencie
       return { exitCode: PREFLIGHT_EXIT_CODES.MANIFEST_FAILED, error }
     }
     if (error instanceof ProductionEnvironmentError) {
-      logger.error(
-        `Preflight rejected the environment [${redactEnvironmentError(error).category}].`,
-      )
+      const redacted = redactEnvironmentError(error)
+      // The shared artifact/credential helpers live in productionEnvironment.js
+      // and therefore raise its error type. An artifact or credential rejection
+      // is an ARTIFACT failure, not an environment one, and must keep reporting
+      // as such — otherwise a malformed credential would be indistinguishable
+      // from a misconfigured project.
+      if (ARTIFACT_ERROR_CATEGORIES.has(error.category)) {
+        logger.error(`Preflight rejected an artifact [${redacted.category}].`)
+        return { exitCode: PREFLIGHT_EXIT_CODES.AUTHORIZATION_REJECTED, error }
+      }
+      logger.error(`Preflight rejected the environment [${redacted.category}].`)
       return { exitCode: PREFLIGHT_EXIT_CODES.ENVIRONMENT_REJECTED, error }
     }
     // Filesystem and unexpected errors: message only, never a stack containing

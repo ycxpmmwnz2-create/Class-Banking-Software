@@ -11,8 +11,11 @@
 // executes correctly.
 
 import assert from 'node:assert/strict'
+import { Buffer } from 'node:buffer'
+import { createHash } from 'node:crypto'
 import process from 'node:process'
 import { describe, it } from 'node:test'
+import { URL } from 'node:url'
 
 import {
   ALLOWED_EMULATOR_PROJECT_ID,
@@ -24,12 +27,18 @@ import {
   PROHIBITED_AUTHORIZATION_KEYS,
   ProductionEnvironmentError,
   REQUIRED_WRITE_AUTHORIZATION_FIELDS,
+  WRITE_AUTHORIZATION_UNPROVEN_IDENTIFIERS,
+  assertServiceAccountArtifact,
   assertV2GateAllowed,
   classifyAllowedProject,
   isLoopbackHostPort,
   redactEnvironmentError,
   resolveRuntimeProjectId,
+  parseJsonArtifact,
+  readHashedArtifact,
   validateExecutionEnvironment,
+  validateExplicitCredential,
+  validateRehearsalWriteAuthorization,
   validateWriteAuthorization,
 } from './productionEnvironment.js'
 
@@ -51,18 +60,34 @@ function emulatorEnvironment(overrides = {}) {
   }
 }
 
-/** A complete, valid write authorization. */
+/**
+ * A complete, valid write authorization.
+ *
+ * Commit 5 widened this contract: the project, teacher, change, both expectation
+ * digests, and a strict validity window are now required, and the manifest ID is
+ * a real content address rather than a loose identifier.
+ */
 function writeAuthorization(overrides = {}) {
   return {
-    authorizationId: 'CHG-2026-07-26-001',
+    projectId: 'morgan-bank',
+    teacherUid: 'YkYUzIzy0aW7roolM1VaLcIJPuN2',
     releaseId: RELEASE_ID,
+    changeId: 'CHG-2026-07-26-001',
+    authorizationId: 'AUTH-2026-07-26-001',
     snapshotId: 'snap-20260726T1200Z',
     writeFreezeProof: 'freeze-20260726T1155Z',
     credentialProvenance: 'operator-workstation-adc-rotated',
-    preflightManifestId: 'preflight-8f3a91c4',
+    preflightManifestId: 'a'.repeat(64),
+    initializationExpectationsSha256: 'b'.repeat(64),
+    copyExpectationsSha256: 'c'.repeat(64),
+    notBefore: '2026-07-26T17:00:00.000Z',
+    notAfter: '2026-07-26T23:00:00.000Z',
     ...overrides,
   }
 }
+
+/** A current instant inside the fixture's validity window. */
+const WRITE_NOW_MILLIS = Date.parse('2026-07-26T18:00:00.000Z')
 
 /** Asserts a call throws a guard error of an exact category. */
 function assertRejects(fn, category, message) {
@@ -655,6 +680,7 @@ describe('Phase 3 production environment guards', () => {
         () => validateWriteAuthorization(writeAuthorization(), {
           environment: undefined,
           expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
         }),
         TypeError,
         'write authorization with explicit undefined environment must not use process.env',
@@ -704,6 +730,7 @@ describe('Phase 3 production environment guards', () => {
         }),
         v2Enabled: true,
         expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
       })
       assert.equal(result.context, EXECUTION_CONTEXT.PRODUCTION)
       assert.equal(result.releaseIdVerified, true)
@@ -715,6 +742,7 @@ describe('Phase 3 production environment guards', () => {
           environment: productionEnvironment(),
           v2Enabled: true,
           expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
         }),
         PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_AUTHORIZATION,
         'absent deployed release ID must block',
@@ -742,6 +770,7 @@ describe('Phase 3 production environment guards', () => {
           }),
           v2Enabled: true,
           expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
         }),
         PRODUCTION_ENVIRONMENT_CATEGORIES.RELEASE_ID_MISMATCH,
         'mismatched release must block',
@@ -755,6 +784,7 @@ describe('Phase 3 production environment guards', () => {
             environment: productionEnvironment({ MULTI_TEACHER_V2_RELEASE_ID: value }),
             v2Enabled: true,
             expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
           }),
           PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_RELEASE_ID,
           `malformed release "${value}" must block`,
@@ -792,6 +822,7 @@ describe('Phase 3 production environment guards', () => {
             }),
             v2Enabled: true,
             expectedReleaseId: expected,
+          nowMillis: WRITE_NOW_MILLIS,
           }),
           PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_RELEASE_ID,
           `non-canonical expected release ${JSON.stringify(expected)} must block the gate`,
@@ -807,6 +838,7 @@ describe('Phase 3 production environment guards', () => {
           }),
           v2Enabled: true,
           expectedReleaseId: 'secret-expected-id',
+          nowMillis: WRITE_NOW_MILLIS,
         })
         assert.fail('should have thrown')
       } catch (error) {
@@ -822,10 +854,102 @@ describe('Phase 3 production environment guards', () => {
       const result = validateWriteAuthorization(writeAuthorization(), {
         environment: productionEnvironment(),
         expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
       })
       assert.equal(result.context, EXECUTION_CONTEXT.PRODUCTION)
-      assert.equal(result.authorizationId, 'CHG-2026-07-26-001')
+      assert.equal(result.authorizationId, 'AUTH-2026-07-26-001')
       assert.ok(Object.isFrozen(result))
+
+      // Commit 5 correction G: EVERY validated safe field is returned. An
+      // earlier version dropped writeFreezeProof and credentialProvenance, so
+      // the journal could not record the identifiers the operator supplied.
+      assert.equal(result.writeFreezeProof, 'freeze-20260726T1155Z')
+      assert.equal(result.credentialProvenance, 'operator-workstation-adc-rotated')
+      assert.equal(result.teacherUid, 'YkYUzIzy0aW7roolM1VaLcIJPuN2')
+      assert.equal(result.changeId, 'CHG-2026-07-26-001')
+      assert.equal(result.initializationExpectationsSha256, 'b'.repeat(64))
+      assert.equal(result.copyExpectationsSha256, 'c'.repeat(64))
+      assert.equal(result.notBefore, '2026-07-26T17:00:00.000Z')
+      assert.equal(result.notAfter, '2026-07-26T23:00:00.000Z')
+    })
+
+    it('requires a current validity window for every mutating invocation', () => {
+      // Unlike the read authorization — which a later write may legitimately
+      // outlive — a stale write authorization must never mutate anything.
+      for (const [label, nowMillis] of [
+        ['before notBefore', Date.parse('2026-07-26T16:59:59.000Z')],
+        ['after notAfter', Date.parse('2026-07-26T23:00:01.000Z')],
+      ]) {
+        assertRejects(
+          () => validateWriteAuthorization(writeAuthorization(), {
+            environment: productionEnvironment(),
+            expectedReleaseId: RELEASE_ID,
+            nowMillis,
+          }),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_AUTHORIZATION,
+          `${label} must block a write`,
+        )
+      }
+      assertRejects(
+        () => validateWriteAuthorization(
+          writeAuthorization({ notAfter: '2026-07-26T16:00:00.000Z' }),
+          {
+            environment: productionEnvironment(),
+            expectedReleaseId: RELEASE_ID,
+            nowMillis: WRITE_NOW_MILLIS,
+          },
+        ),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_AUTHORIZATION,
+        'an inverted window must block',
+      )
+    })
+
+    it('requires digest-shaped fields to be lowercase SHA-256 values', () => {
+      for (const field of [
+        'preflightManifestId',
+        'initializationExpectationsSha256',
+        'copyExpectationsSha256',
+      ]) {
+        for (const value of ['A'.repeat(64), 'abc', 'a'.repeat(63)]) {
+          assertRejects(
+            () => validateWriteAuthorization(
+              writeAuthorization({ [field]: value }),
+              {
+                environment: productionEnvironment(),
+                expectedReleaseId: RELEASE_ID,
+                nowMillis: WRITE_NOW_MILLIS,
+              },
+            ),
+            PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_AUTHORIZATION,
+            `${field}=${value} must block`,
+          )
+        }
+      }
+    })
+
+    it('rejects an authorization naming a different project', () => {
+      assertRejects(
+        () => validateWriteAuthorization(
+          writeAuthorization({ projectId: 'some-other-project' }),
+          {
+            environment: productionEnvironment(),
+            expectedReleaseId: RELEASE_ID,
+            nowMillis: WRITE_NOW_MILLIS,
+          },
+        ),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+        'a foreign project must block',
+      )
+    })
+
+    it('names the supplied identifiers that are NOT proofs', () => {
+      // Documentation-as-contract: these are operator-entered strings. Nothing
+      // here proves a snapshot, freeze, provenance statement, or human approval
+      // actually exists.
+      assert.deepEqual([...WRITE_AUTHORIZATION_UNPROVEN_IDENTIFIERS].sort(), [
+        'authorizationId', 'credentialProvenance', 'snapshotId',
+        'writeFreezeProof',
+      ])
     })
 
     it('rejects each individually missing required field', () => {
@@ -836,6 +960,7 @@ describe('Phase 3 production environment guards', () => {
           () => validateWriteAuthorization(incomplete, {
             environment: productionEnvironment(),
             expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
           }),
           PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_AUTHORIZATION,
           `missing ${field} must block`,
@@ -849,6 +974,7 @@ describe('Phase 3 production environment guards', () => {
           () => validateWriteAuthorization(writeAuthorization({ [field]: '   ' }), {
             environment: productionEnvironment(),
             expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
           }),
           PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_AUTHORIZATION,
           `blank ${field} must block`,
@@ -904,6 +1030,7 @@ describe('Phase 3 production environment guards', () => {
         validateWriteAuthorization(authorization, {
           environment: productionEnvironment(),
           expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
         })
         assert.fail('force must be refused even when falsy')
       } catch (error) {
@@ -928,6 +1055,7 @@ describe('Phase 3 production environment guards', () => {
         () => validateWriteAuthorization(writeAuthorization({ snapshotId: 42 }), {
           environment: productionEnvironment(),
           expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
         }),
         PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_AUTHORIZATION,
         'numeric field must block',
@@ -956,6 +1084,7 @@ describe('Phase 3 production environment guards', () => {
           () => validateWriteAuthorization(value, {
             environment: productionEnvironment(),
             expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
           }),
           PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_AUTHORIZATION,
           `must reject ${String(value)}`,
@@ -969,6 +1098,7 @@ describe('Phase 3 production environment guards', () => {
         () => validateWriteAuthorization(writeAuthorization(), {
           environment: emulatorEnvironment(),
           expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
         }),
         PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
         'emulator context must not authorize a production write',
@@ -980,6 +1110,7 @@ describe('Phase 3 production environment guards', () => {
         () => validateWriteAuthorization(writeAuthorization(), {
           environment: { GCLOUD_PROJECT: 'morgan-bank-staging' },
           expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
         }),
         PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
         'unapproved project must block a write',
@@ -993,6 +1124,7 @@ describe('Phase 3 production environment guards', () => {
             FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080',
           }),
           expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
         }),
         PRODUCTION_ENVIRONMENT_CATEGORIES.EMULATOR_HOST_IN_PRODUCTION,
         'contradictory environment must block a write',
@@ -1074,6 +1206,7 @@ describe('Phase 3 production environment guards', () => {
         () => validateWriteAuthorization({}, {
           environment: productionEnvironment(),
           expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
         }),
         PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_AUTHORIZATION,
         'environment validity must not confer write authorization',
@@ -1145,14 +1278,291 @@ describe('Phase 3 production environment guards', () => {
         'PROJECT_ROUTING_VARIABLES',
         'ProductionEnvironmentError',
         'REQUIRED_WRITE_AUTHORIZATION_FIELDS',
+        // Commit 5 added the rehearsal validator and the shared local-artifact
+        // helpers. All are guards or pure local validators; none performs
+        // discovery, projection, manifest persistence, or any write.
+        'WRITE_AUTHORIZATION_UNPROVEN_IDENTIFIERS',
+        'assertServiceAccountArtifact',
         'assertV2GateAllowed',
         'classifyAllowedProject',
         'isLoopbackHostPort',
+        'parseJsonArtifact',
+        'readHashedArtifact',
         'redactEnvironmentError',
         'resolveRuntimeProjectId',
         'validateExecutionEnvironment',
+        'validateExplicitCredential',
+        'validateRehearsalWriteAuthorization',
         'validateWriteAuthorization',
-      ], 'Commit 2 must expose guards only — no runner, manifest, or writer')
+      ], 'Commit 2/5 must expose guards only — no runner, manifest, or writer')
+    })
+
+    it('importing the module creates no SDK, network, or filesystem handle', async () => {
+      // Correction I: the relocated helpers may read explicitly named local
+      // artifacts and construct an injected credential ONLY when called.
+      // Importing must stay side-effect-free.
+      const source = await import('node:fs/promises')
+        .then(fs => fs.readFile(
+          new URL('./productionEnvironment.js', import.meta.url), 'utf8',
+        ))
+      assert.ok(
+        !source.includes("from 'firebase-admin"),
+        'the guard module must not import firebase-admin',
+      )
+      // Only type/util imports at module scope; no client is constructed.
+      for (const forbidden of [
+        'initializeApp(', 'getFirestore(', 'getAuth(', 'new URL(\'https',
+      ]) {
+        assert.ok(!source.includes(forbidden), `must not contain ${forbidden}`)
+      }
+    })
+  })
+
+  describe('rehearsal write authorization (correction H)', () => {
+    it('accepts the exact demo project in the emulator context', () => {
+      const result = validateRehearsalWriteAuthorization(
+        writeAuthorization({ projectId: ALLOWED_EMULATOR_PROJECT_ID }),
+        {
+          environment: emulatorEnvironment(),
+          expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
+        },
+      )
+      assert.equal(result.context, EXECUTION_CONTEXT.EMULATOR)
+      assert.equal(result.projectId, ALLOWED_EMULATOR_PROJECT_ID)
+    })
+
+    it('can never authorize production', () => {
+      assertRejects(
+        () => validateRehearsalWriteAuthorization(writeAuthorization(), {
+          environment: productionEnvironment(),
+          expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
+        }),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+        'a rehearsal authorization must never reach production',
+      )
+    })
+
+    it('the production validator still rejects the emulator', () => {
+      // The production guard is NOT weakened or parameterized to accommodate
+      // rehearsal: the two paths are not interchangeable in either direction.
+      assertRejects(
+        () => validateWriteAuthorization(
+          writeAuthorization({ projectId: ALLOWED_EMULATOR_PROJECT_ID }),
+          {
+            environment: emulatorEnvironment(),
+            expectedReleaseId: RELEASE_ID,
+            nowMillis: WRITE_NOW_MILLIS,
+          },
+        ),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+        'production write authorization must reject the emulator',
+      )
+    })
+
+    it('admits no demo-* project family and no remote emulator host', () => {
+      for (const projectId of [
+        'demo-anything-else', 'demo-', 'demo-morgan-bank', 'morgan-bank',
+      ]) {
+        // The exact refusal category differs — an unapproved demo-* name is
+        // project-not-allowed, while `morgan-bank` carrying emulator hosts is
+        // emulator-host-in-production. What matters is that NONE of them can
+        // satisfy the rehearsal validator.
+        assert.throws(
+          () => validateRehearsalWriteAuthorization(
+            writeAuthorization({ projectId }),
+            {
+              environment: emulatorEnvironment({ GCLOUD_PROJECT: projectId }),
+              expectedReleaseId: RELEASE_ID,
+              nowMillis: WRITE_NOW_MILLIS,
+            },
+          ),
+          error => {
+            assert.ok(error instanceof ProductionEnvironmentError)
+            assert.equal(error.blocking, true)
+            return true
+          },
+          `${projectId} must not satisfy the rehearsal validator`,
+        )
+      }
+      // A non-loopback emulator host is refused by the environment guard.
+      assertRejects(
+        () => validateRehearsalWriteAuthorization(
+          writeAuthorization({ projectId: ALLOWED_EMULATOR_PROJECT_ID }),
+          {
+            environment: emulatorEnvironment({
+              FIRESTORE_EMULATOR_HOST: 'firestore.example.com:8080',
+            }),
+            expectedReleaseId: RELEASE_ID,
+            nowMillis: WRITE_NOW_MILLIS,
+          },
+        ),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_EMULATOR_HOST,
+        'a remote emulator host must block a rehearsal',
+      )
+    })
+
+    it('shares the same strict shape and binding logic', () => {
+      // The rehearsal path is not a laxer variant: the same required fields,
+      // digest shapes, and validity window apply.
+      for (const override of [
+        { snapshotId: '' },
+        { copyExpectationsSha256: 'not-a-digest' },
+        { notAfter: '2026-07-26T16:00:00.000Z' },
+      ]) {
+        assert.throws(
+          () => validateRehearsalWriteAuthorization(
+            writeAuthorization({
+              projectId: ALLOWED_EMULATOR_PROJECT_ID, ...override,
+            }),
+            {
+              environment: emulatorEnvironment(),
+              expectedReleaseId: RELEASE_ID,
+              nowMillis: WRITE_NOW_MILLIS,
+            },
+          ),
+          error => error instanceof ProductionEnvironmentError,
+          `${JSON.stringify(override)} must block a rehearsal too`,
+        )
+      }
+    })
+  })
+
+  describe('shared service-account artifact assertion (correction H)', () => {
+    function serviceAccount(overrides = {}) {
+      return {
+        type: 'service_account',
+        project_id: ALLOWED_PRODUCTION_PROJECT_ID,
+        client_email: 'runner@morgan-bank.iam.gserviceaccount.com',
+        private_key: '-----BEGIN PRIVATE KEY-----\nsynthetic\n-----END PRIVATE KEY-----\n',
+        ...overrides,
+      }
+    }
+
+    it('requires an explicit expected project from the allowlist', () => {
+      // No default, no fallback, no demo-* family: an absent or unrecognized
+      // expectation fails closed before any SDK handle could exist.
+      for (const expected of [
+        undefined, null, '', 'demo-anything', 'morgan-bank-staging',
+      ]) {
+        assertRejects(
+          () => assertServiceAccountArtifact(serviceAccount(), expected),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+          `expectedProjectId=${String(expected)} must fail closed`,
+        )
+      }
+    })
+
+    it('accepts each allowlisted project for its own artifact', () => {
+      assert.deepEqual(
+        assertServiceAccountArtifact(
+          serviceAccount(), ALLOWED_PRODUCTION_PROJECT_ID,
+        ),
+        {
+          projectId: ALLOWED_PRODUCTION_PROJECT_ID,
+          clientEmail: 'runner@morgan-bank.iam.gserviceaccount.com',
+          privateKey: serviceAccount().private_key,
+        },
+      )
+      assert.equal(
+        assertServiceAccountArtifact(
+          serviceAccount({ project_id: ALLOWED_EMULATOR_PROJECT_ID }),
+          ALLOWED_EMULATOR_PROJECT_ID,
+        ).projectId,
+        ALLOWED_EMULATOR_PROJECT_ID,
+      )
+    })
+
+    it('rejects a cross-project, non-service-account, or incomplete artifact', () => {
+      assertRejects(
+        () => assertServiceAccountArtifact(
+          serviceAccount({ project_id: ALLOWED_EMULATOR_PROJECT_ID }),
+          ALLOWED_PRODUCTION_PROJECT_ID,
+        ),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.WRONG_PROJECT_CREDENTIAL,
+        'a demo credential must not satisfy a production expectation',
+      )
+      for (const override of [
+        { type: 'authorized_user' }, { client_email: '' }, { private_key: '  ' },
+      ]) {
+        assertRejects(
+          () => assertServiceAccountArtifact(
+            serviceAccount(override), ALLOWED_PRODUCTION_PROJECT_ID,
+          ),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_CREDENTIAL,
+          `${JSON.stringify(override)} must block`,
+        )
+      }
+    })
+
+    it('is pure: it constructs no Admin credential', () => {
+      let factoryCalls = 0
+      assertServiceAccountArtifact(
+        serviceAccount(), ALLOWED_PRODUCTION_PROJECT_ID,
+      )
+      assert.equal(factoryCalls, 0)
+      // Only validateExplicitCredential constructs one, and only for production.
+      const credential = validateExplicitCredential(serviceAccount(), () => {
+        factoryCalls += 1
+        return { getAccessToken: async () => ({ access_token: 'x' }) }
+      })
+      assert.equal(factoryCalls, 1)
+      assert.equal(typeof credential.getAccessToken, 'function')
+    })
+
+    it('validateExplicitCredential is production-only', () => {
+      // Emulator rehearsal must never manufacture a service-account Admin
+      // credential; it validates shape and then uses the loopback handle path.
+      assertRejects(
+        () => validateExplicitCredential(
+          serviceAccount({ project_id: ALLOWED_EMULATOR_PROJECT_ID }),
+          () => ({ getAccessToken: async () => ({}) }),
+        ),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.WRONG_PROJECT_CREDENTIAL,
+        'a demo credential must never produce an Admin credential',
+      )
+    })
+  })
+
+  describe('shared artifact helpers (correction I)', () => {
+    it('hashes raw bytes BEFORE decoding', async () => {
+      const bytes = Buffer.from('{"a":1}', 'utf8')
+      const artifact = await readHashedArtifact('/artifact.json', {
+        readFile: async () => bytes,
+      })
+      assert.equal(
+        artifact.sha256,
+        createHash('sha256').update(bytes).digest('hex'),
+      )
+      assert.equal(artifact.contents, '{"a":1}')
+    })
+
+    it('rejects invalid UTF-8 rather than substituting replacement characters', async () => {
+      // A lenient decode maps distinct invalid sequences onto the same
+      // replacement character, so two different files could agree after
+      // decoding while disagreeing on disk.
+      await assert.rejects(
+        readHashedArtifact('/artifact.json', {
+          readFile: async () => Buffer.from([0xff, 0xfe, 0xfd]),
+        }),
+        error => error.category ===
+          PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_ARTIFACT,
+      )
+    })
+
+    it('rejects unparseable JSON without leaking contents', () => {
+      assert.throws(
+        () => parseJsonArtifact('{not json', 'The test artifact'),
+        error => {
+          assert.equal(
+            error.category,
+            PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_ARTIFACT,
+          )
+          assert.ok(!error.message.includes('{not json'))
+          return true
+        },
+      )
     })
   })
 })

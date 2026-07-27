@@ -1,4 +1,8 @@
+import { Buffer } from 'node:buffer'
+import { createHash } from 'node:crypto'
+import { readFile as defaultReadFile } from 'node:fs/promises'
 import process from 'node:process'
+import { TextDecoder } from 'node:util'
 
 /**
  * Phase 3 Commit 2 — production environment, project, and authorization guards.
@@ -48,6 +52,8 @@ export const PRODUCTION_ENVIRONMENT_CATEGORIES = Object.freeze({
   INVALID_AUTHORIZATION: 'invalid-authorization',
   INVALID_EMULATOR_HOST: 'invalid-emulator-host',
   INVALID_RELEASE_ID: 'invalid-release-id',
+  MALFORMED_ARTIFACT: 'malformed-artifact',
+  MALFORMED_CREDENTIAL: 'malformed-credential',
   MISSING_AUTHORIZATION: 'missing-authorization',
   MISSING_EMULATOR_FLAG: 'missing-emulator-flag',
   MISSING_EMULATOR_HOST: 'missing-emulator-host',
@@ -55,6 +61,7 @@ export const PRODUCTION_ENVIRONMENT_CATEGORIES = Object.freeze({
   PROJECT_NOT_ALLOWED: 'project-not-allowed',
   RELEASE_ID_MISMATCH: 'release-id-mismatch',
   V2_NOT_ENABLED: 'v2-not-enabled',
+  WRONG_PROJECT_CREDENTIAL: 'wrong-project-credential',
 })
 
 /**
@@ -81,6 +88,9 @@ const RELEASE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
 /** Authorization identifiers follow the same conservative shape. */
 const AUTHORIZATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
+/** A lowercase SHA-256 hex digest. Uppercase is rejected, not normalized. */
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/
 
 export class ProductionEnvironmentError extends Error {
   constructor(category, message, details = {}) {
@@ -493,12 +503,53 @@ export function assertV2GateAllowed(options = {}) {
  * be inferred, defaulted, or discovered by the runner.
  */
 export const REQUIRED_WRITE_AUTHORIZATION_FIELDS = Object.freeze([
-  'authorizationId',
+  'projectId',
+  'teacherUid',
   'releaseId',
+  'changeId',
+  'authorizationId',
   'snapshotId',
   'writeFreezeProof',
   'credentialProvenance',
   'preflightManifestId',
+  'initializationExpectationsSha256',
+  'copyExpectationsSha256',
+  'notBefore',
+  'notAfter',
+])
+
+/**
+ * Fields that are lowercase 64-character SHA-256 digests rather than canonical
+ * identifiers. `preflightManifestId` is content-addressed, so it is digest-shaped
+ * too — validating it as a loose identifier would accept a manifest ID that could
+ * never resolve to a retained file.
+ */
+const WRITE_AUTHORIZATION_SHA256_FIELDS = Object.freeze([
+  'preflightManifestId',
+  'initializationExpectationsSha256',
+  'copyExpectationsSha256',
+])
+
+/** Fields carrying an ISO-8601 instant bounding the authorization's validity. */
+const WRITE_AUTHORIZATION_INSTANT_FIELDS = Object.freeze([
+  'notBefore',
+  'notAfter',
+])
+
+/**
+ * Supplied identifiers that are recorded and bound but are NOT proofs.
+ *
+ * Named explicitly so no reader of this module mistakes their presence for
+ * evidence that a snapshot was taken, a freeze is in effect, a credential's
+ * provenance was audited, or a human approved anything. They are operator-entered
+ * strings; this module proves only that they are well-formed and consistent
+ * across artifacts.
+ */
+export const WRITE_AUTHORIZATION_UNPROVEN_IDENTIFIERS = Object.freeze([
+  'snapshotId',
+  'writeFreezeProof',
+  'credentialProvenance',
+  'authorizationId',
 ])
 
 /** Flags that must never be honored, even if an operator passes them. */
@@ -527,7 +578,66 @@ export const PROHIBITED_AUTHORIZATION_KEYS = Object.freeze([
  * it does.
  */
 export function validateWriteAuthorization(authorization, options = {}) {
-  const { expectedReleaseId } = options
+  // A write is only ever authorized against the real production project. An
+  // emulator rehearsal must not travel through this guard. The explicit-undefined
+  // rule from `validateExecutionEnvironment` applies here too.
+  const validated = Object.hasOwn(options, 'environment')
+    ? validateExecutionEnvironment(options.environment)
+    : validateExecutionEnvironment()
+  if (validated.context !== EXECUTION_CONTEXT.PRODUCTION) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+      'A production write authorization requires the production project.',
+      { context: validated.context },
+    )
+  }
+
+  return finishWriteAuthorization(authorization, options, validated)
+}
+
+/**
+ * The emulator-rehearsal counterpart to `validateWriteAuthorization`.
+ *
+ * Separately named on purpose. It shares the strict shape, binding, and validity
+ * logic above, but it can NEVER authorize production: it requires the emulator
+ * context and the one exact demo project, so a rehearsal artifact and a
+ * production artifact are not interchangeable in either direction. The production
+ * guard is not weakened or parameterized to accommodate this path, and no
+ * `demo-*` project family is admitted — only the single allowlisted ID.
+ */
+export function validateRehearsalWriteAuthorization(authorization, options = {}) {
+  const validated = Object.hasOwn(options, 'environment')
+    ? validateExecutionEnvironment(options.environment)
+    : validateExecutionEnvironment()
+  if (validated.context !== EXECUTION_CONTEXT.EMULATOR) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+      'A rehearsal write authorization requires the emulator context.',
+      { context: validated.context },
+    )
+  }
+  // Defence in depth: `validateExecutionEnvironment` already pins the emulator
+  // project, but a rehearsal authorization must never be satisfiable by any
+  // project other than the single allowlisted demo ID.
+  if (validated.projectId !== ALLOWED_EMULATOR_PROJECT_ID) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+      'A rehearsal write authorization requires the exact demo project.',
+    )
+  }
+
+  return finishWriteAuthorization(authorization, options, validated)
+}
+
+/**
+ * Shared strict validation for both authorization paths.
+ *
+ * The caller has already decided — and proven — which execution context applies.
+ * This function never makes that decision, so it cannot become a way to reach the
+ * production branch from a rehearsal call site.
+ */
+function finishWriteAuthorization(authorization, options, validated) {
+  const { expectedReleaseId, nowMillis } = options
 
   if (authorization === null || typeof authorization !== 'object' ||
       Array.isArray(authorization)) {
@@ -585,7 +695,27 @@ export function validateWriteAuthorization(authorization, options = {}) {
         { field },
       )
     }
-    if (!AUTHORIZATION_ID_PATTERN.test(value)) {
+  }
+
+  // Digest-shaped fields are validated as digests, not as loose identifiers. The
+  // canonical-identifier pattern would accept an uppercase or short value that can
+  // never address a retained manifest or match a raw artifact hash.
+  for (const field of WRITE_AUTHORIZATION_SHA256_FIELDS) {
+    if (!SHA256_HEX_PATTERN.test(authorization[field])) {
+      fail(
+        PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_AUTHORIZATION,
+        'A write authorization digest is not a lowercase SHA-256 hex value.',
+        { field },
+      )
+    }
+  }
+
+  for (const field of REQUIRED_WRITE_AUTHORIZATION_FIELDS) {
+    if (WRITE_AUTHORIZATION_SHA256_FIELDS.includes(field) ||
+        WRITE_AUTHORIZATION_INSTANT_FIELDS.includes(field)) {
+      continue
+    }
+    if (!AUTHORIZATION_ID_PATTERN.test(authorization[field])) {
       fail(
         PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_AUTHORIZATION,
         'A write authorization field is not a canonical identifier.',
@@ -594,17 +724,12 @@ export function validateWriteAuthorization(authorization, options = {}) {
     }
   }
 
-  // A write is only ever authorized against the real production project. An
-  // emulator rehearsal must not travel through this guard. The explicit-undefined
-  // rule from `validateExecutionEnvironment` applies here too.
-  const validated = Object.hasOwn(options, 'environment')
-    ? validateExecutionEnvironment(options.environment)
-    : validateExecutionEnvironment()
-  if (validated.context !== EXECUTION_CONTEXT.PRODUCTION) {
+  // The authorization must name the project it is being validated against, so a
+  // record issued for one target cannot authorize writing another.
+  if (authorization.projectId !== validated.projectId) {
     fail(
       PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
-      'A production write authorization requires the production project.',
-      { context: validated.context },
+      'The write authorization names a different project than the environment.',
     )
   }
 
@@ -619,13 +744,49 @@ export function validateWriteAuthorization(authorization, options = {}) {
     )
   }
 
+  // The validity window is strict and must be CURRENT for every mutating
+  // invocation. Unlike the read authorization — which a later write invocation may
+  // legitimately outlive — a stale write authorization must never mutate anything.
+  const notBefore = parseAuthorizationInstant(authorization.notBefore, 'notBefore')
+  const notAfter = parseAuthorizationInstant(authorization.notAfter, 'notAfter')
+  if (!(notBefore < notAfter)) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_AUTHORIZATION,
+      'The write-authorization validity interval is empty or inverted.',
+    )
+  }
+  if (!Number.isFinite(nowMillis)) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_AUTHORIZATION,
+      'A finite current time is required to validate the authorization window.',
+    )
+  }
+  if (nowMillis < notBefore || nowMillis > notAfter) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_AUTHORIZATION,
+      'The write authorization is outside its validity interval.',
+    )
+  }
+
+  // Every validated safe field is returned. An earlier version dropped
+  // `writeFreezeProof` and `credentialProvenance`, which meant the journal could
+  // not record the identifiers the operator actually supplied.
   return Object.freeze({
     context: validated.context,
     projectId: validated.projectId,
-    authorizationId: authorization.authorizationId,
+    teacherUid: authorization.teacherUid,
     releaseId: authorization.releaseId,
+    changeId: authorization.changeId,
+    authorizationId: authorization.authorizationId,
     snapshotId: authorization.snapshotId,
+    writeFreezeProof: authorization.writeFreezeProof,
+    credentialProvenance: authorization.credentialProvenance,
     preflightManifestId: authorization.preflightManifestId,
+    initializationExpectationsSha256:
+      authorization.initializationExpectationsSha256,
+    copyExpectationsSha256: authorization.copyExpectationsSha256,
+    notBefore: authorization.notBefore,
+    notAfter: authorization.notAfter,
   })
 }
 
@@ -657,4 +818,193 @@ export function redactEnvironmentError(error) {
     category: error.category,
     details: Object.freeze(safeDetails),
   })
+}
+
+/**
+ * Parses an ISO-8601 instant bounding an authorization's validity.
+ *
+ * Not coercing: a numeric or `Date` input would let a caller supply a bound this
+ * module never reviewed as text.
+ */
+function parseAuthorizationInstant(value, field) {
+  if (typeof value !== 'string') {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_AUTHORIZATION,
+      'An authorization validity bound must be an ISO-8601 string.',
+      { field },
+    )
+  }
+  const millis = Date.parse(value)
+  if (!Number.isFinite(millis)) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_AUTHORIZATION,
+      'An authorization validity bound is not a parseable instant.',
+      { field },
+    )
+  }
+  return millis
+}
+
+/* ------------------------------------------------------------------------- *
+ * Shared local-artifact helpers.
+ *
+ * Relocated here from `preflight.js` so all three Phase 3 entrypoints bind
+ * artifacts identically instead of each carrying a near-copy that could drift.
+ *
+ * Importing this module remains side-effect-free: every function below reads
+ * only when CALLED, with an explicitly named path supplied by the caller, and
+ * none of them constructs an SDK, network, or Admin handle. The credential
+ * FACTORY is injected by the caller — this module never imports `firebase-admin`.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Reads an artifact and returns its exact bytes' SHA-256 plus a strictly decoded
+ * UTF-8 string.
+ *
+ * Hash-before-parse: the digest covers the exact bytes on disk, so an artifact
+ * cannot be bound to an authorization by one representation and then interpreted
+ * as another. The decode is `fatal` because a lenient decode maps distinct
+ * invalid byte sequences onto the same replacement character, which would let two
+ * different files agree after decoding while disagreeing on disk.
+ */
+export async function readHashedArtifact(filePath, dependencies = {}) {
+  const read = dependencies.readFile ?? defaultReadFile
+  if (typeof filePath !== 'string' || filePath.trim() === '') {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_ARTIFACT,
+      'An artifact path must be a non-empty string.',
+    )
+  }
+  const artifact = await read(filePath)
+  if (typeof artifact !== 'string' && !(artifact instanceof Uint8Array)) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_ARTIFACT,
+      'An artifact reader returned no bytes.',
+    )
+  }
+  const bytes = typeof artifact === 'string'
+    ? Buffer.from(artifact, 'utf8')
+    : artifact
+  const sha256 = createHash('sha256').update(bytes).digest('hex')
+  let contents
+  try {
+    contents = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_ARTIFACT,
+      'An artifact is not valid UTF-8.',
+    )
+  }
+  return Object.freeze({ contents, sha256 })
+}
+
+/** Parses artifact text as JSON without leaking its contents into the error. */
+export function parseJsonArtifact(contents, label) {
+  try {
+    return JSON.parse(contents)
+  } catch {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_ARTIFACT,
+      `${label} is not parseable JSON.`,
+      { label },
+    )
+  }
+}
+
+/**
+ * Asserts a parsed artifact is a strict service-account key naming exactly the
+ * expected project. PURE: it constructs nothing and returns the validated fields.
+ *
+ * `expectedProjectId` is a REQUIRED explicit argument that the caller must derive
+ * from an already-validated execution environment, and it must be exactly one of
+ * the two allowlisted projects. There is no default, no fallback, and no
+ * `demo-*` family: an absent or unrecognized expectation fails closed here,
+ * before any SDK handle could exist.
+ */
+export function assertServiceAccountArtifact(parsed, expectedProjectId) {
+  if (expectedProjectId !== ALLOWED_PRODUCTION_PROJECT_ID &&
+      expectedProjectId !== ALLOWED_EMULATOR_PROJECT_ID) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+      'A credential expectation must name an allowlisted project exactly.',
+    )
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_CREDENTIAL,
+      'The credential file must be a JSON object.',
+    )
+  }
+  if (parsed.type !== 'service_account') {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_CREDENTIAL,
+      'The credential file must be an explicit service-account key.',
+    )
+  }
+  if (parsed.project_id !== expectedProjectId) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.WRONG_PROJECT_CREDENTIAL,
+      'The credential file does not name the expected project.',
+    )
+  }
+  for (const field of ['client_email', 'private_key']) {
+    if (typeof parsed[field] !== 'string' || parsed[field].trim() === '') {
+      fail(
+        PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_CREDENTIAL,
+        'The credential file is missing a required service-account field.',
+        { field },
+      )
+    }
+  }
+  return Object.freeze({
+    projectId: parsed.project_id,
+    clientEmail: parsed.client_email,
+    privateKey: parsed.private_key,
+  })
+}
+
+/**
+ * Validates a service-account artifact and constructs an explicit Admin
+ * credential from it.
+ *
+ * PRODUCTION ONLY. An explicit Admin credential is a production concept: the
+ * emulator rehearsal path validates the artifact's shape with
+ * `assertServiceAccountArtifact` and then uses the no-credential loopback handle
+ * path, so a rehearsal never manufactures or uses one. Keeping construction on
+ * this single production-pinned path is what preserves that meaning.
+ *
+ * There is no ADC, CLI-login, metadata-server, or ambient-discovery fallback
+ * anywhere in this contract.
+ */
+export function validateExplicitCredential(parsed, credentialFactory) {
+  const fields = assertServiceAccountArtifact(
+    parsed,
+    ALLOWED_PRODUCTION_PROJECT_ID,
+  )
+  if (typeof credentialFactory !== 'function') {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_CREDENTIAL,
+      'The explicit credential factory is unavailable.',
+    )
+  }
+  let credential
+  try {
+    credential = credentialFactory({
+      projectId: fields.projectId,
+      clientEmail: fields.clientEmail,
+      privateKey: fields.privateKey,
+    })
+  } catch {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_CREDENTIAL,
+      'The credential file does not contain a usable service-account key.',
+    )
+  }
+  if (!credential || typeof credential.getAccessToken !== 'function') {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_CREDENTIAL,
+      'The credential file did not produce an explicit Admin credential.',
+    )
+  }
+  return credential
 }

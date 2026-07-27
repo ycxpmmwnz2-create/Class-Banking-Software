@@ -280,15 +280,27 @@ describe('Phase 3 release-order source contract', () => {
     // let a later commit's test file appear without its implementation, which is
     // the mirror image of the placeholder problem Section 12 forbids.
     // Commit 3 earned productionPreflight, productionManifest, and preflight.js;
-    // Commit 4 earned productionProjection and productionReconciliation.
-    // Everything below still belongs to Commits 5-6. Both implementation and
-    // test names stay pinned, so a later commit's test cannot appear without its
-    // implementation either.
+    // Commit 4 earned productionProjection and productionReconciliation;
+    // Commit 5 earns productionWriter (with its colocated test), write.js, and
+    // reverify.js. Only the student lifecycle remains unearned — it belongs to
+    // Commit 6. Both implementation and test names stay pinned, so a later
+    // commit's test cannot appear without its implementation either.
     const NOT_YET_EARNED = [
-      'productionWriter.js', 'productionWriter.test.js',
-      'write.js', 'reverify.js',
       'studentLifecycle.js', 'studentLifecycle.test.js',
     ]
+
+    // Commit 5 must actually deliver its files, not merely be permitted to.
+    // Pinning presence here is what stops the boundary test from silently
+    // passing if the writer were dropped from the commit.
+    for (const name of [
+      'productionWriter.js', 'productionWriter.test.js',
+      'write.js', 'reverify.js',
+    ]) {
+      assert.ok(
+        actual.includes(name),
+        `functions/phase3/${name} is earned by Commit 5 and must exist`,
+      )
+    }
     for (const name of NOT_YET_EARNED) {
       assert.ok(
         !actual.includes(name),
@@ -367,13 +379,95 @@ describe('Phase 3 release-order source contract', () => {
       )
     }
 
-    // And the sibling entrypoints must still be absent entirely.
-    for (const sibling of ['write.js', 'reverify.js']) {
-      assert.equal(
-        existsSync(new URL(`../../functions/phase3/${sibling}`, import.meta.url)),
-        false,
-        `${sibling} belongs to a later commit`,
+  })
+
+  it('boundary: reverify cannot import the writer or reach a mutation', () => {
+    const source = readFileSync(
+      new URL('../../functions/phase3/reverify.js', import.meta.url), 'utf8',
+    )
+
+    // The structural guarantee that makes reverify read-only: the writer is the
+    // only module holding transaction/create/update code, so not importing it
+    // means no mutating call is reachable from this file at all.
+    //
+    // Matched against actual import statements rather than a bare substring —
+    // the forbidden-vocabulary list in this very test file would otherwise make
+    // a naive `includes` check match itself.
+    const imports = [...source.matchAll(/from\s+'([^']+)'/g)].map(m => m[1])
+    assert.ok(
+      !imports.some(specifier => specifier.includes('productionWriter')),
+      `reverify.js must never import productionWriter.js (imports: ${imports})`,
+    )
+
+    for (const forbidden of [
+      'runTransaction', '.batch(', 'writeBatch',
+      '.create(', '.update(', '.set(', '.delete(',
+      'createUser', 'updateUser', 'deleteUser', 'setCustomUserClaims',
+      'persistProductionManifest', 'journal.append',
+    ]) {
+      assert.ok(
+        !source.includes(forbidden),
+        `reverify.js must contain no ${forbidden} call path`,
       )
+    }
+  })
+
+  it('boundary: write.js has no subcommand dispatch or forbidden override', () => {
+    const source = readFileSync(
+      new URL('../../functions/phase3/write.js', import.meta.url), 'utf8',
+    )
+
+    // The stage is derived from the journal alone. A stage/mode/resume flag
+    // would reintroduce exactly the bypass the two-invocation design removes.
+    for (const forbidden of [
+      "'--stage'", "'--mode'", "'--resume'", "'--force'", "'--dry-run'",
+      "'--teacher-uid'", "'--manifest-id'", "'--state-dir'",
+    ]) {
+      // Each appears ONLY inside the forbidden-vocabulary set, never as an
+      // accepted value flag.
+      const acceptedFlags = source.slice(
+        source.indexOf('const VALUE_FLAGS'),
+        source.indexOf('const FORBIDDEN_FLAGS'),
+      )
+      assert.ok(
+        !acceptedFlags.includes(forbidden),
+        `write.js must not accept ${forbidden}`,
+      )
+    }
+
+    assert.ok(
+      source.includes('FORBIDDEN_SUBCOMMANDS'),
+      'write.js must reject subcommands by name',
+    )
+    assert.ok(
+      !/switch\s*\(\s*(subcommand|command|argv\[0\])/.test(source),
+      'write.js must have no subcommand dispatch',
+    )
+  })
+
+  it('boundary: the production writer holds no delete or Auth mutation path', () => {
+    const source = readFileSync(
+      new URL('../../functions/phase3/productionWriter.js', import.meta.url),
+      'utf8',
+    )
+    for (const forbidden of [
+      '.delete(', 'deleteDoc', 'recursiveDelete', 'bulkWriter',
+      'createUser', 'updateUser', 'deleteUser', 'setCustomUserClaims',
+      '.batch(', 'writeBatch',
+    ]) {
+      assert.ok(
+        !source.includes(forbidden),
+        `productionWriter.js must not contain ${forbidden}`,
+      )
+    }
+    // Transactions, not blind batches.
+    assert.ok(source.includes('runTransaction'))
+    // No cleanup/prune surface may be exported.
+    for (const forbidden of [
+      'export function cleanup', 'export function prune',
+      'export function deleteJournal',
+    ]) {
+      assert.ok(!source.includes(forbidden), `must not export ${forbidden}`)
     }
   })
 
@@ -491,12 +585,24 @@ describe('Phase 3 release-order source contract', () => {
     for (const surface of [
       'classroomStudents', 'classroomTransactions', 'classroomLoginHistory',
       'scopedCredentials', 'scopedLogs',
+      // Commit 5: the root login-code index is a separately bound surface, so a
+      // pre-existing reservation cannot hide behind another surface's zero.
+      'loginCodeIndex',
     ]) {
       assert.ok(
         preflight.includes(`'${surface}'`),
         `DESTINATION_SURFACES must declare ${surface}`,
       )
     }
+    // The whole collection AND the exact selected document must be inspected.
+    assert.ok(
+      /collectionPath:\s*'classroomLoginCodes'/.test(preflight),
+      'the login-code index collection must be enumerated completely',
+    )
+    assert.ok(
+      /classroomLoginCodes\/\$\{canonicalLoginCode\}/.test(preflight),
+      'the exact selected login-code document must be inspected',
+    )
 
     // Every destination reference set must reach the watermark.
     for (const idSet of [
@@ -538,8 +644,12 @@ describe('Phase 3 release-order source contract', () => {
     )
 
     const destinationReader = preflight.match(
-      /async function readDestinationPaths\(\)\s*\{[\s\S]*?async function readAuthCompatibility/,
+      /async function readDestinationPaths\([^)]*\)\s*\{[\s\S]*?async function readAuthCompatibility/,
     )?.[0] ?? ''
+    assert.ok(
+      destinationReader.length > 0,
+      'the destination reader must be locatable for inspection',
+    )
     assert.ok(
       /studentIdCoverageBySurface/.test(destinationReader) &&
         /recordIdentity/.test(destinationReader) &&

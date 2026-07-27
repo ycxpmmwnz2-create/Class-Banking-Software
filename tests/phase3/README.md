@@ -8,19 +8,34 @@
 | 2 | Production environment, project, and authorization guards | complete |
 | 3 | Read-only production preflight and manifest | complete |
 | 4 | Copy-only production projection and reconciliation | complete |
-| 5–11 | Writer, lifecycle, client, rules, rehearsal | not started |
+| 5 | Production writer and crash/restart recovery | complete |
+| 6–11 | Lifecycle, client, rules, rehearsal | not started |
 
-Commit 4 adds pure production projection and reconciliation functions. They
-accept caller-supplied values, reuse Phase 2A's data projection and Phase 2B's
-scoped-credential copy semantics, and expose no reader, SDK, filesystem,
-manifest, operation, or write surface. Flat credentials and logs are modeled
-only as immutable sources; they never appear as destinations. No Phase 3 writer,
-student lifecycle, client wiring, rules artifact, or deployment logic exists
-yet. Commit 3's preflight remains read-only with respect to Firebase and Google
-services; persisting its local manifest is required and does not weaken that
-boundary. The `write.js` and `reverify.js` entrypoints do not exist, and
-`preflight.js` imports no writer, projection, or reconciliation module — asserted
-by `release-order.contract.test.js`.
+Commit 5 adds the bounded production writer, its append-only durable journal,
+and the read-only re-verifier. The writer owns exactly two remote mutations: one
+atomic initialization transaction that reserves the classroom login code and
+sets the student counter on an ALREADY EXISTING foundation, and a bounded series
+of copy transactions. It contains no delete API, no Auth mutation, and no
+control-plane mutation.
+
+Release Order steps 9–12 require two deployment states, so `write.js` is
+journal-driven across **two invocations**. There is no stage flag, mode
+argument, or resume switch: the stage is derived solely by replaying the
+journal, and the copy branch is reachable only from an
+`awaiting-copy-deployment` event that only a verified initialization can append.
+The first invocation stops with a distinct `ACTION_REQUIRED/AWAITING_DEPLOYMENT`
+result and a nonzero exit code, so it can never be mistaken for a completed
+migration.
+
+`reverify.js` is remote read-only and local state read-only. It does not import
+`productionWriter.js` — a structural guarantee, since the writer is the only
+module holding transaction code — and `release-order.contract.test.js` asserts
+that plus the absence of any mutating call path. Commit 3's preflight remains
+read-only with respect to Firebase and Google services, and `preflight.js` still
+imports no writer, projection, or reconciliation module.
+
+Student lifecycle, client wiring, rules artifacts, and deployment logic remain
+unimplemented.
 
 ## Commands
 
@@ -303,10 +318,50 @@ every flat log, and the teacher foundation against their original bodies and
 exact update times. Mismatches report only area, reason, and path — never
 document bodies or secret values.
 
-These tests do not prove that a production reader can supply the reconciliation
-inputs or that a writer can apply the projection safely. Those responsibilities
-belong to Commit 5's bounded writer, recovery journal, runner integration, and
-emulator rehearsal. No Commit 4 function can read or write production.
+These tests do not prove production behavior. Commit 5 adds the writer that
+applies the projection and the emulator rehearsal that exercises it.
+
+## Commit 5 — production writer, journal, and re-verifier
+
+`functions/phase3/productionWriter.test.js` is an emulator-free behavioral suite
+over the writer's decision logic, journal, and recovery classifier. Its
+Firestore doubles implement genuine transaction semantics — reads observe a
+snapshot, writes are buffered until commit, a forced retry discards them, and
+`set()`/`delete()` throw — so the retry-safety and read-before-write assertions
+exercise real behavior rather than a mock's echo.
+
+It proves manifest v2 write-eligibility (including that each precondition blocks
+independently of the summary `writeEligible` flag), login-code recovery from the
+re-presented authorization artifact without the manifest ever retaining the raw
+code, the append-only hash-chained journal, exclusive atomic install with
+same-sequence arbitration and fork rejection, file and directory fsync, journal
+secret scanning, deterministic plan ordering with the 400-write and 8-MiB
+bounds, the exact initialization write set with full field preservation, source
+and target preconditions, batch recovery classification, stage derivation, and
+deployment-expectation comparison.
+
+The Commit 5 block in `production-runner.emulator.test.js` runs the same paths
+against **live Firestore and Auth emulators** with a real on-disk journal in an
+isolated temporary state root. It proves that the first invocation writes
+exactly the classroom root and the code index and that every copy surface
+remains absent; that a gate-on inventory refuses the copy stage and writes
+nothing; that re-initialization cannot renumber the counter or overwrite the
+code index; that flat credentials, the legacy source, the teacher document, and
+Auth users are never mutated; that re-verification changes no Firestore or Auth
+state; and that a real committed transaction followed by a deliberately failed
+journal event recovers by read classification **without duplicate writes**,
+while a divergent target blocks instead.
+
+### Evidence limits specific to Commit 5
+
+The control-plane inventories (Rules releases, Functions revisions, Hosting
+releases, gate parameters, active writers) are **injected** in the emulator
+suite, because the Firebase emulators do not emulate those control planes at
+all. Every Firestore and Auth observation is genuine; no deployment observation
+is. The emulator is not production. The supplied snapshot ID, write-freeze
+proof, credential provenance, and authorization ID are operator-entered strings
+that are recorded and bound — they do **not** cryptographically prove that a
+snapshot, freeze, provenance statement, or human approval exists.
 
 ## Relationship to the Phase 2B matrix
 
