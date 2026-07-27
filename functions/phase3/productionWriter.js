@@ -677,7 +677,7 @@ export function buildCopyPlan({
       type: operation.type,
       destinationPathSha256: sha256Hex(operation.path),
       expectedAfterSha256: operation.expectedAfterDigest ??
-        canonicalDigest(operation.data),
+        documentBodyDigest(operation.data),
       // The source precondition is part of the plan's identity. Binding the
       // source path hash, its exact Timestamp, and the expected-before state
       // means a plan rederived against an edited source cannot reproduce the
@@ -1373,7 +1373,8 @@ export function classifyBatchState(batch, observed) {
         before += 1
         continue
       }
-      if (canonicalDigest(state.data) === canonicalDigest(operation.data)) {
+      if (documentBodyDigest(state.data) ===
+          documentBodyDigest(operation.data)) {
         after += 1
         continue
       }
@@ -1627,7 +1628,8 @@ export async function commitCopyBatch({
         // Already exactly expected-after: a prior attempt committed this batch
         // and crashed before its journal event. Skipping is what makes recovery
         // free of duplicate writes.
-        if (canonicalDigest(snapshot.data()) === canonicalDigest(operation.data)) {
+        if (documentBodyDigest(snapshot.data()) ===
+            documentBodyDigest(operation.data)) {
           decisions.push({ operation, action: 'skip' })
           continue
         }
