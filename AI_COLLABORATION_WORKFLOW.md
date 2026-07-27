@@ -3,275 +3,233 @@
 ## Purpose and authority
 
 This document preserves the preferred AI-assisted engineering workflow for
-this repository across chat resets. When Andrew says to use "the AI
-collaboration workflow," "our Claude/Codex workflow," or similar language,
-the agents should read and follow this document before planning or editing.
+Morgan Bank across chat resets.
 
-Andrew's current instructions always take precedence. Security plans,
-architecture plans, implementation checklists, and repository-specific agent
-instructions remain authoritative for their respective technical scope. This
-workflow governs who plans, builds, reviews, and verifies the work; it does not
-expand the scope of an implementation item or authorize production access,
-deployment, migration, destructive operations, or pushing commits.
+Andrew is the decision-maker. His current instructions override this workflow.
+Architecture plans, implementation briefs, security plans, and test contracts
+remain authoritative for their technical scope. Nothing here authorizes
+production access, deployment, migration, destructive operations, feature-gate
+activation, committing, pushing, or merging.
 
-## Core team
+The repository uses a human-gated Codex and Grok workflow:
 
-Claude and Codex are the primary engineering pair. They rotate roles between
-material implementation items so neither becomes permanently associated with
-planning or coding:
+- **Codex** is the primary engineering agent. Codex inspects the repository,
+  produces acceptance-first plans, implements approved changes, runs tests,
+  validates review findings, and reports evidence and residual risk.
+- **Andrew** approves material repository and external-state changes and carries
+  review prompts and verdicts between Codex and the Grok app.
+- **Grok** is the independent, read-only reviewer. Grok uses Andrew's GitHub
+  connection and receives a bounded copy/paste handoff prepared by Codex.
 
-- **Architect/reviewer:** derives the item from authoritative repository
-  documents, defines its invariants and acceptance evidence, challenges scope,
-  and independently reviews the implementation.
-- **Builder:** challenges the proposed plan, implements the approved item,
-  verifies it, and corrects concrete review findings.
+There is no unattended AI reviewer and no repository-stored model credential.
+The retired Meta/OpenCode workflow must not be reintroduced without Andrew's
+explicit approval and a new security review.
 
-For the next material item, normally swap the roles. Record the role assignment
-in the handoff so a new chat can reconstruct it without relying on memory.
-
-Gemini is not part of the primary planning or implementation loop. It may be
-used only for deliberately bounded mechanical work or as a specifically
-requested additional opinion. Do not send it broad architecture or
-security-sensitive implementation work merely because it participated in an
-earlier phase.
-
-Grok is the preferred lightweight third set of eyes: an independent
-systems-level reviewer and residual-risk inspector. At the close of each
-material implementation item, and again at a phase or production-readiness
-gate, give Grok a bounded, read-only "5,000-foot" review: a quick perusal for
-glaring security, data-integrity, scope, sequencing, rollback, isolation, or
-test-evidence problems. The useful question is whether the completed house is
-livable, not whether Grok would have selected every nail or built it the same
-way. Grok does not redo or replace any Claude/Codex plan-build-review-correct
-loop, become the architect or builder, or write to the repository during this
-checkpoint.
-
-Gemini or another model may still provide an additional opinion when the
-escalation conditions below apply. A lightweight Grok checkpoint or any other
-third reviewer does not replace the Claude/Codex review cycle.
+Claude is optional, not required. Andrew may request Claude for another
+architecture opinion, a genuine high-risk disagreement, or an unusually
+important production-readiness decision. Gemini or another model may likewise
+be used only for a deliberately bounded task. Neither is a standing gate.
 
 ## Non-negotiable operating rules
 
-1. **One repository writer at a time.** Never have two agents editing the same
-   worktree concurrently. A reviewer begins read-only and does not interfere
-   while a builder is working.
-2. **Repository evidence outranks reports.** Inspect the actual commit, diff,
-   production call sites, assertions, configuration, and command results.
-   Never accept an agent's narrative report as proof by itself.
-3. **Acceptance criteria precede implementation.** Define exact invariants,
-   file scope, non-goals, expected call sites, tests, and verification commands
-   before editing.
-4. **Use narrow, reviewable commits.** One logical implementation item or one
-   explicitly identified corrective pass per commit. Do not mix documentation,
-   cleanup, refactoring, and feature work unless the approved scope requires
-   all of them.
-5. **Preserve user work and history.** Do not reset, restore, clean, amend,
-   rebase, squash, push, deploy, migrate, or access production unless Andrew
-   explicitly authorizes that action.
-6. **Tests must prove their titles.** Reject tautologies, mocks that merely echo
-   inputs, source searches represented as behavioral proof, races without the
-   claimed timing, and helper tests disconnected from production wiring.
-7. **Distinguish evidence layers.** Unit tests, static/source guards, emulator
-   tests, real-browser tests, and production acceptance prove different things.
-   Reports must not blur those boundaries.
-8. **Fail closed on ambiguity in security-sensitive work.** Authentication,
-   authorization, tenant isolation, credentials, rules, migration, and cache
-   isolation require explicit negative cases and stale-operation tests.
+1. **Confirm before changing state.** Codex must obtain Andrew's confirmation
+   before review-driven edits, commits, pushes, merges, deployments, migrations,
+   gate changes, production access, repository-setting changes, or other
+   material external mutations.
+2. **One repository writer at a time.** Do not have multiple agents editing the
+   same worktree concurrently.
+3. **Repository evidence outranks reports.** Inspect the actual commit, diff,
+   production call sites, assertions, configuration, and command results. A
+   model verdict is evidence to investigate, not authority to change code.
+4. **Acceptance criteria precede implementation.** Define the objective,
+   invariants, file scope, non-goals, tests, and forbidden actions before
+   editing.
+5. **Use narrow, reviewable commits.** Keep one implementation item or one
+   corrective pass per commit. Do not send Grok an entire feature history when
+   a focused commit range proves the behavior.
+6. **Preserve user work and history.** Do not reset, restore, clean, amend,
+   rebase, squash, delete, or overwrite user work without explicit permission.
+7. **Tests must prove their titles.** Reject tautologies, mocks that merely echo
+   inputs, races without the claimed timing, and source searches represented as
+   runtime proof.
+8. **Distinguish evidence layers.** Unit, source-contract, emulator, browser,
+   integration, and production evidence prove different things.
+9. **Fail closed in high-risk work.** Authentication, authorization, tenant
+   isolation, credentials, rules, migrations, balances, and cache isolation
+   require explicit negative and stale-operation cases.
+10. **Keep secrets out of review.** Never ask a reviewer to inspect or reveal
+    environment variables, tokens, credentials, `.env` contents, private keys,
+    browser state, or unrelated local files.
 
-## Standard item workflow
+## Standard implementation workflow
 
 ### 1. Establish the baseline
 
-The architect/reviewer begins read-only and records:
+Codex begins read-only and records:
 
-- repository path and branch;
-- local HEAD and expected remote reference;
-- worktree state and any pre-existing user changes;
-- authoritative plan/checklist sections;
-- dependencies and the prior completed item;
-- permitted file scope;
-- forbidden production, migration, push, deploy, and cleanup actions.
+- repository path, branch, HEAD, and expected remote reference;
+- worktree state and pre-existing changes;
+- authoritative plan, brief, and test-contract sections;
+- prior completed item and dependencies;
+- permitted file scope; and
+- forbidden production, migration, deploy, cleanup, and credential actions.
 
-If the worktree or history differs from the handoff, stop and resolve that
-discrepancy before implementation.
+If the repository contradicts the handoff, resolve that discrepancy before
+editing.
 
-### 2. Produce an acceptance-first implementation brief
+### 2. Produce an acceptance-first brief
 
-The architect/reviewer writes a bounded brief containing:
+For a material item, Codex defines:
 
 - objective and explicit non-goals;
 - security and data-integrity invariants;
-- exact files permitted to change;
-- production call sites and contracts that must be wired;
-- failure, race, stale-completion, and negative cases;
-- honest evidence required at each test layer;
-- exact verification commands;
-- expected commit boundary and handoff format.
+- files permitted to change;
+- production call sites and contracts to wire;
+- failure, race, retry, stale-completion, and negative cases;
+- evidence required at each test layer;
+- exact verification commands; and
+- expected commit and review boundaries.
 
-Prefer adapting an existing authoritative plan over inventing a parallel
-design. Any material deviation must be called out before coding.
+Codex calls out material ambiguity or scope expansion before implementation.
 
-### 3. Builder challenge
+### 3. Obtain confirmation
 
-Before editing, the builder inspects the repository and challenges the brief:
-
-- identify requirements that conflict with current code;
-- locate missing production adapters or impossible test assumptions;
-- flag file-scope omissions;
-- distinguish work belonging to a later item;
-- propose the smallest coherent implementation.
-
-Resolve material disagreements before implementation. Silence is not approval
-of an internally inconsistent plan.
+Codex presents the intended change and waits for Andrew's confirmation whenever
+the work changes repository or external state. Read-only investigation and
+diagnostics may continue without a new confirmation.
 
 ### 4. Implement and self-verify
 
-The builder:
+After confirmation, Codex:
 
 - edits only the approved scope;
-- keeps legacy/default-off behavior intact when required;
-- wires real production call sites, not detached demonstration helpers;
-- writes tests that fail under realistic regression mutations;
-- runs targeted checks first, then the proportionate broader matrix;
-- inspects the final diff and `git diff --check`;
-- creates one focused local commit when authorized by the task;
-- does not push or deploy without separate explicit authorization.
+- preserves default-off and rollback behavior when required;
+- wires real production call sites rather than detached helpers;
+- adds regression evidence that fails under the realistic defect;
+- runs targeted checks before proportionate broader checks;
+- inspects the final diff and runs `git diff --check`; and
+- reports exact results and residual risks.
 
-The builder's report lists the commit, files, behavior changed, exact command
-results, remaining risks, and evidence deferred to later items.
+Commit, push, PR, merge, deployment, migration, and production actions remain
+separate authority boundaries unless Andrew explicitly grouped them in the
+approval.
 
-### 5. Independent read-only review
+### 5. Prepare the manual Grok handoff
 
-The architect/reviewer reviews the actual implementation without repeating
-work indiscriminately. At minimum:
+When independent review is warranted, Codex follows
+`GROK_REVIEW_HANDOFF.md` and gives Andrew a complete copy/paste prompt naming:
 
-- confirm repository safety and scope;
-- inspect the incremental diff and affected production call sites;
-- inspect assertions intended to prove those call sites;
-- look for stale effects, failure-path escapes, default-off side effects,
-  incorrect adapters, test-title inflation, and plan deviations;
-- rerun proportionate checks independently;
-- report findings ordered by severity with file/line evidence.
+- repository, branch, and pull request;
+- exact `BASE..TARGET` commit range;
+- requirement or original defect;
+- expected files and excluded scope;
+- high-risk invariants;
+- reported verification evidence;
+- forbidden actions; and
+- required verdict and finding schema.
 
-The reviewer initially reports findings rather than editing. This preserves a
-clear separation between implementation and independent judgment.
+Andrew pastes the prompt into the Grok app using Grok's GitHub connector and
+returns Grok's complete response to Codex.
 
-### 6. Builder correction
+### 6. Validate the verdict
 
-The original builder corrects accepted findings in one narrow pass, adds or
-strengthens regression evidence, reruns the verification matrix, and creates a
-separate local correction commit. Findings that belong to a later item must be
-recorded explicitly rather than silently expanded into the current scope.
+Codex checks that Grok reviewed the requested range and validates every finding
+against repository evidence. Codex must reject speculative, stylistic,
+pre-existing, or out-of-scope findings with a concrete explanation.
 
-### 7. Delta-only re-review and closure
+A Grok PASS closes only the requested review boundary. It never authorizes a
+merge, deployment, migration, gate activation, production operation, or later
+phase.
 
-The reviewer checks only the correction delta plus the affected integration
-points. A complete cumulative re-audit is unnecessary unless the correction
-changed architecture or revealed that the initial review boundary was wrong.
+### 7. Confirm and correct
 
-Closure must state one of:
+If Grok reports an actionable defect, Codex explains whether it is accepted,
+rejected, or needs a human decision. Codex obtains Andrew's confirmation before
+making a correction.
 
-- review-quality and ready for the next numbered item;
+An accepted correction should be a narrow delta with focused regression
+evidence. Grok then reviews only the correction range plus affected integration
+points unless the correction changes architecture or invalidates the earlier
+review boundary.
+
+Do not rerun an unchanged review merely to seek a different verdict.
+
+### 8. Close the item honestly
+
+Closure states one of:
+
+- reviewed and ready for the next named item;
 - blocked by precise unresolved defects;
-- structurally complete but awaiting a named later evidence layer.
+- locally complete but awaiting a named evidence or authorization gate; or
+- deployed and verified only when production evidence actually supports that
+  statement.
 
-Do not call a phase complete when only an individual item is complete.
+Do not call a phase complete when only one item or one evidence layer is done.
 
-### 8. Lightweight Grok checkpoint
+## When Grok review is required
 
-After Claude and Codex agree that a material item is review-quality, send Grok
-the authoritative requirement, the exact commit or commit range, the permitted
-scope, the verification summary, and the known deferred risks. Ask for a
-bounded, read-only perusal rather than a full independent re-audit.
+Use a manual Grok handoff for:
 
-Grok's default questions are:
+- a material implementation item reaching review quality;
+- a focused security or correctness correction;
+- changes to authentication, authorization, tenant isolation, credentials,
+  Firestore rules, balances, migrations, reconciliation, destructive writes,
+  rollback, release ordering, or production safeguards;
+- a phase-completion or production-readiness gate;
+- an unresolved material disagreement; or
+- an explicit request from Andrew.
 
-- Is there a realistic cross-module sequence, race window, state-machine
-  transition, pre-identity event, cache/auth interaction, or isolation-boundary
-  failure the primary pair missed?
-- Does any ambiguity fail open where it should fail closed, or does a
-  fail-closed choice create an unstated operational cost?
-- Does the implementation or release ordering create a glaring security,
-  credential, migration, rollback, or data-loss risk?
-- Do the architecture, rules, Functions, client behavior, migration plan, and
-  test claims remain mutually consistent when viewed together?
-- Do the stated tests actually prove their titles at the claimed evidence
-  layer, or is a safety conclusion over-claimed or under-specified?
-- Did a correction create a new high-level failure mode, and is any residual
-  risk being accepted without being named?
-- Is any finding serious enough to reopen the item before the next commit?
+For tiny mechanical or comment-only changes, Codex may explain why independent
+review is disproportionate and ask Andrew whether to skip it.
 
-This checkpoint is deliberately not an exhaustive checklist, a deep
-line-by-line or symbolic proof, or a substitute for detailed low-level edge-case
-enumeration. Claude and Codex retain those responsibilities throughout the
-normal build-and-check loop. Grok should follow a cross-cutting concern into
-specific files or lines when needed to support a concrete finding, but should
-not expand the checkpoint into a duplicate full implementation review.
+## When another model may help
 
-The expected response is short and severity-ordered. "No glaring issue found"
-is a valid result. Low-value style preferences and speculative redesigns do not
-reopen an item. A concrete Blocking or High finding returns to the original
-builder for correction and then to the Claude/Codex delta-review loop. Medium
-findings are recorded and either accepted explicitly or assigned to a named
-follow-up. Run this checkpoint once per material item rather than after every
-small corrective commit; at phase-completion and production-readiness gates,
-give Grok the cumulative range and ask for the same high-level pass.
+Claude, Gemini, or another model is optional. Consider another bounded opinion
+only when:
 
-## When to use a deeper third review
+- Andrew explicitly requests it;
+- Codex and Grok materially disagree on a high-risk invariant;
+- requirements conflict and repository evidence cannot resolve them;
+- several substantive correction rounds fail to close an issue; or
+- a production operation has exceptional irreversible risk.
 
-The lightweight Grok checkpoint above is the normal third-eye pass. Request a
-deeper independent review from Grok, Gemini, or another model when any of the
-following is true:
+Another model does not replace Andrew's authority or the requirement to verify
+claims against the repository.
 
-- a phase-completion, production-readiness, migration, or deployment gate is
-  approaching;
-- Firestore/security rules, authentication, authorization, credentials,
-  secrets, tenant isolation, destructive writes, or rollback controls changed;
-- Claude and Codex materially disagree on a requirement or finding;
-- an item requires multiple substantive correction rounds;
-- tests pass but production behavior remains difficult to connect to them;
-- Andrew explicitly requests an adversarial or additional audit.
+## Durable handoff format
 
-The deeper reviewer should receive the authoritative requirement, exact commit
-range, permitted scope, known disagreements, and requested checks. It should
-begin read-only. Use a narrow review request rather than asking it to redo the
-entire project history.
-
-## Handoff format
-
-Every material handoff should include:
+Every material handoff should record:
 
 ```text
-Repository:
-Branch:
-Role assignment (architect/reviewer and builder):
-Authoritative requirement sections:
+Repository and branch:
 Baseline commit and expected remote ref:
+Authoritative requirement sections:
+Current implementation item:
 Commits under review:
 Permitted file scope:
 Implemented behavior:
 Exact commands and results:
-Known risks/deferred evidence:
-Lightweight Grok checkpoint scope and verdict:
+Known risks and deferred evidence:
+Grok handoff scope and verdict:
+Finding dispositions:
 Explicitly forbidden actions:
-Next requested decision or action:
+Next requested confirmation or action:
 ```
 
-Reports should separate verified facts, inferences, residual risks, and work
+Reports must separate verified facts, inferences, residual risks, and work
 deferred by design.
 
 ## Starting in a new chat
 
-At the beginning of a replacement chat, tell the agent:
+Tell the new Codex conversation:
 
 ```text
-Read AI_COLLABORATION_WORKFLOW.md and the authoritative plan/checklist for the
-current item. Reconstruct the baseline from git before acting. Follow the
-Claude/Codex rotating architect-builder-reviewer workflow. Do not rely on a
-prior chat report without inspecting the referenced commits and repository
-state.
+Read AGENTS.md, AI_COLLABORATION_WORKFLOW.md, GROK_REVIEW_HANDOFF.md, and the
+authoritative plan or brief for the current item. Reconstruct the baseline from
+git before acting. Confirm with me before making changes. Use a manual Grok
+copy/paste handoff when independent review is required.
 ```
 
-Then provide the current item number, role assignment, baseline commit, commit
-range, and latest reviewer report. This makes the repository—not conversational
-memory—the durable source of truth.
+Then provide the current item, baseline commit, exact review range, latest Grok
+verdict, and next requested decision. The repository remains the durable source
+of truth; chat memory and model reports do not replace it.
