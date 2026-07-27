@@ -752,11 +752,13 @@
   <script type="module">
 import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured } from "./src/firebase/firebase.js";
 import { browserSessionPersistence, GoogleAuthProvider, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
-import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, writeBatch } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
 import { mapSafeClientError, orchestrateProductionLogout, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
+import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
+import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 
 const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED === "true";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
@@ -825,6 +827,12 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let studentPinResetPending = false;
     let bulkOperationPending = false;
     let studentLifecyclePending = false;
+    // View-only record of which students this session has just issued a PIN
+    // for. It is deliberately NOT stored on the student object: Section 4
+    // forbids credential-activation state in any write payload or cache
+    // envelope, and the student document contract is exactly five fields.
+    // Server-authoritative activation state is not exposed to clients at all.
+    const v2ActivatedStudentIds = new Set();
     let resolvedClassroom = null;
     let resolvedTeacher = null;
     let v2IsOffline = false;
@@ -914,14 +922,18 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
 
     async function saveData() {
       if (IS_MULTI_TEACHER_V2_ENABLED) {
-        const saveAdapter = typeof window !== "undefined" && typeof window.V2_TENANT_DATA_SAVE_ADAPTER === "function"
-          ? window.V2_TENANT_DATA_SAVE_ADAPTER
-          : null;
-        if (!saveAdapter) {
-          console.error("V2_TENANT_DATA_SAVE_ADAPTER is required in V2 mode.");
+        if (typeof v2SaveTenantData !== "function") {
+          console.error("The V2 tenant data service is required in V2 mode.");
           return { executed: false, reason: "missing-v2-save-adapter" };
         }
-        return orchestrateClassroomDataSave(v2TenantSession, saveAdapter, data, { storageAdapter: localStorage, projectId: v2TenantSession.projectId });
+        const result = await orchestrateClassroomDataSave(v2TenantSession, v2SaveTenantData, data, { storageAdapter: localStorage, projectId: v2TenantSession.projectId });
+        if (result.executed) {
+          // Only a server-accepted write may advance the diff baseline. A
+          // failed save must leave it alone, or the next save would skip the
+          // documents this one never persisted.
+          v2LastPersistedData = JSON.parse(JSON.stringify(data));
+        }
+        return result;
       }
 
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -1255,8 +1267,10 @@ function toggleStudentDropdown() {
         if (!v2TenantSession.validateCapturedIdentity(captured)) return;
 
         if (res.executed) {
-          student.credentialActive = true;
-          await saveData();
+          // View-only. The PIN reset is already durable server-side; the
+          // student document itself carries no activation state, so there is
+          // nothing to persist here.
+          v2ActivatedStudentIds.add(String(student.id));
           if (v2TenantSession.validateCapturedIdentity(captured)) {
             message = `PIN reset successfully for ${student.name}.`;
             studentPinResetPending = false;
@@ -1921,8 +1935,7 @@ const targetStudents = transactionTarget === "whole"
         if (!v2TenantSession.validateCapturedIdentity(captured)) return;
 
         if (res.executed) {
-          student.credentialActive = true;
-          await saveData();
+          v2ActivatedStudentIds.add(String(student.id));
           if (v2TenantSession.validateCapturedIdentity(captured)) {
             message = `Account activated for ${student.name}.`;
             render();
@@ -2007,10 +2020,8 @@ const targetStudents = transactionTarget === "whole"
         if (res.executed && res.result) {
           const { successfulStudentIds, failCount } = res.result;
           for (const sId of successfulStudentIds) {
-            const s = data.students.find(st => String(st.id) === sId);
-            if (s) s.credentialActive = true;
+            v2ActivatedStudentIds.add(sId);
           }
-          await saveData();
           if (v2TenantSession.validateCapturedIdentity(captured)) {
             message = `Bulk activation complete. ${successfulStudentIds.length} succeeded, ${failCount} failed.`;
             bulkOperationPending = false;
@@ -2057,8 +2068,38 @@ const targetStudents = transactionTarget === "whole"
     function updateStudent(studentId) {
       if (!requireTeacher()) return;
       const name = document.getElementById("name-" + studentId).value.trim();
-      const pin = document.getElementById("pin-" + studentId).value.trim();
       const balance = Number(document.getElementById("balance-" + studentId).value);
+
+      // V2 renders no roster PIN input, so there is no PIN to read or write
+      // here. PIN changes go only through resetStudentPinV2.
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        if (!name) {
+          showMessage("Student name cannot be blank.");
+          return;
+        }
+
+        data.students = data.students.map(student => {
+          if (student.id !== studentId) return student;
+          return {
+            ...student,
+            name,
+            balance: Number.isFinite(balance) ? balance : 0,
+            frozen: Boolean(student.frozen)
+          };
+        });
+
+        data.transactions = data.transactions.map(transaction => {
+          if (transaction.studentId !== studentId) return transaction;
+          return { ...transaction, studentName: name };
+        });
+
+        saveData();
+        message = "Student updated.";
+        render();
+        return;
+      }
+
+      const pin = document.getElementById("pin-" + studentId).value.trim();
 
       if (!name || !pin) {
         showMessage("Student name and PIN cannot be blank.");
@@ -2232,13 +2273,26 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
       data.lastBackupAt = new Date().toISOString();
       saveData();
 
-      const backup = {
-        students: data.students,
-        transactions: data.transactions,
-        loginHistory: data.loginHistory || [],
-        settings: data.settings,
-        exportedAt: data.lastBackupAt
-      };
+      let backup;
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        // Section 4: V2 backups are PIN-free. projectBackupExport throws rather
+        // than stripping, so a credential field aborts the export instead of
+        // being written to a file the teacher then shares.
+        try {
+          backup = projectBackupExport({ data, exportedAt: data.lastBackupAt });
+        } catch {
+          showMessage("The backup could not be exported.");
+          return;
+        }
+      } else {
+        backup = {
+          students: data.students,
+          transactions: data.transactions,
+          loginHistory: data.loginHistory || [],
+          settings: data.settings,
+          exportedAt: data.lastBackupAt
+        };
+      }
 
       const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -2251,6 +2305,18 @@ link.click();
       }
     function importBackup(event) {
       if (!requireTeacher()) return;
+
+      // Section 4: V2 backup import is disabled for the initial cutover. An
+      // imported file carries arbitrary student IDs, which normalizeData does
+      // not validate; admitting them would collide with the server-managed
+      // nextStudentNumber and with credentials the import cannot allocate.
+      // Re-enabling requires a separately tested import service.
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        event.target.value = "";
+        showMessage("Backup import is unavailable in this version.");
+        return;
+      }
+
       const file = event.target.files[0];
       if (!file) return;
 
@@ -2862,15 +2928,19 @@ ${transactionTarget !== "whole" ? `
               <h2 style="margin-top: 24px;">Backup</h2>
               <div class="backup-reminder">${escapeHtml(backupText())}</div>
               <button onclick="exportBackup()">Export Backup</button>
-              <button onclick="printRoster()">Print Roster/PIN List</button>
+              <button onclick="printRoster()">${IS_MULTI_TEACHER_V2_ENABLED ? "Print Roster" : "Print Roster/PIN List"}</button>
+              ${IS_MULTI_TEACHER_V2_ENABLED ? `
+              <p class="small-note" style="margin-top: 12px;">Backup import is unavailable in this version.</p>
+              ` : `
               <label for="backupFile" style="margin-top: 12px;">Import Backup</label>
               <input id="backupFile" type="file" accept=".json" onchange="importBackup(event)" />
+              `}
               <p class="small-note">This version saves to this browser using localStorage. Export a backup after adding students or making big balance changes.</p>
             </div>
 
             <div class="card">
               <div class="print-only">
-                <h1>Mr. Morgan's Class Cash — Roster/PIN List</h1>
+                <h1>Mr. Morgan's Class Cash — ${IS_MULTI_TEACHER_V2_ENABLED ? "Roster" : "Roster/PIN List"}</h1>
                 <p>Generated from the classroom banking app.</p>
               </div>
               <h2>Roster</h2>
@@ -2886,10 +2956,17 @@ ${transactionTarget !== "whole" ? `
                     <label for="name-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Student Name</label>
                     <input id="name-${student.id}" value="${escapeHtml(student.name)}" />
                   </div>
+                  ${IS_MULTI_TEACHER_V2_ENABLED ? `
+                  <div>
+                    <label style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">PIN</label>
+                    <div class="small-note">Hidden. Use the student's profile to reset it.</div>
+                  </div>
+                  ` : `
                   <div>
                     <label for="pin-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">PIN</label>
                     <input id="pin-${student.id}" value="${escapeHtml(student.pin)}" />
                   </div>
+                  `}
                   <div>
                     <label for="balance-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Balance</label>
                     <input id="balance-${student.id}" type="number" value="${student.balance}" />
@@ -2939,7 +3016,9 @@ ${transactionTarget !== "whole" ? `
               <h2>${escapeHtml(profileStudent.name)}</h2>
               <div class="big-balance">${dollars(profileStudent.balance)}</div>
               <p><strong>Login ID:</strong> ${escapeHtml(profileLoginIdStatus)}</p>
-              <p><strong>PIN:</strong> ${escapeHtml(profileStudent.pin)}</p>
+              ${IS_MULTI_TEACHER_V2_ENABLED
+                ? ``
+                : `<p><strong>PIN:</strong> ${escapeHtml(profileStudent.pin)}</p>`}
               <p><strong>Status:</strong> ${profileStudent.frozen ? "Frozen" : "Active"}</p>
 
               <div class="lock-note no-print" style="margin-top: 16px;">
@@ -3039,8 +3118,12 @@ ${transactionTarget !== "whole" ? `
               <h2>Backup and Reset Tools</h2>
               <div class="backup-reminder">${escapeHtml(backupText())}</div>
               <button onclick="exportBackup()">Export Backup</button>
+              ${IS_MULTI_TEACHER_V2_ENABLED ? `
+              <p class="small-note" style="margin-top: 12px;">Backup import is unavailable in this version.</p>
+              ` : `
               <label for="backupFileSettings" style="margin-top: 12px;">Import Backup</label>
               <input id="backupFileSettings" type="file" accept=".json" onchange="importBackup(event)" />
+              `}
 
               <h3>Student Login History</h3>
               <div class="lock-note">Choose a student to see their last 20 login attempts, including successful logins, failed PIN attempts, and frozen account blocks.</div>
@@ -3097,7 +3180,9 @@ ${transactionTarget !== "whole" ? `
                 <tbody>
                   ${data.students.map(student => {
                     const loginId = typeof student.name === "string" ? student.name.trim().replaceAll(' ', '-').toLowerCase() : "student";
-                    const isActive = student.credentialActive === true;
+                    const isActive = IS_MULTI_TEACHER_V2_ENABLED
+                      ? v2ActivatedStudentIds.has(String(student.id))
+                      : student.credentialActive === true;
                     return `
                       <tr>
                         <td>
@@ -3281,6 +3366,13 @@ if (screen === "editSettingsLists" && isTeacher) {
       // previous tenant's offline badge / profile login ID can survive a switch.
       v2IsOffline = false;
       profileLoginIdStatus = "Checking...";
+      // The persisted-data baseline belongs to the outgoing tenant. Keeping it
+      // would let the next tenant's first save diff against a foreign
+      // classroom and skip documents it must write.
+      v2LastPersistedData = null;
+      // Activation hints are per-session and per-tenant; a new tenant's roster
+      // must not inherit the previous teacher's "Active" badges.
+      v2ActivatedStudentIds.clear();
     }
 
     async function submitV2Onboarding() {
@@ -3299,10 +3391,12 @@ if (screen === "editSettingsLists" && isTeacher) {
       const res = await orchestrateTeacherOnboarding(v2TenantSession, callAdapter, { classroomName });
       if (res.success && v2TenantSession.getState() === SESSION_STATES.ACTIVE) {
         const loadNetworkFn = async () => {
-          if (typeof window !== "undefined" && typeof window.V2_TENANT_DATA_ADAPTER === "function") {
-            return await window.V2_TENANT_DATA_ADAPTER({ uid: auth.currentUser?.uid, classroomId: v2TenantSession.classroomId });
-          }
-          throw new Error("V2 tenant data adapter is required in V2 mode.");
+          const loaded = await v2LoadTenantData({
+            uid: auth.currentUser?.uid,
+            classroomId: v2TenantSession.classroomId
+          });
+          v2LastPersistedData = JSON.parse(JSON.stringify(loaded));
+          return loaded;
         };
         await loadClassroomDataWithCacheFallback(v2TenantSession, {
           loadNetworkFn,
@@ -3332,6 +3426,39 @@ if (screen === "editSettingsLists" && isTeacher) {
       onResetGlobals: resetAllGlobalState,
       onStateChange: () => render(),
       authAdapter: { signOut: () => signOut(auth) }
+    });
+
+    // Phase 3 Commit 7: the production V2 data layer. Before this, the client
+    // read both data adapters off global window hooks that only the Item 10
+    // browser harness ever defined, so V2 mode had no data layer at all.
+    // These are constructed unconditionally but only ever invoked on the V2
+    // path, so the default-off build is unaffected.
+    const V2_FIRESTORE_ADAPTERS = { doc, getDoc, collection, getDocs, writeBatch };
+
+    // The last aggregate the server accepted. The saver diffs against it so an
+    // ordinary edit writes only the documents that changed instead of the whole
+    // classroom. Cleared on tenant invalidation with the rest of the view state.
+    let v2LastPersistedData = null;
+
+    const v2LoadTenantData = createTenantDataLoader({
+      db,
+      session: v2TenantSession,
+      firestore: V2_FIRESTORE_ADAPTERS,
+      defaultSettings
+    });
+
+    const v2LoadStudentData = createStudentDataLoader({
+      db,
+      session: v2TenantSession,
+      firestore: V2_FIRESTORE_ADAPTERS,
+      defaultSettings
+    });
+
+    const v2SaveTenantData = createTenantDataSaver({
+      db,
+      session: v2TenantSession,
+      firestore: V2_FIRESTORE_ADAPTERS,
+      previousRef: () => v2LastPersistedData
     });
 
     // Keep the default-off build inert: constructing MultiTabInvalidator would
@@ -3398,15 +3525,22 @@ if (screen === "editSettingsLists" && isTeacher) {
           return await callable(payload);
         };
         const loadNetworkFn = async () => {
-          if (typeof window !== "undefined" && typeof window.V2_TENANT_DATA_ADAPTER === "function") {
-            return await window.V2_TENANT_DATA_ADAPTER({ uid: user?.uid, classroomId: v2TenantSession.classroomId });
-          }
-          throw new Error("V2 tenant data adapter is required in V2 mode.");
+          const loaded = await v2LoadTenantData({
+            uid: user?.uid,
+            classroomId: v2TenantSession.classroomId
+          });
+          v2LastPersistedData = JSON.parse(JSON.stringify(loaded));
+          return loaded;
         };
+        // Previously omitted, which made handleAuthTransition fail every V2
+        // student with "student-access-unavailable". A signed-in student reads
+        // exactly their own document; no roster, no history, no credentials.
+        const loadStudentNetworkFn = async (claims) => v2LoadStudentData(claims);
 
         const res = await handleAuthTransition(v2TenantSession, user, tokenResult, {
           callAdapter,
           loadNetworkFn,
+          loadStudentNetworkFn,
           storageAdapter: localStorage,
           projectId: v2TenantSession.projectId
         });

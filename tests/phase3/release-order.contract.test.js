@@ -204,15 +204,38 @@ describe('Phase 3 release-order source contract', () => {
     }
   })
 
-  it('boundary: src/phase3 remains absent until its client commit', () => {
-    // src/phase3 is Commit 7 (tenant data projection/service). functions/phase3
-    // legitimately exists from Commit 2 onward, so it is scoped by content in
-    // the next assertion rather than by absence.
-    assert.equal(
-      existsSync(new URL('../../src/phase3', import.meta.url)),
-      false,
-      'src/phase3 belongs to the client data commit',
-    )
+  it('boundary: src/phase3 contains only the modules Section 11 permits', () => {
+    // src/phase3 is Commit 7 (tenant data projection/service). It was absent
+    // through Commit 6; from Commit 7 it is scoped by content, exactly as
+    // functions/phase3 is in the next assertion.
+    const directory = new URL('../../src/phase3/', import.meta.url)
+    assert.ok(existsSync(directory), 'src/phase3 exists from Commit 7 onward')
+
+    // The complete Section 11 src/phase3 list. An unlisted file requires an
+    // architecture update before it may be added.
+    const PERMITTED = new Set([
+      'tenantDataProjection.js',
+      'tenantDataProjection.test.js',
+      'tenantDataService.js',
+      'tenantDataService.test.js',
+    ])
+
+    for (const entry of readdirSync(directory)) {
+      assert.ok(PERMITTED.has(entry), `src/phase3/${entry} is not permitted by Section 11`)
+    }
+
+    // Each implementation module must ship with its colocated suite in the same
+    // commit; Section 11 forbids adding either as a placeholder.
+    for (const module of ['tenantDataProjection', 'tenantDataService']) {
+      assert.ok(
+        existsSync(new URL(`${module}.js`, directory)),
+        `${module}.js must exist`,
+      )
+      assert.ok(
+        existsSync(new URL(`${module}.test.js`, directory)),
+        `${module}.test.js must accompany its implementation`,
+      )
+    }
   })
 
   it('boundary: functions/phase3 contains only modules earned by completed commits', () => {

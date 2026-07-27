@@ -43,13 +43,22 @@ export const PROPOSED_RULES_PATH = "firestore.phase2b.proposed.rules";
 //
 // Canonical form: exactly 8 characters from the unambiguous alphabet
 // (2-9 A-Z minus I/O/0/1), displayed as XXXX-XXXX.
+// Phase 3 Commit 7: student IDs are the server-allocated numeric student
+// numbers Section 5 defines, not free-form slugs. The production tenant data
+// projection now validates identity strictly (a non-canonical ID would let two
+// document IDs map onto one student), so these fixtures must carry the real
+// contract rather than the looser pre-Phase-3 shapes. Values stay distinct
+// across tenants so a cross-tenant render still fails loudly.
 export const TENANT_A = {
   label: "A",
   email: "teacher-a@example.test",
   password: "test-password-a",
   classroomId: "classroom-a",
-  studentId: "student-a-1",
-  sharedStudentId: "shared-student-a",
+  studentId: "11",
+  sharedStudentId: "12",
+  // Transaction/login-history IDs are the legacy Date.now() millisecond values.
+  transactionId: "1700000000011",
+  historyId: "1700000000012",
   classroomName: "Room A Morning",
   studentLoginCode: "AAAA-2345",
   classroomMarker: "A_ONLY_CLASSROOM",
@@ -64,8 +73,10 @@ export const TENANT_B = {
   email: "teacher-b@example.test",
   password: "test-password-b",
   classroomId: "classroom-b",
-  studentId: "student-b-1",
-  sharedStudentId: "shared-student-b",
+  studentId: "21",
+  sharedStudentId: "22",
+  transactionId: "1700000000021",
+  historyId: "1700000000022",
   classroomName: "Room B Afternoon",
   studentLoginCode: "BBBB-6789",
   classroomMarker: "B_ONLY_CLASSROOM",
@@ -231,29 +242,49 @@ async function seedTenantDocs(db, tenant, uid) {
     ownerUid: uid
   });
 
+  // Exactly the five-field student contract from Section 4. The `transactions`
+  // mirror is required, so it is seeded rather than omitted.
   await db.doc(`classrooms/${tenant.classroomId}/students/${tenant.studentId}`).set({
-    id: tenant.studentId,
+    id: Number(tenant.studentId),
     name: tenant.studentMarker,
     balance: 10,
-    frozen: false
+    frozen: false,
+    transactions: []
   });
 
   await db.doc(`classrooms/${tenant.classroomId}/students/${tenant.sharedStudentId}`).set({
-    id: tenant.sharedStudentId,
+    id: Number(tenant.sharedStudentId),
     name: SHARED_STUDENT_NAME,
     balance: 5,
-    frozen: false
+    frozen: false,
+    transactions: []
   });
 
-  await db.doc(`classrooms/${tenant.classroomId}/transactions/tx-1`).set({
-    marker: tenant.transactionMarker,
+  // Transactions and login history carry their exact field contracts. The
+  // per-tenant marker rides in `memo`/`note` — a real contract field — so the
+  // cross-tenant render assertions keep working without an extra key that the
+  // projection would (correctly) reject.
+  await db.doc(`classrooms/${tenant.classroomId}/transactions/${tenant.transactionId}`).set({
+    id: Number(tenant.transactionId),
+    date: "1/1/2026, 9:00:00 AM",
+    studentId: Number(tenant.studentId),
+    studentName: tenant.studentMarker,
+    type: "Add",
     amount: 5,
-    studentId: tenant.studentId
+    reason: "Weekly payday",
+    memo: tenant.transactionMarker,
+    category: "",
+    status: "Approved",
+    source: "Teacher"
   });
 
-  await db.doc(`classrooms/${tenant.classroomId}/loginHistory/h-1`).set({
-    marker: tenant.historyMarker,
-    studentId: tenant.studentId
+  await db.doc(`classrooms/${tenant.classroomId}/loginHistory/${tenant.historyId}`).set({
+    id: Number(tenant.historyId),
+    date: "1/1/2026, 9:05:00 AM",
+    studentId: Number(tenant.studentId),
+    studentName: tenant.studentMarker,
+    result: "Success",
+    note: tenant.historyMarker
   });
 
   // Classroom-scoped auth logs use studentAuthLogs/{classroomId}/logs/{logId}.

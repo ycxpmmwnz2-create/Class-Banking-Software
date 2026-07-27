@@ -9,7 +9,9 @@
 | 3 | Read-only production preflight and manifest | complete |
 | 4 | Copy-only production projection and reconciliation | complete |
 | 5 | Production writer and crash/restart recovery | complete |
-| 6–11 | Lifecycle, client, rules, rehearsal | not started |
+| 6 | Student lifecycle callables | complete |
+| 7 | Client V2 data layer, PIN-free UI, PIN-free export | complete |
+| 8–11 | Student login wiring, rules, rehearsal | not started |
 
 Commit 5 adds the bounded production writer, its append-only durable journal,
 and the read-only re-verifier. The writer owns exactly two remote mutations: one
@@ -34,8 +36,17 @@ that plus the absence of any mutating call path. Commit 3's preflight remains
 read-only with respect to Firebase and Google services, and `preflight.js` still
 imports no writer, projection, or reconciliation module.
 
-Student lifecycle, client wiring, rules artifacts, and deployment logic remain
-unimplemented.
+Commit 7 gives V2 mode a real client data layer. Through Commit 6 the client read
+both of its data adapters off `window.V2_TENANT_DATA_*`, which only the Item 10
+browser harness ever defined — so in production V2 mode had **no data layer at
+all**, and the student loader was never wired, failing every V2 student with
+`student-access-unavailable`. `src/phase3/tenantDataProjection.js` (pure) and
+`src/phase3/tenantDataService.js` (injected Firestore primitives) replace it,
+alongside the PIN-free V2 UI, PIN-free export, and disabled V2 import.
+
+Student **login** wiring (`studentPinLoginV2` and classroom-code login), rules
+artifacts, and deployment logic remain unimplemented. `firestore.rules` is
+unchanged.
 
 ## Commands
 
@@ -54,22 +65,29 @@ the narrowing and that no `*.emulator.test.js` file matches it.
 discovery in `command-safety.contract.test.js` applies the complete isolation
 contract to it with no special-case entry.
 
-`test:phase3:unit` runs the colocated `functions/phase3/*.test.js` suites. Per
-Section 12 as amended it is **emulator-free** and therefore needs no Firebase CLI
-isolation wrapper — it must not start the CLI, an emulator, or any network-backed
-operation. `command-safety.contract.test.js` asserts that: the gate must execute
+`test:phase3:unit` runs the colocated `functions/phase3/*.test.js` **and**
+`src/phase3/*.test.js` suites. Commit 7 widened the glob to the second directory
+rather than adding a separate `test:phase3:client` gate, so the client data layer
+cannot be added without its tests running in the existing gate. Per Section 12 as
+amended it is **emulator-free** and therefore needs no Firebase CLI isolation
+wrapper — it must not start the CLI, an emulator, or any network-backed operation.
+`command-safety.contract.test.js` asserts that: the gate must execute
 `functions/phase3`, must have at least one suite to run, and must contain neither
 `emulators:exec` nor a bare `firebase` invocation.
 
-Four Section 12 gates remain **deliberately undeclared** —
-`test:phase3:rules`, `test:phase3:migration`, `test:phase3:release-rehearsal`,
+The `src/phase3` suites stay emulator-free because the service takes every
+Firestore primitive by injection, so a unit test constructs no Firebase handle and
+reaches no network. That is a structural property, not a convention.
+
+Three Section 12 gates remain **deliberately undeclared** —
+`test:phase3:rules`, `test:phase3:release-rehearsal`,
 `test:phase3:rollback-rehearsal`. A passing placeholder under any of those names
 would report green for work that does not exist; the command-safety contract
 asserts their absence and will admit each one only alongside the suite it runs.
 
 ## Evidence layer — read this before citing these tests
 
-Every suite in this directory is **static/source evidence**. Each suite parses
+Every suite in **this directory** is **static/source evidence**. Each suite parses
 repository text (`package.json`, the reconciled brief, `index.html`) or checks
 filesystem and checksum facts. Every test title begins with `source contract:`
 or `boundary:` for that reason.
@@ -79,19 +97,38 @@ These suites prove:
 - the declared emulator commands **carry** the credential-isolation contract;
 - the brief still **states** the safe release and rollback ordering;
 - Commit 1 has **not** created later-commit artifacts or edited `firestore.rules`;
-- the current client identity/adapter/login facts are exactly as surveyed.
+- the current client identity/adapter/login facts are exactly as surveyed;
+- that the client **constructs** its own data service rather than reading a
+  window hook, and that the browser harness seam still matches `index.html`.
 
 These suites do **not** prove:
 
 - that credential isolation works at runtime — nothing here starts an emulator
   or the Firebase CLI;
 - that a production release or rollback executes correctly in the stated order;
-- any behavior of the Phase 3 runner, student lifecycle, tenant data service,
-  or rules — none of that code exists yet;
+- any runtime behavior of the Phase 3 runner or the rules artifacts;
 - anything about deployed production state, which remains unknown by design.
 
 Per `AI_COLLABORATION_WORKFLOW.md` rule 7, do not present these results as
 emulator, browser, or production acceptance evidence.
+
+### Where the tenant data service's evidence actually lives
+
+The Commit 7 data layer is the one part of Phase 3 with evidence at more than one
+layer, so cite the right one:
+
+| Layer | Suite | What it establishes |
+| --- | --- | --- |
+| Behavioral unit | `src/phase3/*.test.js` (via `test:phase3:unit`) | The real read/write, projection, fail-closed, and staleness decisions. Firestore primitives are **injected**, so no emulator, credential, or network is involved. |
+| Source contract | `tests/phase3/student-identity.contract.test.js` | That production wires the service, is PIN-free, and exposes no test hook. |
+| Browser + rules | `npm run test:phase2b:browser` | The service's real I/O against the Firestore emulator under `firestore.phase2b.proposed.rules`, including stale-load/stale-save isolation and offline cache behavior. |
+
+The unit layer alone is **not** sufficient for rules-dependent claims. Commit 7's
+root-document write was denied by the proposed rules
+(`onlyMutatesAllowedClassroomFields`) because it overwrote instead of merging;
+injected primitives run no rules layer, so only the browser suite could catch it.
+That defect and its regression test are recorded in
+`src/phase3/tenantDataService.test.js`.
 
 ## Suites
 
@@ -148,11 +185,16 @@ Parsing the section into steps matters: a raw `indexOf` over the whole document
 would also match the identical wording in Sections 2 and 7 and could pass for
 the wrong reason.
 
-Boundary assertions pin that the three future rules artifacts, `functions/phase3`,
-and `src/phase3` are absent, and that `firestore.rules` still hashes to
-`0659a857…cff2cf50`. The suite additionally asserts the baseline file **still
-contains** the recursive `classrooms/{document=**}` allow, so the checksum pin
-cannot become vacuous if the file were replaced by something unrelated.
+Boundary assertions pin that the three future rules artifacts are absent and that
+`firestore.rules` still hashes to `0659a857…cff2cf50`. The suite additionally
+asserts the baseline file **still contains** the recursive
+`classrooms/{document=**}` allow, so the checksum pin cannot become vacuous if the
+file were replaced by something unrelated.
+
+The former blanket "`src/phase3` is absent" boundary became false in Commit 7, and
+is now a **Section 11 content allowlist**: only the four permitted files may exist
+there, and each implementation file must be paired with its test suite. That keeps
+the boundary enforcing scope rather than deleting the check outright.
 
 ### `student-identity.contract.test.js`
 
@@ -171,19 +213,80 @@ Verified and pinned:
 - exactly nine `id:` literals total (1 allocator, 7 transaction/history, 1
   read-only claim echo in `dataForSecureStudent`), so a new site cannot appear
   unclassified before the Section 5 watermark is derived;
-- both V2 data adapters are referenced by the client but never defined by it —
-  they are defined **only** by the Item 10 browser harness, which activates
-  solely under an explicit test flag;
+- the client **constructs its own** V2 data layer from `src/phase3`, binding all
+  three adapters to the live tenant session, and no longer reads
+  `window.V2_TENANT_DATA_*` anywhere (Commit 7 **inverted** this pin — through
+  Commit 6 it asserted the opposite, that the adapters were referenced but never
+  defined by the client);
+- the browser harness defines no data adapter and performs no Firestore I/O of its
+  own, and the test-only seam it relies on still matches `index.html` exactly once;
 - V2 persistence fails closed with `missing-v2-save-adapter` rather than writing
   the legacy blob;
+- the V2 UI is PIN-free after authentication, V2 export is PIN-free, and V2 import
+  refuses before it can reach `normalizeData`;
 - student login still calls legacy `studentPinLogin({loginId, pin})` with no
   `studentPinLoginV2` wiring and no classroom-code input.
 
-**Pinned defects.** `importBackup` still accepts unvalidated imported student
-IDs through `normalizeData`, and the preserved default-off legacy add path still
-places a plaintext `pin` on its roster object. V2 lifecycle creation does not.
-Commit 7 owns the broader PIN-free UI/data-service work and disabled V2 import;
-the assertions remain explicit until that owning boundary changes them.
+**Pinned defects.** The preserved default-off legacy add path still places a
+plaintext `pin` on its roster object, and the legacy `importBackup` path still
+accepts unvalidated imported student IDs through `normalizeData`. V2 lifecycle
+creation does not, and the V2 import path is now disabled outright — so the
+`importBackup` pin is scoped to the legacy arm rather than describing V2. Both
+assertions remain explicit for the default-off path until Commit 8+ changes it.
+
+## Commit 7 — client tenant data layer evidence
+
+`src/phase3/tenantDataProjection.js` is pure and I/O-free (no `window`, no
+Firebase, no network). `src/phase3/tenantDataService.js` takes every Firestore
+primitive by injection. Both suites are **behavioral**, not static.
+
+The projection suite proves fail-closed rebuilding of the aggregate from per-path
+documents across all five violation categories (`shape`, `tenant`, `duplicate`,
+`credential`, `reference`); the exact document contracts (student
+`{id,name,balance,frozen,transactions}`, root `{settings,lastBackupAt,updatedAt}`,
+11-field transaction, 6-field login history); canonical deterministic doc IDs, so
+a retried mutation is idempotent rather than duplicating records; and PIN-free
+backup export that **throws** on a credential field rather than silently stripping
+it. `FORBIDDEN_CREDENTIAL_FIELDS` is enforced inbound **and** outbound, and error
+messages carry field *names* only, never values — itself asserted.
+
+Student IDs are accepted as a number or an exact canonical decimal string only.
+`"07"`, `" 7"`, `"7.0"`, and `"7e0"` are rejected because each would map two
+document IDs onto one student.
+
+The service suite proves tenant/identity resolution and mismatch refusal, the
+staleness re-checks before the first commit and between batches, bounded batching,
+and the read-set boundaries: it reads and writes only under
+`classrooms/{resolvedClassroomId}/…`, never touches `studentCredentials` in either
+shape, and never creates or deletes a student document.
+
+**Defects the suites caught during development.** Four, all fixed and pinned by
+regression tests: `maxWrites` defaulted to `maxBatchSize`, making the batching loop
+unreachable so any mutation needing a second batch was rejected first;
+stale-vs-resolve ordering reported `unresolved-tenant` and masked a stale-write
+attempt; `projectSettings` dropped *all* settings when given no `defaultSettings`,
+which would have erased a classroom's settings on load; and one assertion was
+vacuous, checking a body built from a fixed field list instead of the input, so an
+extra key would have been silently dropped.
+
+**A fifth defect the unit layer could not catch.** The classroom root was written
+with `merge: false` like every other document. That overwrites server-owned tenant
+fields (`ownerUid`, `name`, activation state) and was denied outright by
+`firestore.phase2b.proposed.rules`, whose root-update rule requires
+`affectedKeys() ⊆ {settings, lastBackupAt, updatedAt}` — an overwrite reports every
+dropped field as affected. Injected primitives run no rules layer, so only
+`test:phase2b:browser` could surface it. The root is now merged while every other
+document still overwrites, and both halves are pinned.
+
+Browser evidence comes from the Item 10 suite (21/21), which instruments the
+production service by **decorating its injected primitives** rather than replacing
+an adapter, so the response barriers, failure injection, and call counters sit
+under the real code path. Verified non-vacuous by mutation: with the wrapper made
+inert, the barrier-dependent tests fail.
+
+**Deferred.** `tests/phase3/tenant-data.browser.spec.js` (Section 11-listed) is
+deferred to Commit 8: it cannot honestly exercise the real service until V2 student
+login is wired end to end.
 
 ## Commit 6 — student lifecycle evidence
 

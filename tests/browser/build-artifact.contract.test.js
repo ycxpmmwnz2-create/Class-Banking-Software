@@ -7,7 +7,7 @@
 //
 // The original Item 10 wording required the default-off build to contain NO V2
 // lifecycle markers at all. That is not true of this repository and never was.
-// Four strings survive tree-shaking in the default-off build today:
+// Four strings survived tree-shaking in the default-off build:
 //
 //     session-invalidated            V2_TENANT_DATA_ADAPTER
 //     multi-tab-invalidation         malformed-broadcast-message
@@ -16,16 +16,24 @@
 // IS_MULTI_TEACHER_V2_ENABLED (invalidation reason strings inside
 // tenantSession.js, and the adapter typeof-guard in index.html), so Rollup keeps
 // them. This was verified to be PRE-EXISTING by building HEAD in a throwaway
-// worktree and getting identical counts — it is not a regression introduced by
+// worktree and getting identical counts — it was not a regression introduced by
 // Items 9 or 10.
 //
-// Removing them is a production refactor of index.html / tenantSession.js, which
-// is outside Item 10's tests-only boundary. So this contract asserts what is
-// actually true and enforceable: the four OPERATIONAL markers below — the
-// channel name, the two storage keys, and the save adapter — are genuinely
-// absent from default-off and present in gate-on. Those are the strings whose
-// presence would indicate live transport or persistence behavior shipping to
-// production.
+// PHASE 3 COMMIT 7 UPDATE. Three of the four remain. The fourth,
+// V2_TENANT_DATA_ADAPTER, is gone: Commit 7 replaced the ungated
+// `typeof window.V2_TENANT_DATA_ADAPTER === "function"` guard with the real
+// production data service, so the string no longer exists in either build. It
+// moved from the residual list to a NEGATIVE marker asserted absent from BOTH
+// builds — the window-hook data layer must not come back.
+//
+// The remaining three are invalidation reason strings in tenantSession.js.
+// Removing those is still a production refactor outside this contract's scope.
+//
+// So this contract asserts what is actually true and enforceable: the
+// OPERATIONAL markers below — the channel name and the two storage keys — are
+// genuinely absent from default-off and present in gate-on. Those are the
+// strings whose presence would indicate live transport or persistence behavior
+// shipping to production.
 
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, readdirSync, readFileSync, existsSync } from "node:fs";
@@ -35,12 +43,11 @@ import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 // Absent from default-off, present in gate-on. These indicate LIVE behavior:
-// a real BroadcastChannel name, the two persistence keys, and the save adapter.
+// a real BroadcastChannel name and the two persistence keys.
 const OPERATIONAL_MARKERS = [
   "morgan_bank_v2_invalidation",
   "morganBank:v2:invalidation",
-  "morganBank:v2:pendingInvalidation",
-  "V2_TENANT_DATA_SAVE_ADAPTER"
+  "morganBank:v2:pendingInvalidation"
 ];
 
 // Present in BOTH builds. Pre-existing residue; see the header note. Asserted
@@ -49,8 +56,16 @@ const OPERATIONAL_MARKERS = [
 const RESIDUAL_IN_DEFAULT_OFF = [
   "session-invalidated",
   "multi-tab-invalidation",
-  "malformed-broadcast-message",
-  "V2_TENANT_DATA_ADAPTER"
+  "malformed-broadcast-message"
+];
+
+// Absent from BOTH builds. The window-hook data layer Commit 7 removed: the
+// client must never again read its data adapters off a global that only a test
+// harness defines. Asserted on the built artifacts, so re-adding the hook to
+// index.html fails here even if source-level contracts were also changed.
+const FORBIDDEN_IN_EVERY_BUILD = [
+  "V2_TENANT_DATA_ADAPTER",
+  "V2_TENANT_DATA_SAVE_ADAPTER"
 ];
 
 // A string from the V1 application that must survive in any real build, proving
@@ -151,6 +166,21 @@ describe("Phase 2B Item 10: build artifact composition", () => {
         `Residual marker ${marker} unexpectedly absent from default-off — update the documented conflict in this file's header`
       );
       assert.ok(on.includes(marker), `gate-on must still contain ${marker}`);
+    }
+  });
+
+  test("the removed window-hook data layer is absent from BOTH builds", () => {
+    const off = combined(offFiles);
+    const on = combined(onFiles);
+    for (const marker of FORBIDDEN_IN_EVERY_BUILD) {
+      assert.ok(
+        !off.includes(marker),
+        `default-off build must not reintroduce the window data hook ${marker}`
+      );
+      assert.ok(
+        !on.includes(marker),
+        `gate-on build must not reintroduce the window data hook ${marker}`
+      );
     }
   });
 

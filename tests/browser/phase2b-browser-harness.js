@@ -20,6 +20,10 @@
 //     connectPhase2bEmulatorsIfConfigured(), which the app does at import time.
 //  5. Activates ONLY under an explicit browser-test flag, so this file can never
 //     alter behavior of a normal dev or production build.
+//  6. window.__PHASE2B_WRAP_FIRESTORE__ must be installed before index.html's
+//     module builds V2_FIRESTORE_ADAPTERS. Constraint 1 already guarantees this,
+//     but the coupling is load-order-sensitive: making the wrapper installation
+//     lazy or async would leave the barriers silently uninstalled.
 
 import {
   browserSessionPersistence,
@@ -28,8 +32,11 @@ import {
   signInWithEmailAndPassword,
   signOut
 } from "firebase/auth";
-import { collection, doc, getDoc, getDocs, setDoc } from "firebase/firestore";
-import { app, auth, db } from "../../src/firebase/firebase.js";
+// No `firebase/firestore` import: since Commit 7 the harness performs no reads or
+// writes of its own. It only decorates the primitives the production service was
+// constructed with, which is what guarantees every assertion observes production
+// I/O rather than harness I/O.
+import { app, auth } from "../../src/firebase/firebase.js";
 
 const FLAG = "__PHASE2B_BROWSER_TEST__";
 
@@ -96,11 +103,26 @@ function installHarness() {
   }
 
   // ---------------------------------------------------------------------------
-  // Real data adapters. These perform actual browser Firebase client reads and
-  // writes against the Firestore emulator. They deliberately do NOT return
-  // fixture objects — a fixture-returning adapter would make every isolation
-  // assertion vacuous, since it could not observe a rules denial or a
-  // cross-tenant read.
+  // Firestore primitive wrapper.
+  //
+  // Commit 7 gave the client a real production data layer
+  // (src/phase3/tenantDataService.js) and removed the `window.V2_TENANT_DATA_*`
+  // adapter hooks this harness used to define. Replacing the adapters is
+  // therefore no longer possible — and no longer desirable: a harness-owned
+  // adapter meant the barriers gated HARNESS code, so the isolation specs were
+  // observing the harness's own stale-completion decisions rather than
+  // production's.
+  //
+  // Instead the harness decorates the injected Firestore primitives that the
+  // production service already accepts as a constructor argument. Every real
+  // read, projection, tenant check, staleness re-check, and bounded batch commit
+  // runs exactly as in production; the wrapper only parks and counts the I/O
+  // underneath. The served index.html is rewritten by vite.phase2b.config.js to
+  // pick this up (see applyFirestoreSeamRewrite) — production source is
+  // untouched, and the wrapper is inert unless this harness installed it.
+  //
+  // Nothing here fabricates data: each barrier gates the RESOLUTION of a genuine
+  // emulator call.
   // ---------------------------------------------------------------------------
   // One-shot injected failure, used to distinguish transient (cache-eligible)
   // from permission/integrity (never-cache-eligible) load failures. The error
@@ -120,64 +142,170 @@ function installHarness() {
     }
   };
 
-  window.V2_TENANT_DATA_ADAPTER = async ({ uid, classroomId }) => {
-    obs.counters.loadAdapterCalls++;
-    record("loadAdapter:start", { uid, classroomId });
-    await gate("classroomLoad");
+  // Only classroom-scoped traffic is instrumented. The app performs other reads
+  // (teacher profile, classroom resolution) through the same primitives, and
+  // counting or barriering those would make `loadAdapterCalls` mean something
+  // different from "the V2 data service ran".
+  const CLASSROOM_ROOT = /^classrooms\/[^/]+$/;
+  const CLASSROOM_SCOPED = /^classrooms\/[^/]+\/(students|transactions|loginHistory)$/;
+  const CLASSROOM_SCOPED_DOC = /^classrooms\/[^/]+\/(students|transactions|loginHistory)\/[^/]+$/;
+  const STUDENT_SELF_DOC = /^classrooms\/[^/]+\/students\/[^/]+$/;
 
-    const injected = takeNextLoadFailure();
-    if (injected) {
-      const code = injected;
-      record("loadAdapter:injectedFailure", { code });
-      const err = new Error(`harness injected ${code}`);
-      err.code = code;
-      throw err;
+  const refPath = (ref) => (typeof ref?.path === "string" ? ref.path : "");
+
+  let alreadyWrapped = false;
+
+  window.__PHASE2B_WRAP_FIRESTORE__ = (incoming) => {
+    // Checked FIRST, before anything is captured: wrapping twice would
+    // double-count and double-barrier every call, and a second call may already
+    // be receiving wrapped functions.
+    if (alreadyWrapped) {
+      throw new Error(
+        "Phase 2B harness: __PHASE2B_WRAP_FIRESTORE__ invoked twice. " +
+          "The V2 Firestore primitives must be wrapped exactly once."
+      );
     }
+    alreadyWrapped = true;
 
-    if (!classroomId) throw new Error("harness: missing classroomId");
-
-    const studentsSnap = await getDocs(collection(db, `classrooms/${classroomId}/students`));
-    const txSnap = await getDocs(collection(db, `classrooms/${classroomId}/transactions`));
-    const historySnap = await getDocs(collection(db, `classrooms/${classroomId}/loginHistory`));
-    const rootSnap = await getDoc(doc(db, `classrooms/${classroomId}`));
-
-    const result = {
-      students: studentsSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
-      transactions: txSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
-      loginHistory: historySnap.docs.map((d) => ({ id: d.id, ...d.data() })),
-      settings: (rootSnap.exists() && rootSnap.data().settings) || {}
+    // Capture the originals up front and call ONLY these below. Reading through
+    // the passed object later would re-enter the wrapper if the caller assigned
+    // the result back onto the same object, which is unbounded recursion.
+    const primitives = {
+      doc: incoming.doc,
+      getDoc: incoming.getDoc,
+      collection: incoming.collection,
+      getDocs: incoming.getDocs,
+      writeBatch: incoming.writeBatch
     };
-    record("loadAdapter:done", { uid, classroomId, studentCount: result.students.length });
-    return result;
-  };
 
-  window.V2_TENANT_DATA_SAVE_ADAPTER = async (payload, capturedIdentity) => {
-    obs.counters.saveAdapterCalls++;
-    record("saveAdapter:start", {
-      classroomId: capturedIdentity?.classroomId || payload?.classroomId || null
-    });
-    await gate("classroomSave");
+    record("firestore:wrapped", null);
 
-    // The production orchestrator supplies the identity it captured before the
-    // await. Honor that target even if the browser switches accounts while this
-    // adapter is held, so an accepted outgoing write is attributed honestly to
-    // the outgoing tenant. The orchestrator—not this adapter—owns the later
-    // stale-epoch decision about client cache/state effects.
-    const classroomId =
-      capturedIdentity?.classroomId ||
-      payload?.classroomId ||
-      window.__PHASE2B_TEST__?.currentClassroomId();
-    if (!classroomId) throw new Error("harness: missing classroomId for save");
+    // The service issues the classroom-root getDoc and the three collection
+    // getDocs together in one Promise.all. Counting every one would make
+    // `loadAdapterCalls` count reads, not service invocations, so the count is
+    // attributed to the students collection — read exactly once per load.
+    const wrappedGetDocs = async (ref) => {
+      const path = refPath(ref);
+      if (!CLASSROOM_SCOPED.test(path)) return primitives.getDocs(ref);
 
-    // Writes only the client-writable classroom-root fields the proposed rules
-    // permit, so a save cannot mask a rules regression.
-    await setDoc(
-      doc(db, `classrooms/${classroomId}`),
-      { settings: payload?.settings || {}, updatedAt: new Date().toISOString() },
-      { merge: true }
-    );
-    record("saveAdapter:done", { classroomId });
-    return { executed: true };
+      const isLoadAnchor = path.endsWith("/students");
+      if (isLoadAnchor) {
+        obs.counters.loadAdapterCalls++;
+        record("loadAdapter:start", { path });
+      }
+
+      await gate("classroomLoad");
+
+      // Armed failures are consumed on the anchor read only, so one armed code
+      // fails one load rather than being consumed by whichever of the four
+      // concurrent reads happens to resolve first.
+      if (isLoadAnchor) {
+        const injected = takeNextLoadFailure();
+        if (injected) {
+          record("loadAdapter:injectedFailure", { code: injected });
+          const err = new Error(`harness injected ${injected}`);
+          err.code = injected;
+          throw err;
+        }
+      }
+
+      const snapshot = await primitives.getDocs(ref);
+      if (isLoadAnchor) {
+        record("loadAdapter:done", { path, docCount: snapshot?.docs?.length ?? 0 });
+      }
+      return snapshot;
+    };
+
+    // A student session reads exactly one document, so the student loader's read
+    // is barriered and counted here too — otherwise holding "classroomLoad"
+    // would not park a student load at all.
+    const wrappedGetDoc = async (ref) => {
+      const path = refPath(ref);
+      const isStudentSelfRead = STUDENT_SELF_DOC.test(path);
+      if (!isStudentSelfRead) return primitives.getDoc(ref);
+
+      obs.counters.loadAdapterCalls++;
+      record("loadAdapter:start", { path });
+      await gate("classroomLoad");
+
+      const injected = takeNextLoadFailure();
+      if (injected) {
+        record("loadAdapter:injectedFailure", { code: injected });
+        const err = new Error(`harness injected ${injected}`);
+        err.code = injected;
+        throw err;
+      }
+
+      const snapshot = await primitives.getDoc(ref);
+      record("loadAdapter:done", { path });
+      return snapshot;
+    };
+
+    // The save barrier gates the COMMIT, not batch construction. The service
+    // re-validates the captured identity immediately before its first commit and
+    // between batches, so parking here exercises the production stale-write
+    // refusal rather than bypassing it.
+    const wrappedWriteBatch = (handle) => {
+      const batch = primitives.writeBatch(handle);
+      let touchesClassroom = false;
+      let counted = false;
+
+      const originalSet = batch.set.bind(batch);
+      const originalDelete = batch.delete.bind(batch);
+      const originalCommit = batch.commit.bind(batch);
+
+      const noteRef = (ref) => {
+        const path = refPath(ref);
+        // Either the classroom root doc, or a doc inside one of the three scoped
+        // collections.
+        if (CLASSROOM_ROOT.test(path) || CLASSROOM_SCOPED_DOC.test(path)) {
+          touchesClassroom = true;
+        }
+      };
+
+      batch.set = (ref, ...rest) => {
+        noteRef(ref);
+        return originalSet(ref, ...rest);
+      };
+      batch.delete = (ref, ...rest) => {
+        noteRef(ref);
+        return originalDelete(ref, ...rest);
+      };
+      batch.commit = async () => {
+        if (!touchesClassroom) return originalCommit();
+
+        // A multi-batch mutation is one logical save; count it once.
+        if (!counted) {
+          counted = true;
+          obs.counters.saveAdapterCalls++;
+          record("saveAdapter:start", null);
+        }
+
+        await gate("classroomSave");
+        try {
+          const result = await originalCommit();
+          record("saveAdapter:done", null);
+          return result;
+        } catch (error) {
+          // Recorded so a rejected commit is diagnosable. A save that fails is a
+          // real outcome the specs may assert on; swallowing it here would make
+          // a rules denial look like a hang.
+          record("saveAdapter:failed", {
+            code: error?.code || null,
+            message: String(error?.message || error).slice(0, 200)
+          });
+          throw error;
+        }
+      };
+
+      return batch;
+    };
+
+    return {
+      getDoc: wrappedGetDoc,
+      getDocs: wrappedGetDocs,
+      writeBatch: wrappedWriteBatch
+    };
   };
 
   // ---------------------------------------------------------------------------
