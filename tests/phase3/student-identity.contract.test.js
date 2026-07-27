@@ -1,11 +1,9 @@
-// Phase 3 Commit 1 — student-identity SOURCE contract.
+// Phase 3 Commit 1, updated by Commit 6 — student-identity SOURCE contract.
 //
 // EVIDENCE LAYER: static analysis of index.html source text. This suite pins the
-// CURRENT (pre-Phase-3) client identity facts that the Phase 3 student-lifecycle
-// and tenant-data work must change. It does NOT execute the client, does not
-// prove runtime allocation behavior, and does NOT assert the desired end state —
-// several assertions deliberately pin a known DEFECT so it cannot be forgotten
-// or silently altered before the commit that fixes it. See tests/phase3/README.md.
+// client identity wiring and its remaining deferred gaps. It does NOT execute
+// the client or prove runtime allocation behavior; the lifecycle unit/emulator
+// suites own that evidence. See tests/phase3/README.md.
 //
 // Authority: PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md Sections 1, 4, 5, 14.
 
@@ -35,13 +33,29 @@ function contextAt(lineNumber, before = 2, after = 8) {
     .join('\n')
 }
 
+function enclosingV2Branch(needle) {
+  const callIndex = indexHtml.indexOf(needle)
+  assert.notEqual(callIndex, -1, `Expected ${needle} in index.html`)
+  const marker = 'if (IS_MULTI_TEACHER_V2_ENABLED) {'
+  const start = indexHtml.lastIndexOf(marker, callIndex)
+  assert.notEqual(start, -1, `Expected a V2 branch enclosing ${needle}`)
+  const openingBrace = indexHtml.indexOf('{', start)
+  let depth = 0
+  for (let index = openingBrace; index < indexHtml.length; index += 1) {
+    if (indexHtml[index] === '{') depth += 1
+    if (indexHtml[index] === '}') depth -= 1
+    if (depth === 0) return indexHtml.slice(start, index + 1)
+  }
+  assert.fail(`Unterminated V2 branch enclosing ${needle}`)
+}
+
 describe('Phase 3 student-identity source contract', () => {
-  it('source contract: exactly one live student-ID allocator exists', () => {
+  it('source contract: V2 creation returns before the preserved legacy allocator', () => {
     const allocators = matchingLines(/id:\s*maxId \+ 1/)
     assert.equal(
       allocators.length,
       1,
-      'max(roster)+1 must be the single student allocator',
+      'the default-off legacy allocator must remain available for rollback',
     )
 
     const context = contextAt(allocators[0], 4, 8)
@@ -51,10 +65,20 @@ describe('Phase 3 student-identity source contract', () => {
       'the allocator must still derive from the live roster maximum',
     )
     assert.match(context, /const newStudent = \{/)
+
+    const v2Branch = enclosingV2Branch('orchestrateCreateStudent(v2TenantSession')
+    assert.match(v2Branch, /orchestrateCreateStudent\(v2TenantSession, callableAdapter, \{/)
+    assert.match(v2Branch, /name,\s*startingBalance,\s*pin/)
+    assert.match(v2Branch, /data\.students\.push\(result\.result\.student\)/)
+    assert.match(v2Branch, /return;/)
+    assert.doesNotMatch(v2Branch, /maxId|saveData\(/)
   })
 
-  it('source contract: exactly one data.students.push allocation site exists', () => {
-    assert.equal(matchingLines(/data\.students\.push\(/).length, 1)
+  it('source contract: V2 and legacy have exactly one isolated roster admission each', () => {
+    const pushes = matchingLines(/data\.students\.push\(/)
+    assert.equal(pushes.length, 2)
+    assert.match(lines[pushes[0] - 1], /result\.result\.student/)
+    assert.match(lines[pushes[1] - 1], /newStudent/)
   })
 
   it('source contract: every Date.now() id is a transaction or login-history id, not a student id', () => {
@@ -160,15 +184,25 @@ describe('Phase 3 student-identity source contract', () => {
     )
   })
 
-  it('source contract: plaintext pin still enters the roster object (pinned defect)', () => {
-    // Section 4 requires PIN-free V2 writes. Commit 7 removes this; until then
-    // the defect is pinned so the requirement cannot be quietly dropped.
+  it('source contract: plaintext pin remains only in the preserved legacy roster branch', () => {
+    // Commit 6 keeps default-off rollback behavior intact. The V2 branch above
+    // admits only the server response, which has no PIN; Commit 7 owns removal
+    // of PIN displays and the remaining broader PIN-free V2 UI work.
     const allocator = matchingLines(/id:\s*maxId \+ 1/)[0]
     assert.match(
       contextAt(allocator, 2, 10),
       /^\s*pin,$/m,
-      'addStudent must still be shown to place a plaintext pin on the roster object',
+      'the default-off legacy branch must remain unchanged',
     )
+  })
+
+  it('source contract: V2 removal calls only removeStudentV2 and returns before legacy save', () => {
+    const branch = enclosingV2Branch('orchestrateRemoveStudent(v2TenantSession')
+    assert.match(branch, /orchestrateRemoveStudent\(v2TenantSession, callableAdapter, \{/)
+    assert.match(branch, /studentId: String\(student\.id\)/)
+    assert.match(branch, /data\.students = data\.students\.filter/)
+    assert.match(branch, /return;/)
+    assert.doesNotMatch(branch, /saveData\(/)
   })
 
   it('source contract: both V2 data adapters are referenced by the client but never defined by it', () => {

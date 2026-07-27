@@ -19,6 +19,10 @@ import {
 import { studentPinLoginV2CallableHandler } from './phase2b/studentCredentialVerifier.js'
 import { resetStudentPinV2CallableHandler } from './phase2b/resetStudentPin.js'
 import { syncStudentProfilesV2Handler } from './phase2b/syncStudentProfiles.js'
+import {
+  createStudentV2CallableHandler,
+  removeStudentV2CallableHandler,
+} from './phase3/studentLifecycle.js'
 
 export const MULTI_TEACHER_V2_ENABLED = defineBoolean('MULTI_TEACHER_V2_ENABLED', {
   default: false,
@@ -173,6 +177,24 @@ export const studentPinLoginV2 = onCall(async (request) => {
 export const resetStudentPinV2 = onCall(async (request) => {
   assertV2Callable()
   return resetStudentPinV2CallableHandler(
+    request.data,
+    request,
+    { firestore: getFirestore() },
+  )
+})
+
+export const createStudentV2 = onCall(async (request) => {
+  assertV2Callable()
+  return createStudentV2CallableHandler(
+    request.data,
+    request,
+    { firestore: getFirestore() },
+  )
+})
+
+export const removeStudentV2 = onCall(async (request) => {
+  assertV2Callable()
+  return removeStudentV2CallableHandler(
     request.data,
     request,
     { firestore: getFirestore() },

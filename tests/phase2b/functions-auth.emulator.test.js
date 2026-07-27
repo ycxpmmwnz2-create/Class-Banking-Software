@@ -387,6 +387,8 @@ if (testMode === 'gate-off') {
         'onboardTeacherClassroomV2',
         'studentPinLoginV2',
         'resetStudentPinV2',
+        'createStudentV2',
+        'removeStudentV2',
       ]) {
         let error = null
         try {
@@ -425,6 +427,8 @@ if (testMode === 'gate-off') {
         'onboardTeacherClassroomV2',
         'studentPinLoginV2',
         'resetStudentPinV2',
+        'createStudentV2',
+        'removeStudentV2',
       ]) {
         await expectCallableError(
           () => httpsCallable(functions, name)({}),

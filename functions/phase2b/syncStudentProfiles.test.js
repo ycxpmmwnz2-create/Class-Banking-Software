@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import bcrypt from 'bcryptjs'
 import {
   buildCandidateLoginId,
+  buildTrustedLifecycleCredential,
   defaultHashPin,
   deriveBaseLoginId,
   syncStudentProfilesV2Handler,
@@ -405,6 +406,87 @@ test('default PIN hashing happens once, outside the retriable transaction', asyn
 
   assert.equal(firestore.transactionAttempts, 2)
   assert.equal(hashCalls, 1)
+})
+
+test('student creation treats the exact callable-created credential as idempotent verified state', async () => {
+  const credential = buildTrustedLifecycleCredential({
+    loginId: 'alex-smith',
+    classroomId: 'classA',
+    studentId: 'stu1',
+    pinHash: 'caller_selected_secret_hash',
+    timestamp: 1000,
+  })
+  const firestore = createMockFirestore({
+    ...foundation('classA', 'teacherA'),
+    'classrooms/classA/studentCredentials/alex-smith': credential,
+  })
+
+  const result = await syncStudentProfilesV2Handler(
+    v2WrittenEvent({ classroomId: 'classA', studentId: 'stu1', after: { name: 'Alex Smith' } }),
+    { firestore, now: () => 2000, hashPin: stubHashPin },
+  )
+
+  assert.deepEqual(result, {
+    success: true,
+    action: 'lifecycle_verified',
+    loginId: 'alex-smith',
+    authUid: deriveDeterministicStudentAuthUid('classA', 'stu1'),
+  })
+  assert.deepEqual(
+    firestore.store.get('classrooms/classA/studentCredentials/alex-smith'),
+    credential,
+  )
+  assert.equal(
+    firestore.attemptOperations.flat().some(operation => operation.kind !== 'read'),
+    false,
+  )
+})
+
+test('student creation still blocks every divergent or duplicate pre-existing credential', async () => {
+  const exact = buildTrustedLifecycleCredential({
+    loginId: 'alex-smith',
+    classroomId: 'classA',
+    studentId: 'stu1',
+    pinHash: 'caller_selected_secret_hash',
+    timestamp: 1000,
+  })
+  const divergentCredentials = [
+    { ...exact, active: false },
+    { ...exact, failedAttempts: 1 },
+    { ...exact, updatedAt: 1001 },
+    { ...exact, extraField: true },
+    Object.fromEntries(Object.entries(exact).filter(([key]) => key !== 'pinUpdatedAt')),
+  ]
+
+  for (const credential of divergentCredentials) {
+    const firestore = createMockFirestore({
+      ...foundation('classA', 'teacherA'),
+      'classrooms/classA/studentCredentials/alex-smith': credential,
+    })
+    await assert.rejects(
+      syncStudentProfilesV2Handler(
+        v2WrittenEvent({ classroomId: 'classA', studentId: 'stu1', after: { name: 'Alex Smith' } }),
+        { firestore, hashPin: stubHashPin },
+      ),
+      error => error instanceof SyncStudentProfilesError && error.code === 'failed-precondition',
+    )
+  }
+
+  const duplicated = createMockFirestore({
+    ...foundation('classA', 'teacherA'),
+    'classrooms/classA/studentCredentials/alex-smith': exact,
+    'classrooms/classA/studentCredentials/alex-smith-2': {
+      ...exact,
+      loginId: 'alex-smith-2',
+    },
+  })
+  await assert.rejects(
+    syncStudentProfilesV2Handler(
+      v2WrittenEvent({ classroomId: 'classA', studentId: 'stu1', after: { name: 'Alex Smith' } }),
+      { firestore: duplicated, hashPin: stubHashPin },
+    ),
+    error => error instanceof SyncStudentProfilesError && error.code === 'failed-precondition',
+  )
 })
 
 test('student update: rename keeps login ID stable and update allowlist preserves identity/lock fields', async () => {

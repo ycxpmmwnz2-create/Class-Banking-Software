@@ -201,6 +201,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
       studentAuthLogsError: "Error log",
       studentPinResetPending: true,
       bulkOperationPending: true,
+      studentLifecyclePending: true,
       messageTimeout: 999,
       resolvedClassroom: { id: "c1", name: "Class 1" },
       resolvedTeacher: { uid: "t1", name: "Mr. T" },
@@ -225,6 +226,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     assert.equal(globalState.studentAuthLogsError, "");
     assert.equal(globalState.studentPinResetPending, false);
     assert.equal(globalState.bulkOperationPending, false);
+    assert.equal(globalState.studentLifecyclePending, false);
     assert.equal(globalState.messageTimeout, null);
     assert.equal(globalState.resolvedClassroom, null);
     assert.equal(globalState.resolvedTeacher, null);
@@ -255,7 +257,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     // clears but the default-state factory owns as a timer handle.
     const resetFields = Object.keys(createDefaultGlobalState());
     assert.equal(resetFields.includes("messageTimeout"), true);
-    assert.equal(resetFields.length, 20, "Field contract changed: update the reset and the production adapter together");
+    assert.equal(resetFields.length, 21, "Field contract changed: update the reset and the production adapter together");
 
     // Prove the reset actually writes each field, using a probe object that
     // records writes, so the contract is behavioural and not just a key list.
@@ -294,7 +296,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     assert.match(resetFnSource, /profileLoginIdStatus = "Checking\.\.\.";/, "A previous tenant's profile login ID must not survive a tenant switch");
   });
 
-  test("resetGlobalApplicationState correctly resets complete windowAppGlobals getter/setter proxy adapter backing all 20 application variables", () => {
+  test("resetGlobalApplicationState correctly resets complete windowAppGlobals getter/setter proxy adapter backing all 21 application variables", () => {
     let data = { students: [{ id: 1, name: "Student 1" }] };
     let screen = "roster";
     let loginTab = "student";
@@ -310,6 +312,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     let studentAuthLogsError = "Err";
     let studentPinResetPending = true;
     let bulkOperationPending = true;
+    let studentLifecyclePending = true;
     let messageTimeout = 123;
     let resolvedClassroom = { id: "room1" };
     let resolvedTeacher = { uid: "t1" };
@@ -332,6 +335,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
       get studentAuthLogsError() { return studentAuthLogsError; }, set studentAuthLogsError(val) { studentAuthLogsError = val; },
       get studentPinResetPending() { return studentPinResetPending; }, set studentPinResetPending(val) { studentPinResetPending = val; },
       get bulkOperationPending() { return bulkOperationPending; }, set bulkOperationPending(val) { bulkOperationPending = val; },
+      get studentLifecyclePending() { return studentLifecyclePending; }, set studentLifecyclePending(val) { studentLifecyclePending = val; },
       get messageTimeout() { return messageTimeout; }, set messageTimeout(val) { messageTimeout = val; },
       get resolvedClassroom() { return resolvedClassroom; }, set resolvedClassroom(val) { resolvedClassroom = val; },
       get resolvedTeacher() { return resolvedTeacher; }, set resolvedTeacher(val) { resolvedTeacher = val; },
@@ -355,6 +359,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     assert.equal(studentAuthLogsError, "");
     assert.equal(studentPinResetPending, false);
     assert.equal(bulkOperationPending, false);
+    assert.equal(studentLifecyclePending, false);
     assert.equal(messageTimeout, null);
     assert.equal(resolvedClassroom, null);
     assert.equal(resolvedTeacher, null);
