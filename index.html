@@ -1513,6 +1513,7 @@ function toggleStudentDropdown() {
             { classroomCode, loginId, pin }
           );
           if (!result.executed) {
+            if (result.reason === "stale-epoch-ignored") return;
             message = result.rawCode === "unauthenticated"
               ? "Wrong classroom code, student login ID, or PIN."
               : "Student login is unavailable. Please try again.";

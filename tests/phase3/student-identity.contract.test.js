@@ -429,4 +429,24 @@ describe('Phase 3 student-identity source contract', () => {
       /callableAdapter\("studentPinLoginV2", payload\)/,
     )
   })
+
+  it('source contract: a stale V2 student-login completion cannot rewrite UI message state', () => {
+    const loginStart = indexHtml.indexOf('async function loginStudent()')
+    const loginEnd = indexHtml.indexOf('\n    async function logout()', loginStart)
+    assert.notEqual(loginStart, -1, 'loginStudent must remain defined')
+    assert.notEqual(loginEnd, -1, 'loginStudent must remain bounded by logout')
+
+    const loginBody = indexHtml.slice(loginStart, loginEnd)
+    const staleGuard = 'if (result.reason === "stale-epoch-ignored") return;'
+    const failureMessage = 'message = result.rawCode === "unauthenticated"'
+    const staleGuardIndex = loginBody.indexOf(staleGuard)
+    const failureMessageIndex = loginBody.indexOf(failureMessage)
+
+    assert.notEqual(staleGuardIndex, -1, 'stale login results must return without touching message')
+    assert.notEqual(failureMessageIndex, -1, 'live login failures must still set a useful message')
+    assert.ok(
+      staleGuardIndex < failureMessageIndex,
+      'the stale-result guard must run before any login failure message assignment',
+    )
+  })
 })
