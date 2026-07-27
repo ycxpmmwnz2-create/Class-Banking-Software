@@ -414,6 +414,82 @@ export async function orchestrateStudentPinReset(session, resetFn, payload) {
   return { executed: true, result };
 }
 
+function isExactObject(value, keys) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const actualKeys = Object.keys(value).sort();
+  const expectedKeys = [...keys].sort();
+  return actualKeys.length === expectedKeys.length &&
+    actualKeys.every((key, index) => key === expectedKeys[index]);
+}
+
+function validateCreatedStudentResponse(response) {
+  const result = response?.data || response;
+  if (!isExactObject(result, ["student", "loginId"])) return null;
+  if (!isExactObject(result.student, ["id", "name", "balance", "frozen"])) return null;
+  if (
+    !Number.isSafeInteger(result.student.id) || result.student.id < 1 ||
+    typeof result.student.name !== "string" || !result.student.name.trim() ||
+    typeof result.student.balance !== "number" || !Number.isFinite(result.student.balance) ||
+    typeof result.student.frozen !== "boolean" ||
+    typeof result.loginId !== "string" ||
+    !/^[a-z0-9](?:[a-z0-9]|-(?!-)){0,62}[a-z0-9]$|^[a-z0-9]$/.test(result.loginId)
+  ) {
+    return null;
+  }
+  return result;
+}
+
+async function orchestrateLifecycleCall(session, callableAdapter, functionName, payload, validate) {
+  if (!session) throw new Error("Tenant session is required.");
+  if (typeof callableAdapter !== "function") {
+    throw new Error("Callable adapter function is required.");
+  }
+  const captured = session.captureIdentity();
+  try {
+    const response = await callableAdapter(functionName, payload);
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+    const result = validate(response);
+    if (!result) {
+      return {
+        executed: false,
+        reason: "malformed-lifecycle-response",
+        error: "An unexpected internal error occurred."
+      };
+    }
+    return { executed: true, result };
+  } catch (err) {
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+    return { executed: false, reason: "lifecycle-call-failed", error: mapSafeClientError(err) };
+  }
+}
+
+export async function orchestrateCreateStudent(session, callableAdapter, payload) {
+  return orchestrateLifecycleCall(
+    session,
+    callableAdapter,
+    "createStudentV2",
+    payload,
+    validateCreatedStudentResponse
+  );
+}
+
+export async function orchestrateRemoveStudent(session, callableAdapter, payload) {
+  return orchestrateLifecycleCall(
+    session,
+    callableAdapter,
+    "removeStudentV2",
+    payload,
+    response => {
+      const result = response?.data || response;
+      return isExactObject(result, ["success"]) && result.success === true ? result : null;
+    }
+  );
+}
+
 export async function orchestrateBulkOperation(session, bulkFn, payload) {
   const captured = session.captureIdentity();
   let result;

@@ -756,7 +756,7 @@ import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc } from 
 import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
-import { mapSafeClientError, orchestrateProductionLogout, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
+import { mapSafeClientError, orchestrateProductionLogout, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
 
 const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED === "true";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
@@ -824,6 +824,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let studentAuthLogsError = "";
     let studentPinResetPending = false;
     let bulkOperationPending = false;
+    let studentLifecyclePending = false;
     let resolvedClassroom = null;
     let resolvedTeacher = null;
     let v2IsOffline = false;
@@ -1819,8 +1820,8 @@ const targetStudents = transactionTarget === "whole"
       render();
     }
 
-    function addStudent() {
-      if (!requireTeacher()) return;
+    async function addStudent() {
+      if (!requireTeacher() || studentLifecyclePending) return;
       const name = document.getElementById("newStudentName").value.trim();
       const pin = document.getElementById("newStudentPin").value.trim();
       const balanceInput = document.getElementById("newStudentBalance").value;
@@ -1836,8 +1837,43 @@ const targetStudents = transactionTarget === "whole"
         return;
       }
 
+      if (IS_MULTI_TEACHER_V2_ENABLED && !/^[0-9]{4}$/.test(pin)) {
+        showMessage("PIN must be exactly 4 digits.");
+        return;
+      }
+
       if (data.students.some(student => student.name.toLowerCase() === name.toLowerCase())) {
         showMessage("That student name is already on the roster.");
+        return;
+      }
+
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        if (!Number.isFinite(startingBalance)) {
+          showMessage("Enter a valid starting balance.");
+          return;
+        }
+        studentLifecyclePending = true;
+        message = `Adding ${name}...`;
+        render();
+        const captured = v2TenantSession.captureIdentity();
+        const callableAdapter = async (functionName, payload) => {
+          const callable = httpsCallable(functions, functionName);
+          return await callable(payload);
+        };
+        const result = await orchestrateCreateStudent(v2TenantSession, callableAdapter, {
+          name,
+          startingBalance,
+          pin
+        });
+        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+        if (result.executed) {
+          data.students.push(result.result.student);
+          message = `${result.result.student.name} added. Login ID: ${result.result.loginId}.`;
+        } else {
+          message = result.error || "The student could not be added.";
+        }
+        studentLifecyclePending = false;
+        render();
         return;
       }
 
@@ -2050,13 +2086,38 @@ const targetStudents = transactionTarget === "whole"
       render();
     }
 
-    function removeStudent(studentId) {
-      if (!requireTeacher()) return;
+    async function removeStudent(studentId) {
+      if (!requireTeacher() || studentLifecyclePending) return;
       const student = data.students.find(s => s.id === studentId);
       if (!student) return;
 
       const confirmed = confirm("Remove " + student.name + "? This removes the student from the roster but keeps old transaction records.");
       if (!confirmed) return;
+
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        studentLifecyclePending = true;
+        message = `Removing ${student.name}...`;
+        render();
+        const captured = v2TenantSession.captureIdentity();
+        const callableAdapter = async (functionName, payload) => {
+          const callable = httpsCallable(functions, functionName);
+          return await callable(payload);
+        };
+        const result = await orchestrateRemoveStudent(v2TenantSession, callableAdapter, {
+          studentId: String(student.id)
+        });
+        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+        if (result.executed) {
+          data.students = data.students.filter(item => item.id !== studentId);
+          if (loggedInStudentId === studentId) loggedInStudentId = null;
+          message = student.name + " removed.";
+        } else {
+          message = result.error || "The student could not be removed.";
+        }
+        studentLifecyclePending = false;
+        render();
+        return;
+      }
 
       data.students = data.students.filter(student => student.id !== studentId);
       if (loggedInStudentId === studentId) loggedInStudentId = null;
@@ -3199,6 +3260,8 @@ if (screen === "editSettingsLists" && isTeacher) {
       set studentPinResetPending(val) { studentPinResetPending = val; },
       get bulkOperationPending() { return bulkOperationPending; },
       set bulkOperationPending(val) { bulkOperationPending = val; },
+      get studentLifecyclePending() { return studentLifecyclePending; },
+      set studentLifecyclePending(val) { studentLifecyclePending = val; },
       get messageTimeout() { return messageTimeout; },
       set messageTimeout(val) { messageTimeout = val; },
       get resolvedClassroom() { return resolvedClassroom; },

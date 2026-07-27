@@ -4,7 +4,10 @@ import {
   validateCanonicalDocumentId,
 } from './identityNormalization.js'
 import { STUDENT_CREDENTIAL_COLLECTIONS } from './studentCredentialPaths.js'
-import { deriveDeterministicStudentAuthUid } from './scopedCredentialProjection.js'
+import {
+  deriveDeterministicStudentAuthUid,
+  firestoreValuesEqual,
+} from './scopedCredentialProjection.js'
 import { FIRESTORE_COLLECTIONS, TEACHER_STATUS } from '../phase1/firestoreSchema.js'
 
 /**
@@ -18,7 +21,21 @@ import { FIRESTORE_COLLECTIONS, TEACHER_STATUS } from '../phase1/firestoreSchema
 export const DEFAULT_STUDENT_PIN = '1234'
 export const STUDENT_PIN_BCRYPT_COST = 12
 
-const SUPPORTED_CREDENTIAL_SCHEMA_VERSION = 1
+export const SUPPORTED_CREDENTIAL_SCHEMA_VERSION = 1
+const TRUSTED_LIFECYCLE_CREDENTIAL_KEYS = Object.freeze([
+  'active',
+  'authUid',
+  'classroomId',
+  'createdAt',
+  'failedAttempts',
+  'lockedUntil',
+  'loginId',
+  'pinHash',
+  'pinUpdatedAt',
+  'schemaVersion',
+  'studentId',
+  'updatedAt',
+])
 const MAX_LOGIN_ID_LENGTH = 64
 const MAX_COLLISION_CANDIDATES = 200
 const MAX_CREATE_ATTEMPTS = 5
@@ -100,6 +117,59 @@ function assertCanonicalLoginId(loginId) {
 
 function snapshotExists(snapshot) {
   return Boolean(snapshot && snapshot.exists === true)
+}
+
+export function buildTrustedLifecycleCredential({
+  loginId,
+  classroomId,
+  studentId,
+  pinHash,
+  timestamp,
+}) {
+  return Object.freeze({
+    loginId,
+    classroomId,
+    studentId,
+    authUid: deriveDeterministicStudentAuthUid(classroomId, studentId),
+    active: true,
+    pinHash,
+    failedAttempts: 0,
+    lockedUntil: null,
+    schemaVersion: SUPPORTED_CREDENTIAL_SCHEMA_VERSION,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    pinUpdatedAt: timestamp,
+  })
+}
+
+export function isTrustedLifecycleCredential({
+  credentialId,
+  credentialData,
+  classroomId,
+  studentId,
+}) {
+  if (typeof credentialData !== 'object' || credentialData === null || Array.isArray(credentialData)) {
+    return false
+  }
+  const keys = Object.keys(credentialData).sort()
+  if (
+    keys.length !== TRUSTED_LIFECYCLE_CREDENTIAL_KEYS.length ||
+    !keys.every((key, index) => key === TRUSTED_LIFECYCLE_CREDENTIAL_KEYS[index])
+  ) {
+    return false
+  }
+
+  return credentialData.loginId === credentialId &&
+    credentialData.classroomId === classroomId &&
+    credentialData.studentId === studentId &&
+    credentialData.authUid === deriveDeterministicStudentAuthUid(classroomId, studentId) &&
+    credentialData.active === true &&
+    typeof credentialData.pinHash === 'string' && credentialData.pinHash.length > 0 &&
+    credentialData.failedAttempts === 0 &&
+    credentialData.lockedUntil === null &&
+    credentialData.schemaVersion === SUPPORTED_CREDENTIAL_SCHEMA_VERSION &&
+    firestoreValuesEqual(credentialData.createdAt, credentialData.updatedAt) &&
+    firestoreValuesEqual(credentialData.createdAt, credentialData.pinUpdatedAt)
 }
 
 /**
@@ -186,7 +256,7 @@ async function readValidatedFoundation(transaction, firestore, classroomId) {
  * event path's tenant and student. A forged or mis-copied credential must fail
  * closed instead of being updated or silently deactivated.
  */
-function assertExistingCredentialIdentity({ credDocSnap, credData, classroomId, studentId }) {
+export function assertExistingCredentialIdentity({ credDocSnap, credData, classroomId, studentId }) {
   let canonicalLoginId
   try {
     canonicalLoginId = normalizeStudentLoginId(credDocSnap.id)
@@ -301,11 +371,39 @@ export async function syncStudentProfilesV2Handler(
       // `studentId` is load-bearing for PIN reset and for the deterministic
       // Auth UID, so any existing credential for it — active or inactive — is a
       // blocking integrity failure, never a second credential.
-      if (existingDocs.length > 0) {
+      if (existingDocs.length > 1) {
         throw new SyncStudentProfilesError(
           'failed-precondition',
-          'Credential already exists for this student; a recycled studentId is rejected.',
+          'Multiple credential documents found for this student.',
         )
+      }
+
+      if (existingDocs.length === 1) {
+        const credDocSnap = existingDocs[0]
+        const credentialData = credDocSnap.data() ?? {}
+        assertExistingCredentialIdentity({
+          credDocSnap,
+          credData: credentialData,
+          classroomId,
+          studentId,
+        })
+        if (!isTrustedLifecycleCredential({
+          credentialId: credDocSnap.id,
+          credentialData,
+          classroomId,
+          studentId,
+        })) {
+          throw new SyncStudentProfilesError(
+            'failed-precondition',
+            'Credential already exists for this student; a recycled studentId or divergent state is rejected.',
+          )
+        }
+        return Object.freeze({
+          success: true,
+          action: 'lifecycle_verified',
+          loginId: credDocSnap.id,
+          authUid: credentialData.authUid,
+        })
       }
 
       const studentData = change.after.data() ?? {}
