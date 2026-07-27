@@ -11,24 +11,37 @@ remain authoritative for their technical scope. Nothing here authorizes
 production access, deployment, migration, destructive operations, feature-gate
 activation, committing, pushing, or merging.
 
-The repository uses a human-gated Codex and Grok workflow:
+The repository uses a Codex, Claude, and Grok engineering workflow:
 
 - **Codex** is the primary engineering agent. Codex inspects the repository,
   produces acceptance-first plans, implements approved changes, runs tests,
   validates review findings, and reports evidence and residual risk.
-- **Andrew** approves material repository and external-state changes and carries
-  review prompts and verdicts between Codex and the Grok app.
-- **Grok** is the independent, read-only reviewer. Grok uses Andrew's GitHub
-  connection and receives a bounded copy/paste handoff prepared by Codex.
+- **Claude** is the detailed technical reviewer and Codex's engineering peer.
+  Claude reviews implementation details, architecture, security invariants,
+  production wiring, and test quality. Codex addresses accepted findings and
+  Claude rechecks the focused correction until the detailed review closes.
+- **Grok** is the final independent 5,000-foot reviewer. After the Codex and
+  Claude cycle closes, Grok checks the bounded result for glaring cross-cutting
+  security, architecture, sequencing, rollback, isolation, and evidence risks.
+- **Andrew** owns the repository, sets priorities, grants permission for
+  consequential actions, and carries prompts and verdicts between applications.
+  Andrew is not expected to perform technical review or decide whether an
+  implementation is correct or secure.
 
 There is no unattended AI reviewer and no repository-stored model credential.
 The retired Meta/OpenCode workflow must not be reintroduced without Andrew's
 explicit approval and a new security review.
 
-Claude is optional, not required. Andrew may request Claude for another
-architecture opinion, a genuine high-risk disagreement, or an unusually
-important production-readiness decision. Gemini or another model may likewise
-be used only for a deliberately bounded task. Neither is a standing gate.
+Claude is a standing part of the normal review loop and must not be removed
+merely to save time or simplify a handoff. Only Andrew may declare Claude
+temporarily unavailable because his Claude credits have run out. In that
+explicit exception, Codex temporarily carries the detailed-review load and
+records that Claude review was deferred until access refreshes. Do not infer
+this exception from silence, cost concerns about another service, or ordinary
+time pressure.
+
+Gemini or another model may be used for a deliberately bounded task, but is not
+a standing gate and does not replace Claude or Grok.
 
 ## Non-negotiable operating rules
 
@@ -45,8 +58,9 @@ be used only for a deliberately bounded task. Neither is a standing gate.
    invariants, file scope, non-goals, tests, and forbidden actions before
    editing.
 5. **Use narrow, reviewable commits.** Keep one implementation item or one
-   corrective pass per commit. Do not send Grok an entire feature history when
-   a focused commit range proves the behavior.
+   corrective pass per commit. Give Claude exact implementation and correction
+   ranges, then give Grok the bounded reviewed result rather than an entire
+   feature history.
 6. **Preserve user work and history.** Do not reset, restore, clean, amend,
    rebase, squash, delete, or overwrite user work without explicit permission.
 7. **Tests must prove their titles.** Reject tautologies, mocks that merely echo
@@ -114,10 +128,10 @@ Commit, push, PR, merge, deployment, migration, and production actions remain
 separate authority boundaries unless Andrew explicitly grouped them in the
 approval.
 
-### 5. Prepare the manual Grok handoff
+### 5. Prepare the detailed Claude handoff
 
-When independent review is warranted, Codex follows
-`GROK_REVIEW_HANDOFF.md` and gives Andrew a complete copy/paste prompt naming:
+For each material implementation item, Codex gives Andrew a complete
+copy/paste prompt for Claude naming:
 
 - repository, branch, and pull request;
 - exact `BASE..TARGET` commit range;
@@ -128,31 +142,41 @@ When independent review is warranted, Codex follows
 - forbidden actions; and
 - required verdict and finding schema.
 
-Andrew pastes the prompt into the Grok app using Grok's GitHub connector and
-returns Grok's complete response to Codex.
+Claude performs the detailed, read-only engineering review. Andrew carries
+Claude's complete response back to Codex but is not responsible for evaluating
+its technical merits.
 
-### 6. Validate the verdict
+### 6. Validate, correct, and close the Claude review
 
-Codex checks that Grok reviewed the requested range and validates every finding
-against repository evidence. Codex must reject speculative, stylistic,
+Codex checks that Claude reviewed the requested range and validates every
+finding against repository evidence. Codex rejects speculative, stylistic,
 pre-existing, or out-of-scope findings with a concrete explanation.
 
-A Grok PASS closes only the requested review boundary. It never authorizes a
-merge, deployment, migration, gate activation, production operation, or later
-phase.
+For accepted findings, Codex prepares the smallest safe correction, obtains any
+required permission, adds focused regression evidence, and reports the exact
+correction range. Claude rechecks that delta plus affected integration points.
+Repeat only when a concrete finding remains; do not rerun an unchanged review
+merely to seek a different verdict.
 
-### 7. Confirm and correct
+Claude's detailed PASS closes the engineering-review boundary but does not
+replace the final Grok checkpoint or authorize a merge, deployment, migration,
+gate activation, production operation, or later phase.
 
-If Grok reports an actionable defect, Codex explains whether it is accepted,
-rejected, or needs a human decision. Codex obtains Andrew's confirmation before
-making a correction.
+### 7. Run the final 5,000-foot Grok checkpoint
 
-An accepted correction should be a narrow delta with focused regression
-evidence. Grok then reviews only the correction range plus affected integration
-points unless the correction changes architecture or invalidates the earlier
-review boundary.
+After Claude's detailed review closes, Codex follows `GROK_REVIEW_HANDOFF.md`
+and gives Andrew a bounded copy/paste prompt for Grok. Grok reviews the completed
+item at a systems level rather than duplicating Claude's line-by-line review.
+The prompt asks whether the completed result has any glaring cross-module,
+security, data-integrity, tenant-isolation, sequencing, rollback, operational,
+or test-evidence risk.
 
-Do not rerun an unchanged review merely to seek a different verdict.
+Codex validates every Grok finding against repository evidence. A concrete
+finding returns to Codex for correction and then to Claude for detailed delta
+review before Grok rechecks the affected high-level boundary.
+
+A Grok PASS closes only the final review boundary. It never authorizes a merge,
+deployment, migration, gate activation, production operation, or later phase.
 
 ### 8. Close the item honestly
 
@@ -166,9 +190,10 @@ Closure states one of:
 
 Do not call a phase complete when only one item or one evidence layer is done.
 
-## When Grok review is required
+## When Claude and Grok review are required
 
-Use a manual Grok handoff for:
+Use the full Codex implementation, Claude detailed review, and Grok final review
+loop for:
 
 - a material implementation item reaching review quality;
 - a focused security or correctness correction;
@@ -179,22 +204,25 @@ Use a manual Grok handoff for:
 - an unresolved material disagreement; or
 - an explicit request from Andrew.
 
-For tiny mechanical or comment-only changes, Codex may explain why independent
-review is disproportionate and ask Andrew whether to skip it.
+For tiny mechanical or comment-only changes, Codex may explain why the full
+review loop is disproportionate and ask Andrew whether to skip it. Codex must
+not silently skip Claude or substitute Grok for Claude.
 
-## When another model may help
+## Temporary Claude-credit exception
 
-Claude, Gemini, or another model is optional. Consider another bounded opinion
-only when:
+Claude remains required unless Andrew explicitly says his Claude credits are
+currently exhausted or Claude is otherwise temporarily unavailable. Only for
+that named period:
 
-- Andrew explicitly requests it;
-- Codex and Grok materially disagree on a high-risk invariant;
-- requirements conflict and repository evidence cannot resolve them;
-- several substantive correction rounds fail to close an issue; or
-- a production operation has exceptional irreversible risk.
+- Codex performs a separate adversarial self-review after implementation;
+- tests and mutation checks are strengthened in proportion to the risk;
+- the handoff records that independent detailed Claude review was deferred;
+- Grok still performs the final 5,000-foot checkpoint; and
+- Claude returns to the normal detailed-review role when Andrew says access has
+  refreshed.
 
-Another model does not replace Andrew's authority or the requirement to verify
-claims against the repository.
+Do not assume that Claude is unavailable. Do not make this exception permanent
+without Andrew's explicit instruction.
 
 ## Durable handoff format
 
@@ -210,8 +238,9 @@ Permitted file scope:
 Implemented behavior:
 Exact commands and results:
 Known risks and deferred evidence:
+Claude handoff scope and verdict:
+Claude correction ranges and finding dispositions:
 Grok handoff scope and verdict:
-Finding dispositions:
 Explicitly forbidden actions:
 Next requested confirmation or action:
 ```
@@ -226,10 +255,12 @@ Tell the new Codex conversation:
 ```text
 Read AGENTS.md, AI_COLLABORATION_WORKFLOW.md, GROK_REVIEW_HANDOFF.md, and the
 authoritative plan or brief for the current item. Reconstruct the baseline from
-git before acting. Confirm with me before making changes. Use a manual Grok
-copy/paste handoff when independent review is required.
+git before acting. Codex is the primary engineer, Claude is the required
+detailed reviewer, and Grok performs the final 5,000-foot review. Confirm with
+me before making changes. Do not skip Claude unless I explicitly say my Claude
+credits are temporarily unavailable.
 ```
 
-Then provide the current item, baseline commit, exact review range, latest Grok
-verdict, and next requested decision. The repository remains the durable source
-of truth; chat memory and model reports do not replace it.
+Then provide the current item, baseline commit, exact Claude and Grok review
+ranges, latest verdicts, and next requested decision. The repository remains
+the durable source of truth; chat memory and model reports do not replace it.
