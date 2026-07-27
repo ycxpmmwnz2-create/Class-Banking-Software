@@ -1180,6 +1180,33 @@ describe('Phase 3 production writer', () => {
       assert.equal(build().planDigest, build().planDigest)
     })
 
+    it('binds native Firestore values in destination plan digests', () => {
+      const projection = projectionFixture()
+      projection.scopedCredentials = [{
+        id: 'a.b',
+        path: `classrooms/${CLASSROOM_ID}/studentCredentials/a.b`,
+        data: {
+          studentId: 1,
+          classroomId: CLASSROOM_ID,
+          authUid: 's_x',
+          createdAt: FakeTimestamp(1_600_000_000, 123_456_789),
+        },
+        sourcePath: 'studentCredentials/a.b',
+        sourceUpdateTime: FakeTimestamp(1_700_000_000, 5),
+      }]
+      const build = () => buildCopyPlan({
+        projection,
+        foundation: foundationFixture(),
+        initialization: INITIALIZATION,
+      })
+      const first = build()
+      assert.equal(first.planDigest, build().planDigest)
+
+      projection.scopedCredentials[0].data.createdAt =
+        FakeTimestamp(1_600_000_000, 123_456_790)
+      assert.notEqual(first.planDigest, build().planDigest)
+    })
+
     it('bounds batches at 400 writes', () => {
       const plan = buildCopyPlan({
         projection: projectionFixture(1000),
@@ -1478,7 +1505,12 @@ describe('Phase 3 production writer', () => {
             surface: 'scopedCredentials',
             type: 'create',
             path: `classrooms/${CLASSROOM_ID}/studentCredentials/a.b`,
-            data: { studentId: 1, classroomId: CLASSROOM_ID, authUid: 's_x' },
+            data: {
+              studentId: 1,
+              classroomId: CLASSROOM_ID,
+              authUid: 's_x',
+              createdAt: FakeTimestamp(1_600_000_000, 123_456_789),
+            },
             sourcePath: 'studentCredentials/a.b',
             sourceUpdateTime: { seconds: 1_600_000_000, nanoseconds: 5 },
             expectedBefore: 'absent',
@@ -1594,7 +1626,10 @@ describe('Phase 3 production writer', () => {
       batchIndex: 0,
       operations: [
         { operationId: 'op-0', type: 'create', surface: 'students',
-          path: 'classrooms/c/students/1', data: { id: 1 } },
+          path: 'classrooms/c/students/1', data: {
+            id: 1,
+            createdAt: FakeTimestamp(1_600_000_000, 123_456_789),
+          } },
         { operationId: 'op-1', type: 'create', surface: 'students',
           path: 'classrooms/c/students/2', data: { id: 2 } },
       ],
@@ -1612,7 +1647,10 @@ describe('Phase 3 production writer', () => {
 
     it('classifies a fully applied batch as all-expected-after', () => {
       const observed = new Map([
-        ['classrooms/c/students/1', { exists: true, data: { id: 1 } }],
+        ['classrooms/c/students/1', { exists: true, data: {
+          id: 1,
+          createdAt: FakeTimestamp(1_600_000_000, 123_456_789),
+        } }],
         ['classrooms/c/students/2', { exists: true, data: { id: 2 } }],
       ])
       assert.equal(

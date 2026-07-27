@@ -1593,6 +1593,7 @@ describe('Phase 3 production writer against live emulators', () => {
     await firestore.doc('studentCredentials/ada').set({
       loginId: 'ada', studentId: '1', classroomId: 'morgan', active: true,
       pinHash: SEEDED_PIN_HASHES.ada,
+      createdAt: new Timestamp(1_690_000_000, 123_456_789),
     })
     await firestore.doc('studentCredentials/grace').set({
       loginId: 'grace', studentId: '2', classroomId: 'morgan', active: true,
@@ -1600,6 +1601,7 @@ describe('Phase 3 production writer against live emulators', () => {
     })
     await firestore.collection('studentAuthLogs').add({
       studentId: '1', outcome: 'success',
+      observedAt: new Timestamp(1_690_000_001, 987_654_321),
     })
     await auth.createUser({ uid: 'legacy-student-1', disabled: false })
     await seedWriterFoundation()
@@ -2129,6 +2131,7 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
     await firestore.doc('studentCredentials/ada').set({
       loginId: 'ada', studentId: '1', classroomId: 'morgan', active: true,
       pinHash: SEEDED_PIN_HASHES.ada,
+      createdAt: new writerMod.Timestamp(1_690_000_000, 123_456_789),
     })
     await firestore.doc('studentCredentials/grace').set({
       loginId: 'grace', studentId: '2', classroomId: 'morgan', active: true,
@@ -2136,6 +2139,7 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
     })
     await firestore.collection('studentAuthLogs').add({
       studentId: '1', outcome: 'success',
+      observedAt: new writerMod.Timestamp(1_690_000_001, 987_654_321),
     })
     await auth.createUser({ uid: 'legacy-student-1', disabled: false })
 
@@ -2409,12 +2413,40 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
     const history = await firestore
       .collection(`classrooms/${E2E_CLASSROOM_ID}/loginHistory`).get()
     assert.equal(history.size, 1)
+    const scopedAda = await firestore.doc(
+      `classrooms/${E2E_CLASSROOM_ID}/studentCredentials/ada`,
+    ).get()
+    const flatAda = await firestore.doc('studentCredentials/ada').get()
+    assert.deepEqual(
+      {
+        seconds: scopedAda.data().createdAt.seconds,
+        nanoseconds: scopedAda.data().createdAt.nanoseconds,
+      },
+      {
+        seconds: flatAda.data().createdAt.seconds,
+        nanoseconds: flatAda.data().createdAt.nanoseconds,
+      },
+      'native credential Timestamps must survive the copy exactly')
+    const scopedLogs = await firestore
+      .collection(`studentAuthLogs/${E2E_CLASSROOM_ID}/logs`).get()
+    assert.equal(scopedLogs.size, 1)
+    const flatLogs = await firestore.collection('studentAuthLogs').get()
+    assert.equal(flatLogs.size, 1)
+    assert.deepEqual(
+      {
+        seconds: scopedLogs.docs[0].data().observedAt.seconds,
+        nanoseconds: scopedLogs.docs[0].data().observedAt.nanoseconds,
+      },
+      {
+        seconds: flatLogs.docs[0].data().observedAt.seconds,
+        nanoseconds: flatLogs.docs[0].data().observedAt.nanoseconds,
+      },
+      'native auth-log Timestamps must survive the copy exactly')
 
     // ---- 5. every immutable SOURCE is byte-identical ----
     const legacyAfter = await firestore.doc('morganBank/classroomData').get()
     assert.equal(legacyAfter.data().students.length, 3,
       'the legacy source must be untouched')
-    const flatAda = await firestore.doc('studentCredentials/ada').get()
     assert.equal(flatAda.data().pinHash, SEEDED_PIN_HASHES.ada,
       'a flat credential must never be rewritten')
 
