@@ -242,8 +242,8 @@ function installHarness() {
     };
 
     // The save barrier gates the COMMIT, not batch construction. The service
-    // re-validates the captured identity immediately before its first commit and
-    // between batches, so parking here exercises the production stale-write
+    // re-validates the captured identity immediately before its single atomic
+    // commit, so parking here exercises the production stale-write
     // refusal rather than bypassing it.
     const wrappedWriteBatch = (handle) => {
       const batch = primitives.writeBatch(handle);
@@ -274,7 +274,7 @@ function installHarness() {
       batch.commit = async () => {
         if (!touchesClassroom) return originalCommit();
 
-        // A multi-batch mutation is one logical save; count it once.
+        // A classroom mutation is one logical, atomic save; count it once.
         if (!counted) {
           counted = true;
           obs.counters.saveAdapterCalls++;

@@ -113,6 +113,32 @@ function assertIdentityUnchanged(session, captured) {
   }
 }
 
+function assertSessionRole(session, expectedRole) {
+  if (session?.role !== expectedRole) {
+    throw new TenantDataServiceError(
+      "role-mismatch",
+      `The tenant data operation requires the ${expectedRole} role.`
+    );
+  }
+}
+
+function requireCanonicalStudentId(value) {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) {
+    throw new TenantDataServiceError(
+      "invalid-student-id",
+      "The student claim does not contain a canonical student id."
+    );
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new TenantDataServiceError(
+      "invalid-student-id",
+      "The student claim does not contain a safe student id."
+    );
+  }
+  return value;
+}
+
 /**
  * Build the production `loadNetworkFn` adapter: read the classroom root and the
  * three scoped collections, then project them into the aggregate view.
@@ -134,6 +160,7 @@ export function createTenantDataLoader({
 
   return async function loadTenantClassroomData(request = {}) {
     const { classroomId } = resolveTenant(session, request);
+    assertSessionRole(session, "teacher");
     const captured = session.captureIdentity();
 
     const [rootSnapshot, studentsSnapshot, transactionsSnapshot, historySnapshot] = await Promise.all([
@@ -147,12 +174,20 @@ export function createTenantDataLoader({
     // returned; the caller would otherwise cache it under the new tenant.
     assertIdentityUnchanged(session, captured);
 
+    const root = readSnapshotData(rootSnapshot);
+    if (!root) {
+      throw new TenantDataServiceError(
+        "classroom-root-missing",
+        "The resolved classroom root document is missing."
+      );
+    }
+
     return projectClassroomData({
       classroomId,
-      root: readSnapshotData(rootSnapshot),
-      students: readCollectionData(studentsSnapshot),
-      transactions: readCollectionData(transactionsSnapshot),
-      loginHistory: readCollectionData(historySnapshot),
+      root,
+      students: readCollectionData(studentsSnapshot, "students"),
+      transactions: readCollectionData(transactionsSnapshot, "transactions"),
+      loginHistory: readCollectionData(historySnapshot, "loginHistory"),
       defaultSettings
     });
   };
@@ -183,6 +218,22 @@ export function createStudentDataLoader({ db, session, firestore, defaultSetting
       );
     }
 
+    assertSessionRole(session, "student");
+    const sessionUid = typeof session.uid === "string" ? session.uid.trim() : "";
+    if (!sessionUid || sessionUid !== identity) {
+      throw new TenantDataServiceError(
+        "identity-mismatch",
+        "The requesting identity does not match the student session."
+      );
+    }
+    if (session.classroomId && session.classroomId !== tenant) {
+      throw new TenantDataServiceError(
+        "tenant-mismatch",
+        "The student claim does not match the resolved tenant."
+      );
+    }
+    requireCanonicalStudentId(student);
+
     const captured = session.captureIdentity();
     const snapshot = await getDoc(doc(db, `classrooms/${tenant}/students/${student}`));
     assertIdentityUnchanged(session, captured);
@@ -207,7 +258,7 @@ export function createStudentDataLoader({ db, session, firestore, defaultSetting
 /**
  * Build the production `V2_TENANT_DATA_SAVE_ADAPTER`.
  *
- * The aggregate is decomposed by path and applied through bounded batches. The
+ * The aggregate is decomposed by path and applied through one bounded atomic batch. The
  * classroom root receives only `settings`, `lastBackupAt`, and a server-side
  * `updatedAt`; students receive only their exact five-field body; transactions
  * and login history are written at canonical deterministic IDs so a retry is
@@ -222,13 +273,11 @@ export function createTenantDataSaver({
   session,
   firestore,
   previousRef = null,
-  // Firestore caps a WriteBatch at 500 operations; 400 leaves headroom. This
-  // bounds ONE batch, not the mutation.
+  // Firestore caps a WriteBatch at 500 operations; 400 leaves headroom and is
+  // also the maximum logical mutation size. A logical balance/history change
+  // must never be split across commits.
   maxBatchSize = 400,
-  // The ceiling on a single logical mutation. Deliberately a separate, larger
-  // bound: conflating the two would reject every mutation big enough to need
-  // splitting, making the batching loop unreachable.
-  maxWrites = 2000,
+  maxWrites = 400,
   nowFn = () => new Date().toISOString()
 }) {
   const doc = requireFunction(firestore?.doc, "doc");
@@ -246,6 +295,7 @@ export function createTenantDataSaver({
     assertIdentityUnchanged(session, captured);
 
     const { classroomId } = resolveTenant(session, { classroomId: captured?.classroomId });
+    assertSessionRole(session, "teacher");
 
     const previous = typeof previousRef === "function" ? previousRef() : previousRef;
 
@@ -292,37 +342,33 @@ export function createTenantDataSaver({
       return { written: 0, batches: 0, skipped: true };
     }
 
+    if (!Number.isSafeInteger(maxBatchSize) || maxBatchSize < 1 ||
+        operations.length > maxBatchSize) {
+      throw new TenantDataServiceError(
+        "mutation-not-atomic",
+        "The logical mutation exceeds the atomic batch limit."
+      );
+    }
+
     // Re-check immediately before the first commit. Everything above is
     // synchronous, so this closes the window opened by the awaits the caller
     // performed before invoking the adapter.
     assertIdentityUnchanged(session, captured);
 
-    let batches = 0;
-    for (let index = 0; index < operations.length; index += maxBatchSize) {
-      const slice = operations.slice(index, index + maxBatchSize);
-      const batch = writeBatch(db);
-      for (const operation of slice) {
-        const reference = doc(db, operation.path);
-        if (operation.kind === "delete") {
-          requireFunction(batch.delete?.bind(batch), "batch.delete")(reference);
-        } else {
-          requireFunction(batch.set?.bind(batch), "batch.set")(reference, operation.body, {
-            merge: operation.merge === true
-          });
-        }
-      }
-      await requireFunction(batch.commit?.bind(batch), "batch.commit")();
-      batches += 1;
-
-      // A multi-batch mutation is not atomic. If the tenant changes mid-way the
-      // remaining batches must not be committed against the new tenant's
-      // session; stopping here is strictly better than continuing.
-      if (index + maxBatchSize < operations.length) {
-        assertIdentityUnchanged(session, captured);
+    const batch = writeBatch(db);
+    for (const operation of operations) {
+      const reference = doc(db, operation.path);
+      if (operation.kind === "delete") {
+        requireFunction(batch.delete?.bind(batch), "batch.delete")(reference);
+      } else {
+        requireFunction(batch.set?.bind(batch), "batch.set")(reference, operation.body, {
+          merge: operation.merge === true
+        });
       }
     }
+    await requireFunction(batch.commit?.bind(batch), "batch.commit")();
 
-    return { written: operations.length, batches, skipped: false };
+    return { written: operations.length, batches: 1, skipped: false };
   };
 }
 
@@ -334,17 +380,23 @@ function readSnapshotData(snapshot) {
   return data ?? null;
 }
 
-function readCollectionData(snapshot) {
+function readCollectionData(snapshot, collectionName) {
   const docs = snapshot?.docs;
   if (!Array.isArray(docs)) return [];
   return docs.map(entry => {
     const body = typeof entry.data === "function" ? entry.data() : null;
     if (body === null || typeof body !== "object" || Array.isArray(body)) return body;
-    // The document ID is authoritative for identity. A stored body whose `id`
-    // disagrees with its own document ID is a real inconsistency, so it is
-    // surfaced rather than silently overwritten by the path.
-    if (Object.prototype.hasOwnProperty.call(body, "id")) return body;
-    return { ...body, id: entry.id };
+    // The path and body must name the same record. Never synthesize a missing
+    // body id from the path: exact document contracts require both, and doing so
+    // would hide malformed migrated state from the projection.
+    if (!Object.prototype.hasOwnProperty.call(body, "id") ||
+        typeof entry?.id !== "string" || String(body.id) !== entry.id) {
+      throw new TenantDataServiceError(
+        "document-id-mismatch",
+        `A ${collectionName} document path disagrees with its body identity.`
+      );
+    }
+    return body;
   });
 }
 
