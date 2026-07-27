@@ -59,6 +59,8 @@ const {
   createReadOnlyAdminHandles,
   createReadOnlyDataReaders,
   createRawDataReaders,
+  sourceEntryFromEnvelope,
+  summarizeHashedSource,
   toSourceEnvelope,
 } = await import(
   '../../functions/phase3/productionPreflight.js'
@@ -67,6 +69,10 @@ const {
 // manifest and then removes only its own, per the amended retention policy.
 const {
   PRODUCTION_STATE_DIRECTORY,
+  PRODUCTION_MANIFEST_CATEGORIES,
+  ProductionManifestError,
+  buildProductionManifest,
+  hashDomain,
   persistProductionManifest,
   readProductionManifest,
   resolveManifestPath,
@@ -285,6 +291,34 @@ async function snapshotAuth() {
       .map(user => ({ uid: user.uid, disabled: user.disabled }))
       .sort((a, b) => a.uid.localeCompare(b.uid)),
   )
+}
+
+/**
+ * Clears only this suite's exact demo-project emulator namespace.
+ *
+ * The end-to-end block must reproduce the production invariant that exactly one
+ * teacher, classroom, and login-code reservation exist. Earlier blocks create
+ * their own emulator documents, so sharing that state would either make the E2E
+ * manifest false or tempt the production guard to be weakened for test
+ * convenience. Recursive deletion is test setup against loopback emulators only;
+ * no production module exposes it.
+ */
+async function resetTestOwnedEmulatorState() {
+  async function removeTree(reference) {
+    for (const collection of await reference.listCollections()) {
+      for (const document of (await collection.get()).docs) {
+        await removeTree(document.ref)
+      }
+    }
+    await reference.delete()
+  }
+  for (const collection of await firestore.listCollections()) {
+    for (const reference of await collection.listDocuments()) {
+      await removeTree(reference)
+    }
+  }
+  const users = await auth.listUsers(1000)
+  for (const user of users.users) await auth.deleteUser(user.uid)
 }
 
 before(async () => {
@@ -1220,6 +1254,7 @@ describe('Phase 3 production writer against live emulators', () => {
   let writerModule
   let reconciliationModule
   let Timestamp
+  let writerManifest
 
   /** Everything this describe block seeded, for exact-mutation assertions. */
   async function seedWriterFoundation() {
@@ -1243,21 +1278,46 @@ describe('Phase 3 production writer against live emulators', () => {
     })
   }
 
+  function readWriterAuthCompatibility() {
+    return createReadOnlyDataReaders({
+      firestore, auth, teacherUid: WRITER_TEACHER_UID,
+    }).readAuthCompatibility()
+  }
+
+  /**
+   * A COMPLETE control-plane observation.
+   *
+   * Every deployment surface is declared on both sides and the active-writer
+   * observation is explicitly attested complete: an expectations artifact that
+   * omitted a surface, or an inventory that could not enumerate writers, must
+   * block rather than silently waive the comparison.
+   */
+  const EMULATOR_DEPLOYMENT_SURFACES = Object.freeze({
+    rules: { release: 'bridge-emulator' },
+    functions: { studentPinLoginV2: 'rev-emulator' },
+    hosting: { release: 'hosting-emulator' },
+    indexes: { composite: 'none' },
+  })
+
   function deployment(gateOn = false) {
+    const gateParameters = {
+      MULTI_TEACHER_V2_ENABLED: gateOn ? 'true' : 'false',
+    }
     return {
       readInventory: async () => ({
-        rules: { release: 'bridge-emulator' },
-        gateParameters: {
-          MULTI_TEACHER_V2_ENABLED: gateOn ? 'true' : 'false',
-        },
+        ...EMULATOR_DEPLOYMENT_SURFACES,
+        gateParameters,
         activeWriters: [],
+        activeWritersObservationComplete: true,
       }),
       initializationExpectations: {
-        rules: { release: 'bridge-emulator' },
+        ...EMULATOR_DEPLOYMENT_SURFACES,
+        gateParameters,
         acknowledgedWriters: [],
       },
       copyExpectations: {
-        rules: { release: 'bridge-emulator' },
+        ...EMULATOR_DEPLOYMENT_SURFACES,
+        gateParameters,
         acknowledgedWriters: [],
       },
     }
@@ -1278,8 +1338,107 @@ describe('Phase 3 production writer against live emulators', () => {
     }
   }
 
-  function manifestFor() {
-    return {
+  /**
+   * A manifest whose retained evidence actually describes the CURRENT seeded
+   * source, so the writer's reproving succeeds because the evidence agrees —
+   * not because a check was skipped. Built by reading live emulator state, the
+   * same way a real preflight would have recorded it.
+   */
+  async function manifestFor(overrides = {}) {
+    if (writerManifest !== undefined) {
+      return { ...writerManifest, ...overrides }
+    }
+    const readers = rawReaders()
+    const [legacy, flatCredentials, flatAuthLogs] = await Promise.all([
+      readers.readLegacyClassroomAggregate(),
+      readers.readFlatCredentials(),
+      readers.readFlatAuthLogs(),
+    ])
+    const legacyCounts = {
+      students: legacy.data?.students?.length ?? 0,
+      transactions: legacy.data?.transactions?.length ?? 0,
+      loginHistory: legacy.data?.loginHistory?.length ?? 0,
+    }
+    const legacyDomain = {
+      present: true,
+      counts: legacyCounts,
+      credentialCount: flatCredentials.length,
+      authLogCount: flatAuthLogs.length,
+      noncanonicalValueCount: 0,
+      sources: {
+        flatAuthLogs: summarizeHashedSource(
+          flatAuthLogs.map(e => sourceEntryFromEnvelope(e, 'flatAuthLogs')),
+          'flatAuthLogs',
+        ),
+        flatCredentials: summarizeHashedSource(
+          flatCredentials.map(
+            e => sourceEntryFromEnvelope(e, 'flatCredentials'),
+          ),
+          'flatCredentials',
+        ),
+        legacyClassroom: summarizeHashedSource(
+          [sourceEntryFromEnvelope(legacy, 'legacyClassroom')],
+          'legacyClassroom',
+        ),
+      },
+    }
+    const [teacher, classroom, authCompatibility] = await Promise.all([
+      readers.readTeacher(),
+      readers.readClassroom(WRITER_CLASSROOM_ID),
+      createReadOnlyDataReaders({
+        firestore, auth, teacherUid: WRITER_TEACHER_UID,
+      }).readAuthCompatibility(),
+    ])
+    const foundationDomain = {
+      present: true,
+      reciprocal: true,
+      teacherStatus: 'active',
+      classroomIdPresent: true,
+      existingTeacherCount: 1,
+      existingClassroomCount: 1,
+      sources: {
+        foundation: summarizeHashedSource([
+          sourceEntryFromEnvelope(teacher, 'foundation'),
+          sourceEntryFromEnvelope(classroom, 'foundation'),
+        ], 'foundation'),
+      },
+    }
+    const emptySurface = surface => summarizeHashedSource([], surface)
+    const emptyCoverage = Object.fromEntries([
+      'destinationStudents', 'destinationCredentials',
+      'destinationTransactions', 'destinationLoginHistory',
+      'destinationAuthLogs',
+    ].map(name => [name, {
+      referencedCount: 0, unassignedCount: 0, inconsistentCount: 0,
+    }]))
+    const destinationDomain = {
+      counts: Object.fromEntries(
+        ['classroomStudents', 'classroomTransactions',
+          'classroomLoginHistory', 'scopedCredentials', 'scopedLogs',
+          'loginCodeIndex'].map(surface => [surface, 0]),
+      ),
+      studentIdCoverage: emptyCoverage,
+      selectedCodePresent: false,
+      selectedCodeSha256: createHash('sha256').update(WRITER_CODE).digest('hex'),
+      selectedCodePathSha256: createHash('sha256')
+        .update(`classroomLoginCodes/${WRITER_CODE}`).digest('hex'),
+      sources: Object.fromEntries(
+        ['classroomStudents', 'classroomTransactions',
+          'classroomLoginHistory', 'scopedCredentials', 'scopedLogs',
+          'loginCodeIndex'].sort().map(surface => [surface, emptySurface(surface)]),
+      ),
+    }
+    const authDomain = {
+      uidCollisions: authCompatibility.uidCollisions,
+      incompatibleUsers: authCompatibility.incompatibleUsers,
+      examinedUserCount: authCompatibility.examinedUserCount,
+      sources: {
+        authUsers: summarizeHashedSource(
+          authCompatibility.sourceEntries, 'authUsers',
+        ),
+      },
+    }
+    writerManifest = {
       schemaVersion: 2,
       preflightManifestId: 'd'.repeat(64),
       projectId: EMULATOR_PROJECT_ID,
@@ -1288,7 +1447,78 @@ describe('Phase 3 production writer against live emulators', () => {
       changeId: 'CHG-EMULATOR-001',
       preflightChecksum: 'e'.repeat(64),
       outcome: 'succeeded',
-      observations: { watermark: { nextStudentNumber: 6 } },
+      domainChecksums: {
+        legacySourceState: hashDomain(legacyDomain),
+        foundationState: hashDomain(foundationDomain),
+        destinationAbsence: hashDomain(destinationDomain),
+        authCompatibility: hashDomain(authDomain),
+        identityWatermark: hashDomain({
+          observedMaximum: 5, nextStudentNumber: 6, distinctCount: 3,
+        }),
+      },
+      observations: {
+        watermark: { nextStudentNumber: 6 },
+        counts: {
+          legacy: legacyCounts,
+          flatCredentials: flatCredentials.length,
+          flatAuthLogs: flatAuthLogs.length,
+        },
+        noncanonicalValueCount: 0,
+      },
+    }
+    return { ...writerManifest, ...overrides }
+  }
+
+  /** A complete, schema-valid planned header for direct journal exercises. */
+  function completeHeaderEvent(extra = {}) {
+    const sha = value => createHash('sha256').update(value).digest('hex')
+    return {
+      schemaVersion: writerModule.JOURNAL_SCHEMA_VERSION,
+      kind: 'phase3-production-write-journal',
+      event: 'planned',
+      projectId: EMULATOR_PROJECT_ID,
+      teacherUidSha256: sha(WRITER_TEACHER_UID),
+      releaseId: 'phase3-rel-emulator',
+      changeId: 'CHG-EMULATOR-001',
+      authorizationId: 'AUTH-EMULATOR-001',
+      snapshotId: 'SNAP-EMULATOR-001',
+      writeFreezeProof: 'FREEZE-EMULATOR-001',
+      credentialProvenance: 'emulator-harness-no-credential',
+      preflightManifestId: '0'.repeat(64),
+      preflightChecksum: 'e'.repeat(64),
+      writeAuthorizationSha256: sha('wa'),
+      preflightAuthorizationSha256: sha('pa'),
+      credentialSha256: sha('cred'),
+      initializationExpectationsSha256: sha('init-exp'),
+      copyExpectationsSha256: sha('copy-exp'),
+      loginCodeSha256: sha(WRITER_CODE),
+      loginCodePathSha256: sha(`classroomLoginCodes/${WRITER_CODE}`),
+      classroomIdSha256: sha(WRITER_CLASSROOM_ID),
+      nextStudentNumber: 6,
+      initializedAtSeconds: 1_790_000_000,
+      initializedAtNanoseconds: 0,
+      planDigest: sha('plan'),
+      batchCount: 1,
+      countsBySurface: {
+        classroom: 1, students: 0, transactions: 0, loginHistory: 0,
+        scopedCredentials: 0, scopedAuthLogs: 0,
+      },
+      foundationStateSha256: 'a'.repeat(64),
+      foundationBodiesSha256: createHash('sha256')
+        .update('foundation-bodies').digest('hex'),
+      foundationStableBodiesSha256: createHash('sha256')
+        .update('foundation-stable-bodies').digest('hex'),
+      teacherSourceSha256: createHash('sha256')
+        .update('teacher-source').digest('hex'),
+      classroomInitializedBodySha256: createHash('sha256')
+        .update('classroom-initialized-body').digest('hex'),
+      classroomProjectedBodySha256: createHash('sha256')
+        .update('classroom-projected-body').digest('hex'),
+      legacySourceStateSha256: 'b'.repeat(64),
+      destinationAbsenceSha256: 'c'.repeat(64),
+      authCompatibilitySha256: 'd'.repeat(64),
+      watermarkSha256: 'f'.repeat(64),
+      ...extra,
     }
   }
 
@@ -1349,7 +1579,31 @@ describe('Phase 3 production writer against live emulators', () => {
     writerState = fs.mkdtempSync(
       path.join(os.tmpdir(), `phase3-writer-${RUN_TOKEN}-`),
     )
+    await resetTestOwnedEmulatorState()
+    await firestore.doc('morganBank/classroomData').set({
+      students: [
+        { id: 1, name: 'Ada', balance: 10, frozen: false },
+        { id: 2, name: 'Grace', balance: 20, frozen: false },
+        { id: 5, name: 'Alan', balance: 0, frozen: true },
+      ],
+      transactions: [{ id: 100, studentId: 1, type: 'Add', amount: 10 }],
+      loginHistory: [{ id: 200, studentId: 2, result: 'success' }],
+      settings: { reasons: ['Quick Cash'] },
+    })
+    await firestore.doc('studentCredentials/ada').set({
+      loginId: 'ada', studentId: '1', classroomId: 'morgan', active: true,
+      pinHash: SEEDED_PIN_HASHES.ada,
+    })
+    await firestore.doc('studentCredentials/grace').set({
+      loginId: 'grace', studentId: '2', classroomId: 'morgan', active: true,
+      pinHash: SEEDED_PIN_HASHES.grace,
+    })
+    await firestore.collection('studentAuthLogs').add({
+      studentId: '1', outcome: 'success',
+    })
+    await auth.createUser({ uid: 'legacy-student-1', disabled: false })
     await seedWriterFoundation()
+    await manifestFor()
   })
 
   after(() => {
@@ -1378,7 +1632,7 @@ describe('Phase 3 production writer against live emulators', () => {
     const outcome = await writerModule.runProductionWrite({
       firestore,
       journal,
-      manifest: manifestFor(),
+      manifest: await manifestFor(),
       authorization: authorizationFor(),
       initialization: {
         ...initialization,
@@ -1390,6 +1644,7 @@ describe('Phase 3 production writer against live emulators', () => {
       foundation,
       deployment: deployment(),
       rawReaders: rawReaders(),
+      readAuthCompatibility: readWriterAuthCompatibility,
       nowTimestamp: Timestamp.fromMillis(1_790_000_000_000),
       logger: { log() {}, error() {} },
     })
@@ -1473,7 +1728,7 @@ describe('Phase 3 production writer against live emulators', () => {
       writerModule.runProductionWrite({
         firestore,
         journal,
-        manifest: manifestFor(),
+        manifest: await manifestFor(),
         authorization: authorizationFor(),
         initialization: {
           ...initialization,
@@ -1485,9 +1740,10 @@ describe('Phase 3 production writer against live emulators', () => {
         foundation,
         // Gate ON: copying under a live gate would expose a half-migrated
         // classroom to real traffic.
-        deployment: deployment(true),
-        rawReaders: rawReaders(),
-        nowTimestamp: Timestamp.fromMillis(1_790_000_000_000),
+          deployment: deployment(true),
+          rawReaders: rawReaders(),
+          readAuthCompatibility: readWriterAuthCompatibility,
+          nowTimestamp: Timestamp.fromMillis(1_790_000_000_000),
         logger: { log() {}, error() {} },
       }),
       error => error.category === 'deployment-drift',
@@ -1516,7 +1772,7 @@ describe('Phase 3 production writer against live emulators', () => {
             nextStudentNumber: 99,
           },
           initializedAt: Timestamp.fromMillis(1_790_000_000_000),
-          manifest: manifestFor(),
+          manifest: await manifestFor(),
         }),
         error => error.category === 'state-diverged',
       )
@@ -1611,9 +1867,12 @@ describe('Phase 3 production writer against live emulators', () => {
       })
       await assert.rejects(
         journal.append(
-          { schemaVersion: 1, kind: 'phase3-production-write-journal',
-            event: 'planned' },
-          { expectedSequence: 0, expectedPreviousDigest: null },
+          completeHeaderEvent(),
+          {
+            expectedSequence: 0,
+            expectedPreviousDigest: null,
+            expectedPreviousEvent: null,
+          },
         ),
         error => error.category === 'journal-write-failed',
       )
@@ -1665,6 +1924,788 @@ describe('Phase 3 production writer against live emulators', () => {
         nowMillis: Date.now(),
       }),
       error => error.code === 'PHASE3_PRODUCTION_ENVIRONMENT_ERROR',
+    )
+  })
+})
+
+/**
+ * Phase 3 Commit 5 — the CONTINUOUS end-to-end copy against live emulators.
+ *
+ * This is the evidence the suite previously lacked. The block above proves
+ * initialization, a gate-on refusal, and a synthetic one-document recovery; it
+ * never performs a successful copy, never calls `runWriteMain`, and never calls
+ * `runReverifyMain`. Those are exactly the paths an operator will run.
+ *
+ * Here both entrypoints are driven for real, in order, against real emulator
+ * Firestore and Auth and a real isolated on-disk state root:
+ *
+ *   1. a retained manifest built from the live seeded source;
+ *   2. runWriteMain invocation one -> initialization only;
+ *   3. runWriteMain invocation two with the gate off -> the copy;
+ *   4. every projected destination and every immutable source verified;
+ *   5. runReverifyMain through the real read-only journal path;
+ *   6. crash controls at each journal stage;
+ *   7. negative controls for drift and incomplete observation.
+ *
+ * Only the control-plane observations are injected — no emulator exists for
+ * Rules/Functions/Hosting releases — plus a deterministic clock and the
+ * isolated filesystem roots. Firestore, Auth, the journal, and both
+ * entrypoints are real.
+ */
+describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
+  const E2E_TEACHER_UID = 'e2e-teacher-uid-0001'
+  const E2E_CLASSROOM_ID = 'e2e-classroom-0001'
+  const E2E_CODE = 'RSTVWXYZ'
+  const E2E_FORMATTED = 'RSTV-WXYZ'
+
+  let writeModule
+  let reverifyModule
+  let writerMod
+  let e2eStateRoot
+  let e2eArtifactRoot
+  let artifacts
+  let retainedManifest
+
+  const DEPLOYMENT_SURFACES_E2E = Object.freeze({
+    rules: { release: 'bridge-e2e' },
+    functions: { studentPinLoginV2: 'rev-e2e' },
+    hosting: { release: 'hosting-e2e' },
+    indexes: { composite: 'none' },
+  })
+
+  function inventory({ gateOn = false, writers = [], complete = true } = {}) {
+    return async () => ({
+      ...DEPLOYMENT_SURFACES_E2E,
+      gateParameters: { MULTI_TEACHER_V2_ENABLED: gateOn ? 'true' : 'false' },
+      activeWriters: writers,
+      activeWritersObservationComplete: complete,
+    })
+  }
+
+  function expectations(gateOn = false) {
+    return {
+      ...DEPLOYMENT_SURFACES_E2E,
+      gateParameters: { MULTI_TEACHER_V2_ENABLED: gateOn ? 'true' : 'false' },
+      acknowledgedWriters: [],
+    }
+  }
+
+  function e2eReaders() {
+    return createRawDataReaders({ firestore, teacherUid: E2E_TEACHER_UID })
+  }
+
+  function completedJournalDirectory() {
+    return path.join(
+      e2eStateRoot, `write-${retainedManifest.preflightManifestId}`,
+    )
+  }
+
+  /** Copies a valid journal prefix into a disposable crash-recovery root. */
+  function journalPrefixThrough(eventName) {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), `phase3-crash-${eventName}-${RUN_TOKEN}-`),
+    )
+    const source = completedJournalDirectory()
+    const target = path.join(
+      root, `write-${retainedManifest.preflightManifestId}`,
+    )
+    fs.mkdirSync(target, { recursive: true })
+    let found = false
+    for (const name of fs.readdirSync(source).filter(
+      value => /^\d{6}\.json$/.test(value),
+    ).sort()) {
+      const bytes = fs.readFileSync(path.join(source, name), 'utf8')
+      fs.writeFileSync(path.join(target, name), bytes, 'utf8')
+      if (JSON.parse(bytes).event === eventName) {
+        found = true
+        break
+      }
+    }
+    assert.equal(found, true, `completed journal must contain ${eventName}`)
+    return root
+  }
+
+  async function captureE2EDestination() {
+    const collections = [
+      `classrooms/${E2E_CLASSROOM_ID}/students`,
+      `classrooms/${E2E_CLASSROOM_ID}/transactions`,
+      `classrooms/${E2E_CLASSROOM_ID}/loginHistory`,
+      `classrooms/${E2E_CLASSROOM_ID}/studentCredentials`,
+      `studentAuthLogs/${E2E_CLASSROOM_ID}/logs`,
+    ]
+    const documents = []
+    for (const collectionPath of collections) {
+      for (const document of (await firestore.collection(collectionPath).get()).docs) {
+        documents.push({ path: document.ref.path, data: document.data() })
+      }
+    }
+    return {
+      documents,
+      classroom: (await firestore.doc(
+        `classrooms/${E2E_CLASSROOM_ID}`,
+      ).get()).data(),
+      code: (await firestore.doc(`classroomLoginCodes/${E2E_CODE}`).get()).data(),
+    }
+  }
+
+  async function removeCapturedDocuments(captured) {
+    for (const document of captured.documents) {
+      await firestore.doc(document.path).delete()
+    }
+  }
+
+  async function restoreE2EDestination(captured) {
+    await firestore.doc(`classrooms/${E2E_CLASSROOM_ID}`).set(captured.classroom)
+    await firestore.doc(`classroomLoginCodes/${E2E_CODE}`).set(captured.code)
+    for (const document of captured.documents) {
+      await firestore.doc(document.path).set(document.data)
+    }
+  }
+
+  /** Drives the real write entrypoint with real artifacts on disk. */
+  async function runWrite(overrides = {}) {
+    return writeModule.runWriteMain([
+      '--write-authorization-file', artifacts.writeAuthorizationPath,
+      '--preflight-authorization-file', artifacts.preflightAuthorizationPath,
+      '--initialization-expectations-file', artifacts.initializationPath,
+      '--copy-expectations-file', artifacts.copyPath,
+      '--credential-file', artifacts.credentialPath,
+    ], {
+      environment: emulatorEnvironment(),
+      logger: { log() {}, error() {} },
+      // Real default Firestore/Auth handles, real journal, real state root. Only
+      // the control plane and deterministic clock are injected.
+      readDeploymentInventory: inventory(),
+      stateRoot: e2eStateRoot,
+      nowTimestamp: writerMod.Timestamp.fromMillis(1_795_000_000_000),
+      nowMillis: Date.parse('2026-07-26T12:00:00.000Z'),
+      ...overrides,
+    })
+  }
+
+  async function runReverify(overrides = {}) {
+    return reverifyModule.runReverifyMain([
+      '--write-authorization-file', artifacts.writeAuthorizationPath,
+      '--preflight-authorization-file', artifacts.preflightAuthorizationPath,
+      '--initialization-expectations-file', artifacts.initializationPath,
+      '--copy-expectations-file', artifacts.copyPath,
+      '--credential-file', artifacts.credentialPath,
+    ], {
+      environment: emulatorEnvironment(),
+      logger: { log() {}, error() {} },
+      readDeploymentInventory: inventory(),
+      stateRoot: e2eStateRoot,
+      nowMillis: Date.parse('2026-07-26T12:00:00.000Z'),
+      ...overrides,
+    })
+  }
+
+  before(async () => {
+    writeModule = await import('../../functions/phase3/write.js')
+    reverifyModule = await import('../../functions/phase3/reverify.js')
+    writerMod = await import('../../functions/phase3/productionWriter.js')
+
+    e2eStateRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), `phase3-e2e-state-${RUN_TOKEN}-`),
+    )
+    e2eArtifactRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), `phase3-e2e-art-${RUN_TOKEN}-`),
+    )
+
+    // Isolate this continuous run from the preceding emulator controls while
+    // preserving the production-wide one-classroom/code-index invariants.
+    await resetTestOwnedEmulatorState()
+
+    await firestore.doc('morganBank/classroomData').set({
+      students: [
+        { id: 1, name: 'Ada', balance: 10, frozen: false },
+        { id: 2, name: 'Grace', balance: 20, frozen: false },
+        { id: 5, name: 'Alan', balance: 0, frozen: true },
+      ],
+      transactions: [{ id: 100, studentId: 1, type: 'Add', amount: 10 }],
+      loginHistory: [{ id: 200, studentId: 2, result: 'success' }],
+      settings: { reasons: ['Quick Cash'] },
+    })
+    await firestore.doc('studentCredentials/ada').set({
+      loginId: 'ada', studentId: '1', classroomId: 'morgan', active: true,
+      pinHash: SEEDED_PIN_HASHES.ada,
+    })
+    await firestore.doc('studentCredentials/grace').set({
+      loginId: 'grace', studentId: '2', classroomId: 'morgan', active: true,
+      pinHash: SEEDED_PIN_HASHES.grace,
+    })
+    await firestore.collection('studentAuthLogs').add({
+      studentId: '1', outcome: 'success',
+    })
+    await auth.createUser({ uid: 'legacy-student-1', disabled: false })
+
+    // An EXISTING reciprocal foundation with no code and no counter — exactly
+    // what Release Order step 8 leaves behind.
+    await firestore.doc(`teachers/${E2E_TEACHER_UID}`).set({
+      uid: E2E_TEACHER_UID,
+      classroomId: E2E_CLASSROOM_ID,
+      status: 'active',
+    })
+    await firestore.doc(`classrooms/${E2E_CLASSROOM_ID}`).set({
+      ownerUid: E2E_TEACHER_UID,
+      name: 'E2E Period 1',
+      settings: { reasons: ['Legacy'] },
+    })
+
+    const writeArtifactAt = (name, value) => {
+      const filePath = path.join(e2eArtifactRoot, name)
+      fs.writeFileSync(filePath, JSON.stringify(value), 'utf8')
+      return filePath
+    }
+    const sha256File = filePath => createHash('sha256')
+      .update(fs.readFileSync(filePath)).digest('hex')
+
+    const initializationPath = writeArtifactAt(
+      'e2e-initialization-expectations.json', expectations(),
+    )
+    const copyPath = writeArtifactAt('e2e-copy-expectations.json', expectations())
+    const credentialPath = writeArtifactAt('e2e-credential.json', {
+      type: 'service_account',
+      project_id: EMULATOR_PROJECT_ID,
+      client_email: 'phase3-e2e@example.invalid',
+      private_key: 'not-a-real-key',
+    })
+    const preflightAuthorizationPath = writeArtifactAt(
+      'e2e-preflight-authorization.json',
+      authorizationArtifact({
+        teacherUid: E2E_TEACHER_UID,
+        studentLoginCode: E2E_CODE,
+        // The preflight authorization BINDS the credential and expectations by
+        // digest; the writer refuses a substituted artifact.
+        credentialSha256: sha256File(credentialPath),
+        expectationsSha256: sha256File(copyPath),
+      }),
+    )
+
+    // ---- a REAL retained manifest describing the LIVE seeded source ----
+    // Built through the real builder (which content-addresses it) and installed
+    // through the real persister into the real state directory, so the writer
+    // resolves it by content address exactly as it would in production. No
+    // reader is injected: injecting `readFile` would also intercept every
+    // artifact read, which is not how the entrypoint behaves.
+    const readers = e2eReaders()
+    const [legacy, flatCredentials, flatAuthLogs] = await Promise.all([
+      readers.readLegacyClassroomAggregate(),
+      readers.readFlatCredentials(),
+      readers.readFlatAuthLogs(),
+    ])
+    const authCompatibility = await createReadOnlyDataReaders({
+      firestore, auth, teacherUid: E2E_TEACHER_UID,
+    }).readAuthCompatibility()
+    const legacyCounts = {
+      students: legacy.data.students.length,
+      transactions: legacy.data.transactions.length,
+      loginHistory: legacy.data.loginHistory.length,
+    }
+    const teacherDoc = await readers.readTeacher()
+    const classroomDoc = await readers.readClassroom(E2E_CLASSROOM_ID)
+    const emptySurface = surface => summarizeHashedSource([], surface)
+
+    retainedManifest = buildProductionManifest({
+      projectId: EMULATOR_PROJECT_ID,
+      teacherUid: E2E_TEACHER_UID,
+      releaseId: 'phase3-rel-emulator',
+      changeId: 'CHG-EMULATOR-001',
+      authorizationId: 'AUTH-EMULATOR-001',
+      observedAt: '2026-07-26T12:00:00.000Z',
+      domains: {
+        deploymentInventory: {
+          ...DEPLOYMENT_SURFACES_E2E,
+          gateParameters: { MULTI_TEACHER_V2_ENABLED: 'false' },
+          activeWriters: [],
+        },
+        legacySourceState: {
+          present: true,
+          counts: legacyCounts,
+          credentialCount: flatCredentials.length,
+          authLogCount: flatAuthLogs.length,
+          noncanonicalValueCount: 0,
+          sources: {
+            flatAuthLogs: summarizeHashedSource(
+              flatAuthLogs.map(e => sourceEntryFromEnvelope(e, 'flatAuthLogs')),
+              'flatAuthLogs',
+            ),
+            flatCredentials: summarizeHashedSource(
+              flatCredentials.map(
+                e => sourceEntryFromEnvelope(e, 'flatCredentials'),
+              ),
+              'flatCredentials',
+            ),
+            legacyClassroom: summarizeHashedSource(
+              [sourceEntryFromEnvelope(legacy, 'legacyClassroom')],
+              'legacyClassroom',
+            ),
+          },
+        },
+        foundationState: {
+          present: true,
+          reciprocal: true,
+          teacherStatus: 'active',
+          classroomIdPresent: true,
+          existingTeacherCount: 1,
+          existingClassroomCount: 1,
+          sources: {
+            foundation: summarizeHashedSource([
+              sourceEntryFromEnvelope(teacherDoc, 'foundation'),
+              sourceEntryFromEnvelope(classroomDoc, 'foundation'),
+            ], 'foundation'),
+          },
+        },
+        destinationAbsence: {
+          counts: {
+            classroomStudents: 0,
+            classroomTransactions: 0,
+            classroomLoginHistory: 0,
+            scopedCredentials: 0,
+            scopedLogs: 0,
+            loginCodeIndex: 0,
+          },
+          studentIdCoverage: Object.fromEntries([
+            'destinationStudents', 'destinationCredentials',
+            'destinationTransactions', 'destinationLoginHistory',
+            'destinationAuthLogs',
+          ].map(name => [name, {
+            referencedCount: 0, unassignedCount: 0, inconsistentCount: 0,
+          }])),
+          selectedCodePresent: false,
+          selectedCodeSha256: createHash('sha256').update(E2E_CODE).digest('hex'),
+          selectedCodePathSha256: createHash('sha256')
+            .update(`classroomLoginCodes/${E2E_CODE}`).digest('hex'),
+          sources: {
+            classroomStudents: emptySurface('classroomStudents'),
+            classroomTransactions: emptySurface('classroomTransactions'),
+            classroomLoginHistory: emptySurface('classroomLoginHistory'),
+            scopedCredentials: emptySurface('scopedCredentials'),
+            scopedLogs: emptySurface('scopedLogs'),
+            loginCodeIndex: emptySurface('loginCodeIndex'),
+          },
+        },
+        authCompatibility: {
+          uidCollisions: authCompatibility.uidCollisions,
+          incompatibleUsers: authCompatibility.incompatibleUsers,
+          examinedUserCount: authCompatibility.examinedUserCount,
+          sources: {
+            authUsers: summarizeHashedSource(
+              authCompatibility.sourceEntries, 'authUsers',
+            ),
+          },
+        },
+        identityWatermark: {
+          observedMaximum: 5,
+          nextStudentNumber: 6,
+          distinctCount: 3,
+        },
+        expectationsArtifact: { sha256: sha256File(copyPath) },
+        authorizationArtifact: { sha256: sha256File(preflightAuthorizationPath) },
+      },
+      observations: {
+        watermark: {
+          observedMaximum: 5,
+          nextStudentNumber: 6,
+          distinctCount: 3,
+        },
+        counts: {
+          legacy: legacyCounts,
+          flatCredentials: flatCredentials.length,
+          flatAuthLogs: flatAuthLogs.length,
+        },
+        foundationPresent: true,
+        acknowledgedAnomalyCount: 0,
+        writeEligible: true,
+        selectedCodePresent: false,
+        destinationCounts: {
+          classroomStudents: 0,
+          classroomTransactions: 0,
+          classroomLoginHistory: 0,
+          scopedCredentials: 0,
+          scopedLogs: 0,
+          loginCodeIndex: 0,
+        },
+        noncanonicalValueCount: 0,
+      },
+    })
+    await persistProductionManifest(retainedManifest)
+    createdManifestPaths.push(
+      resolveManifestPath(retainedManifest.preflightManifestId),
+    )
+
+    // The authorization binds the manifest's DERIVED content address.
+    const writeAuthorizationPath = writeArtifactAt(
+      'e2e-write-authorization.json',
+      {
+        projectId: EMULATOR_PROJECT_ID,
+        teacherUid: E2E_TEACHER_UID,
+        releaseId: 'phase3-rel-emulator',
+        changeId: 'CHG-EMULATOR-001',
+        authorizationId: 'AUTH-EMULATOR-001',
+        snapshotId: 'SNAP-EMULATOR-001',
+        writeFreezeProof: 'FREEZE-EMULATOR-001',
+        credentialProvenance: 'emulator-harness-no-credential',
+        preflightManifestId: retainedManifest.preflightManifestId,
+        initializationExpectationsSha256: sha256File(initializationPath),
+        copyExpectationsSha256: sha256File(copyPath),
+        notBefore: '2020-01-01T00:00:00.000Z',
+        notAfter: '2099-01-01T00:00:00.000Z',
+      },
+    )
+    artifacts = {
+      initializationPath, copyPath, credentialPath,
+      preflightAuthorizationPath, writeAuthorizationPath,
+    }
+  })
+
+  after(() => {
+    for (const root of [e2eStateRoot, e2eArtifactRoot]) {
+      if (root) fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('drives the complete two-invocation copy and then reverifies', async () => {
+    // ---- 1. invocation one: initialization ONLY ----
+    const first = await runWrite()
+    assert.equal(
+      first.exitCode, writeModule.WRITE_EXIT_CODES.AWAITING_DEPLOYMENT,
+      `invocation one must stop awaiting deployment (${first.error?.category ?? ''}: ${first.error?.message ?? ''} ${JSON.stringify(first.error?.details ?? {})})`,
+    )
+    assert.equal(first.outcome.migrationRan, false)
+
+    const classroomAfterInit = await firestore
+      .doc(`classrooms/${E2E_CLASSROOM_ID}`).get()
+    assert.equal(classroomAfterInit.data().studentLoginCode, E2E_FORMATTED)
+    assert.equal(classroomAfterInit.data().nextStudentNumber, 6)
+    // Pre-existing fields survived untouched.
+    assert.equal(classroomAfterInit.data().name, 'E2E Period 1')
+
+    // ---- 2. NOTHING was copied yet ----
+    for (const collection of [
+      'students', 'transactions', 'loginHistory', 'studentCredentials',
+    ]) {
+      const docs = await firestore
+        .collection(`classrooms/${E2E_CLASSROOM_ID}/${collection}`).get()
+      assert.equal(docs.size, 0, `${collection} must be empty after step 1`)
+    }
+
+    // ---- 3. invocation two, gate OFF: the copy runs ----
+    const second = await runWrite()
+    assert.equal(
+      second.exitCode, writeModule.WRITE_EXIT_CODES.SUCCESS,
+      `invocation two must succeed (got ${second.error?.message ?? ''})`,
+    )
+    assert.equal(second.outcome.result, 'COMPLETED')
+    assert.equal(second.outcome.migrationRan, true)
+
+    // ---- 4. EVERY projected destination exists exactly ----
+    const students = await firestore
+      .collection(`classrooms/${E2E_CLASSROOM_ID}/students`).get()
+    assert.equal(students.size, 3, 'all three legacy students were copied')
+    const transactions = await firestore
+      .collection(`classrooms/${E2E_CLASSROOM_ID}/transactions`).get()
+    assert.equal(transactions.size, 1)
+    const history = await firestore
+      .collection(`classrooms/${E2E_CLASSROOM_ID}/loginHistory`).get()
+    assert.equal(history.size, 1)
+
+    // ---- 5. every immutable SOURCE is byte-identical ----
+    const legacyAfter = await firestore.doc('morganBank/classroomData').get()
+    assert.equal(legacyAfter.data().students.length, 3,
+      'the legacy source must be untouched')
+    const flatAda = await firestore.doc('studentCredentials/ada').get()
+    assert.equal(flatAda.data().pinHash, SEEDED_PIN_HASHES.ada,
+      'a flat credential must never be rewritten')
+
+    // ---- 6. reverify succeeds through the REAL read-only journal path ----
+    const reverified = await runReverify()
+    assert.equal(
+      reverified.exitCode, reverifyModule.REVERIFY_EXIT_CODES.SUCCESS,
+      `reverify must succeed (got ${reverified.error?.message ?? ''})`,
+    )
+    assert.equal(reverified.journalHead, 'completed')
+  })
+
+  test('a third invocation is idempotent and writes nothing', async () => {
+    const before = await snapshotFirestore()
+    const again = await runWrite()
+    assert.equal(again.exitCode, writeModule.WRITE_EXIT_CODES.SUCCESS)
+    assert.equal(again.outcome.result, 'ALREADY_COMPLETED')
+    assert.equal(again.outcome.migrationRan, false)
+    assert.equal(before, await snapshotFirestore(),
+      'a completed run must never write again')
+  })
+
+  test('crash control: a planned header resumes initialization exactly once',
+    async () => {
+      const captured = await captureE2EDestination()
+      const crashRoot = journalPrefixThrough('planned')
+      try {
+        await removeCapturedDocuments(captured)
+        await firestore.doc(`classroomLoginCodes/${E2E_CODE}`).delete()
+        await firestore.doc(`classrooms/${E2E_CLASSROOM_ID}`).set({
+          ownerUid: E2E_TEACHER_UID,
+          name: 'E2E Period 1',
+          settings: { reasons: ['Legacy'] },
+        })
+        const result = await runWrite({ stateRoot: crashRoot })
+        assert.equal(result.exitCode, writeModule.WRITE_EXIT_CODES.AWAITING_DEPLOYMENT)
+        assert.equal(result.outcome.migrationRan, false)
+        assert.equal((await firestore.doc(
+          `classroomLoginCodes/${E2E_CODE}`,
+        ).get()).exists, true)
+      } finally {
+        await restoreE2EDestination(captured)
+        fs.rmSync(crashRoot, { recursive: true, force: true })
+      }
+    })
+
+  test('crash control: initialization-in-flight classifies the committed pair',
+    async () => {
+      const captured = await captureE2EDestination()
+      const crashRoot = journalPrefixThrough('initialization-in-flight')
+      try {
+        await removeCapturedDocuments(captured)
+        await firestore.doc(`classrooms/${E2E_CLASSROOM_ID}`).set({
+          ownerUid: E2E_TEACHER_UID,
+          name: 'E2E Period 1',
+          settings: { reasons: ['Legacy'] },
+          studentLoginCode: E2E_FORMATTED,
+          nextStudentNumber: 6,
+        })
+        const beforeCode = (await firestore.doc(
+          `classroomLoginCodes/${E2E_CODE}`,
+        ).get()).data()
+        const result = await runWrite({ stateRoot: crashRoot })
+        assert.equal(result.exitCode, writeModule.WRITE_EXIT_CODES.AWAITING_DEPLOYMENT)
+        assert.deepEqual((await firestore.doc(
+          `classroomLoginCodes/${E2E_CODE}`,
+        ).get()).data(), beforeCode, 'recovery must not rewrite the code index')
+      } finally {
+        await restoreE2EDestination(captured)
+        fs.rmSync(crashRoot, { recursive: true, force: true })
+      }
+    })
+
+  test('NEGATIVE: copy blocks a planned destination before any batch attempt',
+    async () => {
+      const captured = await captureE2EDestination()
+      const crashRoot = journalPrefixThrough('awaiting-copy-deployment')
+      const injected = captured.documents.find(document =>
+        document.path.includes('/students/'))
+      assert.ok(injected, 'the fixture must contain a projected student')
+      try {
+        await removeCapturedDocuments(captured)
+        await firestore.doc(`classrooms/${E2E_CLASSROOM_ID}`).set({
+          ownerUid: E2E_TEACHER_UID,
+          name: 'E2E Period 1',
+          settings: { reasons: ['Legacy'] },
+          studentLoginCode: E2E_FORMATTED,
+          nextStudentNumber: 6,
+        })
+        await firestore.doc(injected.path).set(injected.data)
+        const result = await runWrite({ stateRoot: crashRoot })
+        assert.notEqual(result.exitCode, writeModule.WRITE_EXIT_CODES.SUCCESS)
+        assert.equal((await firestore.collection(
+          `classrooms/${E2E_CLASSROOM_ID}/transactions`,
+        ).get()).size, 0, 'the refusal must occur before any copy transaction')
+      } finally {
+        await restoreE2EDestination(captured)
+        fs.rmSync(crashRoot, { recursive: true, force: true })
+      }
+    })
+
+  test('NEGATIVE: copy blocks when the initialized code index is missing',
+    async () => {
+      const captured = await captureE2EDestination()
+      const crashRoot = journalPrefixThrough('awaiting-copy-deployment')
+      try {
+        await removeCapturedDocuments(captured)
+        await firestore.doc(`classrooms/${E2E_CLASSROOM_ID}`).set({
+          ownerUid: E2E_TEACHER_UID,
+          name: 'E2E Period 1',
+          settings: { reasons: ['Legacy'] },
+          studentLoginCode: E2E_FORMATTED,
+          nextStudentNumber: 6,
+        })
+        await firestore.doc(`classroomLoginCodes/${E2E_CODE}`).delete()
+        const result = await runWrite({ stateRoot: crashRoot })
+        assert.notEqual(result.exitCode, writeModule.WRITE_EXIT_CODES.SUCCESS)
+        assert.equal((await firestore.collection(
+          `classrooms/${E2E_CLASSROOM_ID}/students`,
+        ).get()).size, 0, 'a missing reservation must block before copying')
+      } finally {
+        await restoreE2EDestination(captured)
+        fs.rmSync(crashRoot, { recursive: true, force: true })
+      }
+    })
+
+  for (const [head, expectedRecoveredEvent] of [
+    ['batch-in-flight', 'batch-committed'],
+    ['batch-committed', 'batch-verified'],
+    ['copy-verifying', 'completed'],
+  ]) {
+    test(`crash control: ${head} resumes from exact remote state`, async () => {
+      const crashRoot = journalPrefixThrough(head)
+      try {
+        const before = await snapshotFirestore()
+        const result = await runWrite({ stateRoot: crashRoot })
+        assert.equal(result.exitCode, writeModule.WRITE_EXIT_CODES.SUCCESS)
+        assert.equal(result.outcome.result, 'COMPLETED')
+        assert.equal(before, await snapshotFirestore(),
+          `${head} recovery must perform no duplicate remote write`)
+        const replay = await writerMod.createWriteJournal({
+          preflightManifestId: retainedManifest.preflightManifestId,
+          stateRoot: crashRoot,
+        }).replay()
+        assert.ok(replay.events.some(event =>
+          event.event === expectedRecoveredEvent))
+        assert.equal(replay.head.event, 'completed')
+      } finally {
+        fs.rmSync(crashRoot, { recursive: true, force: true })
+      }
+    })
+  }
+
+  test('NEGATIVE: batch recovery rejects a divergent classroom root',
+    async () => {
+      const crashRoot = journalPrefixThrough('batch-in-flight')
+      const classroomRef = firestore.doc(`classrooms/${E2E_CLASSROOM_ID}`)
+      const original = (await classroomRef.get()).data()
+      try {
+        // Change only a copy-authorized field. The stable foundation digest
+        // intentionally excludes it, so only the batch's exact full-body
+        // before/after hashes can distinguish this edit from crash recovery.
+        await classroomRef.set({
+          ...original,
+          settings: { reasons: ['External drift'] },
+        })
+        const result = await runWrite({ stateRoot: crashRoot })
+        assert.notEqual(result.exitCode, writeModule.WRITE_EXIT_CODES.SUCCESS)
+      } finally {
+        await classroomRef.set(original)
+        fs.rmSync(crashRoot, { recursive: true, force: true })
+      }
+    })
+
+  test('NEGATIVE: reverify blocks on an extra login-code index document',
+    async () => {
+      const intruderPath = 'classroomLoginCodes/ZZZZZZZZ'
+      try {
+        await firestore.doc(intruderPath).set({
+          classroomId: E2E_CLASSROOM_ID, status: 'active',
+          createdAt: writerMod.Timestamp.fromMillis(1_795_000_000_000),
+        })
+        const result = await runReverify()
+        assert.notEqual(
+          result.exitCode, reverifyModule.REVERIFY_EXIT_CODES.SUCCESS,
+          'an extra code reservation must block',
+        )
+      } finally {
+        await firestore.doc(intruderPath).delete()
+      }
+    })
+
+  test('NEGATIVE: reverify reports a corrupt journal as a manifest failure',
+    async () => {
+      const result = await runReverify({
+        journal: Object.freeze({
+          replay: async () => {
+            throw new ProductionManifestError(
+              PRODUCTION_MANIFEST_CATEGORIES.JOURNAL_CORRUPT,
+              'Injected corrupt journal.',
+            )
+          },
+        }),
+      })
+      assert.equal(
+        result.exitCode,
+        reverifyModule.REVERIFY_EXIT_CODES.MANIFEST_FAILED,
+      )
+    })
+
+  test('NEGATIVE: reverify blocks on a missing deployment surface', async () => {
+    const partial = { ...expectations() }
+    delete partial.hosting
+    const result = await runReverify({
+      // The artifact on disk is still complete; this drives the comparison with
+      // an inventory that cannot report hosting.
+      readDeploymentInventory: async () => {
+        const full = await inventory()()
+        const { hosting, ...withoutHosting } = full
+        assert.ok(hosting)
+        return withoutHosting
+      },
+    })
+    assert.notEqual(result.exitCode, reverifyModule.REVERIFY_EXIT_CODES.SUCCESS)
+  })
+
+  test('NEGATIVE: reverify blocks when active writers cannot be observed',
+    async () => {
+      const result = await runReverify({
+        readDeploymentInventory: inventory({ complete: false }),
+      })
+      assert.notEqual(
+        result.exitCode, reverifyModule.REVERIFY_EXIT_CODES.SUCCESS,
+        'an unattested writer observation must never read as "no writers"',
+      )
+    })
+
+  test('NEGATIVE: reverify blocks on an unacknowledged active writer',
+    async () => {
+      const result = await runReverify({
+        readDeploymentInventory: inventory({ writers: ['rogue-process'] }),
+      })
+      assert.notEqual(result.exitCode, reverifyModule.REVERIFY_EXIT_CODES.SUCCESS)
+    })
+
+  test('NEGATIVE: reverify blocks on a destination document edited after copy',
+    async () => {
+      const studentRef = (await firestore
+        .collection(`classrooms/${E2E_CLASSROOM_ID}/students`).get()).docs[0].ref
+      const original = (await studentRef.get()).data()
+      try {
+        await studentRef.set({ ...original, balance: original.balance + 500 })
+        const result = await runReverify()
+        assert.notEqual(
+          result.exitCode, reverifyModule.REVERIFY_EXIT_CODES.SUCCESS,
+          'destination drift must block',
+        )
+      } finally {
+        await studentRef.set(original)
+      }
+    })
+
+  test('NEGATIVE: reverify blocks when Auth compatibility evidence drifts',
+    async () => {
+      const injectedUid = `post-copy-auth-${RUN_TOKEN}`
+      try {
+        await auth.createUser({ uid: injectedUid, disabled: false })
+        const result = await runReverify()
+        assert.notEqual(
+          result.exitCode, reverifyModule.REVERIFY_EXIT_CODES.SUCCESS,
+          'a post-copy Auth user must change the exact retained evidence',
+        )
+      } finally {
+        await auth.deleteUser(injectedUid)
+      }
+    })
+
+  // LAST: restoring a Firestore body cannot restore its original updateTime.
+  // Keeping this irreversible control last ensures no later negative can pass
+  // accidentally because this exact source-evidence guard is already tripped.
+  test('NEGATIVE: reverify blocks when the legacy source drifts', async () => {
+    const original = (await firestore.doc('morganBank/classroomData').get()).data()
+    await firestore.doc('morganBank/classroomData').set({
+      ...original,
+      students: [...original.students, { id: 99, name: 'Injected', balance: 0,
+        frozen: false }],
+    })
+    const drifted = await runReverify()
+    assert.notEqual(
+      drifted.exitCode, reverifyModule.REVERIFY_EXIT_CODES.SUCCESS,
+      'a post-copy source edit must never self-mask as success',
     )
   })
 })

@@ -9,7 +9,9 @@ import { describe, it } from 'node:test'
 import {
   BATCH_CLASSIFICATIONS,
   COPY_SURFACE_ORDER,
+  DEPLOYMENT_SURFACES,
   JOURNAL_EVENTS,
+  JOURNAL_SCHEMA_VERSION,
   PRODUCTION_WRITER_CATEGORIES,
   ProductionWriterError,
   WRITE_RESULTS,
@@ -27,6 +29,17 @@ import {
   runInitializationTransaction,
   runProductionWrite,
 } from './productionWriter.js'
+import {
+  DESTINATION_COUNT_SURFACES,
+  PRODUCTION_MANIFEST_CATEGORIES,
+  ProductionManifestError,
+  hashDomain,
+} from './productionManifest.js'
+import {
+  DESTINATION_SURFACES,
+  sourceEntryFromEnvelope,
+  summarizeHashedSource,
+} from './productionPreflight.js'
 import {
   encodeCanonicalFirestoreValue,
   serializeCanonicalState,
@@ -54,6 +67,12 @@ const FORMATTED_CODE = 'BCDF-GHJK'
 
 function sha256(value) {
   return createHash('sha256').update(value, 'utf8').digest('hex')
+}
+
+function bodyDigest(value) {
+  return sha256(
+    serializeCanonicalState(encodeCanonicalFirestoreValue(value)),
+  )
 }
 
 /**
@@ -241,6 +260,12 @@ function foundationFixture(classroomExtra = {}) {
     foundationStateDigest: computeFoundationDigest(
       teacher.data, classroom.data,
     ),
+    // What the writer reproved against the RETAINED manifest evidence. The
+    // transaction asserts against this, never against a digest recomputed from
+    // a read taken in the same invocation.
+    reprovedFoundationStateDigest: computeFoundationDigest(
+      teacher.data, classroom.data,
+    ),
   }
 }
 
@@ -302,17 +327,92 @@ function journalFor(root, overrides = {}) {
   })
 }
 
+/**
+ * A COMPLETE, schema-valid planned header.
+ *
+ * Every field the header schema declares is present: the journal rejects a
+ * partial header, which is the point of the exact per-event schemas.
+ */
 function headerEvent(extra = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: JOURNAL_SCHEMA_VERSION,
     kind: 'phase3-production-write-journal',
     event: JOURNAL_EVENTS.PLANNED,
     projectId: 'morgan-bank',
+    teacherUidSha256: sha256('teacher'),
+    releaseId: 'release-1',
+    changeId: 'change-1',
+    authorizationId: 'authorization-1',
+    snapshotId: 'snapshot-1',
+    writeFreezeProof: 'freeze-1',
+    credentialProvenance: 'provenance-1',
     preflightManifestId: MANIFEST_ID,
-    planDigest: sha256('plan'),
+    preflightChecksum: sha256('preflight'),
+    writeAuthorizationSha256: sha256('write-auth'),
+    preflightAuthorizationSha256: sha256('preflight-auth'),
+    credentialSha256: sha256('credential'),
     initializationExpectationsSha256: sha256('init-exp'),
     copyExpectationsSha256: sha256('copy-exp'),
+    loginCodeSha256: sha256('login-code'),
+    loginCodePathSha256: sha256('login-code-path'),
+    classroomIdSha256: sha256('classroom'),
+    nextStudentNumber: 4,
+    initializedAtSeconds: 1780000000,
+    initializedAtNanoseconds: 123456789,
+    planDigest: sha256('plan'),
+    batchCount: 1,
+    countsBySurface: {
+      classroom: 1,
+      students: 0,
+      transactions: 0,
+      loginHistory: 0,
+      scopedCredentials: 0,
+      scopedAuthLogs: 0,
+    },
+    foundationStateSha256: sha256('foundation-state'),
+    foundationBodiesSha256: sha256('foundation-bodies'),
+    foundationStableBodiesSha256: sha256('foundation-stable-bodies'),
+    teacherSourceSha256: sha256('teacher-source'),
+    classroomInitializedBodySha256: sha256('classroom-initialized-body'),
+    classroomProjectedBodySha256: sha256('classroom-projected-body'),
+    legacySourceStateSha256: sha256('legacy-source-state'),
+    destinationAbsenceSha256: sha256('destination-absence'),
+    authCompatibilitySha256: sha256('auth-compatibility'),
+    watermarkSha256: sha256('watermark'),
     ...extra,
+  }
+}
+
+/** A complete, schema-valid initialization-in-flight successor event. */
+function inFlightEvent(extra = {}) {
+  return {
+    schemaVersion: JOURNAL_SCHEMA_VERSION,
+    kind: 'phase3-production-write-journal',
+    event: JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT,
+    initializedAtSeconds: 1780000000,
+    initializedAtNanoseconds: 123456789,
+    ...extra,
+  }
+}
+
+/**
+ * Manifest eligibility moved to productionManifest.js so the read-only
+ * re-verifier can audit it without importing the writer, so it now raises that
+ * module's error type.
+ */
+function assertEligibilityError() {
+  return error => {
+    assert.ok(
+      error instanceof ProductionManifestError,
+      'expected a manifest error',
+    )
+    assert.equal(error.code, 'PHASE3_PRODUCTION_MANIFEST_ERROR')
+    assert.ok(
+      error.category === PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE ||
+      error.category === PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
+      `unexpected category: ${error.category}`,
+    )
+    return true
   }
 }
 
@@ -328,6 +428,43 @@ function assertWriterError(category) {
 
 describe('Phase 3 production writer', () => {
   describe('manifest eligibility', () => {
+    it('pins the manifest surface list to the preflight declaration', () => {
+      // productionManifest.js declares its own copy so it need not import the
+      // Admin-SDK-bearing preflight module. This is the guard that keeps the
+      // two from drifting apart.
+      assert.deepEqual(
+        [...DESTINATION_COUNT_SURFACES], [...DESTINATION_SURFACES],
+      )
+    })
+
+    it('rejects a manifest that counts only SOME destination surfaces', () => {
+      // Reproduced fail-open: a manifest whose destinationCounts held only
+      // {loginCodeIndex: 0} was accepted, proving five surfaces empty without
+      // ever having examined them.
+      for (const surface of DESTINATION_COUNT_SURFACES) {
+        const manifest = eligibleManifest()
+        delete manifest.observations.destinationCounts[surface]
+        assert.throws(
+          () => assertManifestWriteEligible(
+            manifest, { expectedProjectId: 'morgan-bank' },
+          ),
+          assertEligibilityError(),
+          `omitting ${surface} must not pass by omission`,
+        )
+      }
+    })
+
+    it('rejects a manifest counting an undeclared destination surface', () => {
+      const manifest = eligibleManifest()
+      manifest.observations.destinationCounts.inventedSurface = 0
+      assert.throws(
+        () => assertManifestWriteEligible(
+          manifest, { expectedProjectId: 'morgan-bank' },
+        ),
+        assertEligibilityError(),
+      )
+    })
+
     it('accepts an eligible v2 manifest', () => {
       const manifest = eligibleManifest()
       assert.equal(
@@ -342,7 +479,7 @@ describe('Phase 3 production writer', () => {
           eligibleManifest({ schemaVersion: 1 }),
           { expectedProjectId: 'morgan-bank' },
         ),
-        assertWriterError(PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE),
+        assertEligibilityError(),
       )
     })
 
@@ -357,7 +494,7 @@ describe('Phase 3 production writer', () => {
         () => assertManifestWriteEligible(manifest, {
           expectedProjectId: 'morgan-bank',
         }),
-        assertWriterError(PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE),
+        assertEligibilityError(),
       )
     })
 
@@ -375,7 +512,7 @@ describe('Phase 3 production writer', () => {
           () => assertManifestWriteEligible(manifest, {
             expectedProjectId: 'morgan-bank',
           }),
-          assertWriterError(PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE),
+          assertEligibilityError(),
           `${JSON.stringify(override)} must block`,
         )
       }
@@ -418,7 +555,7 @@ describe('Phase 3 production writer', () => {
           () => assertManifestWriteEligible(manifest, {
             expectedProjectId: 'morgan-bank',
           }),
-          assertWriterError(PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE),
+          assertEligibilityError(),
           `${label} must block on its own guard, not only via writeEligible`,
         )
       }
@@ -441,7 +578,7 @@ describe('Phase 3 production writer', () => {
         () => assertManifestWriteEligible(manifest, {
           expectedProjectId: 'morgan-bank',
         }),
-        assertWriterError(PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE),
+        assertEligibilityError(),
       )
     })
 
@@ -450,7 +587,7 @@ describe('Phase 3 production writer', () => {
         () => assertManifestWriteEligible(eligibleManifest(), {
           expectedProjectId: 'demo-morgan-bank-phase2b-server-test',
         }),
-        assertWriterError(PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE),
+        assertEligibilityError(),
       )
     })
   })
@@ -554,11 +691,11 @@ describe('Phase 3 production writer', () => {
         const journal = journalFor(root)
         const first = await journal.append(headerEvent(), {
           expectedSequence: 0, expectedPreviousDigest: null,
+          expectedPreviousEvent: null,
         })
         const second = await journal.append(
-          { schemaVersion: 1, kind: 'phase3-production-write-journal',
-            event: JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT },
-          { expectedSequence: 1, expectedPreviousDigest: first.digest },
+          inFlightEvent(),
+          { expectedSequence: 1, expectedPreviousDigest: first.digest, expectedPreviousEvent: JOURNAL_EVENTS.PLANNED },
         )
         const replay = await journal.replay()
         assert.equal(replay.events.length, 2)
@@ -568,25 +705,25 @@ describe('Phase 3 production writer', () => {
       })
     })
 
-    it('replay rejects an event that does not chain to its predecessor', async () => {
+    it('refuses to install an event that does not chain to its predecessor', async () => {
       await withTempState(async root => {
         const journal = journalFor(root)
         await journal.append(headerEvent(), {
           expectedSequence: 0, expectedPreviousDigest: null,
+          expectedPreviousEvent: null,
         })
-        // Install an event naming a predecessor digest that is not the real
-        // header digest. The write itself cannot know it is wrong — the chain is
-        // what makes it detectable, and replay is where that check lives.
-        await journal.append(
-          { schemaVersion: 1, kind: 'phase3-production-write-journal',
-            event: JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT },
-          { expectedSequence: 1, expectedPreviousDigest: sha256('wrong') },
-        )
+        // The append replays and binds to the durable prefix before it installs
+        // an immutable filename, so a stale or forged predecessor never lands.
         await assert.rejects(
-          journal.replay(),
-          assertWriterError(PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT),
-          'a broken chain must be rejected on replay',
+          journal.append(
+            inFlightEvent(),
+            { expectedSequence: 1, expectedPreviousDigest: sha256('wrong'),
+              expectedPreviousEvent: JOURNAL_EVENTS.PLANNED },
+          ),
+          assertWriterError(PRODUCTION_WRITER_CATEGORIES.JOURNAL_CONFLICT),
+          'a broken chain must be rejected before installation',
         )
+        assert.equal((await journal.replay()).events.length, 1)
       })
     })
 
@@ -595,11 +732,11 @@ describe('Phase 3 production writer', () => {
         const journal = journalFor(root)
         const first = await journal.append(headerEvent(), {
           expectedSequence: 0, expectedPreviousDigest: null,
+          expectedPreviousEvent: null,
         })
         await journal.append(
-          { schemaVersion: 1, kind: 'phase3-production-write-journal',
-            event: JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT },
-          { expectedSequence: 1, expectedPreviousDigest: first.digest },
+          inFlightEvent(),
+          { expectedSequence: 1, expectedPreviousDigest: first.digest, expectedPreviousEvent: JOURNAL_EVENTS.PLANNED },
         )
         // Rewrite event 0 with different-but-valid content. Its digest changes,
         // so event 1's recorded predecessor no longer matches.
@@ -623,19 +760,25 @@ describe('Phase 3 production writer', () => {
         const journal = journalFor(root)
         const first = await journal.append(headerEvent(), {
           expectedSequence: 0, expectedPreviousDigest: null,
+          expectedPreviousEvent: null,
         })
 
         const identical = {
-          schemaVersion: 1, kind: 'phase3-production-write-journal',
+          schemaVersion: JOURNAL_SCHEMA_VERSION,
+          kind: 'phase3-production-write-journal',
           event: JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT,
+          initializedAtSeconds: 1780000000,
+          initializedAtNanoseconds: 123456789,
         }
         // Two processes observed the same predecessor and intend the SAME next
         // event. Exactly one file exists afterwards and both calls succeed.
         const a = await journal.append(identical, {
           expectedSequence: 1, expectedPreviousDigest: first.digest,
+          expectedPreviousEvent: JOURNAL_EVENTS.PLANNED,
         })
         const b = await journal.append(identical, {
           expectedSequence: 1, expectedPreviousDigest: first.digest,
+          expectedPreviousEvent: JOURNAL_EVENTS.PLANNED,
         })
         assert.equal(a.digest, b.digest)
         assert.equal(b.installedByPeer, true)
@@ -646,9 +789,11 @@ describe('Phase 3 production writer', () => {
         // A DIFFERENT event at the same sequence is a fork and must block.
         await assert.rejects(
           journal.append(
-            { schemaVersion: 1, kind: 'phase3-production-write-journal',
-              event: JOURNAL_EVENTS.INDETERMINATE },
-            { expectedSequence: 1, expectedPreviousDigest: first.digest },
+            { schemaVersion: JOURNAL_SCHEMA_VERSION,
+              kind: 'phase3-production-write-journal',
+              event: JOURNAL_EVENTS.INDETERMINATE, phase: 'initialization' },
+            { expectedSequence: 1, expectedPreviousDigest: first.digest,
+              expectedPreviousEvent: JOURNAL_EVENTS.PLANNED },
           ),
           assertWriterError(PRODUCTION_WRITER_CATEGORIES.JOURNAL_CONFLICT),
         )
@@ -671,6 +816,7 @@ describe('Phase 3 production writer', () => {
         })
         await journal.append(headerEvent(), {
           expectedSequence: 0, expectedPreviousDigest: null,
+          expectedPreviousEvent: null,
         })
         assert.equal(linkCalls.length, 1, 'install must use link, not rename')
         assert.equal(renameCalls.length, 0, 'rename must never be used')
@@ -699,6 +845,7 @@ describe('Phase 3 production writer', () => {
         })
         await journal.append(headerEvent(), {
           expectedSequence: 0, expectedPreviousDigest: null,
+          expectedPreviousEvent: null,
         })
         assert.equal(fileSyncs, 1, 'the event bytes must be fsynced')
         assert.equal(directorySyncs, 1, 'the directory link must be fsynced')
@@ -720,6 +867,7 @@ describe('Phase 3 production writer', () => {
         await assert.rejects(
           journal.append(headerEvent(), {
             expectedSequence: 0, expectedPreviousDigest: null,
+            expectedPreviousEvent: null,
           }),
           assertWriterError(PRODUCTION_WRITER_CATEGORIES.JOURNAL_WRITE_FAILED),
         )
@@ -736,6 +884,7 @@ describe('Phase 3 production writer', () => {
         await assert.rejects(
           journal.append(headerEvent(), {
             expectedSequence: 0, expectedPreviousDigest: null,
+            expectedPreviousEvent: null,
           }),
           assertWriterError(PRODUCTION_WRITER_CATEGORIES.JOURNAL_WRITE_FAILED),
         )
@@ -747,12 +896,70 @@ describe('Phase 3 production writer', () => {
         const journal = journalFor(root)
         const first = await journal.append(headerEvent(), {
           expectedSequence: 0, expectedPreviousDigest: null,
+          expectedPreviousEvent: null,
         })
-        await journal.append(
-          { schemaVersion: 1, kind: 'phase3-production-write-journal',
-            event: JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT },
-          { expectedSequence: 2, expectedPreviousDigest: first.digest },
+        await assert.rejects(
+          journal.append(
+            inFlightEvent(),
+            { expectedSequence: 2, expectedPreviousDigest: first.digest,
+              expectedPreviousEvent: JOURNAL_EVENTS.PLANNED },
+          ),
+          assertWriterError(PRODUCTION_WRITER_CATEGORIES.JOURNAL_CONFLICT),
         )
+        assert.equal((await journal.replay()).events.length, 1)
+      })
+    })
+
+    it('read-only replay rejects batches that do not reconstruct the plan', async () => {
+      await withTempState(async root => {
+        const journal = journalFor(root)
+        let installed = await journal.append(headerEvent(), {
+          expectedSequence: 0, expectedPreviousDigest: null,
+          expectedPreviousEvent: null,
+        })
+        installed = await journal.append(inFlightEvent(), {
+          expectedSequence: 1, expectedPreviousDigest: installed.digest,
+          expectedPreviousEvent: JOURNAL_EVENTS.PLANNED,
+        })
+        installed = await journal.append({
+          schemaVersion: JOURNAL_SCHEMA_VERSION,
+          kind: 'phase3-production-write-journal',
+          event: JOURNAL_EVENTS.INITIALIZATION_VERIFIED,
+        }, {
+          expectedSequence: 2, expectedPreviousDigest: installed.digest,
+          expectedPreviousEvent: JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT,
+        })
+        installed = await journal.append({
+          schemaVersion: JOURNAL_SCHEMA_VERSION,
+          kind: 'phase3-production-write-journal',
+          event: JOURNAL_EVENTS.AWAITING_COPY_DEPLOYMENT,
+        }, {
+          expectedSequence: 3, expectedPreviousDigest: installed.digest,
+          expectedPreviousEvent: JOURNAL_EVENTS.INITIALIZATION_VERIFIED,
+        })
+
+        // Bypass the writer to model a hand-forged local file whose envelope,
+        // transition, and hash chain are all valid but whose batch digest does
+        // not reconstruct the planned header digest. The shared read-only replay
+        // must detect meaning-level corruption independently of append().
+        const forged = {
+          schemaVersion: JOURNAL_SCHEMA_VERSION,
+          kind: 'phase3-production-write-journal',
+          event: JOURNAL_EVENTS.BATCH_IN_FLIGHT,
+          sequence: 4,
+          previousDigest: installed.digest,
+          batchIndex: 0,
+          batchDigest: sha256('unrelated-batch'),
+          operationCount: 1,
+          estimatedBytes: 100,
+        }
+        const { writeFile } = await import('node:fs/promises')
+        await writeFile(
+          path.join(journal.directory, '000004.json'),
+          serializeCanonicalState(forged),
+          { flag: 'wx', mode: 0o400 },
+        )
+
         await assert.rejects(
           journal.replay(),
           assertWriterError(PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT),
@@ -760,20 +967,89 @@ describe('Phase 3 production writer', () => {
       })
     })
 
-    it('rejects an illegal state transition', async () => {
+    it('refuses to INSTALL an illegal state transition', async () => {
       await withTempState(async root => {
         const journal = journalFor(root)
         const first = await journal.append(headerEvent(), {
           expectedSequence: 0, expectedPreviousDigest: null,
+          expectedPreviousEvent: null,
         })
-        // planned -> completed is not a legal successor.
-        await journal.append(
-          { schemaVersion: 1, kind: 'phase3-production-write-journal',
-            event: JOURNAL_EVENTS.COMPLETED },
-          { expectedSequence: 1, expectedPreviousDigest: first.digest },
-        )
+        // planned -> completed is not a legal successor. append must refuse it
+        // BEFORE it becomes durable: an installed illegal event would brick
+        // every later replay as journal-corrupt.
         await assert.rejects(
-          journal.replay(),
+          journal.append(
+            { schemaVersion: JOURNAL_SCHEMA_VERSION,
+              kind: 'phase3-production-write-journal',
+              event: JOURNAL_EVENTS.COMPLETED },
+            { expectedSequence: 1, expectedPreviousDigest: first.digest,
+              expectedPreviousEvent: JOURNAL_EVENTS.PLANNED },
+          ),
+          assertWriterError(PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT),
+        )
+        // Nothing was written, so the journal is still replayable.
+        const replay = await journal.replay()
+        assert.equal(replay.events.length, 1)
+      })
+    })
+
+    it('rejects the specific batch-in-flight -> batch-verified forgery', async () => {
+      await withTempState(async root => {
+        const journal = journalFor(root)
+        // The reported reproduction: append accepted an illegal transition and
+        // the very next replay reported journal-corrupt. Both halves are now
+        // consistent — append refuses, so replay never sees it.
+        await assert.rejects(
+          journal.append(
+            { schemaVersion: JOURNAL_SCHEMA_VERSION,
+              kind: 'phase3-production-write-journal',
+              event: JOURNAL_EVENTS.BATCH_VERIFIED,
+              batchIndex: 0, batchDigest: sha256('batch') },
+            { expectedSequence: 1, expectedPreviousDigest: sha256('previous'),
+              expectedPreviousEvent: JOURNAL_EVENTS.BATCH_IN_FLIGHT },
+          ),
+          assertWriterError(PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT),
+        )
+      })
+    })
+
+    it('requires every append to declare its predecessor event', async () => {
+      await withTempState(async root => {
+        const journal = journalFor(root)
+        // Omitting the predecessor must fail closed rather than skip the
+        // transition check.
+        await assert.rejects(
+          journal.append(headerEvent(), {
+            expectedSequence: 0, expectedPreviousDigest: null,
+          }),
+          assertWriterError(PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT),
+        )
+      })
+    })
+
+    it('rejects an event carrying an undeclared field', async () => {
+      await withTempState(async root => {
+        const journal = journalFor(root)
+        await assert.rejects(
+          journal.append(headerEvent({ unexpectedExtra: 'smuggled' }), {
+            expectedSequence: 0, expectedPreviousDigest: null,
+            expectedPreviousEvent: null,
+          }),
+          assertWriterError(PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT),
+        )
+      })
+    })
+
+    it('rejects a header missing a retained-evidence digest', async () => {
+      await withTempState(async root => {
+        const journal = journalFor(root)
+        const incomplete = headerEvent()
+        delete incomplete.foundationStateSha256
+        await assert.rejects(
+          journal.append(incomplete, {
+            expectedSequence: 0, expectedPreviousDigest: null,
+            expectedPreviousEvent: null,
+          }),
           assertWriterError(PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT),
         )
       })
@@ -836,7 +1112,7 @@ describe('Phase 3 production writer', () => {
         await journal.append(headerEvent({
           loginCodeSha256: sha256(CANONICAL_CODE),
           teacherUidSha256: sha256(TEACHER_UID),
-        }), { expectedSequence: 0, expectedPreviousDigest: null })
+        }), { expectedSequence: 0, expectedPreviousDigest: null, expectedPreviousEvent: null })
         const bytes = await readFile(
           path.join(journal.directory, '000000.json'), 'utf8',
         )
@@ -1436,6 +1712,7 @@ describe('Phase 3 production writer', () => {
       indexes: { composite: 'none' },
       gateParameters: { MULTI_TEACHER_V2_ENABLED: 'false' },
       activeWriters: ['legacy-teacher-browser'],
+      activeWritersObservationComplete: true,
     }
     const expectations = {
       rules: { release: 'bridge-1' },
@@ -1507,6 +1784,70 @@ describe('Phase 3 production writer', () => {
         assertWriterError(PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT),
       )
     })
+
+    it('rejects expectations that OMIT any deployment surface', () => {
+      // Reproduced fail-open: an expectations artifact missing rules/functions/
+      // hosting/indexes was accepted, silently waiving those comparisons.
+      for (const surface of DEPLOYMENT_SURFACES) {
+        const partial = { ...expectations }
+        delete partial[surface]
+        assert.throws(
+          () => assertDeploymentExpectations({
+            observed, expectations: partial, stage: WRITE_STAGES.COPY,
+          }),
+          assertWriterError(PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT),
+          `omitting ${surface} must block rather than skip the comparison`,
+        )
+      }
+    })
+
+    it('rejects an inventory that omits a deployment surface', () => {
+      for (const surface of DEPLOYMENT_SURFACES) {
+        const partial = { ...observed }
+        delete partial[surface]
+        assert.throws(
+          () => assertDeploymentExpectations({
+            observed: partial, expectations, stage: WRITE_STAGES.COPY,
+          }),
+          assertWriterError(PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT),
+          `an unobserved ${surface} must block`,
+        )
+      }
+    })
+
+    it('rejects a missing or unattested active-writer observation', () => {
+      // Reproduced fail-open: absent activeWriters defaulted to [], so an
+      // inventory that could not inspect writers read as proof of none.
+      const { activeWriters, ...withoutWriters } = observed
+      assert.ok(activeWriters)
+      assert.throws(
+        () => assertDeploymentExpectations({
+          observed: withoutWriters, expectations, stage: WRITE_STAGES.COPY,
+        }),
+        assertWriterError(PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT),
+        'an absent observation must never be read as an empty one',
+      )
+      assert.throws(
+        () => assertDeploymentExpectations({
+          observed: { ...observed, activeWritersObservationComplete: false },
+          expectations,
+          stage: WRITE_STAGES.COPY,
+        }),
+        assertWriterError(PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT),
+        'an incomplete observation must block',
+      )
+    })
+
+    it('rejects an expectations artifact carrying undeclared keys', () => {
+      assert.throws(
+        () => assertDeploymentExpectations({
+          observed,
+          expectations: { ...expectations, rulez: { release: 'typo' } },
+          stage: WRITE_STAGES.COPY,
+        }),
+        assertWriterError(PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT),
+      )
+    })
   })
 
   describe('two-invocation stage separation', () => {
@@ -1533,50 +1874,401 @@ describe('Phase 3 production writer', () => {
       }
     }
 
+    /** A COMPLETE inventory and matching expectations: every surface declared. */
+    const deploymentSurfaces = {
+      rules: { release: 'bridge-1' },
+      functions: { studentPinLoginV2: 'rev-7' },
+      hosting: { release: 'hosting-default-off' },
+      indexes: { composite: 'none' },
+      gateParameters: { MULTI_TEACHER_V2_ENABLED: 'false' },
+    }
     const deployment = {
       readInventory: async () => ({
-        rules: { release: 'bridge-1' },
-        gateParameters: { MULTI_TEACHER_V2_ENABLED: 'false' },
+        ...deploymentSurfaces,
         activeWriters: [],
+        activeWritersObservationComplete: true,
       }),
       initializationExpectations: {
-        rules: { release: 'bridge-1' },
+        ...deploymentSurfaces,
         acknowledgedWriters: [],
       },
       copyExpectations: {
-        rules: { release: 'bridge-1' },
+        ...deploymentSurfaces,
         acknowledgedWriters: [],
       },
     }
 
+    const LEGACY_SOURCE_PATH = 'morganBank/classroomData'
+    const LEGACY_UPDATE_TIME = Object.freeze({
+      seconds: 1780000000, nanoseconds: 424242,
+    })
+
+    /**
+     * The complete raw-reader surface, including the reads that reprove the
+     * retained preflight evidence. A reader family missing those would make the
+     * writer unable to prove its baseline.
+     */
     function rawReadersFor(documents) {
+      const envelope = (docPath, id) => documents.get(docPath)
+        ? {
+          exists: true,
+          id,
+          path: docPath,
+          data: documents.get(docPath).data,
+          updateTime: documents.get(docPath).updateTime ?? LEGACY_UPDATE_TIME,
+        }
+        : { exists: false, path: docPath }
+
+      const readCollection = async collectionPath => {
+        const prefix = `${collectionPath}/`
+        const expectedSegments = collectionPath.split('/').length + 1
+        return [...documents.keys()]
+          .filter(docPath => docPath.startsWith(prefix) &&
+            docPath.split('/').length === expectedSegments)
+          .sort()
+          .map(docPath => envelope(docPath, docPath.split('/').at(-1)))
+      }
+
       return {
-        readClassroom: async () => documents.get(`classrooms/${CLASSROOM_ID}`)
-          ? {
-            exists: true,
-            id: CLASSROOM_ID,
-            path: `classrooms/${CLASSROOM_ID}`,
-            data: documents.get(`classrooms/${CLASSROOM_ID}`).data,
-          }
-          : { exists: false },
+        readClassroom: async () =>
+          envelope(`classrooms/${CLASSROOM_ID}`, CLASSROOM_ID),
+        readTeacher: async () => envelope(`teachers/${TEACHER_UID}`, TEACHER_UID),
+        readLegacyClassroomAggregate: async () =>
+          envelope(LEGACY_SOURCE_PATH, 'classroomData'),
+        readFlatCredentials: async () => readCollection('studentCredentials'),
+        readFlatAuthLogs: async () => readCollection('studentAuthLogs'),
+        readClassroomStudents: async () =>
+          readCollection(`classrooms/${CLASSROOM_ID}/students`),
+        readClassroomTransactions: async () =>
+          readCollection(`classrooms/${CLASSROOM_ID}/transactions`),
+        readClassroomLoginHistory: async () =>
+          readCollection(`classrooms/${CLASSROOM_ID}/loginHistory`),
+        readScopedCredentials: async () =>
+          readCollection(`classrooms/${CLASSROOM_ID}/studentCredentials`),
+        readScopedAuthLogs: async () =>
+          readCollection(`studentAuthLogs/${CLASSROOM_ID}/logs`),
+        readLoginCodeIndex: async () => readCollection('classroomLoginCodes'),
         readLoginCodeIndexDocument: async () =>
-          documents.get(`classroomLoginCodes/${CANONICAL_CODE}`)
-            ? {
-              exists: true,
-              id: CANONICAL_CODE,
-              path: `classroomLoginCodes/${CANONICAL_CODE}`,
-              data: documents.get(`classroomLoginCodes/${CANONICAL_CODE}`).data,
-            }
-            : { exists: false },
-        readDocument: async docPath => documents.get(docPath)
-          ? { exists: true, path: docPath, data: documents.get(docPath).data }
-          : { exists: false, path: docPath },
+          envelope(`classroomLoginCodes/${CANONICAL_CODE}`, CANONICAL_CODE),
+        readDocument: async docPath => envelope(docPath, docPath.split('/').pop()),
+        readCollection,
       }
     }
+
+    const readEmptyAuthCompatibility = async () => ({
+      complete: true,
+      uidCollisions: 0,
+      incompatibleUsers: 0,
+      examinedUserCount: 0,
+      sourceEntries: [],
+    })
+
+    /**
+     * A manifest whose retained checksums actually match the fixture documents,
+     * so reproving succeeds for the same reason it would in production: the
+     * evidence agrees, not because the check was skipped.
+     */
+    function manifestForFixture(documents) {
+      const legacy = documents.get(LEGACY_SOURCE_PATH)
+      const legacyEntry = sourceEntryFromEnvelope({
+        exists: true,
+        path: LEGACY_SOURCE_PATH,
+        data: legacy?.data ?? {},
+        updateTime: legacy?.updateTime ?? LEGACY_UPDATE_TIME,
+      }, 'legacyClassroom')
+      const legacyDomain = {
+        present: true,
+        counts: { students: 0, transactions: 0, loginHistory: 0 },
+        credentialCount: 0,
+        authLogCount: 0,
+        noncanonicalValueCount: 0,
+        sources: {
+          flatAuthLogs: summarizeHashedSource([], 'flatAuthLogs'),
+          flatCredentials: summarizeHashedSource([], 'flatCredentials'),
+          legacyClassroom: summarizeHashedSource([legacyEntry], 'legacyClassroom'),
+        },
+      }
+      const teacher = documents.get(`teachers/${TEACHER_UID}`)
+      const currentClassroom = documents.get(`classrooms/${CLASSROOM_ID}`)
+      const classroomData = { ...(currentClassroom?.data ?? {}) }
+      delete classroomData.studentLoginCode
+      delete classroomData.nextStudentNumber
+      const foundationDomain = {
+        present: true,
+        reciprocal: true,
+        teacherStatus: 'active',
+        classroomIdPresent: true,
+        existingTeacherCount: 1,
+        existingClassroomCount: 1,
+        sources: {
+          foundation: summarizeHashedSource([
+            sourceEntryFromEnvelope({
+              exists: true,
+              path: `teachers/${TEACHER_UID}`,
+              data: teacher?.data ?? {},
+              updateTime: teacher?.updateTime ?? LEGACY_UPDATE_TIME,
+            }, 'foundation'),
+            sourceEntryFromEnvelope({
+              exists: true,
+              path: `classrooms/${CLASSROOM_ID}`,
+              data: classroomData,
+              updateTime: currentClassroom?.updateTime ?? LEGACY_UPDATE_TIME,
+            }, 'foundation'),
+          ], 'foundation'),
+        },
+      }
+      const emptySources = Object.fromEntries(
+        [...DESTINATION_SURFACES].sort().map(surface => [
+          surface, summarizeHashedSource([], surface),
+        ]),
+      )
+      const emptyCoverage = Object.fromEntries([
+        'destinationStudents', 'destinationCredentials',
+        'destinationTransactions', 'destinationLoginHistory',
+        'destinationAuthLogs',
+      ].map(name => [name, {
+        referencedCount: 0, unassignedCount: 0, inconsistentCount: 0,
+      }]))
+      const destinationDomain = {
+        counts: Object.fromEntries(DESTINATION_SURFACES.map(surface => [surface, 0])),
+        studentIdCoverage: emptyCoverage,
+        selectedCodePresent: false,
+        selectedCodeSha256: sha256(CANONICAL_CODE),
+        selectedCodePathSha256: sha256(
+          `classroomLoginCodes/${CANONICAL_CODE}`,
+        ),
+        sources: emptySources,
+      }
+      const authDomain = {
+        uidCollisions: 0,
+        incompatibleUsers: 0,
+        examinedUserCount: 0,
+        sources: { authUsers: summarizeHashedSource([], 'authUsers') },
+      }
+      const manifest = eligibleManifest()
+      manifest.domainChecksums = {
+        ...manifest.domainChecksums,
+        legacySourceState: hashDomain(legacyDomain),
+        foundationState: hashDomain(foundationDomain),
+        destinationAbsence: hashDomain(destinationDomain),
+        authCompatibility: hashDomain(authDomain),
+        identityWatermark: hashDomain({
+          observedMaximum: null, nextStudentNumber: 1, distinctCount: 0,
+        }),
+      }
+      manifest.observations = {
+        ...manifest.observations,
+        counts: {
+          legacy: legacyDomain.counts,
+          flatCredentials: 0,
+          flatAuthLogs: 0,
+        },
+        noncanonicalValueCount: 0,
+      }
+      return manifest
+    }
+
+    function orchestrationAuthorization() {
+      return {
+        authorizationId: 'AUTH-1', snapshotId: 'SNAP-1',
+        writeFreezeProof: 'FREEZE-1', credentialProvenance: 'PROV-1',
+        writeAuthorizationSha256: sha256('wa'),
+        preflightAuthorizationSha256: sha256('pa'),
+        credentialSha256: sha256('cred'),
+        initializationExpectationsSha256: sha256('init-exp'),
+        copyExpectationsSha256: sha256('copy-exp'),
+      }
+    }
+
+    function orchestrationInitialization() {
+      const initialized = {
+        ...classroomDoc().data,
+        studentLoginCode: INITIALIZATION.formattedLoginCode,
+        nextStudentNumber: INITIALIZATION.nextStudentNumber,
+      }
+      return {
+        ...INITIALIZATION,
+        projection: { classroomId: CLASSROOM_ID },
+        planDigest: sha256('plan'),
+        batchCount: 0,
+        countsBySurface: {
+          classroom: 0, students: 0, transactions: 0, loginHistory: 0,
+          scopedCredentials: 0, scopedAuthLogs: 0,
+        },
+        classroomInitializedBodySha256: bodyDigest(initialized),
+        classroomProjectedBodySha256: bodyDigest(initialized),
+      }
+    }
+
+    function orchestrationHeader({ manifest, authorization, initialization }) {
+      return {
+        event: JOURNAL_EVENTS.PLANNED,
+        projectId: manifest.projectId,
+        teacherUidSha256: sha256(manifest.teacherUid),
+        releaseId: manifest.releaseId,
+        changeId: manifest.changeId,
+        authorizationId: authorization.authorizationId,
+        snapshotId: authorization.snapshotId,
+        writeFreezeProof: authorization.writeFreezeProof,
+        credentialProvenance: authorization.credentialProvenance,
+        preflightManifestId: manifest.preflightManifestId,
+        preflightChecksum: manifest.preflightChecksum,
+        writeAuthorizationSha256: authorization.writeAuthorizationSha256,
+        preflightAuthorizationSha256: authorization.preflightAuthorizationSha256,
+        credentialSha256: authorization.credentialSha256,
+        initializationExpectationsSha256:
+          authorization.initializationExpectationsSha256,
+        copyExpectationsSha256: authorization.copyExpectationsSha256,
+        loginCodeSha256: sha256(initialization.canonicalLoginCode),
+        loginCodePathSha256: sha256(
+          `classroomLoginCodes/${initialization.canonicalLoginCode}`,
+        ),
+        classroomIdSha256: sha256(CLASSROOM_ID),
+        nextStudentNumber: initialization.nextStudentNumber,
+        initializedAtSeconds: INITIALIZED_AT.seconds,
+        initializedAtNanoseconds: INITIALIZED_AT.nanoseconds,
+        planDigest: initialization.planDigest,
+        batchCount: initialization.batchCount,
+        countsBySurface: initialization.countsBySurface,
+        foundationStateSha256: manifest.domainChecksums.foundationState,
+        foundationBodiesSha256: computeFoundationDigest(
+          teacherDoc().data, classroomDoc().data,
+        ),
+        foundationStableBodiesSha256: (() => {
+          const stable = { ...classroomDoc().data }
+          delete stable.settings
+          delete stable.lastBackupAt
+          return computeFoundationDigest(teacherDoc().data, stable)
+        })(),
+        teacherSourceSha256: hashDomain(summarizeHashedSource(
+          [sourceEntryFromEnvelope({
+            ...teacherDoc(),
+            exists: true,
+            path: `teachers/${TEACHER_UID}`,
+          }, 'foundationTeacher')],
+          'foundationTeacher',
+        )),
+        classroomInitializedBodySha256:
+          initialization.classroomInitializedBodySha256,
+        classroomProjectedBodySha256:
+          initialization.classroomProjectedBodySha256,
+        legacySourceStateSha256: manifest.domainChecksums.legacySourceState,
+        destinationAbsenceSha256: manifest.domainChecksums.destinationAbsence,
+        authCompatibilitySha256: manifest.domainChecksums.authCompatibility,
+        watermarkSha256: manifest.domainChecksums.identityWatermark,
+      }
+    }
+
+    it('BLOCKS when the legacy source changed after preflight', async () => {
+      // The core of the retained-evidence defect: the writer used to reread
+      // current state and adopt it as its own baseline, so a post-preflight
+      // production change silently became the accepted starting point.
+      const { firestore, documents } = createFakeFirestore({
+        [`teachers/${TEACHER_UID}`]: teacherDoc(),
+        [LEGACY_SOURCE_PATH]: {
+          data: { students: [], transactions: [], loginHistory: [] },
+          updateTime: LEGACY_UPDATE_TIME,
+        },
+        [`classrooms/${CLASSROOM_ID}`]: classroomDoc(),
+      })
+      // Manifest pinned to the ORIGINAL source, then the source changes.
+      const manifest = manifestForFixture(documents)
+      documents.set(LEGACY_SOURCE_PATH, {
+        data: { students: [{ id: 'injected' }], transactions: [], loginHistory: [] },
+        updateTime: LEGACY_UPDATE_TIME,
+      })
+
+      await assert.rejects(
+        runProductionWrite({
+          firestore,
+          journal: fakeJournal(),
+          manifest,
+          authorization: {
+            authorizationId: 'AUTH-1', snapshotId: 'SNAP-1',
+            writeFreezeProof: 'FREEZE-1', credentialProvenance: 'PROV-1',
+            writeAuthorizationSha256: sha256('wa'),
+            preflightAuthorizationSha256: sha256('pa'),
+            credentialSha256: sha256('cred'),
+            initializationExpectationsSha256: sha256('init-exp'),
+            copyExpectationsSha256: sha256('copy-exp'),
+          },
+          initialization: {
+            ...INITIALIZATION,
+            projection: { classroomId: CLASSROOM_ID },
+            planDigest: sha256('plan'),
+            batchCount: 1,
+            countsBySurface: {},
+          },
+          foundation: foundationFixture(),
+          deployment,
+          rawReaders: rawReadersFor(documents),
+          readAuthCompatibility: readEmptyAuthCompatibility,
+          nowTimestamp: INITIALIZED_AT,
+          logger: { log() {}, error() {} },
+        }),
+        assertWriterError(PRODUCTION_WRITER_CATEGORIES.SOURCE_DIVERGED),
+      )
+    })
+
+    it('BLOCKS when the foundation changed after preflight', async () => {
+      const { firestore, documents } = createFakeFirestore({
+        [`teachers/${TEACHER_UID}`]: teacherDoc(),
+        [LEGACY_SOURCE_PATH]: {
+          data: { students: [], transactions: [], loginHistory: [] },
+          updateTime: LEGACY_UPDATE_TIME,
+        },
+        [`classrooms/${CLASSROOM_ID}`]: classroomDoc(),
+      })
+      const manifest = manifestForFixture(documents)
+      const original = foundationFixture()
+      // The classroom gains a field after preflight recorded its evidence.
+      documents.set(`classrooms/${CLASSROOM_ID}`, {
+        data: { ...classroomDoc().data, injectedField: 'added-after-preflight' },
+        updateTime: LEGACY_UPDATE_TIME,
+      })
+
+      await assert.rejects(
+        runProductionWrite({
+          firestore,
+          journal: fakeJournal(),
+          manifest,
+          authorization: {
+            authorizationId: 'AUTH-1', snapshotId: 'SNAP-1',
+            writeFreezeProof: 'FREEZE-1', credentialProvenance: 'PROV-1',
+            writeAuthorizationSha256: sha256('wa'),
+            preflightAuthorizationSha256: sha256('pa'),
+            credentialSha256: sha256('cred'),
+            initializationExpectationsSha256: sha256('init-exp'),
+            copyExpectationsSha256: sha256('copy-exp'),
+          },
+          initialization: {
+            ...INITIALIZATION,
+            projection: { classroomId: CLASSROOM_ID },
+            planDigest: sha256('plan'),
+            batchCount: 1,
+            countsBySurface: {},
+          },
+          // The retained body digest binds the PRE-drift foundation.
+          foundation: {
+            ...original,
+            retainedFoundationBodies: computeFoundationDigest(
+              teacherDoc().data, classroomDoc().data,
+            ),
+          },
+          deployment,
+          rawReaders: rawReadersFor(documents),
+          readAuthCompatibility: readEmptyAuthCompatibility,
+          nowTimestamp: INITIALIZED_AT,
+          logger: { log() {}, error() {} },
+        }),
+        assertWriterError(PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED),
+      )
+    })
 
     it('first invocation initializes only and reports awaiting deployment', async () => {
       const { firestore, documents, calls } = createFakeFirestore({
         [`teachers/${TEACHER_UID}`]: teacherDoc(),
+        [LEGACY_SOURCE_PATH]: { data: { students: [], transactions: [], loginHistory: [] }, updateTime: LEGACY_UPDATE_TIME },
         [`classrooms/${CLASSROOM_ID}`]: classroomDoc(),
       })
       const journal = fakeJournal()
@@ -1584,7 +2276,7 @@ describe('Phase 3 production writer', () => {
       const outcome = await runProductionWrite({
         firestore,
         journal,
-        manifest: eligibleManifest(),
+        manifest: manifestForFixture(documents),
         authorization: {
           authorizationId: 'AUTH-1', snapshotId: 'SNAP-1',
           writeFreezeProof: 'FREEZE-1', credentialProvenance: 'PROV-1',
@@ -1604,6 +2296,7 @@ describe('Phase 3 production writer', () => {
         foundation: foundationFixture(),
         deployment,
         rawReaders: rawReadersFor(documents),
+        readAuthCompatibility: readEmptyAuthCompatibility,
         nowTimestamp: INITIALIZED_AT,
         logger: { log() {}, error() {} },
       })
@@ -1630,21 +2323,24 @@ describe('Phase 3 production writer', () => {
       ))
     })
 
-    it('reports already completed without writing', async () => {
+    it('a completed marker does not bypass header and artifact rebinding', async () => {
       const { firestore, calls } = createFakeFirestore({})
-      const outcome = await runProductionWrite({
-        firestore,
-        journal: fakeJournal([{ event: JOURNAL_EVENTS.COMPLETED }]),
-        manifest: eligibleManifest(),
-        authorization: {},
-        initialization: INITIALIZATION,
-        foundation: foundationFixture(),
-        deployment,
-        rawReaders: {},
-        nowTimestamp: INITIALIZED_AT,
-        logger: { log() {}, error() {} },
-      })
-      assert.equal(outcome.result, WRITE_RESULTS.ALREADY_COMPLETED)
+      await assert.rejects(
+        runProductionWrite({
+          firestore,
+          journal: fakeJournal([{ event: JOURNAL_EVENTS.COMPLETED }]),
+          manifest: eligibleManifest(),
+          authorization: {},
+          initialization: INITIALIZATION,
+          foundation: foundationFixture(),
+          deployment,
+          rawReaders: {},
+          readAuthCompatibility: readEmptyAuthCompatibility,
+          nowTimestamp: INITIALIZED_AT,
+          logger: { log() {}, error() {} },
+        }),
+        assertWriterError(PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED),
+      )
       assert.equal(calls.writes.length, 0)
     })
 
@@ -1671,6 +2367,7 @@ describe('Phase 3 production writer', () => {
       // the process died before the verified event was installed.
       const { firestore, documents, calls } = createFakeFirestore({
         [`teachers/${TEACHER_UID}`]: teacherDoc(),
+        [LEGACY_SOURCE_PATH]: { data: { students: [], transactions: [], loginHistory: [] }, updateTime: LEGACY_UPDATE_TIME },
         [`classrooms/${CLASSROOM_ID}`]: classroomDoc({
           studentLoginCode: FORMATTED_CODE, nextStudentNumber: 12,
         }),
@@ -1680,20 +2377,24 @@ describe('Phase 3 production writer', () => {
           updateTime: INITIALIZED_AT,
         },
       })
+      const manifest = manifestForFixture(documents)
+      const authorization = orchestrationAuthorization()
+      const initialization = orchestrationInitialization()
       const journal = fakeJournal([
-        { event: JOURNAL_EVENTS.PLANNED },
+        orchestrationHeader({ manifest, authorization, initialization }),
         { event: JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT },
       ])
 
       const outcome = await runProductionWrite({
         firestore,
         journal,
-        manifest: eligibleManifest(),
-        authorization: {},
-        initialization: INITIALIZATION,
+        manifest,
+        authorization,
+        initialization,
         foundation: foundationFixture(),
         deployment,
         rawReaders: rawReadersFor(documents),
+        readAuthCompatibility: readEmptyAuthCompatibility,
         nowTimestamp: INITIALIZED_AT,
         logger: { log() {}, error() {} },
       })
@@ -1712,24 +2413,29 @@ describe('Phase 3 production writer', () => {
       // atomic, so this is interference and must never be auto-repaired.
       const { firestore, documents, calls } = createFakeFirestore({
         [`teachers/${TEACHER_UID}`]: teacherDoc(),
+        [LEGACY_SOURCE_PATH]: { data: { students: [], transactions: [], loginHistory: [] }, updateTime: LEGACY_UPDATE_TIME },
         [`classrooms/${CLASSROOM_ID}`]: classroomDoc({
           studentLoginCode: FORMATTED_CODE, nextStudentNumber: 12,
         }),
       })
+      const manifest = manifestForFixture(documents)
+      const authorization = orchestrationAuthorization()
+      const initialization = orchestrationInitialization()
       const journal = fakeJournal([
-        { event: JOURNAL_EVENTS.PLANNED },
+        orchestrationHeader({ manifest, authorization, initialization }),
         { event: JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT },
       ])
 
       const outcome = await runProductionWrite({
         firestore,
         journal,
-        manifest: eligibleManifest(),
-        authorization: {},
-        initialization: INITIALIZATION,
+        manifest,
+        authorization,
+        initialization,
         foundation: foundationFixture(),
         deployment,
         rawReaders: rawReadersFor(documents),
+        readAuthCompatibility: readEmptyAuthCompatibility,
         nowTimestamp: INITIALIZED_AT,
         logger: { log() {}, error() {} },
       })

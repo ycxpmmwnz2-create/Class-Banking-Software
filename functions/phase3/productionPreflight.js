@@ -490,6 +490,53 @@ export function normalizeSourceEntries(entries, surface) {
  * the Section 9 read-volume requirement — but it is never a substitute for the
  * digest.
  */
+/**
+ * Builds a hashed source entry from a RAW READ-ONLY ENVELOPE.
+ *
+ * The evidence readers build the same entry from a Firestore snapshot. This
+ * variant exists so the writer can recompute a retained domain checksum from the
+ * envelopes its raw readers already return, using the identical preimage — the
+ * whole point of reproving evidence is that both sides derive it the same way,
+ * so the derivation lives in exactly one place.
+ */
+export function sourceEntryFromEnvelope(envelope, surface) {
+  // updateTime is a Firestore Timestamp — a CLASS INSTANCE, not a plain object —
+  // so it is validated by its contract (integer seconds/nanoseconds) rather than
+  // by shape.
+  if (!isPlainObject(envelope) || envelope.exists === false ||
+      typeof envelope.path !== 'string' ||
+      envelope.updateTime === null ||
+      typeof envelope.updateTime !== 'object' ||
+      !Number.isInteger(envelope.updateTime.seconds) ||
+      !Number.isInteger(envelope.updateTime.nanoseconds)) {
+    failInspection('A raw envelope cannot be summarized as source evidence.', {
+      surface,
+    })
+  }
+  let documentHash
+  try {
+    // `?? {}` mirrors the snapshot-based builder exactly: the two preimages must
+    // agree byte for byte or a reproved checksum would never match.
+    documentHash = canonicalDigest(
+      encodeCanonicalFirestoreValue(envelope.data ?? {}),
+    )
+  } catch {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.NONCANONICAL_VALUE,
+      'A Firestore document cannot be encoded canonically.',
+      { surface },
+    )
+  }
+  return Object.freeze({
+    pathHash: createHash('sha256').update(envelope.path, 'utf8').digest('hex'),
+    updateTime: Object.freeze({
+      seconds: envelope.updateTime.seconds,
+      nanoseconds: envelope.updateTime.nanoseconds,
+    }),
+    documentHash,
+  })
+}
+
 export function summarizeHashedSource(entries, surface) {
   const normalized = normalizeSourceEntries(entries, surface)
   // Both timestamp components enter the preimage at full precision.
