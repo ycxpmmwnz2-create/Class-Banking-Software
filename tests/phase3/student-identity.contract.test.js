@@ -158,29 +158,41 @@ describe('Phase 3 student-identity source contract', () => {
    * Commit 7 addresses it, this assertion is expected to be updated in that
    * commit — not silently deleted.
    */
-  it('source contract: importBackup is an unvalidated student-ID entry path', () => {
+  it('source contract: V2 disables backup import before it can reach normalizeData', () => {
+    // Section 4: V2 backup import is disabled for the initial cutover. The
+    // underlying defect below is unchanged and still pinned; Commit 7 closes it
+    // for V2 by refusing the entry point, not by validating imported IDs.
     const importBackupLine = matchingLines(/function importBackup\(/)
     assert.equal(importBackupLine.length, 1)
 
-    const body = contextAt(importBackupLine[0], 0, 30)
-    assert.match(body, /JSON\.parse\(e\.target\.result\)/)
-    assert.match(body, /imported\.students/)
-    assert.match(body, /normalizeData\(/)
-    assert.match(body, /saveData\(\)/)
+    const body = contextAt(importBackupLine[0], 0, 40)
+    const gateIndex = body.indexOf('IS_MULTI_TEACHER_V2_ENABLED')
+    const parseIndex = body.indexOf('JSON.parse(e.target.result)')
+    assert.ok(gateIndex !== -1, 'importBackup must gate on the V2 flag')
+    assert.ok(parseIndex !== -1, 'the legacy parse path must remain for rollback')
     assert.ok(
-      !/nextStudentNumber|allocateStudentId|validateStudentId/.test(body),
-      'importBackup must still lack ID allocation/validation (pinned defect)',
+      gateIndex < parseIndex,
+      'the V2 refusal must precede any parsing of the imported file',
     )
 
-    // normalizeData spreads imported student objects and coerces only `frozen`,
-    // so an arbitrary `id` survives into persistence.
+    // The refusal must return, not merely warn and fall through.
+    const gateBranch = body.slice(gateIndex, parseIndex)
+    assert.match(gateBranch, /return;/)
+    assert.ok(
+      !/normalizeData\(/.test(gateBranch),
+      'the V2 branch must never reach normalizeData',
+    )
+
+    // Pinned defect, unchanged: normalizeData still spreads imported student
+    // objects and coerces only `frozen`, so an arbitrary `id` would survive
+    // into persistence. Only the default-off legacy path can still reach it.
     const normalizeLine = matchingLines(/function normalizeData\(/)
     assert.equal(normalizeLine.length, 1)
     const normalizeBody = contextAt(normalizeLine[0], 0, 18)
     assert.match(
       normalizeBody,
       /parsed\.students\.map\(student => \(\{ \.\.\.student, frozen: Boolean\(student\.frozen\) \}\)\)/,
-      'normalizeData must still pass through student ids unvalidated (pinned defect)',
+      'normalizeData still passes student ids through unvalidated (pinned defect)',
     )
   })
 
@@ -205,42 +217,192 @@ describe('Phase 3 student-identity source contract', () => {
     assert.doesNotMatch(branch, /saveData\(/)
   })
 
-  it('source contract: both V2 data adapters are referenced by the client but never defined by it', () => {
+  it('source contract: the client supplies its own V2 data layer instead of a window hook', () => {
+    // Commit 7 closes the Section 1 finding that the client data layer was
+    // under-scoped. Through Commit 6 the client read both adapters off
+    // `window`, and only the Item 10 browser harness ever defined them, so V2
+    // mode had no production data layer at all.
     for (const adapter of [
       'V2_TENANT_DATA_ADAPTER',
       'V2_TENANT_DATA_SAVE_ADAPTER',
     ]) {
-      const references = matchingLines(new RegExp(`window\\.${adapter}`))
-      assert.ok(
-        references.length > 0,
-        `${adapter} must still be referenced by the client`,
-      )
-      // The client only ever reads these off `window`; it never assigns them.
-      // `=(?!=)` is required: `typeof window.X === "function"` is a comparison,
-      // not an assignment, and a bare `=` matcher would report a false positive.
-      const assignments = matchingLines(
-        new RegExp(`window\\.${adapter}\\s*=(?!=)`),
-      )
       assert.equal(
-        assignments.length,
+        matchingLines(new RegExp(`window\\.${adapter}`)).length,
         0,
-        `${adapter} must not be defined by production client code`,
+        `${adapter} must no longer be read off window by production client code`,
       )
     }
 
-    // Precision matters: the adapters ARE defined, but only by the Item 10
-    // browser harness, which activates solely under an explicit test flag.
+    // The real service is imported from src/phase3 and constructed by the
+    // client itself.
+    assert.match(
+      indexHtml,
+      /import \{[^}]*createTenantDataLoader[^}]*\} from "\.\/src\/phase3\/tenantDataService\.js"/,
+      'the client must import the production tenant data service',
+    )
+    for (const factory of [
+      'createTenantDataLoader',
+      'createStudentDataLoader',
+      'createTenantDataSaver',
+    ]) {
+      assert.ok(
+        matchingLines(new RegExp(`${factory}\\(`)).length > 0,
+        `${factory} must be constructed by the client`,
+      )
+    }
+
+    // Every constructed adapter is bound to the live tenant session, which is
+    // what makes the stale-epoch and tenant-mismatch refusals reachable.
+    for (const construction of [
+      /createTenantDataLoader\(\{[\s\S]{0,200}?session: v2TenantSession/,
+      /createStudentDataLoader\(\{[\s\S]{0,200}?session: v2TenantSession/,
+      /createTenantDataSaver\(\{[\s\S]{0,200}?session: v2TenantSession/,
+    ]) {
+      assert.match(indexHtml, construction)
+    }
+
+    // The student loader was never wired before Commit 7, so every V2 student
+    // failed with "student-access-unavailable".
+    assert.match(
+      indexHtml,
+      /loadStudentNetworkFn,/,
+      'the auth observer must pass the student loader to handleAuthTransition',
+    )
+
+    // The Item 10 harness no longer defines data adapters at all. It instruments
+    // the production service by decorating the injected Firestore primitives, so
+    // the browser suite's barriers sit UNDER the real code path.
     const harness = readFileSync(
       new URL('../../tests/browser/phase2b-browser-harness.js', import.meta.url),
       'utf8',
     )
-    assert.match(harness, /window\.V2_TENANT_DATA_ADAPTER\s*=(?!=)/)
-    assert.match(harness, /window\.V2_TENANT_DATA_SAVE_ADAPTER\s*=(?!=)/)
+    for (const adapter of ['V2_TENANT_DATA_ADAPTER', 'V2_TENANT_DATA_SAVE_ADAPTER']) {
+      assert.doesNotMatch(
+        harness,
+        new RegExp(`window\\.${adapter}\\s*=(?!=)`),
+        `the harness must not define ${adapter}: it would replace the production data layer ` +
+          'and make every isolation assertion observe harness code instead',
+      )
+    }
+    assert.match(
+      harness,
+      /window\.__PHASE2B_WRAP_FIRESTORE__\s*=(?!=)/,
+      'the harness must instrument the production service by wrapping its injected primitives',
+    )
     assert.match(
       harness,
       /Activates ONLY under an explicit browser-test flag/,
-      'the harness definitions must remain test-only, never a production adapter',
+      'the harness must remain test-only, never a production adapter',
     )
+
+    // The harness performs no Firestore I/O of its own. Were it to import the
+    // SDK directly it could read or write behind the production path, which is
+    // what made the pre-Commit-7 adapters able to fabricate data.
+    assert.doesNotMatch(
+      harness,
+      /from "firebase\/firestore"/,
+      'the harness must not import firebase/firestore: all I/O goes through the wrapped primitives',
+    )
+  })
+
+  it('source contract: the browser harness seam matches index.html and is test-only', () => {
+    // The browser suite instruments production by rewriting the served copy of
+    // index.html (dev-server only) so the harness can decorate
+    // V2_FIRESTORE_ADAPTERS. That rewrite is a literal string match against
+    // production source, so a future index.html edit could silently disable
+    // every response barrier. This pins the two halves together.
+    const viteConfig = readFileSync(
+      new URL('../../tests/browser/vite.phase2b.config.js', import.meta.url),
+      'utf8',
+    )
+
+    const seamMatch = viteConfig.match(
+      /export const FIRESTORE_SEAM_SOURCE\s*=\s*\n?\s*"((?:[^"\\]|\\.)*)";/,
+    )
+    assert.ok(seamMatch, 'the vite config must export FIRESTORE_SEAM_SOURCE')
+    const seam = seamMatch[1].replace(/\\"/g, '"')
+
+    assert.equal(
+      indexHtml.split(seam).length - 1,
+      1,
+      'FIRESTORE_SEAM_SOURCE must appear in index.html exactly once, or the browser ' +
+        'suite silently loses its barriers',
+    )
+
+    // The rewrite must fail loudly rather than no-op, and must run in the `pre`
+    // phase: Vite hoists index.html's inline module out of the HTML before the
+    // default phase, so a `post` transform sees no application source.
+    assert.match(viteConfig, /order:\s*"pre"/)
+    assert.match(viteConfig, /throw new Error\(\s*\n?\s*`Phase 2B browser harness seam not found/)
+
+    // Production source must carry no test affordance: the seam is a plain
+    // production line, and the wrapper hook exists only in test files.
+    assert.equal(
+      matchingLines(/__PHASE2B_WRAP_FIRESTORE__/).length,
+      0,
+      'index.html must contain no browser-test hook; the seam is applied by the test config only',
+    )
+  })
+
+  it('source contract: the V2 UI is PIN-free after authentication', () => {
+    // Section 4: "do not display or edit stored PINs on roster/profile
+    // screens". Both remaining `student.pin` renders must sit in the
+    // default-off legacy arm of a V2 conditional.
+    const pinRenders = matchingLines(/escapeHtml\((?:profileStudent|student)\.pin\)/)
+    assert.equal(pinRenders.length, 2, 'exactly the roster input and profile line render a PIN')
+
+    for (const line of pinRenders) {
+      const context = contextAt(line, 12, 2)
+      assert.match(
+        context,
+        /IS_MULTI_TEACHER_V2_ENABLED/,
+        'each PIN render must be gated behind the V2 flag',
+      )
+    }
+
+    // The roster PIN input is not merely hidden: updateStudent must not read it
+    // in V2, or the Save button would throw on a missing element.
+    const updateLine = matchingLines(/function updateStudent\(/)[0]
+    const updateBody = contextAt(updateLine, 0, 50)
+    const v2Index = updateBody.indexOf('IS_MULTI_TEACHER_V2_ENABLED')
+    const pinReadIndex = updateBody.indexOf('getElementById("pin-"')
+    assert.ok(v2Index !== -1 && pinReadIndex !== -1)
+    assert.ok(
+      v2Index < pinReadIndex,
+      'the V2 branch must return before updateStudent reads the roster PIN input',
+    )
+
+    // Credential-activation state must not be written onto the student record:
+    // the student document contract is exactly five fields.
+    assert.ok(
+      matchingLines(/v2ActivatedStudentIds/).length > 0,
+      'V2 activation state must live in a view-only set',
+    )
+    for (const line of matchingLines(/\.credentialActive = true/)) {
+      const context = contextAt(line, 14, 1)
+      assert.ok(
+        !/resetStudentPinV2/.test(context),
+        'no V2 branch may assign credentialActive onto a student object',
+      )
+    }
+  })
+
+  it('source contract: V2 export is PIN-free and V2 import is disabled', () => {
+    assert.match(
+      indexHtml,
+      /import \{ projectBackupExport \} from "\.\/src\/phase3\/tenantDataProjection\.js"/,
+    )
+
+    const exportLine = matchingLines(/function exportBackup\(/)[0]
+    const exportBody = contextAt(exportLine, 0, 30)
+    const gateIndex = exportBody.indexOf('IS_MULTI_TEACHER_V2_ENABLED')
+    const legacyIndex = exportBody.indexOf('students: data.students')
+    assert.ok(gateIndex !== -1 && legacyIndex !== -1)
+    assert.ok(
+      gateIndex < legacyIndex,
+      'the V2 export branch must precede the legacy raw-aggregate body',
+    )
+    assert.match(exportBody, /projectBackupExport\(\{ data, exportedAt: data\.lastBackupAt \}\)/)
   })
 
   it('source contract: V2 save fails closed when no adapter is present', () => {

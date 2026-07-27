@@ -1168,7 +1168,11 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     // execution falls through and runs the legacy path as well — which would
     // reinstate exactly the unscoped writes and legacy callables Item 9 forbids.
     const branchesShadowingLegacy = [
-      ["V2_TENANT_DATA_SAVE_ADAPTER", "saveData"],
+      // Commit 7 replaced the harness-supplied window.V2_TENANT_DATA_SAVE_ADAPTER
+      // with the real production service. The guard's subject is unchanged: a
+      // returning V2 branch in saveData that never falls through to the legacy
+      // localStorage/setDoc path.
+      ["v2SaveTenantData", "saveData"],
       ["studentAuthLogs", "openStudentAuthLogs"],
       ["orchestrateProductionLogout", "logout"],
       ["orchestrateBulkOperation", "bulkActivateStudents"],
