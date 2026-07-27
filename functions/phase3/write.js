@@ -5,9 +5,11 @@ import { cert } from 'firebase-admin/app'
 import { Timestamp } from 'firebase-admin/firestore'
 
 import {
+  ALLOWED_EMULATOR_PROJECT_ID,
   EXECUTION_CONTEXT,
   PRODUCTION_ENVIRONMENT_CATEGORIES,
   ProductionEnvironmentError,
+  assertServiceAccountArtifact,
   parseJsonArtifact,
   readHashedArtifact,
   redactEnvironmentError,
@@ -18,7 +20,10 @@ import {
 } from './productionEnvironment.js'
 import {
   PreflightAbortError,
+  createProductionReaders,
   createRawDataReaders,
+  createReadOnlyAdminHandles,
+  createReadOnlyDataReaders,
   toSourceEnvelope,
 } from './productionPreflight.js'
 import {
@@ -359,11 +364,19 @@ export async function runWriteMain(argv = process.argv.slice(2), dependencies = 
 
     // ---- 7. only now may an explicit-credential Admin handle exist ----
     let credential = null
+    const parsedCredential = parseJsonArtifact(
+      credentialArtifact.contents, 'The credential file',
+    )
     if (isProduction) {
       credential = validateExplicitCredential(
-        parseJsonArtifact(credentialArtifact.contents, 'The credential file'),
+        parsedCredential,
         dependencies.credentialFactory ?? cert,
       )
+    } else {
+      // Emulator: the artifact must still be a service-account-shaped file
+      // naming the EXACT demo project, but it is never constructed into a
+      // credential and never used to authenticate anything.
+      assertServiceAccountArtifact(parsedCredential, ALLOWED_EMULATOR_PROJECT_ID)
     }
     const handles = await (dependencies.createHandles ?? defaultCreateHandles)({
       context: validatedEnvironment.context,
@@ -376,6 +389,12 @@ export async function runWriteMain(argv = process.argv.slice(2), dependencies = 
       firestore: handles.firestore,
       teacherUid: manifest.teacherUid,
     })
+    const readAuthCompatibility = dependencies.readAuthCompatibility ??
+      createReadOnlyDataReaders({
+        firestore: handles.firestore,
+        auth: handles.auth,
+        teacherUid: manifest.teacherUid,
+      }).readAuthCompatibility
 
     // The foundation is READ, never created. Its exact state digest is bound so
     // the initialization transaction can reprove it atomically.
@@ -392,6 +411,11 @@ export async function runWriteMain(argv = process.argv.slice(2), dependencies = 
       failArgument('foundation-absent', 'The existing classroom is absent.')
     }
 
+    // The digest bound here is the RETAINED one from the manifest, not one
+    // recomputed from this read. Recomputing it would make whatever production
+    // currently holds the writer's own baseline, so a change made after
+    // preflight would be silently adopted instead of blocking. The writer
+    // reproves the retained evidence itself before either stage runs.
     const foundation = {
       teacherUid: manifest.teacherUid,
       classroomId,
@@ -400,6 +424,7 @@ export async function runWriteMain(argv = process.argv.slice(2), dependencies = 
       foundationStateDigest: computeFoundationDigest(
         teacher.data, classroom.data,
       ),
+      retainedFoundationStateSha256: manifest.domainChecksums.foundationState,
     }
 
     // Recompute the projection and plan from current sources so the header binds
@@ -424,6 +449,7 @@ export async function runWriteMain(argv = process.argv.slice(2), dependencies = 
     }
     const plan = buildCopyPlan({
       projection, foundation, initialization: initializationBase,
+      retainedFoundationBodiesSha256: foundation.foundationStateDigest,
     })
 
     const journal = dependencies.journal ?? createWriteJournal({
@@ -449,15 +475,31 @@ export async function runWriteMain(argv = process.argv.slice(2), dependencies = 
         planDigest: plan.planDigest,
         batchCount: plan.batches.length,
         countsBySurface: plan.countsBySurface,
+        classroomInitializedBodySha256:
+          plan.classroomInitializedBodySha256,
+        classroomProjectedBodySha256:
+          plan.classroomProjectedBodySha256,
       },
       foundation,
       deployment: {
         readInventory: dependencies.readDeploymentInventory ??
-          (() => { throw new Error('no inventory reader') }),
+          defaultDeploymentInventoryReader({
+            context: validatedEnvironment.context,
+            projectId: validatedEnvironment.projectId,
+            credential,
+            teacherUid: manifest.teacherUid,
+          }) ??
+          (() => {
+            throw new ProductionWriterError(
+              PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT,
+              'No deployment inventory observation is available.',
+            )
+          }),
         initializationExpectations,
         copyExpectations,
       },
       rawReaders,
+      readAuthCompatibility,
       nowTimestamp: dependencies.nowTimestamp ?? Timestamp.now(),
       logger,
     })
@@ -519,10 +561,83 @@ export async function runWriteMain(argv = process.argv.slice(2), dependencies = 
   }
 }
 
-async function defaultCreateHandles() {
-  throw new Error(
-    'A handle factory must be supplied; write.js constructs no ambient client.',
-  )
+/**
+ * The DEFAULT production handle factory.
+ *
+ * Reuses `createReadOnlyAdminHandles`, which resolves `firebase-admin` from
+ * `functions/node_modules` and returns a closable app. It is deliberately the
+ * same factory preflight uses — one construction path means one place where an
+ * ambient credential could ever enter, and there is none: production requires
+ * the explicit validated credential, and the emulator path passes none at all.
+ *
+ * The name embeds the pid and a counter so two concurrent invocations cannot
+ * collide on a shared Admin app.
+ */
+let writeHandleSequence = 0
+async function defaultCreateHandles({ context, projectId, credential }) {
+  if (context === EXECUTION_CONTEXT.PRODUCTION) {
+    if (!credential || typeof credential.getAccessToken !== 'function') {
+      throw new ProductionWriterError(
+        PRODUCTION_WRITER_CATEGORIES.INVALID_ARGUMENTS,
+        'A production write requires an explicit validated credential.',
+      )
+    }
+    return createReadOnlyAdminHandles({
+      projectId,
+      credential,
+      appName: `phase3-write-${process.pid}-${writeHandleSequence += 1}`,
+    })
+  }
+  // Emulator rehearsal: the loopback path takes NO credential. The artifact was
+  // already validated as a service-account-shaped file naming the exact demo
+  // project; it is never constructed into a credential here.
+  return createReadOnlyAdminHandles({
+    projectId,
+    appName: `phase3-write-${process.pid}-${writeHandleSequence += 1}`,
+  })
+}
+
+/**
+ * The DEFAULT bounded deployment-inventory reader.
+ *
+ * Wraps preflight's `createProductionReaders`, which owns the fixed Google API
+ * origins, bounded pagination, per-request timeouts, and redirect rejection.
+ * The writer inspects; it never deploys.
+ *
+ * `activeWritersObservationComplete` is set from the reader's own completeness
+ * declaration rather than assumed: an inventory that could not enumerate writers
+ * must never read as proof that there are none.
+ */
+function defaultDeploymentInventoryReader({ context, projectId, credential,
+  teacherUid }) {
+  if (context !== EXECUTION_CONTEXT.PRODUCTION) {
+    // No control plane exists for the emulator. The caller injects the
+    // observation; there is nothing to read and nothing to guess.
+    return null
+  }
+  return async () => {
+    const readers = createProductionReaders({
+      projectId, teacherUid, credential,
+    })
+    try {
+      const [inventory, writers] = await Promise.all([
+        readers.readDeploymentInventory(),
+        readers.readActiveWriters(),
+      ])
+      return Object.freeze({
+        rules: inventory.rules,
+        functions: inventory.functions,
+        hosting: inventory.hosting,
+        indexes: inventory.indexes,
+        gateParameters: inventory.gateParameters,
+        activeWriters: writers.writers,
+        activeWritersObservationComplete:
+          inventory.complete === true && writers.complete === true,
+      })
+    } finally {
+      await readers.close()
+    }
+  }
 }
 
 const isDirectExecution = process.argv[1] &&

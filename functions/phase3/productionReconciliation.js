@@ -688,10 +688,112 @@ export function reconcileProductionWriteRun(options) {
  * module that contains no mutation capability at all. This function performs no
  * write of any kind: it only calls reader functions and one pure comparison.
  */
+/**
+ * Proves the CURRENT source and foundation still match the retained evidence.
+ *
+ * This is what stops reverify from self-masking. A source edit made after the
+ * copy would otherwise change the expected projection and the observed actual
+ * together, so the two would continue to agree and reverify would report
+ * success over drifted data.
+ *
+ * Every digest is recomputed with the same derivation preflight used, so this
+ * compares current state to the reviewed record — never to itself.
+ */
+export function assertRetainedSourceEvidence({ retainedEvidence, observed }) {
+  if (!isPlainObject(retainedEvidence)) {
+    fail(
+      PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
+      'Retained evidence must be a plain object.',
+    )
+  }
+  const {
+    legacySourceStateSha256,
+    foundationBodiesSha256,
+    teacherSourceSha256,
+    watermarkSha256,
+    computeLegacySourceDigest,
+    computeFoundationDigest: computeFoundation,
+    computeTeacherSourceDigest,
+    computeWatermarkDigest,
+  } = retainedEvidence
+
+  for (const [name, value] of Object.entries({
+    legacySourceStateSha256,
+    foundationBodiesSha256,
+    teacherSourceSha256,
+    watermarkSha256,
+  })) {
+    if (typeof value !== 'string' || value === '') {
+      fail(
+        PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
+        'Retained evidence is missing a required digest.',
+        { field: name },
+      )
+    }
+  }
+  if (typeof computeLegacySourceDigest !== 'function' ||
+      typeof computeFoundation !== 'function' ||
+      typeof computeTeacherSourceDigest !== 'function' ||
+      typeof computeWatermarkDigest !== 'function') {
+    fail(
+      PRODUCTION_RECONCILIATION_CATEGORIES.INVALID_ARGUMENTS,
+      'Retained evidence must supply every digest derivation.',
+    )
+  }
+
+  const observedLegacy = computeLegacySourceDigest({
+    legacyClassroomData: observed.legacyClassroomData,
+    flatCredentials: observed.flatCredentials,
+    flatAuthLogs: observed.flatAuthLogs,
+  })
+  if (observedLegacy !== legacySourceStateSha256) {
+    fail(
+      PRODUCTION_RECONCILIATION_CATEGORIES.WRITE_RUN_MISMATCH,
+      'The legacy source no longer matches the retained preflight evidence.',
+    )
+  }
+
+  const observedFoundation = computeFoundation({
+    teacher: observed.teacher,
+    classroom: observed.classroom,
+  })
+  if (observedFoundation !== foundationBodiesSha256) {
+    fail(
+      PRODUCTION_RECONCILIATION_CATEGORIES.WRITE_RUN_MISMATCH,
+      'The foundation no longer matches the retained preflight evidence.',
+    )
+  }
+
+  if (computeTeacherSourceDigest(observed.teacher) !== teacherSourceSha256) {
+    fail(
+      PRODUCTION_RECONCILIATION_CATEGORIES.WRITE_RUN_MISMATCH,
+      'The immutable teacher source no longer matches the retained evidence.',
+    )
+  }
+
+  if (computeWatermarkDigest(observed) !== watermarkSha256) {
+    fail(
+      PRODUCTION_RECONCILIATION_CATEGORIES.WRITE_RUN_MISMATCH,
+      'The identity watermark no longer matches the retained preflight evidence.',
+    )
+  }
+  return true
+}
+
 export async function readAndReconcileWriteRun({
   rawReaders,
   foundation,
   initialization,
+  /**
+   * RETAINED evidence the current state must be compared against.
+   *
+   * Without it this function builds the expected projection from the CURRENT
+   * source and then uses those same current documents as the actual source, so
+   * a post-write source edit appears on both sides and cancels out. Reverify
+   * supplies this so the comparison is current-state-vs-retained-evidence rather
+   * than current-state-vs-itself.
+   */
+  retainedEvidence,
 }) {
   const classroomId = foundation.classroomId
   const [
@@ -722,16 +824,41 @@ export async function readAndReconcileWriteRun({
   }
   const projection = buildProductionProjection({ classroomId, ...source })
 
+  // When retained evidence is supplied, the CURRENT source must first be proven
+  // identical to what the run was reviewed against. Only then is a projection
+  // derived from it meaningful as an expectation.
+  if (retainedEvidence !== undefined) {
+    assertRetainedSourceEvidence({
+      retainedEvidence,
+      observed: {
+        legacyClassroomData,
+        flatCredentials,
+        flatAuthLogs,
+        teacher,
+        classroom,
+        students,
+        transactions,
+        loginHistory,
+        scopedCredentials,
+        scopedAuthLogs,
+      },
+    })
+  }
+
   return reconcileProductionWriteRun({
     source,
     // The foundation compared here is the CURRENT observed teacher plus the
-    // exact initialized-after classroom from the caller, not the
-    // pre-initialization manifest state.
+    // exact initialized-after classroom. When retained evidence is supplied the
+    // caller's classroom is NOT trusted as its own historical baseline: the
+    // observed classroom is used and the retained digest above is what
+    // constrains it.
     foundation: {
       teacherUid: foundation.teacherUid,
       classroomId,
       teacher,
-      classroom: foundation.classroom,
+      classroom: retainedEvidence === undefined
+        ? foundation.classroom
+        : classroom,
     },
     projection,
     initialization: {
