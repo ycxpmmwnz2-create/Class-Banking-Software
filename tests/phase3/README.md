@@ -254,20 +254,21 @@ Student IDs are accepted as a number or an exact canonical decimal string only.
 `"07"`, `" 7"`, `"7.0"`, and `"7e0"` are rejected because each would map two
 document IDs onto one student.
 
-The service suite proves tenant/identity resolution and mismatch refusal, the
-staleness re-checks before the first commit and between batches, bounded batching,
-and the read-set boundaries: it reads and writes only under
+The service suite proves tenant/identity/role resolution and mismatch refusal,
+document-path/body identity agreement, the staleness re-check before the atomic
+commit, the single-batch logical-mutation bound, and the read-set boundaries: it reads and writes only under
 `classrooms/{resolvedClassroomId}/…`, never touches `studentCredentials` in either
 shape, and never creates or deletes a student document.
 
-**Defects the suites caught during development.** Four, all fixed and pinned by
-regression tests: `maxWrites` defaulted to `maxBatchSize`, making the batching loop
-unreachable so any mutation needing a second batch was rejected first;
-stale-vs-resolve ordering reported `unresolved-tenant` and masked a stale-write
-attempt; `projectSettings` dropped *all* settings when given no `defaultSettings`,
-which would have erased a classroom's settings on load; and one assertion was
-vacuous, checking a body built from a fixed field list instead of the input, so an
-extra key would have been silently dropped.
+**Defects the suites caught during development and review.** Fixed and pinned by
+regression tests: stale-vs-resolve ordering reported `unresolved-tenant` and
+masked a stale-write attempt; `projectSettings` dropped *all* settings when given
+no `defaultSettings`; one assertion checked a body built from a fixed field list
+instead of the input; collection reads trusted a body `id` without comparing it
+to the Firestore document ID; transaction mirrors were not validated, checked
+for exact ledger parity, or rebuilt from the authoritative collection; student operations were not role-bound; and
+a logical mutation could be split across commits, allowing a later failure to
+persist balances without their transaction records.
 
 **A fifth defect the unit layer could not catch.** The classroom root was written
 with `merge: false` like every other document. That overwrites server-owned tenant

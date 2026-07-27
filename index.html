@@ -1881,7 +1881,11 @@ const targetStudents = transactionTarget === "whole"
         });
         if (!v2TenantSession.validateCapturedIdentity(captured)) return;
         if (result.executed) {
-          data.students.push(result.result.student);
+          // The callable intentionally returns only the four public fields.
+          // The aggregate/persisted student contract adds the required
+          // transaction mirror, which starts empty for a newly-created student.
+          data.students.push({ ...result.result.student, transactions: [] });
+          v2ActivatedStudentIds.add(String(result.result.student.id));
           message = `${result.result.student.name} added. Login ID: ${result.result.loginId}.`;
         } else {
           message = result.error || "The student could not be added.";

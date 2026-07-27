@@ -219,6 +219,20 @@ export async function readClassroomWithRulesDisabled(classroomId) {
 }
 
 async function seedTenantDocs(db, tenant, uid) {
+  const transaction = {
+    id: Number(tenant.transactionId),
+    date: "1/1/2026, 9:00:00 AM",
+    studentId: Number(tenant.studentId),
+    studentName: tenant.studentMarker,
+    type: "Add",
+    amount: 5,
+    reason: "Weekly payday",
+    memo: tenant.transactionMarker,
+    category: "",
+    status: "Approved",
+    source: "Teacher"
+  };
+
   // teachers/{uid}.uid is required by the proposed rules, so it must be seeded.
   await db.doc(`teachers/${uid}`).set({
     uid,
@@ -249,7 +263,7 @@ async function seedTenantDocs(db, tenant, uid) {
     name: tenant.studentMarker,
     balance: 10,
     frozen: false,
-    transactions: []
+    transactions: [transaction]
   });
 
   await db.doc(`classrooms/${tenant.classroomId}/students/${tenant.sharedStudentId}`).set({
@@ -264,19 +278,7 @@ async function seedTenantDocs(db, tenant, uid) {
   // per-tenant marker rides in `memo`/`note` — a real contract field — so the
   // cross-tenant render assertions keep working without an extra key that the
   // projection would (correctly) reject.
-  await db.doc(`classrooms/${tenant.classroomId}/transactions/${tenant.transactionId}`).set({
-    id: Number(tenant.transactionId),
-    date: "1/1/2026, 9:00:00 AM",
-    studentId: Number(tenant.studentId),
-    studentName: tenant.studentMarker,
-    type: "Add",
-    amount: 5,
-    reason: "Weekly payday",
-    memo: tenant.transactionMarker,
-    category: "",
-    status: "Approved",
-    source: "Teacher"
-  });
+  await db.doc(`classrooms/${tenant.classroomId}/transactions/${tenant.transactionId}`).set(transaction);
 
   await db.doc(`classrooms/${tenant.classroomId}/loginHistory/${tenant.historyId}`).set({
     id: Number(tenant.historyId),

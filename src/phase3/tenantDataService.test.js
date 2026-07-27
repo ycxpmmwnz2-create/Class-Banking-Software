@@ -56,7 +56,9 @@ function createFirestoreDouble(seed = {}) {
           }
           for (const op of buffered) {
             if (op.kind === 'delete') store.delete(op.path)
-            else store.set(op.path, op.body)
+            else if (op.options?.merge === true) {
+              store.set(op.path, { ...(store.get(op.path) || {}), ...op.body })
+            } else store.set(op.path, op.body)
           }
           commits.push(buffered)
         },
@@ -79,6 +81,13 @@ function createActiveSession({ uid = TEACHER_UID, classroomId = CLASSROOM } = {}
   session.transitionTo(SESSION_STATES.AUTHENTICATING)
   session.transitionTo(SESSION_STATES.RESOLVING)
   session.transitionTo(SESSION_STATES.ACTIVE, { uid, role: 'teacher', classroomId })
+  return session
+}
+
+function createResolvingStudentSession({ uid = 'student-uid', classroomId = null } = {}) {
+  const session = new TenantSession({ storageAdapter: null, projectId: 'demo-test' })
+  session.transitionTo(SESSION_STATES.AUTHENTICATING, { uid, role: 'student' })
+  session.transitionTo(SESSION_STATES.RESOLVING, { uid, role: 'student', classroomId })
   return session
 }
 
@@ -106,7 +115,7 @@ function transaction(overrides = {}) {
 function seededStore() {
   return {
     [`classrooms/${CLASSROOM}`]: { settings: { requireTeacherApproval: true }, lastBackupAt: null },
-    [`classrooms/${CLASSROOM}/students/1`]: student(),
+    [`classrooms/${CLASSROOM}/students/1`]: student({ transactions: [transaction()] }),
     [`classrooms/${CLASSROOM}/transactions/1700000000000`]: transaction(),
     // A credential document deliberately present in the store. Nothing the
     // service reads may ever surface it.
@@ -223,6 +232,44 @@ describe('Phase 3 tenant data service — loader', () => {
     assert.ok(!error.message.includes('9999'))
   })
 
+  it('rejects a missing classroom root instead of rendering an empty tenant', async () => {
+    const seed = seededStore()
+    delete seed[`classrooms/${CLASSROOM}`]
+    const { firestore } = createFirestoreDouble(seed)
+    const session = createActiveSession()
+    const load = createTenantDataLoader({ db: {}, session, firestore })
+
+    await assert.rejects(
+      () => load({}),
+      err => err instanceof TenantDataServiceError && err.reason === 'classroom-root-missing',
+    )
+  })
+
+  it('rejects a body identity that disagrees with its Firestore document id', async () => {
+    const seed = seededStore()
+    seed[`classrooms/${CLASSROOM}/students/99`] = student({ id: 2, name: 'Bea' })
+    const { firestore } = createFirestoreDouble(seed)
+    const session = createActiveSession()
+    const load = createTenantDataLoader({ db: {}, session, firestore })
+
+    await assert.rejects(
+      () => load({}),
+      err => err instanceof TenantDataServiceError && err.reason === 'document-id-mismatch',
+    )
+  })
+
+  it('requires the teacher role before listing tenant collections', async () => {
+    const { firestore } = createFirestoreDouble(seededStore())
+    const session = createActiveSession()
+    session.role = 'student'
+    const load = createTenantDataLoader({ db: {}, session, firestore })
+
+    await assert.rejects(
+      () => load({}),
+      err => err instanceof TenantDataServiceError && err.reason === 'role-mismatch',
+    )
+  })
+
   it('requires every Firestore adapter to be supplied', () => {
     const session = createActiveSession()
     assert.throws(
@@ -243,7 +290,7 @@ describe('Phase 3 tenant data service — student loader', () => {
         return double.firestore.doc(db, path)
       },
     }
-    const session = new TenantSession({ storageAdapter: null, projectId: 'demo-test' })
+    const session = createResolvingStudentSession()
     const load = createStudentDataLoader({ db: {}, session, firestore: spying })
 
     const result = await load({ uid: 'student-uid', classroomId: CLASSROOM, studentId: '1' })
@@ -255,7 +302,7 @@ describe('Phase 3 tenant data service — student loader', () => {
 
   it('fails closed on incomplete claims', async () => {
     const { firestore } = createFirestoreDouble(seededStore())
-    const session = new TenantSession({ storageAdapter: null, projectId: 'demo-test' })
+    const session = createResolvingStudentSession({ uid: 'u' })
     const load = createStudentDataLoader({ db: {}, session, firestore })
 
     for (const claims of [
@@ -272,7 +319,7 @@ describe('Phase 3 tenant data service — student loader', () => {
 
   it('fails closed when the student has no record', async () => {
     const { firestore } = createFirestoreDouble(seededStore())
-    const session = new TenantSession({ storageAdapter: null, projectId: 'demo-test' })
+    const session = createResolvingStudentSession({ uid: 'u' })
     const load = createStudentDataLoader({ db: {}, session, firestore })
 
     await assert.rejects(
@@ -280,12 +327,48 @@ describe('Phase 3 tenant data service — student loader', () => {
       err => err instanceof TenantDataServiceError && err.reason === 'student-document-missing',
     )
   })
+
+  it('binds the requested uid and role to the resolving student session', async () => {
+    const { firestore } = createFirestoreDouble(seededStore())
+    const session = createResolvingStudentSession({ uid: 'student-uid' })
+    const load = createStudentDataLoader({ db: {}, session, firestore })
+
+    await assert.rejects(
+      () => load({ uid: 'other-uid', classroomId: CLASSROOM, studentId: '1' }),
+      err => err instanceof TenantDataServiceError && err.reason === 'identity-mismatch',
+    )
+    session.role = 'teacher'
+    await assert.rejects(
+      () => load({ uid: 'student-uid', classroomId: CLASSROOM, studentId: '1' }),
+      err => err instanceof TenantDataServiceError && err.reason === 'role-mismatch',
+    )
+  })
+
+  it('rejects a non-canonical student id before constructing a Firestore path', async () => {
+    let reads = 0
+    const double = createFirestoreDouble(seededStore())
+    const firestore = {
+      ...double.firestore,
+      getDoc: async ref => {
+        reads += 1
+        return double.firestore.getDoc(ref)
+      },
+    }
+    const session = createResolvingStudentSession()
+    const load = createStudentDataLoader({ db: {}, session, firestore })
+
+    await assert.rejects(
+      () => load({ uid: 'student-uid', classroomId: CLASSROOM, studentId: '1/other' }),
+      err => err instanceof TenantDataServiceError && err.reason === 'invalid-student-id',
+    )
+    assert.equal(reads, 0)
+  })
 })
 
 describe('Phase 3 tenant data service — saver', () => {
   function baseData(overrides = {}) {
     return {
-      students: [student()],
+      students: [student({ transactions: [transaction()] })],
       transactions: [transaction()],
       loginHistory: [],
       settings: { requireTeacherApproval: true },
@@ -328,7 +411,9 @@ describe('Phase 3 tenant data service — saver', () => {
   // rules layer runs against injected primitives; the Item 10 browser suite
   // caught it.
   it('merges the classroom root so server-owned tenant fields survive', async () => {
-    const double = createFirestoreDouble({})
+    const double = createFirestoreDouble({
+      [`classrooms/${CLASSROOM}`]: { ownerUid: TEACHER_UID, status: 'active' },
+    })
     const session = createActiveSession()
     const save = createTenantDataSaver({ db: {}, session, firestore: double.firestore })
 
@@ -356,6 +441,8 @@ describe('Phase 3 tenant data service — saver', () => {
         `root write must not include non-client-writable field "${key}"`
       )
     }
+    assert.equal(double.store.get(`classrooms/${CLASSROOM}`).ownerUid, TEACHER_UID)
+    assert.equal(double.store.get(`classrooms/${CLASSROOM}`).status, 'active')
   })
 
   it('writes a student body with exactly the five contract fields', async () => {
@@ -477,38 +564,36 @@ describe('Phase 3 tenant data service — saver', () => {
     assert.equal(double.commits.length, 0)
   })
 
-  it('stops committing further batches when the tenant changes mid-write', async () => {
-    // Force multiple batches so there is a real gap between commits.
+  it('requires the teacher role before constructing any write batch', async () => {
+    const double = createFirestoreDouble({})
+    const session = createActiveSession()
+    session.role = 'student'
+    const save = createTenantDataSaver({ db: {}, session, firestore: double.firestore })
+
+    await assert.rejects(
+      () => save(baseData(), session.captureIdentity()),
+      err => err instanceof TenantDataServiceError && err.reason === 'role-mismatch',
+    )
+    assert.equal(double.commits.length, 0)
+  })
+
+  it('refuses to split one logical mutation across commits', async () => {
     const many = Array.from({ length: 6 }, (_, i) => transaction({ id: 1700000000000 + i }))
     const double = createFirestoreDouble({})
     const session = createActiveSession()
-    let commitCount = 0
-    const racing = {
-      ...double.firestore,
-      writeBatch: db => {
-        const batch = double.firestore.writeBatch(db)
-        const originalCommit = batch.commit.bind(batch)
-        batch.commit = async () => {
-          await originalCommit()
-          commitCount += 1
-          if (commitCount === 1) session.invalidate('auth-observer-change', { uid: 'other-teacher' })
-        }
-        return batch
-      },
-    }
     const save = createTenantDataSaver({
       db: {},
       session,
-      firestore: racing,
+      firestore: double.firestore,
       maxBatchSize: 2,
       maxWrites: 100,
     })
 
     await assert.rejects(
       () => save(baseData({ transactions: many }), session.captureIdentity()),
-      err => err instanceof TenantDataServiceError && err.reason === 'stale-identity',
+      err => err instanceof TenantDataServiceError && err.reason === 'mutation-not-atomic',
     )
-    assert.equal(commitCount, 1, 'only the first batch may commit')
+    assert.equal(double.commits.length, 0, 'an oversized logical mutation must write nothing')
   })
 
   it('propagates a rejected commit without seeding partial state', async () => {
@@ -523,27 +608,9 @@ describe('Phase 3 tenant data service — saver', () => {
     assert.equal(double.store.size, 0)
   })
 
-  it('splits a large mutation into bounded batches', async () => {
-    const many = Array.from({ length: 9 }, (_, i) => transaction({ id: 1700000000000 + i }))
-    const double = createFirestoreDouble({})
-    const session = createActiveSession()
-    const save = createTenantDataSaver({
-      db: {},
-      session,
-      firestore: double.firestore,
-      maxBatchSize: 4,
-      maxWrites: 100,
-    })
-
-    const result = await save(baseData({ transactions: many }), session.captureIdentity())
-
-    assert.equal(result.batches, Math.ceil(result.written / 4))
-    assert.ok(double.commits.every(batch => batch.length <= 4))
-  })
-
   it('bounds the whole mutation separately from the per-batch limit', async () => {
-    // The two limits are independent. A mutation under the total ceiling must
-    // still split into batches; one over the ceiling must be refused outright.
+    // The configured logical ceiling may be stricter than Firestore's atomic
+    // batch ceiling; either limit must refuse before the first commit.
     const many = Array.from({ length: 9 }, (_, i) => transaction({ id: 1700000000000 + i }))
     const double = createFirestoreDouble({})
     const session = createActiveSession()
@@ -563,18 +630,16 @@ describe('Phase 3 tenant data service — saver', () => {
     assert.equal(double.commits.length, 0, 'an over-budget mutation must write nothing')
   })
 
-  it('defaults the mutation ceiling above the per-batch limit', async () => {
-    // Regression guard for the defect this suite caught: defaulting maxWrites
-    // to maxBatchSize made the batching loop unreachable, because any mutation
-    // large enough to need a second batch was rejected before reaching it.
+  it('defaults the logical mutation ceiling to one atomic batch', async () => {
     const many = Array.from({ length: 450 }, (_, i) => transaction({ id: 1700000000000 + i }))
     const double = createFirestoreDouble({})
     const session = createActiveSession()
     const save = createTenantDataSaver({ db: {}, session, firestore: double.firestore })
 
-    const result = await save(baseData({ transactions: many }), session.captureIdentity())
-
-    assert.ok(result.batches > 1, 'a >400-write mutation must split rather than be refused')
-    assert.ok(double.commits.every(batch => batch.length <= 400))
+    await assert.rejects(
+      () => save(baseData({ transactions: many }), session.captureIdentity()),
+      err => err instanceof TenantProjectionError && err.details.maxWrites === 400,
+    )
+    assert.equal(double.commits.length, 0)
   })
 })

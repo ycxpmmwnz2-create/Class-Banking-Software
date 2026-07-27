@@ -69,7 +69,11 @@ describe('Phase 3 student-identity source contract', () => {
     const v2Branch = enclosingV2Branch('orchestrateCreateStudent(v2TenantSession')
     assert.match(v2Branch, /orchestrateCreateStudent\(v2TenantSession, callableAdapter, \{/)
     assert.match(v2Branch, /name,\s*startingBalance,\s*pin/)
-    assert.match(v2Branch, /data\.students\.push\(result\.result\.student\)/)
+    assert.match(
+      v2Branch,
+      /data\.students\.push\(\{ \.\.\.result\.result\.student, transactions: \[\] \}\)/,
+      'the four-field callable response must gain the required empty transaction mirror in the view',
+    )
     assert.match(v2Branch, /return;/)
     assert.doesNotMatch(v2Branch, /maxId|saveData\(/)
   })
@@ -77,7 +81,7 @@ describe('Phase 3 student-identity source contract', () => {
   it('source contract: V2 and legacy have exactly one isolated roster admission each', () => {
     const pushes = matchingLines(/data\.students\.push\(/)
     assert.equal(pushes.length, 2)
-    assert.match(lines[pushes[0] - 1], /result\.result\.student/)
+    assert.match(lines[pushes[0] - 1], /result\.result\.student, transactions: \[\]/)
     assert.match(lines[pushes[1] - 1], /newStudent/)
   })
 

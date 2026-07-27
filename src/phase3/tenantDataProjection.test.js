@@ -50,11 +50,15 @@ function historyEntry(overrides = {}) {
 }
 
 function load(overrides = {}) {
+  const transactions = overrides.transactions ?? [transaction()]
+  const students = overrides.students ?? [student({
+    transactions: transactions.filter(entry => Number(entry.studentId) === 1),
+  })]
   return projectClassroomData({
     classroomId: CLASSROOM,
     root: { settings: {}, lastBackupAt: null },
-    students: [student()],
-    transactions: [transaction()],
+    students,
+    transactions,
     loginHistory: [historyEntry()],
     ...overrides,
   })
@@ -79,7 +83,7 @@ describe('Phase 3 tenant data projection — load', () => {
       root: { settings: { requireTeacherApproval: false }, lastBackupAt: '2026-01-01T00:00:00.000Z' },
     })
 
-    assert.deepEqual(result.students, [student()])
+    assert.deepEqual(result.students, [student({ transactions: [transaction()] })])
     assert.equal(result.transactions.length, 1)
     assert.equal(result.loginHistory.length, 1)
     assert.equal(result.lastBackupAt, '2026-01-01T00:00:00.000Z')
@@ -87,9 +91,10 @@ describe('Phase 3 tenant data projection — load', () => {
   })
 
   it('normalizes a canonical string student id to a number', () => {
+    const mirrored = transaction({ studentId: '7' })
     const result = load({
-      students: [student({ id: '7' })],
-      transactions: [transaction({ studentId: '7' })],
+      students: [student({ id: '7', transactions: [mirrored] })],
+      transactions: [mirrored],
       loginHistory: [historyEntry({ studentId: 7 })],
     })
     assert.equal(result.students[0].id, 7)
@@ -107,7 +112,12 @@ describe('Phase 3 tenant data projection — load', () => {
 
   it('rejects duplicate student ids', () => {
     expectRejection(
-      () => load({ students: [student({ id: 1 }), student({ id: '1', name: 'Bea' })] }),
+      () => load({
+        students: [
+          student({ transactions: [transaction()] }),
+          student({ id: '1', name: 'Bea', transactions: [transaction()] }),
+        ],
+      }),
       PROJECTION_CATEGORIES.DUPLICATE,
     )
   })
@@ -138,10 +148,11 @@ describe('Phase 3 tenant data projection — load', () => {
     )
   })
 
-  it('accepts a document tagged with the resolved classroom', () => {
-    const result = load({ students: [student({ classroomId: CLASSROOM })] })
-    assert.equal(result.students[0].id, 1)
-    assert.ok(!('classroomId' in result.students[0]))
+  it('rejects even a same-tenant extra key on the exact student body', () => {
+    expectRejection(
+      () => load({ students: [student({ classroomId: CLASSROOM })] }),
+      PROJECTION_CATEGORIES.SHAPE,
+    )
   })
 
   it('rejects a transaction or login entry referencing an off-roster student', () => {
@@ -171,6 +182,30 @@ describe('Phase 3 tenant data projection — load', () => {
       // The field name may be reported; the value never may.
       assert.ok(!error.message.includes('secret-value'))
       assert.ok(!JSON.stringify(error.details).includes('secret-value'))
+    }
+  })
+
+  it('refuses credential material nested in the required transaction mirror', () => {
+    const error = expectRejection(
+      () => load({
+        students: [student({ transactions: [{ ...transaction(), pinHash: 'nested-secret' }] })],
+      }),
+      PROJECTION_CATEGORIES.CREDENTIAL,
+    )
+    assert.ok(!error.message.includes('nested-secret'))
+    assert.ok(!JSON.stringify(error.details).includes('nested-secret'))
+  })
+
+  it('rejects a student transaction mirror that disagrees with the authoritative ledger', () => {
+    for (const transactions of [
+      [],
+      [transaction({ amount: 99 })],
+      [transaction(), transaction({ id: 1700000000002 })],
+    ]) {
+      expectRejection(
+        () => load({ students: [student({ transactions })] }),
+        PROJECTION_CATEGORIES.REFERENCE,
+      )
     }
   })
 
@@ -248,7 +283,7 @@ describe('Phase 3 tenant data projection — load', () => {
 
 describe('Phase 3 tenant data projection — mutation decomposition', () => {
   const data = {
-    students: [student()],
+    students: [student({ transactions: [transaction()] })],
     transactions: [transaction()],
     loginHistory: [historyEntry()],
     settings: { requireTeacherApproval: true },
@@ -314,11 +349,17 @@ describe('Phase 3 tenant data projection — mutation decomposition', () => {
   it('writes only the student that actually changed', () => {
     const previous = {
       ...data,
-      students: [student({ id: 1 }), student({ id: 2, name: 'Bea' })],
+      students: [
+        student({ id: 1, transactions: [transaction()] }),
+        student({ id: 2, name: 'Bea' }),
+      ],
     }
     const next = {
       ...previous,
-      students: [student({ id: 1 }), student({ id: 2, name: 'Bea', balance: 99 })],
+      students: [
+        student({ id: 1, transactions: [transaction()] }),
+        student({ id: 2, name: 'Bea', balance: 99 }),
+      ],
     }
     const plan = decomposeClassroomMutation({ classroomId: CLASSROOM, data: next, previous })
     assert.deepEqual(plan.students.map(w => w.id), ['2'])
@@ -329,6 +370,12 @@ describe('Phase 3 tenant data projection — mutation decomposition', () => {
     const next = { ...data, students: [student({ transactions: [transaction()] })] }
     const plan = decomposeClassroomMutation({ classroomId: CLASSROOM, data: next, previous })
     assert.equal(plan.students.length, 1)
+  })
+
+  it('derives the persisted transaction mirror from the authoritative collection', () => {
+    const staleMirror = { ...data, students: [student({ transactions: [] })] }
+    const plan = decomposeClassroomMutation({ classroomId: CLASSROOM, data: staleMirror })
+    assert.deepEqual(plan.students[0].body.transactions, [transaction()])
   })
 
   it('deletes login-history records trimmed beyond the cap', () => {

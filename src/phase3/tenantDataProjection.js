@@ -225,6 +225,13 @@ function projectStudent(raw, expectedClassroomId, index) {
   }
   assertNoCredentialFields(raw, where);
   requireTenantMatch(raw.classroomId, expectedClassroomId, where);
+  if (!hasExactKeys(raw, STUDENT_DOCUMENT_FIELDS)) {
+    fail(
+      PROJECTION_CATEGORIES.SHAPE,
+      `${where} does not match the exact student field contract.`,
+      { where }
+    );
+  }
 
   const id = normalizeStudentId(raw.id, where);
   const name = requireString(raw.name, where, "name");
@@ -238,11 +245,38 @@ function projectStudent(raw, expectedClassroomId, index) {
     fail(PROJECTION_CATEGORIES.SHAPE, `${where} field "transactions" must be an array.`, { where });
   }
 
-  return { id, name, balance, frozen, transactions: raw.transactions };
+  const transactions = [];
+  const seenTransactionIds = new Set();
+  const knownStudentIds = new Set([id]);
+  for (let transactionIndex = 0; transactionIndex < raw.transactions.length; transactionIndex += 1) {
+    const transaction = projectTransaction(
+      raw.transactions[transactionIndex],
+      expectedClassroomId,
+      transactionIndex,
+      knownStudentIds,
+      `${where}.transactions[${transactionIndex}]`
+    );
+    if (seenTransactionIds.has(transaction.id)) {
+      fail(
+        PROJECTION_CATEGORIES.DUPLICATE,
+        `${where} repeats transaction mirror id ${transaction.id}.`,
+        { where }
+      );
+    }
+    seenTransactionIds.add(transaction.id);
+    transactions.push(transaction);
+  }
+
+  return { id, name, balance, frozen, transactions };
 }
 
-function projectTransaction(raw, expectedClassroomId, index, knownStudentIds) {
-  const where = `transactions[${index}]`;
+function projectTransaction(
+  raw,
+  expectedClassroomId,
+  index,
+  knownStudentIds,
+  where = `transactions[${index}]`
+) {
   if (!isPlainObject(raw)) {
     fail(PROJECTION_CATEGORIES.SHAPE, `${where} must be an object.`, { where });
   }
@@ -406,6 +440,38 @@ function cloneSettings(settings) {
   return clone;
 }
 
+function transactionBodiesEqual(left, right) {
+  return TRANSACTION_DOCUMENT_FIELDS.every(field => left[field] === right[field]);
+}
+
+function assertTransactionMirrorParity(students, transactions) {
+  const authoritativeByStudent = new Map(students.map(student => [student.id, new Map()]));
+  for (const transaction of transactions) {
+    authoritativeByStudent.get(transaction.studentId).set(transaction.id, transaction);
+  }
+
+  for (const student of students) {
+    const authoritative = authoritativeByStudent.get(student.id);
+    if (student.transactions.length !== authoritative.size) {
+      fail(
+        PROJECTION_CATEGORIES.REFERENCE,
+        `Student ${student.id} has a transaction mirror that disagrees with the classroom ledger.`,
+        { where: `students/${student.id}/transactions` }
+      );
+    }
+    for (const mirrored of student.transactions) {
+      const canonical = authoritative.get(mirrored.id);
+      if (!canonical || !transactionBodiesEqual(mirrored, canonical)) {
+        fail(
+          PROJECTION_CATEGORIES.REFERENCE,
+          `Student ${student.id} has a transaction mirror that disagrees with the classroom ledger.`,
+          { where: `students/${student.id}/transactions` }
+        );
+      }
+    }
+  }
+}
+
 /**
  * Rebuild the aggregate view model from separately-read V2 documents.
  *
@@ -492,6 +558,7 @@ export function projectClassroomData({
   // deterministic regardless of how the service paginated.
   projectedTransactions.sort((a, b) => b.id - a.id);
   projectedHistory.sort((a, b) => b.id - a.id);
+  assertTransactionMirrorParity(projectedStudents, projectedTransactions);
 
   const lastBackupAt = root && root.lastBackupAt !== undefined && root.lastBackupAt !== null
     ? requireString(root.lastBackupAt, "root", "lastBackupAt")
@@ -531,9 +598,18 @@ export function decomposeClassroomMutation({
     fail(PROJECTION_CATEGORIES.SHAPE, "A mutation requires an aggregate data object.", { where: "data" });
   }
 
-  const students = Array.isArray(data.students) ? data.students : [];
-  const transactions = Array.isArray(data.transactions) ? data.transactions : [];
-  const loginHistory = Array.isArray(data.loginHistory) ? data.loginHistory : [];
+  if (!Array.isArray(data.students) ||
+      !Array.isArray(data.transactions) ||
+      !Array.isArray(data.loginHistory)) {
+    fail(
+      PROJECTION_CATEGORIES.SHAPE,
+      "A mutation requires student, transaction, and login-history arrays.",
+      { where: "data" }
+    );
+  }
+  const students = data.students;
+  const transactions = data.transactions;
+  const loginHistory = data.loginHistory;
 
   const previousStudents = new Map();
   if (previous && Array.isArray(previous.students)) {
@@ -546,38 +622,70 @@ export function decomposeClassroomMutation({
   }
 
   const seenStudentIds = new Set();
-  const studentWrites = [];
+  const projectedStudents = [];
   for (let index = 0; index < students.length; index += 1) {
     const where = `students[${index}]`;
-    const raw = students[index];
-    if (!isPlainObject(raw)) {
-      fail(PROJECTION_CATEGORIES.SHAPE, `${where} must be an object.`, { where });
-    }
-    // Outbound credential prohibition. The default-off legacy roster object
-    // carries a plaintext `pin`; if such an object ever reached a V2 save it
-    // must abort the whole mutation, not be quietly stripped.
-    assertNoCredentialFields(raw, where);
-
-    const id = normalizeStudentId(raw.id, where);
+    const projected = projectStudent(students[index], classroomId, index);
+    const id = projected.id;
     if (seenStudentIds.has(id)) {
       fail(PROJECTION_CATEGORIES.DUPLICATE, `${where} repeats student id ${id}.`, { where });
     }
     seenStudentIds.add(id);
+    projectedStudents.push(projected);
+  }
 
-    // Check the INPUT against the contract, not the body constructed below.
-    // The body is assembled from a fixed field list, so asserting on it could
-    // never fail — an extra key on the incoming object would be silently
-    // dropped instead of aborting the mutation.
-    if (!hasExactKeys(stripTenantKey(raw), STUDENT_DOCUMENT_FIELDS)) {
-      fail(PROJECTION_CATEGORIES.SHAPE, `${where} does not match the exact student field contract.`, { where });
+  const projectedTransactions = [];
+  const seenTransactionIds = new Set();
+  for (let index = 0; index < transactions.length; index += 1) {
+    const projected = projectTransaction(
+      transactions[index],
+      classroomId,
+      index,
+      seenStudentIds
+    );
+    if (seenTransactionIds.has(projected.id)) {
+      fail(
+        PROJECTION_CATEGORIES.DUPLICATE,
+        `transactions[${index}] repeats record id ${projected.id}.`,
+        { where: `transactions[${index}]` }
+      );
     }
+    seenTransactionIds.add(projected.id);
+    projectedTransactions.push(projected);
+  }
 
+  const projectedHistory = [];
+  const seenHistoryIds = new Set();
+  for (let index = 0; index < loginHistory.length; index += 1) {
+    const projected = projectLoginHistoryEntry(
+      loginHistory[index],
+      classroomId,
+      index,
+      seenStudentIds
+    );
+    if (seenHistoryIds.has(projected.id)) {
+      fail(
+        PROJECTION_CATEGORIES.DUPLICATE,
+        `loginHistory[${index}] repeats record id ${projected.id}.`,
+        { where: `loginHistory[${index}]` }
+      );
+    }
+    seenHistoryIds.add(projected.id);
+    projectedHistory.push(projected);
+  }
+
+  const studentWrites = [];
+  for (const projected of projectedStudents) {
+    const id = projected.id;
     const body = {
       id,
-      name: requireString(raw.name, where, "name"),
-      balance: requireFiniteNumber(raw.balance, where, "balance"),
-      frozen: requireBoolean(raw.frozen, where, "frozen"),
-      transactions: Array.isArray(raw.transactions) ? raw.transactions : []
+      name: projected.name,
+      balance: projected.balance,
+      frozen: projected.frozen,
+      // The top-level transaction collection is the aggregate's authoritative
+      // source. Deriving the required per-student mirror here prevents a
+      // balance/transaction save from leaving the student's self-read stale.
+      transactions: projectedTransactions.filter(transaction => transaction.studentId === id)
     };
 
     // Only write students that actually changed. This is what keeps an
@@ -594,7 +702,7 @@ export function decomposeClassroomMutation({
   }
 
   const transactionWrites = collectRecordWrites({
-    records: transactions,
+    records: projectedTransactions,
     classroomId,
     collection: "transactions",
     fields: TRANSACTION_DOCUMENT_FIELDS,
@@ -603,7 +711,7 @@ export function decomposeClassroomMutation({
   });
 
   const historyWrites = collectRecordWrites({
-    records: loginHistory.slice(0, LOGIN_HISTORY_LIMIT),
+    records: projectedHistory.slice(0, LOGIN_HISTORY_LIMIT),
     classroomId,
     collection: "loginHistory",
     fields: LOGIN_HISTORY_DOCUMENT_FIELDS,
@@ -617,8 +725,8 @@ export function decomposeClassroomMutation({
   const historyDeletes = [];
   if (previous && Array.isArray(previous.loginHistory)) {
     const retained = new Set(historyWrites.map(entry => entry.id));
-    for (const entry of loginHistory.slice(0, LOGIN_HISTORY_LIMIT)) {
-      if (isPlainObject(entry)) retained.add(String(requireTransactionId(entry.id, "loginHistory")));
+    for (const entry of projectedHistory.slice(0, LOGIN_HISTORY_LIMIT)) {
+      retained.add(String(entry.id));
     }
     for (const entry of previous.loginHistory) {
       if (!isPlainObject(entry)) continue;
@@ -811,13 +919,8 @@ export function projectStudentSelfData({
     fail(PROJECTION_CATEGORIES.TENANT, "A resolved classroom id is required to project student data.", {});
   }
   const expectedId = normalizeStudentId(studentId, "studentSelf");
-  if (!isPlainObject(student)) {
-    fail(PROJECTION_CATEGORIES.SHAPE, "The student document must be an object.", { where: "studentSelf" });
-  }
-  assertNoCredentialFields(student, "studentSelf");
-  requireTenantMatch(student.classroomId, classroomId, "studentSelf");
-
-  const actualId = normalizeStudentId(student.id, "studentSelf");
+  const projectedStudent = projectStudent(student, classroomId, 0);
+  const actualId = projectedStudent.id;
   // The claim and the document must name the same student. A mismatch means
   // the read resolved someone else's record and must fail closed.
   if (actualId !== expectedId) {
@@ -828,20 +931,9 @@ export function projectStudentSelfData({
     );
   }
 
-  const transactions = Array.isArray(student.transactions) ? student.transactions : [];
-  for (let index = 0; index < transactions.length; index += 1) {
-    assertNoCredentialFields(transactions[index], `studentSelf.transactions[${index}]`);
-  }
-
   return {
-    students: [{
-      id: actualId,
-      name: requireString(student.name, "studentSelf", "name"),
-      balance: requireFiniteNumber(student.balance, "studentSelf", "balance"),
-      frozen: requireBoolean(student.frozen, "studentSelf", "frozen"),
-      transactions
-    }],
-    transactions,
+    students: [projectedStudent],
+    transactions: projectedStudent.transactions,
     loginHistory: [],
     settings: cloneSettings(defaultSettings),
     lastBackupAt: null
