@@ -182,11 +182,24 @@ function sortedFrozenEntries(entries) {
   return Object.freeze(entries)
 }
 
-function destinationEntries(entries) {
+/**
+ * Projects legacy-derived destination entries WITH their source provenance.
+ *
+ * Students, transactions, and login history are all derived from the single
+ * embedded `morganBank/classroomData` document, so that singleton's exact path
+ * and Timestamp are the precondition for every one of these operations. Carrying
+ * them here is what lets the copy plan bind an expected-before digest and lets
+ * `commitCopyBatch` reread and reprove the legacy source inside each affected
+ * batch. Dropping them would let a source edit made after preflight be copied as
+ * though it had been reviewed.
+ */
+function destinationEntries(entries, source) {
   return sortedFrozenEntries(entries.map(entry => ({
     id: entry.id,
     path: entry.path,
     data: entry.data,
+    sourcePath: source.path,
+    sourceUpdateTime: source.updateTime,
   })))
 }
 
@@ -304,12 +317,20 @@ export function buildProductionProjection(rawOptions) {
     options,
     rosterStudentIds,
   )
-  const students = destinationEntries(legacy.students)
-  const transactions = destinationEntries(legacy.transactions)
-  const loginHistory = destinationEntries(legacy.loginHistory)
+  const students = destinationEntries(legacy.students, options.classroomData)
+  const transactions = destinationEntries(
+    legacy.transactions, options.classroomData,
+  )
+  const loginHistory = destinationEntries(
+    legacy.loginHistory, options.classroomData,
+  )
+  // The classroom update is derived from the same legacy singleton, so it
+  // carries the same source precondition as the collections below.
   const classroom = Object.freeze({
     ...legacy.classroom,
     data: Object.freeze(legacy.classroom.data),
+    sourcePath: options.classroomData.path,
+    sourceUpdateTime: options.classroomData.updateTime,
   })
 
   const scopedCredentials = sortedFrozenEntries(

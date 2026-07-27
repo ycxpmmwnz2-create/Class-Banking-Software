@@ -8,6 +8,7 @@ import {
   PRODUCTION_RECONCILIATION_CATEGORIES,
   PRODUCTION_RECONCILIATION_MODES,
   ProductionReconciliationError,
+  assertRetainedSourceEvidence,
   reconcileProductionDryRun,
   reconcileProductionWriteRun,
 } from './productionReconciliation.js'
@@ -674,6 +675,40 @@ test('source collection reconciliation is path-based rather than order-based', (
   state.actual.flatCredentials.reverse()
   state.actual.flatAuthLogs.reverse()
   assert.equal(writeRun(state).passed, true)
+})
+
+test('retained teacher evidence detects an identical-body rewrite', () => {
+  const observed = scenario().actual
+  const teacherDigest = teacher => [
+    teacher.path,
+    teacher.updateTime.seconds,
+    teacher.updateTime.nanoseconds,
+  ].join(':')
+  const retainedEvidence = {
+    legacySourceStateSha256: 'legacy-retained',
+    foundationBodiesSha256: 'foundation-retained',
+    teacherSourceSha256: teacherDigest(observed.teacher),
+    watermarkSha256: 'watermark-retained',
+    computeLegacySourceDigest: () => 'legacy-retained',
+    computeFoundationDigest: () => 'foundation-retained',
+    computeTeacherSourceDigest: teacherDigest,
+    computeWatermarkDigest: () => 'watermark-retained',
+  }
+  assert.equal(assertRetainedSourceEvidence({ retainedEvidence, observed }), true)
+
+  // The document body is unchanged; only exact source time moves. A body-only
+  // comparison would miss this rewrite, while the retained source digest must
+  // block it.
+  observed.teacher.updateTime = new FakeTimestamp(
+    observed.teacher.updateTime.seconds + 1,
+    observed.teacher.updateTime.nanoseconds,
+  )
+  assert.throws(
+    () => assertRetainedSourceEvidence({ retainedEvidence, observed }),
+    assertReconciliationError(
+      PRODUCTION_RECONCILIATION_CATEGORIES.WRITE_RUN_MISMATCH,
+    ),
+  )
 })
 
 test('malformed and unknown option surfaces fail before comparison', () => {

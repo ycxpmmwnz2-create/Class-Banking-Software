@@ -18,6 +18,26 @@ import {
   formatClassroomCode,
   normalizeClassroomCode,
 } from '../phase2b/identityNormalization.js'
+import {
+  DESTINATION_SURFACES,
+  deriveStudentIdWatermark,
+  sourceEntryFromEnvelope,
+  summarizeHashedSource,
+} from './productionPreflight.js'
+import {
+  JOURNAL_EVENTS,
+  JOURNAL_KIND,
+  JOURNAL_SCHEMA_VERSION,
+  LEGAL_TRANSITIONS,
+  PRODUCTION_MANIFEST_CATEGORIES,
+  ProductionManifestError,
+  assertNoJournalSecrets as assertNoJournalSecretsFromManifest,
+  computeFoundationStateDigest,
+  hashDomain,
+  replayWriteJournal,
+  validateJournalEvent,
+  validateJournalSemantics,
+} from './productionManifest.js'
 import { buildProductionProjection } from './productionProjection.js'
 import {
   readAndReconcileWriteRun,
@@ -58,7 +78,6 @@ import {
 const SEQUENCE_WIDTH = 6
 
 /** Bounded replay ceiling; far above any real plan's event count. */
-const MAX_JOURNAL_EVENTS = 100_000
 
 /**
  * The canonical, module-anchored Phase 3 state directory.
@@ -71,83 +90,28 @@ export const PRODUCTION_STATE_DIRECTORY = fileURLToPath(
   new URL('./.state/', import.meta.url),
 )
 
-export const JOURNAL_SCHEMA_VERSION = 1
-export const JOURNAL_KIND = 'phase3-production-write-journal'
 
 /**
- * The event vocabulary. Order in this list is NOT the transition order; the
- * legal transitions are declared separately below.
+ * The journal vocabulary and legal transitions are owned by
+ * `productionManifest.js` — a module with NO mutation capability — and
+ * re-exported here for existing callers. One declaration means the read-only
+ * re-verifier and this writer can never disagree about what a valid chain is.
  */
-export const JOURNAL_EVENTS = Object.freeze({
-  PLANNED: 'planned',
-  INITIALIZATION_IN_FLIGHT: 'initialization-in-flight',
-  INITIALIZATION_VERIFIED: 'initialization-verified',
-  AWAITING_COPY_DEPLOYMENT: 'awaiting-copy-deployment',
-  BATCH_IN_FLIGHT: 'batch-in-flight',
-  BATCH_COMMITTED: 'batch-committed',
-  BATCH_VERIFIED: 'batch-verified',
-  COPY_VERIFYING: 'copy-verifying',
-  COMPLETED: 'completed',
-  FAILED: 'failed',
-  INDETERMINATE: 'indeterminate',
-})
-
-/**
- * Legal successors for each event kind.
- *
- * `indeterminate` and `failed` are terminal for automated progress: recovery
- * from them requires human review, which is the entire point of recording them.
- */
-const LEGAL_TRANSITIONS = Object.freeze({
-  [JOURNAL_EVENTS.PLANNED]: Object.freeze([
-    JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT,
-    JOURNAL_EVENTS.FAILED,
-    JOURNAL_EVENTS.INDETERMINATE,
-  ]),
-  [JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT]: Object.freeze([
-    JOURNAL_EVENTS.INITIALIZATION_VERIFIED,
-    JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT,
-    JOURNAL_EVENTS.FAILED,
-    JOURNAL_EVENTS.INDETERMINATE,
-  ]),
-  [JOURNAL_EVENTS.INITIALIZATION_VERIFIED]: Object.freeze([
-    JOURNAL_EVENTS.AWAITING_COPY_DEPLOYMENT,
-    JOURNAL_EVENTS.FAILED,
-    JOURNAL_EVENTS.INDETERMINATE,
-  ]),
-  [JOURNAL_EVENTS.AWAITING_COPY_DEPLOYMENT]: Object.freeze([
-    JOURNAL_EVENTS.BATCH_IN_FLIGHT,
-    JOURNAL_EVENTS.FAILED,
-    JOURNAL_EVENTS.INDETERMINATE,
-  ]),
-  [JOURNAL_EVENTS.BATCH_IN_FLIGHT]: Object.freeze([
-    JOURNAL_EVENTS.BATCH_COMMITTED,
-    JOURNAL_EVENTS.BATCH_IN_FLIGHT,
-    JOURNAL_EVENTS.FAILED,
-    JOURNAL_EVENTS.INDETERMINATE,
-  ]),
-  [JOURNAL_EVENTS.BATCH_COMMITTED]: Object.freeze([
-    JOURNAL_EVENTS.BATCH_VERIFIED,
-    JOURNAL_EVENTS.FAILED,
-    JOURNAL_EVENTS.INDETERMINATE,
-  ]),
-  [JOURNAL_EVENTS.BATCH_VERIFIED]: Object.freeze([
-    JOURNAL_EVENTS.BATCH_IN_FLIGHT,
-    JOURNAL_EVENTS.COPY_VERIFYING,
-    JOURNAL_EVENTS.FAILED,
-    JOURNAL_EVENTS.INDETERMINATE,
-  ]),
-  [JOURNAL_EVENTS.COPY_VERIFYING]: Object.freeze([
-    JOURNAL_EVENTS.COMPLETED,
-    JOURNAL_EVENTS.FAILED,
-    JOURNAL_EVENTS.INDETERMINATE,
-  ]),
-  [JOURNAL_EVENTS.COMPLETED]: Object.freeze([]),
-  [JOURNAL_EVENTS.FAILED]: Object.freeze([]),
-  [JOURNAL_EVENTS.INDETERMINATE]: Object.freeze([]),
-})
+export { JOURNAL_EVENTS, JOURNAL_KIND, JOURNAL_SCHEMA_VERSION, LEGAL_TRANSITIONS }
 
 /** The deterministic copy surface order. Never reordered at runtime. */
+/**
+ * The complete deployment surface set. Every one must be both expected and
+ * observed before any stage runs; there is no optional surface.
+ */
+export const DEPLOYMENT_SURFACES = Object.freeze([
+  'rules',
+  'functions',
+  'hosting',
+  'indexes',
+  'gateParameters',
+])
+
 export const COPY_SURFACE_ORDER = Object.freeze([
   'classroom',
   'students',
@@ -205,6 +169,11 @@ function canonicalDigest(value) {
   return sha256Hex(serializeCanonicalState(value))
 }
 
+/** Exact digest of one Firestore document body, including native values. */
+function documentBodyDigest(value) {
+  return canonicalDigest(encodeCanonicalFirestoreValue(value))
+}
+
 /**
  * The exact foundation-state digest.
  *
@@ -214,65 +183,9 @@ function canonicalDigest(value) {
  * compare nothing meaningful.
  */
 export function computeFoundationDigest(teacherData, classroomData) {
-  return canonicalDigest({
-    teacher: encodeCanonicalFirestoreValue(teacherData),
-    classroom: encodeCanonicalFirestoreValue(classroomData),
-  })
-}
-
-/* ------------------------------------------------------------------------- *
- * Journal secret scanning
- * ------------------------------------------------------------------------- */
-
-/**
- * Key names that must never appear in a journal event at any depth.
- *
- * A journal records HASHES and CLASSIFICATIONS. A raw document body, a login
- * code, a full Firestore path, an email, or a PIN hash in an append-only file
- * that is never deleted would be a durable disclosure, so the scan is applied
- * before any bytes are written.
- */
-const FORBIDDEN_JOURNAL_KEYS = Object.freeze(new Set([
-  'pin', 'pins', 'pinhash', 'pinhashes', 'password', 'passwords',
-  'secret', 'secrets', 'token', 'tokens', 'email', 'emails',
-  'emailaddress', 'email_address', 'privatekey', 'private_key',
-  'apikey', 'api_key', 'accesstoken', 'access_token',
-  'refreshtoken', 'refresh_token', 'clientsecret', 'client_secret',
-  'logincode', 'login_code', 'studentlogincode', 'student_login_code',
-  'classroomcode', 'classroom_code', 'code', 'rawcode', 'raw_code',
-  'data', 'body', 'document', 'documents', 'contents',
-  'path', 'paths', 'documentpath', 'document_path', 'sourcepath',
-  'targetpath', 'credentialpath', 'credential_path',
-  'credentialbody', 'credential_body', 'rawcredential', 'raw_credential',
-  'serviceaccount', 'service_account',
-]))
-
-const FORBIDDEN_JOURNAL_SUBSTRINGS = Object.freeze([
-  'pinhash', 'privatekey', 'private_key', 'accesstoken', 'access_token',
-  'refreshtoken', 'refresh_token', 'clientsecret', 'client_secret',
-  'credentialpath', 'credentialbody', 'rawcredential',
-  'serviceaccount', 'service_account',
-])
-
-/**
- * Value shapes that indicate leaked material regardless of key name. The
- * Firestore-path pattern is what catches a raw `classrooms/x/students/3` that
- * slipped into an otherwise innocuous field.
- */
-const FORBIDDEN_JOURNAL_VALUE_PATTERNS = Object.freeze([
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./,
-  /\bya29\.[A-Za-z0-9_-]{10,}/,
-  /\bBearer\s+[A-Za-z0-9._-]{10,}/i,
-  /@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/,
-  /\$2[aby]\$\d{2}\$/,
-  /\b(?:classrooms|teachers|studentCredentials|studentAuthLogs|morganBank|classroomLoginCodes)\/[^\s"]+/,
-])
-
-function isForbiddenJournalKey(key) {
-  const normalized = key.toLowerCase()
-  if (FORBIDDEN_JOURNAL_KEYS.has(normalized)) return true
-  return FORBIDDEN_JOURNAL_SUBSTRINGS.some(part => normalized.includes(part))
+  // Delegates to the single shared derivation in productionManifest.js so the
+  // writer, the transaction, and the read-only re-verifier cannot drift apart.
+  return computeFoundationStateDigest(teacherData, classroomData)
 }
 
 /**
@@ -281,34 +194,17 @@ function isForbiddenJournalKey(key) {
  * cannot reintroduce one.
  */
 export function assertNoJournalSecrets(value, label = '$') {
-  if (typeof value === 'string') {
-    for (const pattern of FORBIDDEN_JOURNAL_VALUE_PATTERNS) {
-      if (pattern.test(value)) {
-        fail(
-          PRODUCTION_WRITER_CATEGORIES.SECRET_MATERIAL,
-          'A journal event contains sensitive material.',
-          { label },
-        )
-      }
+  try {
+    return assertNoJournalSecretsFromManifest(value, label)
+  } catch (error) {
+    if (error instanceof ProductionManifestError) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.SECRET_MATERIAL,
+        error.message,
+        error.details,
+      )
     }
-    return
-  }
-  if (Array.isArray(value)) {
-    value.forEach((entry, index) =>
-      assertNoJournalSecrets(entry, `${label}[${index}]`))
-    return
-  }
-  if (isPlainObject(value)) {
-    for (const [key, entry] of Object.entries(value)) {
-      if (isForbiddenJournalKey(key)) {
-        fail(
-          PRODUCTION_WRITER_CATEGORIES.SECRET_MATERIAL,
-          'A journal event contains a forbidden field name.',
-          { label: `${label}.${key}` },
-        )
-      }
-      assertNoJournalSecrets(entry, `${label}.${key}`)
-    }
+    throw error
   }
 }
 
@@ -381,103 +277,33 @@ export function createWriteJournal({
     )
   }
 
-  /** Reads and validates the complete contiguous chain from sequence 0. */
+  /**
+   * Reads and validates the complete contiguous chain from sequence 0.
+   *
+   * Delegates to the READ-ONLY primitive in `productionManifest.js` so the
+   * writer and the re-verifier validate a stored journal with exactly the same
+   * code. Duplicating this logic is what let `append` and `replay` disagree
+   * about which transitions are legal.
+   */
   async function replay() {
-    let names
     try {
-      names = await fs.readdir(directory)
+      return await replayWriteJournal({
+        directory,
+        fs,
+      })
     } catch (error) {
-      if (error?.code === 'ENOENT') {
-        return Object.freeze({ exists: false, events: Object.freeze([]) })
+      // Surface journal corruption in the writer's own error vocabulary so
+      // callers keep matching on a single category.
+      if (error instanceof ProductionManifestError &&
+          error.category === PRODUCTION_MANIFEST_CATEGORIES.JOURNAL_CORRUPT) {
+        fail(
+          PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
+          error.message,
+          error.details,
+        )
       }
       throw error
     }
-
-    const eventFiles = names
-      .filter(name => /^\d{6}\.json$/.test(name))
-      .sort()
-
-    const events = []
-    let previousDigest = null
-    for (let sequence = 0; sequence < eventFiles.length; sequence += 1) {
-      const expectedName = sequenceFilename(sequence)
-      if (eventFiles[sequence] !== expectedName) {
-        fail(
-          PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-          'The journal has a gap or out-of-order sequence file.',
-          { sequence },
-        )
-      }
-      const contents = await fs.readFile(
-        path.join(directory, expectedName),
-        'utf8',
-      )
-      let parsed
-      try {
-        parsed = JSON.parse(contents)
-      } catch {
-        fail(
-          PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-          'A journal event is not parseable JSON.',
-          { sequence },
-        )
-      }
-      // Canonical round-trip: proves the stored bytes were not hand-edited into
-      // an equivalent-but-different form.
-      if (serializeCanonicalState(parsed) !== contents) {
-        fail(
-          PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-          'A journal event is not in canonical serialized form.',
-          { sequence },
-        )
-      }
-      assertNoJournalSecrets(parsed, `event[${sequence}]`)
-      requireEventShape(parsed, sequence)
-
-      // The hash chain is what makes a mid-chain substitution detectable: each
-      // event names its predecessor's digest, so replacing event N invalidates
-      // every event after it.
-      if (parsed.previousDigest !== previousDigest) {
-        fail(
-          PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-          'A journal event does not chain to its predecessor.',
-          { sequence },
-        )
-      }
-      if (sequence > 0) {
-        const previous = events[sequence - 1]
-        const legal = LEGAL_TRANSITIONS[previous.event] ?? []
-        if (!legal.includes(parsed.event)) {
-          fail(
-            PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-            'A journal event is not a legal successor of its predecessor.',
-            { sequence, from: previous.event, to: parsed.event },
-          )
-        }
-      } else if (parsed.event !== JOURNAL_EVENTS.PLANNED) {
-        fail(
-          PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-          'A journal must begin with a planned header event.',
-        )
-      }
-
-      events.push(parsed)
-      previousDigest = canonicalDigest(parsed)
-      if (sequence >= MAX_JOURNAL_EVENTS) {
-        fail(
-          PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-          'The journal exceeded its bounded event count.',
-        )
-      }
-    }
-
-    return Object.freeze({
-      exists: true,
-      events: Object.freeze(events),
-      head: events.at(-1),
-      headDigest: previousDigest,
-      nextSequence: events.length,
-    })
   }
 
   /**
@@ -493,15 +319,80 @@ export function createWriteJournal({
    * replaces. An immutable event must never be overwritten, not even by an
    * identical one.
    */
-  async function append(event, { expectedSequence, expectedPreviousDigest }) {
+  async function append(event, {
+    expectedSequence, expectedPreviousDigest, expectedPreviousEvent,
+  }) {
     const body = {
       ...event,
       sequence: expectedSequence,
       previousDigest: expectedPreviousDigest,
     }
-    requireEventShape(body, expectedSequence)
     assertNoJournalSecrets(body, 'event')
+    try {
+      validateJournalEvent(body, expectedSequence)
+    } catch (error) {
+      if (error instanceof ProductionManifestError) {
+        fail(
+          PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
+          error.message,
+          error.details,
+        )
+      }
+      throw error
+    }
+    // The transition is proven BEFORE the event is made durable, using the same
+    // table replay enforces. Installing an illegal event would brick every later
+    // replay with journal-corrupt.
+    if (expectedPreviousEvent === undefined) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
+        'An append must declare the predecessor event it transitions from.',
+        { sequence: expectedSequence },
+      )
+    }
+    assertLegalTransition(expectedPreviousEvent, body.event, expectedSequence)
     const serialized = serializeCanonicalState(body)
+
+    // Rebind the append to the actual durable prefix and validate cross-event
+    // semantics BEFORE installing a new immutable name. This also handles the
+    // benign race where a peer already installed the byte-identical event.
+    const durable = await replay()
+    if (durable.nextSequence === expectedSequence + 1) {
+      const installed = durable.events[expectedSequence]
+      if (serializeCanonicalState(installed) === serialized) {
+        return Object.freeze({
+          event: installed,
+          digest: createHash('sha256').update(serialized, 'utf8').digest('hex'),
+          installedByPeer: true,
+        })
+      }
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.JOURNAL_CONFLICT,
+        'A different journal event already occupies this sequence.',
+        { sequence: expectedSequence },
+      )
+    }
+    if (durable.nextSequence !== expectedSequence ||
+        durable.headDigest !== expectedPreviousDigest ||
+        (durable.head?.event ?? null) !== expectedPreviousEvent) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.JOURNAL_CONFLICT,
+        'The journal advanced from the predecessor this append observed.',
+        { sequence: expectedSequence },
+      )
+    }
+    try {
+      validateJournalSemantics([...durable.events, body])
+    } catch (error) {
+      if (error instanceof ProductionManifestError) {
+        fail(
+          PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
+          error.message,
+          error.details,
+        )
+      }
+      throw error
+    }
 
     const targetPath = path.join(directory, sequenceFilename(expectedSequence))
     const temporaryPath = path.join(
@@ -583,65 +474,34 @@ export function createWriteJournal({
   return Object.freeze({ directory, replay, append })
 }
 
-/** Required fields per event kind. */
-const EVENT_BASE_KEYS = Object.freeze([
-  'schemaVersion', 'kind', 'event', 'sequence', 'previousDigest',
-])
-
-function requireEventShape(event, sequence) {
-  if (!isPlainObject(event)) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-      'A journal event must be a plain object.',
-      { sequence },
-    )
-  }
-  for (const key of EVENT_BASE_KEYS) {
-    if (!Object.hasOwn(event, key)) {
+/**
+ * Proves a transition is legal BEFORE it is installed.
+ *
+ * The same table `replay` enforces. Validating only on read meant an illegal
+ * event could be made durable and then brick every subsequent replay as
+ * `journal-corrupt` — a write that succeeds and a read that refuses to accept
+ * it is the worst possible outcome for a crash-recovery record.
+ */
+export function assertLegalTransition(previousEvent, nextEvent, sequence) {
+  if (previousEvent === null || previousEvent === undefined) {
+    if (nextEvent !== JOURNAL_EVENTS.PLANNED) {
       fail(
         PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-        'A journal event is missing a required field.',
-        { sequence, field: key },
+        'A journal must begin with a planned header event.',
+        { sequence, to: nextEvent },
       )
     }
+    return true
   }
-  if (event.schemaVersion !== JOURNAL_SCHEMA_VERSION ||
-      event.kind !== JOURNAL_KIND) {
+  const legal = LEGAL_TRANSITIONS[previousEvent] ?? []
+  if (!legal.includes(nextEvent)) {
     fail(
       PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-      'A journal event declares an unsupported schema or kind.',
-      { sequence },
+      'A journal event is not a legal successor of its predecessor.',
+      { sequence, from: previousEvent, to: nextEvent },
     )
   }
-  if (!Object.values(JOURNAL_EVENTS).includes(event.event)) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-      'A journal event declares an unrecognized event kind.',
-      { sequence },
-    )
-  }
-  if (event.sequence !== sequence) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-      'A journal event declares the wrong sequence.',
-      { sequence },
-    )
-  }
-  if (sequence === 0) {
-    if (event.previousDigest !== null) {
-      fail(
-        PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-        'The header event must have a null predecessor digest.',
-      )
-    }
-  } else if (typeof event.previousDigest !== 'string' ||
-      !SHA256_HEX.test(event.previousDigest)) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
-      'A journal event has no valid predecessor digest.',
-      { sequence },
-    )
-  }
+  return true
 }
 
 /* ------------------------------------------------------------------------- *
@@ -672,7 +532,14 @@ function estimateOperationBytes(operation) {
  * remote write. Sorting is by path within each surface, and surfaces follow the
  * fixed COPY_SURFACE_ORDER, so batch membership is stable across retries.
  */
-export function buildCopyPlan({ projection, foundation, initialization }) {
+export function buildCopyPlan({
+  projection,
+  foundation,
+  initialization,
+  retainedFoundationBodiesSha256,
+  retainedClassroomInitializedBodySha256,
+  retainedClassroomProjectedBodySha256,
+}) {
   if (!isPlainObject(projection) || !isPlainObject(foundation) ||
       !isPlainObject(initialization)) {
     fail(
@@ -686,6 +553,44 @@ export function buildCopyPlan({ projection, foundation, initialization }) {
   // 1. The classroom projection update. Only settings and lastBackupAt change;
   //    initialization fields were already committed and are asserted, not
   //    rewritten, so the copy stage cannot silently alter the reserved code.
+  // The complete classroom root as it must exist BEFORE the copy update: every
+  // pre-existing field, plus exactly the two identity fields initialization
+  // committed. Comparing the whole root — rather than only the two keys this
+  // operation writes — is what detects an extra, removed, or altered field
+  // introduced between initialization and copy.
+  const expectedClassroomBefore = Object.freeze({
+    ...foundation.classroom.data,
+    studentLoginCode: initialization.formattedLoginCode,
+    nextStudentNumber: initialization.nextStudentNumber,
+  })
+  const expectedClassroomAfter = Object.freeze({
+    ...expectedClassroomBefore,
+    settings: projection.classroom.data.settings,
+    lastBackupAt: projection.classroom.data.lastBackupAt,
+  })
+  const classroomInitializedBodySha256 =
+    retainedClassroomInitializedBodySha256 ??
+    documentBodyDigest(expectedClassroomBefore)
+  const classroomProjectedBodySha256 =
+    retainedClassroomProjectedBodySha256 ??
+    documentBodyDigest(expectedClassroomAfter)
+  if (!SHA256_HEX.test(classroomInitializedBodySha256) ||
+      !SHA256_HEX.test(classroomProjectedBodySha256)) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.INVALID_ARGUMENTS,
+      'A copy plan requires exact initialized and projected classroom digests.',
+    )
+  }
+  const foundationEvidenceSha256 = retainedFoundationBodiesSha256 ??
+    foundation.foundationStateDigest
+  if (typeof foundationEvidenceSha256 !== 'string' ||
+      !SHA256_HEX.test(foundationEvidenceSha256)) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.INVALID_ARGUMENTS,
+      'A copy plan requires the retained foundation evidence digest.',
+    )
+  }
+
   operations.push({
     surface: 'classroom',
     type: 'update',
@@ -694,7 +599,18 @@ export function buildCopyPlan({ projection, foundation, initialization }) {
       settings: projection.classroom.data.settings,
       lastBackupAt: projection.classroom.data.lastBackupAt,
     },
+    sourcePath: projection.classroom.sourcePath ?? null,
+    sourceUpdateTime: projection.classroom.sourceUpdateTime ?? null,
     expectedBefore: 'initialized',
+    expectedBeforeRoot: expectedClassroomBefore,
+    expectedAfterRoot: expectedClassroomAfter,
+    expectedAfterDigest: classroomProjectedBodySha256,
+    // Firestore-encoded before hashing: the classroom root carries Timestamp
+    // values, which are not plain JSON.
+    // The pre-copy root itself is retained in memory for the transaction. The
+    // durable plan binds its secret-free evidence digest so a restart can
+    // reproduce the SAME plan even when the classroom operation already applied.
+    expectedBeforeDigest: classroomInitializedBodySha256,
   })
 
   const collections = [
@@ -760,7 +676,20 @@ export function buildCopyPlan({ projection, foundation, initialization }) {
       surface: operation.surface,
       type: operation.type,
       destinationPathSha256: sha256Hex(operation.path),
-      expectedAfterSha256: canonicalDigest(operation.data),
+      expectedAfterSha256: operation.expectedAfterDigest ??
+        canonicalDigest(operation.data),
+      // The source precondition is part of the plan's identity. Binding the
+      // source path hash, its exact Timestamp, and the expected-before state
+      // means a plan rederived against an edited source cannot reproduce the
+      // retained digest, so recovery blocks instead of copying new bytes.
+      sourcePathSha256: typeof operation.sourcePath === 'string'
+        ? sha256Hex(operation.sourcePath)
+        : null,
+      sourceUpdateTime: encodeCanonicalFirestoreValue(
+        operation.sourceUpdateTime ?? null,
+      ),
+      expectedBefore: operation.expectedBefore,
+      expectedBeforeSha256: operation.expectedBeforeDigest ?? null,
     }))),
   }))
 
@@ -776,7 +705,533 @@ export function buildCopyPlan({ projection, foundation, initialization }) {
       }, {}),
     ),
     planDigest: canonicalDigest(plan.map(batch => batch.batchDigest)),
+    classroomInitializedBodySha256,
+    classroomProjectedBodySha256,
   })
+}
+
+/* ------------------------------------------------------------------------- *
+ * Retained-evidence reproving
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Reproves the RETAINED preflight evidence against current production state.
+ *
+ * This is the control that makes the manifest the baseline. Rereading current
+ * state and treating it as the new baseline — which is what the writer used to
+ * do — means a production change made after preflight simply becomes the
+ * accepted starting point, and the reviewed evidence never constrains anything.
+ *
+ * Each domain below is recomputed with the SAME derivation preflight used
+ * (`sourceEntryFromEnvelope` + `summarizeHashedSource`) and compared to the
+ * retained `domainChecksums`. Any drift aborts before a transaction opens.
+ *
+ * The stage-specific authorized deltas are the ONLY permitted differences:
+ *   - initialization may add `studentLoginCode`/`nextStudentNumber` to the
+ *     classroom and create the login-code index document;
+ *   - copy may additionally populate the projected destination surfaces.
+ */
+export async function reproveRetainedEvidence({
+  manifest,
+  rawReaders,
+  readAuthCompatibility,
+  foundation,
+  canonicalLoginCode,
+  formattedLoginCode,
+  stage,
+  resuming = false,
+  expectedFoundationBodiesSha256,
+  expectedFoundationStableBodiesSha256,
+  expectedTeacherSourceSha256,
+  requireFullFoundationBodies = true,
+  requireDestinationAbsence = false,
+  initializedAt,
+  allowedDestinationPaths,
+}) {
+  const observed = {}
+
+  // ---- legacy source state: the immutable copy inputs ----
+  const legacyClassroom = await rawReaders.readLegacyClassroomAggregate()
+  if (legacyClassroom.exists !== true) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.SOURCE_DIVERGED,
+      'The legacy source document is absent at write time.',
+    )
+  }
+  const flatCredentials = await rawReaders.readFlatCredentials()
+  const flatAuthLogs = await rawReaders.readFlatAuthLogs()
+  observed.legacySource = summarizeHashedSource(
+    [sourceEntryFromEnvelope(legacyClassroom, 'legacyClassroom')],
+    'legacyClassroom',
+  )
+  observed.flatCredentials = summarizeHashedSource(
+    flatCredentials.map(e => sourceEntryFromEnvelope(e, 'flatCredentials')),
+    'flatCredentials',
+  )
+  observed.flatAuthLogs = summarizeHashedSource(
+    flatAuthLogs.map(e => sourceEntryFromEnvelope(e, 'flatAuthLogs')),
+    'flatAuthLogs',
+  )
+
+  // The retained legacySourceState domain is a checksum over a fully determined
+  // payload: counts plus these three hashed source summaries. Every input is
+  // either recomputed here or recorded in the manifest's own observations, so
+  // the whole domain can be REBUILT and its checksum compared. That comparison —
+  // not a fresh read — is what proves the copy inputs are byte-identical to the
+  // reviewed ones.
+  const retainedCounts = manifest.observations?.counts
+  if (!isPlainObject(retainedCounts)) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE,
+      'The retained manifest records no legacy source counts to reprove.',
+    )
+  }
+  const rebuiltLegacyDomain = {
+    present: true,
+    counts: retainedCounts.legacy,
+    credentialCount: flatCredentials.length,
+    authLogCount: flatAuthLogs.length,
+    noncanonicalValueCount: manifest.observations.noncanonicalValueCount ?? 0,
+    sources: {
+      flatAuthLogs: observed.flatAuthLogs,
+      flatCredentials: observed.flatCredentials,
+      legacyClassroom: observed.legacySource,
+    },
+  }
+  observed.legacySourceStateDigest = hashDomain(rebuiltLegacyDomain)
+  if (observed.legacySourceStateDigest !==
+      manifest.domainChecksums.legacySourceState) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.SOURCE_DIVERGED,
+      'The legacy source changed after preflight recorded its evidence.',
+    )
+  }
+  if (retainedCounts.flatCredentials !== flatCredentials.length ||
+      retainedCounts.flatAuthLogs !== flatAuthLogs.length) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.SOURCE_DIVERGED,
+      'A flat source collection changed size after preflight.',
+    )
+  }
+
+  // ---- foundation: reproved against the RETAINED digest, not a fresh read ----
+  const teacher = await rawReaders.readTeacher()
+  const classroom = await rawReaders.readClassroom(foundation.classroomId)
+  if (teacher.exists !== true || classroom.exists !== true) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+      'The foundation is absent at write time.',
+    )
+  }
+
+  // The classroom carries the stage's authorized delta, so it is compared by
+  // removing exactly that delta and requiring the REMAINDER to be unchanged.
+  const classroomWithoutDelta = { ...classroom.data }
+  const deltaKeys = ['studentLoginCode', 'nextStudentNumber']
+  const observedDelta = {}
+  for (const key of deltaKeys) {
+    if (Object.hasOwn(classroomWithoutDelta, key)) {
+      observedDelta[key] = classroomWithoutDelta[key]
+      delete classroomWithoutDelta[key]
+    }
+  }
+  // A FRESH initialization requires the delta to be absent. A RESUMED one may
+  // legitimately find it already applied — that is precisely the crash-recovery
+  // case — so the presence of the delta is only an error when this run has not
+  // yet recorded an attempt. The initialization transaction independently
+  // refuses to overwrite an existing code or counter.
+  if (stage === WRITE_STAGES.INITIALIZATION && resuming !== true &&
+      Object.keys(observedDelta).length > 0) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+      'The classroom already carries initialization identity fields.',
+    )
+  }
+  if (Object.hasOwn(observedDelta, 'studentLoginCode') &&
+      observedDelta.studentLoginCode !== formattedLoginCode) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+      'The classroom carries a login code this run did not authorize.',
+    )
+  }
+  // The foundation evidence preflight retained is a hashed source summary over
+  // the teacher and classroom documents AS THEY WERE BEFORE initialization.
+  // Reproving it means summarizing the same two documents the same way, with the
+  // classroom's authorized delta removed so the pre-initialization body is what
+  // gets hashed.
+  observed.foundation = summarizeHashedSource(
+    [
+      sourceEntryFromEnvelope(teacher, 'foundation'),
+      sourceEntryFromEnvelope(
+        { ...classroom, data: classroomWithoutDelta }, 'foundation',
+      ),
+    ],
+    'foundation',
+  )
+  observed.teacherSourceSha256 = hashDomain(summarizeHashedSource(
+    [sourceEntryFromEnvelope(teacher, 'foundationTeacher')],
+    'foundationTeacher',
+  ))
+  // The document bodies are what must not have drifted. updateTime necessarily
+  // advances when initialization writes the classroom, so the body digests —
+  // not the entry summary — are the stable evidence across both stages.
+  observed.foundationStateDigest = computeFoundationDigest(
+    teacher.data, classroomWithoutDelta,
+  )
+  observed.foundationBodiesSha256 = observed.foundationStateDigest
+  const classroomStable = { ...classroomWithoutDelta }
+  delete classroomStable.settings
+  delete classroomStable.lastBackupAt
+  observed.foundationStableBodiesSha256 = computeFoundationDigest(
+    teacher.data, classroomStable,
+  )
+
+  // The preflight domain included the COMPLETE root enumeration. Repeating that
+  // enumeration prevents an extra teacher/classroom from hiding behind reads of
+  // only the authorized pair. The raw production reader always exposes this
+  // method; an injected reader that cannot enumerate is incomplete, not empty.
+  if (typeof rawReaders.readCollection !== 'function') {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+      'The foundation root enumeration is unavailable at write time.',
+    )
+  }
+  const [teacherRoots, classroomRoots] = await Promise.all([
+    rawReaders.readCollection('teachers'),
+    rawReaders.readCollection('classrooms'),
+  ])
+  if (teacherRoots.length !== 1 || classroomRoots.length !== 1 ||
+      teacherRoots[0].path !== `teachers/${foundation.teacherUid}` ||
+      classroomRoots[0].path !== `classrooms/${foundation.classroomId}`) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+      'The foundation root set changed after preflight.',
+    )
+  }
+
+  if (resuming !== true) {
+    const rebuiltFoundationDomain = {
+      present: true,
+      reciprocal: teacher.data.classroomId === foundation.classroomId &&
+        classroomWithoutDelta.ownerUid === foundation.teacherUid,
+      teacherStatus: teacher.data.status,
+      classroomIdPresent: Boolean(teacher.data.classroomId),
+      existingTeacherCount: teacherRoots.length,
+      existingClassroomCount: classroomRoots.length,
+      sources: { foundation: observed.foundation },
+    }
+    observed.foundationStateDomainSha256 = hashDomain(rebuiltFoundationDomain)
+    if (observed.foundationStateDomainSha256 !==
+        manifest.domainChecksums.foundationState) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+        'The foundation changed after preflight recorded its evidence.',
+      )
+    }
+  } else {
+    if (typeof expectedTeacherSourceSha256 !== 'string' ||
+        observed.teacherSourceSha256 !== expectedTeacherSourceSha256) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+        'The immutable teacher evidence no longer matches the journal baseline.',
+      )
+    }
+    if (typeof expectedFoundationStableBodiesSha256 !== 'string' ||
+        observed.foundationStableBodiesSha256 !==
+          expectedFoundationStableBodiesSha256) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+        'The immutable foundation fields no longer match the journal baseline.',
+      )
+    }
+    if (requireFullFoundationBodies &&
+        (typeof expectedFoundationBodiesSha256 !== 'string' ||
+         observed.foundationBodiesSha256 !== expectedFoundationBodiesSha256)) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+        'The foundation bodies no longer match the journal baseline.',
+      )
+    }
+  }
+
+  // ---- Auth compatibility: complete, exact, and retained ----
+  if (typeof readAuthCompatibility !== 'function') {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.SOURCE_DIVERGED,
+      'The Auth compatibility observation is unavailable at write time.',
+    )
+  }
+  const authCompatibility = await readAuthCompatibility()
+  if (authCompatibility?.complete !== true ||
+      !Array.isArray(authCompatibility.sourceEntries) ||
+      !Number.isInteger(authCompatibility.examinedUserCount) ||
+      authCompatibility.examinedUserCount !==
+        authCompatibility.sourceEntries.length) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.SOURCE_DIVERGED,
+      'The Auth compatibility observation is incomplete.',
+    )
+  }
+  const rebuiltAuthDomain = {
+    uidCollisions: authCompatibility.uidCollisions,
+    incompatibleUsers: authCompatibility.incompatibleUsers,
+    examinedUserCount: authCompatibility.examinedUserCount,
+    sources: {
+      authUsers: summarizeHashedSource(
+        authCompatibility.sourceEntries, 'authUsers',
+      ),
+    },
+  }
+  observed.authCompatibilitySha256 = hashDomain(rebuiltAuthDomain)
+  if (observed.authCompatibilitySha256 !==
+      manifest.domainChecksums.authCompatibility) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.SOURCE_DIVERGED,
+      'Auth compatibility changed after preflight recorded its evidence.',
+    )
+  }
+
+  // ---- destination absence: exactly the authorized stage delta ----
+  const destinationReaders = [
+    ['classroomStudents', () =>
+      rawReaders.readClassroomStudents(foundation.classroomId)],
+    ['classroomTransactions', () =>
+      rawReaders.readClassroomTransactions(foundation.classroomId)],
+    ['classroomLoginHistory', () =>
+      rawReaders.readClassroomLoginHistory(foundation.classroomId)],
+    ['scopedCredentials', () =>
+      rawReaders.readScopedCredentials(foundation.classroomId)],
+    ['scopedLogs', () =>
+      rawReaders.readScopedAuthLogs(foundation.classroomId)],
+  ]
+  const destinationCounts = {}
+  const destinationEntries = {}
+  for (const [surface, read] of destinationReaders) {
+    destinationEntries[surface] = await read()
+    destinationCounts[surface] = destinationEntries[surface].length
+  }
+  const codeIndex = await rawReaders.readLoginCodeIndex()
+  destinationEntries.loginCodeIndex = codeIndex
+  destinationCounts.loginCodeIndex = codeIndex.length
+
+  if (stage === WRITE_STAGES.INITIALIZATION) {
+    for (const surface of DESTINATION_SURFACES) {
+      // The login-code index is the ONE surface initialization itself creates,
+      // so a resumed run may legitimately observe its own authorized document
+      // there. Every other surface must still be empty: initialization writes
+      // nothing else, and the copy stage has not run.
+      const permitted = surface === 'loginCodeIndex' && resuming === true ? 1 : 0
+      if (destinationCounts[surface] > permitted) {
+        fail(
+          PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+          'A destination surface is no longer empty.',
+          { surface },
+        )
+      }
+    }
+    const indexed = codeIndex[0]
+    if (indexed !== undefined &&
+        indexed.path !== `classroomLoginCodes/${canonicalLoginCode}`) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+        'The login code index names a code this run did not authorize.',
+      )
+    }
+
+    // A fresh invocation must reproduce the retained absence domain exactly.
+    // Once initialization has created its authorized code document, the journal
+    // is the durable proof that this comparison already succeeded.
+    if (resuming !== true) {
+      const emptyCoverage = Object.fromEntries([
+        'destinationStudents',
+        'destinationCredentials',
+        'destinationTransactions',
+        'destinationLoginHistory',
+        'destinationAuthLogs',
+      ].map(name => [name, {
+        referencedCount: 0, unassignedCount: 0, inconsistentCount: 0,
+      }]))
+      const rebuiltDestinationDomain = {
+        counts: destinationCounts,
+        studentIdCoverage: emptyCoverage,
+        selectedCodePresent: false,
+        selectedCodeSha256: sha256Hex(canonicalLoginCode),
+        selectedCodePathSha256: sha256Hex(
+          `classroomLoginCodes/${canonicalLoginCode}`,
+        ),
+        sources: Object.fromEntries(
+          [...DESTINATION_SURFACES].sort().map(surface => [
+            surface,
+            summarizeHashedSource(
+              destinationEntries[surface].map(entry =>
+                sourceEntryFromEnvelope(entry, surface)),
+              surface,
+            ),
+          ]),
+        ),
+      }
+      observed.destinationAbsenceSha256 = hashDomain(rebuiltDestinationDomain)
+      if (observed.destinationAbsenceSha256 !==
+          manifest.domainChecksums.destinationAbsence) {
+        fail(
+          PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+          'Destination absence no longer matches the retained evidence.',
+        )
+      }
+    }
+  } else {
+    // At copy time exactly ONE code-index document — the authorized one — must
+    // exist. Its exact body is checked below; absence is not a recoverable copy
+    // state because initialization is already durably recorded as verified.
+    if (destinationCounts.loginCodeIndex !== 1) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+        'The authorized classroom login code index is absent or duplicated.',
+      )
+    }
+    const indexed = codeIndex[0]
+    if (indexed !== undefined &&
+        indexed.path !== `classroomLoginCodes/${canonicalLoginCode}`) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+        'The login code index names a code this run did not authorize.',
+      )
+    }
+    if (!(allowedDestinationPaths instanceof Set)) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.PLAN_DIVERGED,
+        'The copy stage has no bounded destination path set.',
+      )
+    }
+    for (const [surface, entries] of Object.entries(destinationEntries)) {
+      if (surface === 'loginCodeIndex') continue
+      if (requireDestinationAbsence && entries.length !== 0) {
+        fail(
+          PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+          'A copy destination appeared before any batch attempt was recorded.',
+          { surface },
+        )
+      }
+      const unexpected = entries.find(entry =>
+        !allowedDestinationPaths.has(entry.path))
+      if (unexpected !== undefined) {
+        fail(
+          PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+          'A destination document exists outside the authorized copy plan.',
+          { surface },
+        )
+      }
+    }
+  }
+
+  if (codeIndex.length === 1 && !isExactLoginCodeIndex({
+    document: codeIndex[0],
+    classroomId: foundation.classroomId,
+    canonicalLoginCode,
+    initializedAt,
+  })) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+      'The classroom login code index does not match the recorded initialization.',
+    )
+  }
+
+  // ---- identity watermark: every historical source, including destination ----
+  const legacyData = legacyClassroom.data
+  const requireArray = (value, name) => {
+    if (!Array.isArray(value)) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.SOURCE_DIVERGED,
+        'A legacy watermark source is malformed.',
+        { source: name },
+      )
+    }
+    return value
+  }
+  const ids = (entries, field) => entries
+    .filter(entry => entry.data?.[field] != null)
+    .map(entry => entry.data[field])
+  const watermark = deriveStudentIdWatermark({
+    roster: requireArray(legacyData.students, 'roster').map(entry => entry?.id),
+    credentials: ids(flatCredentials, 'studentId'),
+    transactions: requireArray(legacyData.transactions, 'transactions')
+      .filter(entry => entry?.studentId != null).map(entry => entry.studentId),
+    loginHistory: requireArray(legacyData.loginHistory, 'loginHistory')
+      .filter(entry => entry?.studentId != null).map(entry => entry.studentId),
+    authLogs: ids(flatAuthLogs, 'studentId'),
+    destinationStudents: ids(destinationEntries.classroomStudents, 'id'),
+    destinationCredentials: ids(destinationEntries.scopedCredentials, 'studentId'),
+    destinationTransactions: ids(
+      destinationEntries.classroomTransactions, 'studentId',
+    ),
+    destinationLoginHistory: ids(
+      destinationEntries.classroomLoginHistory, 'studentId',
+    ),
+    destinationAuthLogs: ids(destinationEntries.scopedLogs, 'studentId'),
+  })
+  observed.watermarkSha256 = hashDomain(watermark)
+  if (observed.watermarkSha256 !== manifest.domainChecksums.identityWatermark) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.SOURCE_DIVERGED,
+      'The identity watermark changed after preflight recorded its evidence.',
+    )
+  }
+
+  observed.destinationCounts = Object.freeze(destinationCounts)
+  return Object.freeze(observed)
+}
+
+/**
+ * Binds a resumed or completed run to the FULL journal header.
+ *
+ * A second invocation presents its own artifacts. Without this, it could carry a
+ * different manifest, authorization, credential, or login code and still resume
+ * a journal planned from something else entirely — the header would record one
+ * run's provenance while the copy executed another's.
+ */
+export function assertHeaderBinding(header, {
+  manifest, authorization, initialization, foundation,
+}) {
+  const expected = {
+    projectId: manifest.projectId,
+    teacherUidSha256: sha256Hex(manifest.teacherUid),
+    releaseId: manifest.releaseId,
+    changeId: manifest.changeId,
+    authorizationId: authorization.authorizationId,
+    snapshotId: authorization.snapshotId,
+    writeFreezeProof: authorization.writeFreezeProof,
+    credentialProvenance: authorization.credentialProvenance,
+    preflightManifestId: manifest.preflightManifestId,
+    preflightChecksum: manifest.preflightChecksum,
+    writeAuthorizationSha256: authorization.writeAuthorizationSha256,
+    preflightAuthorizationSha256: authorization.preflightAuthorizationSha256,
+    credentialSha256: authorization.credentialSha256,
+    initializationExpectationsSha256:
+      authorization.initializationExpectationsSha256,
+    copyExpectationsSha256: authorization.copyExpectationsSha256,
+    loginCodeSha256: sha256Hex(initialization.canonicalLoginCode),
+    loginCodePathSha256: sha256Hex(
+      `classroomLoginCodes/${initialization.canonicalLoginCode}`,
+    ),
+    classroomIdSha256: sha256Hex(foundation.classroomId),
+    nextStudentNumber: initialization.nextStudentNumber,
+    foundationStateSha256: manifest.domainChecksums.foundationState,
+    legacySourceStateSha256: manifest.domainChecksums.legacySourceState,
+    destinationAbsenceSha256: manifest.domainChecksums.destinationAbsence,
+    authCompatibilitySha256: manifest.domainChecksums.authCompatibility,
+    watermarkSha256: manifest.domainChecksums.identityWatermark,
+  }
+
+  for (const [field, value] of Object.entries(expected)) {
+    if (header[field] !== value) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+        'The resumed run does not match the journal header it is continuing.',
+        { field },
+      )
+    }
+  }
+  return true
 }
 
 /* ------------------------------------------------------------------------- *
@@ -784,97 +1239,12 @@ export function buildCopyPlan({ projection, foundation, initialization }) {
  * ------------------------------------------------------------------------- */
 
 /**
- * Proves a retained manifest may authorize Commit 5 writes.
- *
- * A diagnostic manifest — foundation absent, an acknowledged anomaly, an
- * acknowledged destination count, or a present code — is explicitly NOT
- * write-eligible. Correction A: the existing foundation is created or repaired
- * administratively under Release Order step 8 and preflight is rerun; this
- * writer validates an existing reciprocal foundation and never invents one.
+ * Manifest write-eligibility is a pure predicate over a retained manifest with
+ * no mutation surface, so it lives in `productionManifest.js`. That lets the
+ * READ-ONLY re-verifier audit the same eligibility the writer required without
+ * importing this module. Re-exported here for existing callers.
  */
-export function assertManifestWriteEligible(manifest, { expectedProjectId }) {
-  if (!isPlainObject(manifest)) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.INVALID_ARGUMENTS,
-      'A retained manifest is required.',
-    )
-  }
-  if (manifest.schemaVersion !== 2) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE,
-      'Only a schema v2 manifest may authorize a write.',
-    )
-  }
-  if (manifest.outcome !== 'succeeded') {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE,
-      'Only a succeeded preflight may authorize a write.',
-    )
-  }
-  if (manifest.projectId !== expectedProjectId) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE,
-      'The retained manifest names a different project than this invocation.',
-    )
-  }
-  const observations = manifest.observations
-  if (!isPlainObject(observations)) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE,
-      'The retained manifest has no observations.',
-    )
-  }
-  if (observations.foundationPresent !== true) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE,
-      'A manifest recording an absent foundation must not authorize a write.',
-    )
-  }
-  if (observations.selectedCodePresent !== false) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE,
-      'The selected classroom login code was already present at preflight.',
-    )
-  }
-  if (observations.acknowledgedAnomalyCount !== 0) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE,
-      'An acknowledged-anomaly manifest must not authorize a write.',
-    )
-  }
-  const counts = observations.destinationCounts
-  if (!isPlainObject(counts)) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE,
-      'The retained manifest records no destination counts.',
-    )
-  }
-  // Every surface must be exactly zero, and the login-code index must be one of
-  // the surfaces actually counted. A manifest that never examined it cannot
-  // satisfy this check by omission.
-  if (!Object.hasOwn(counts, 'loginCodeIndex')) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE,
-      'The retained manifest never counted the login-code index.',
-    )
-  }
-  for (const [surface, count] of Object.entries(counts)) {
-    if (count !== 0) {
-      fail(
-        PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE,
-        'A destination surface was not empty at preflight.',
-        { surface },
-      )
-    }
-  }
-  if (observations.writeEligible !== true) {
-    fail(
-      PRODUCTION_WRITER_CATEGORIES.MANIFEST_NOT_ELIGIBLE,
-      'The retained manifest does not declare itself write-eligible.',
-    )
-  }
-  return manifest
-}
+export { assertManifestWriteEligible } from './productionManifest.js'
 
 /**
  * Proves the re-presented preflight authorization artifact is the exact one the
@@ -1010,13 +1380,14 @@ export function classifyBatchState(batch, observed) {
       // Present but different: not our write, or a partial/divergent one.
       return BATCH_CLASSIFICATIONS.MIXED
     }
-    // The classroom update is classified by whether the projected fields are
-    // already exactly applied.
+    // The classroom update is classified by its COMPLETE exact before/after
+    // body digests. Comparing only the two projected fields would misclassify
+    // an unrelated edit elsewhere in the root as this run's recovery state.
     if (!state || state.exists === false) return BATCH_CLASSIFICATIONS.MIXED
-    const applied = Object.entries(operation.data).every(([key, value]) =>
-      canonicalDigest(state.data?.[key]) === canonicalDigest(value))
-    if (applied) after += 1
-    else before += 1
+    const observedDigest = documentBodyDigest(state.data)
+    if (observedDigest === operation.expectedAfterDigest) after += 1
+    else if (observedDigest === operation.expectedBeforeDigest) before += 1
+    else return BATCH_CLASSIFICATIONS.MIXED
   }
   if (before === batch.operations.length) return BATCH_CLASSIFICATIONS.ALL_BEFORE
   if (after === batch.operations.length) return BATCH_CLASSIFICATIONS.ALL_AFTER
@@ -1096,8 +1467,19 @@ export async function runInitializationTransaction({
         'The foundation is not an active reciprocal pair.',
       )
     }
+    // Compared against the digest the WRITER REPROVED against retained preflight
+    // evidence — never against one recomputed from a read taken moments earlier
+    // in the same invocation. Two digests both derived from current state agree
+    // by construction, so such a comparison can never detect post-preflight
+    // drift; this one can.
+    if (typeof foundation.reprovedFoundationStateDigest !== 'string') {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+        'The initialization transaction was given no reproved foundation digest.',
+      )
+    }
     if (computeFoundationDigest(teacher, classroom) !==
-        foundation.foundationStateDigest) {
+        foundation.reprovedFoundationStateDigest) {
       fail(
         PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
         'The foundation state no longer matches the retained evidence.',
@@ -1138,6 +1520,22 @@ export async function runInitializationTransaction({
     ),
     manifestId: manifest.preflightManifestId,
   })
+}
+
+/** Exact login-code index shape and Timestamp recorded by this run. */
+function isExactLoginCodeIndex({
+  document, classroomId, canonicalLoginCode, initializedAt,
+}) {
+  if (document?.exists !== true ||
+      document.path !== `classroomLoginCodes/${canonicalLoginCode}` ||
+      !isPlainObject(document.data) || initializedAt == null) return false
+  const keys = Object.keys(document.data).sort()
+  return keys.length === 3 && keys[0] === 'classroomId' &&
+    keys[1] === 'createdAt' && keys[2] === 'status' &&
+    document.data.classroomId === classroomId &&
+    document.data.status === 'active' &&
+    document.data.createdAt?.seconds === initializedAt.seconds &&
+    document.data.createdAt?.nanoseconds === initializedAt.nanoseconds
 }
 
 /* ------------------------------------------------------------------------- *
@@ -1246,15 +1644,26 @@ export async function commitCopyBatch({
             { operationId: operation.operationId },
           )
         }
+        // The COMPLETE root is compared, not merely the two keys this operation
+        // writes. An extra, removed, or altered field anywhere in the classroom
+        // is a divergence: the reviewed plan was built against an exact root and
+        // this update must not be applied on top of a different one.
         const body = snapshot.data()
-        const alreadyApplied = Object.entries(operation.data).every(
-          ([key, value]) =>
-            canonicalDigest(body?.[key]) === canonicalDigest(value),
-        )
-        decisions.push({
-          operation,
-          action: alreadyApplied ? 'skip' : 'update',
-        })
+        const observedDigest = documentBodyDigest(body)
+        if (observedDigest === operation.expectedAfterDigest) {
+          // Already exactly expected-after: a prior attempt applied this update
+          // and crashed before its journal event.
+          decisions.push({ operation, action: 'skip' })
+          continue
+        }
+        if (observedDigest !== operation.expectedBeforeDigest) {
+          fail(
+            PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
+            'The classroom root does not match its expected pre-copy state.',
+            { operationId: operation.operationId },
+          )
+        }
+        decisions.push({ operation, action: 'update' })
       }
     }
 
@@ -1333,6 +1742,59 @@ export function deriveStage(replay) {
  * artifact, a gate-on state, Hosting drift, an unacknowledged writer, or any
  * expectations mismatch aborts before a transaction is opened.
  */
+/**
+ * The exact top-level keys a reviewed expectations artifact may carry.
+ *
+ * Strict and exhaustive: an artifact with an extra key is rejected rather than
+ * ignored, because a misspelled surface name would otherwise be silently
+ * unenforced while appearing — to a human reviewer reading the file — to be
+ * constraining the deployment.
+ */
+const EXPECTATIONS_KEYS = Object.freeze([
+  ...DEPLOYMENT_SURFACES,
+  'acknowledgedWriters',
+])
+
+export function assertExpectationsArtifactSchema(expectations, stage) {
+  const keys = Object.keys(expectations)
+  const missing = EXPECTATIONS_KEYS.filter(
+    key => !Object.hasOwn(expectations, key),
+  )
+  if (missing.length > 0) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT,
+      'The reviewed expectations artifact is missing required keys.',
+      { stage, missing },
+    )
+  }
+  const extra = keys.filter(key => !EXPECTATIONS_KEYS.includes(key))
+  if (extra.length > 0) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT,
+      'The reviewed expectations artifact carries undeclared keys.',
+      { stage, extra },
+    )
+  }
+  if (!Array.isArray(expectations.acknowledgedWriters) ||
+      expectations.acknowledgedWriters.some(
+        writer => typeof writer !== 'string' || writer === '',
+      )) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT,
+      'acknowledgedWriters must be an array of non-empty strings.',
+      { stage },
+    )
+  }
+  if (!isPlainObject(expectations.gateParameters)) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT,
+      'gateParameters must be an object.',
+      { stage },
+    )
+  }
+  return true
+}
+
 export function assertDeploymentExpectations({
   observed,
   expectations,
@@ -1345,9 +1807,26 @@ export function assertDeploymentExpectations({
       { stage },
     )
   }
-  for (const surface of ['rules', 'functions', 'hosting', 'indexes',
-    'gateParameters']) {
-    if (!Object.hasOwn(expectations, surface)) continue
+  assertExpectationsArtifactSchema(expectations, stage)
+  // ALL five surfaces are required. Skipping an absent expected surface meant a
+  // reviewed-expectations artifact that simply omitted `rules` silently waived
+  // the rules comparison — an expectations file could authorize a write by
+  // saying less, which is exactly backwards.
+  for (const surface of DEPLOYMENT_SURFACES) {
+    if (!Object.hasOwn(expectations, surface)) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT,
+        'The reviewed expectations omit a required deployment surface.',
+        { stage, surface },
+      )
+    }
+    if (!Object.hasOwn(observed, surface)) {
+      fail(
+        PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT,
+        'The deployment inventory omits a required surface.',
+        { stage, surface },
+      )
+    }
     if (canonicalDigest(observed[surface]) !==
         canonicalDigest(expectations[surface])) {
       fail(
@@ -1372,17 +1851,27 @@ export function assertDeploymentExpectations({
     }
   }
 
-  const acknowledged = Array.isArray(expectations.acknowledgedWriters)
-    ? expectations.acknowledgedWriters
-    : null
-  if (acknowledged === null) {
+  // Shape already proven by assertExpectationsArtifactSchema above.
+  const acknowledged = expectations.acknowledgedWriters
+  // An ABSENT observation is not an empty observation. Defaulting to [] meant an
+  // inventory that could not inspect active writers was treated as proof there
+  // were none — the copy would proceed against a live writer precisely when the
+  // evidence was missing. The observation must be explicitly complete.
+  if (!Array.isArray(observed.activeWriters)) {
     fail(
       PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT,
-      'The expectations artifact must enumerate acknowledged active writers.',
+      'The deployment inventory did not enumerate active writers.',
       { stage },
     )
   }
-  const unacknowledged = (observed.activeWriters ?? []).filter(
+  if (observed.activeWritersObservationComplete !== true) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.DEPLOYMENT_DRIFT,
+      'The active-writer observation is not attested complete.',
+      { stage },
+    )
+  }
+  const unacknowledged = observed.activeWriters.filter(
     writer => !acknowledged.includes(writer),
   )
   if (unacknowledged.length > 0) {
@@ -1417,6 +1906,7 @@ export async function runProductionWrite({
   foundation,
   deployment,
   rawReaders,
+  readAuthCompatibility,
   nowTimestamp,
   logger,
 }) {
@@ -1432,31 +1922,59 @@ export async function runProductionWrite({
     })
   }
 
-  if (stage === WRITE_STAGES.COMPLETE) {
-    return Object.freeze({
-      result: WRITE_RESULTS.ALREADY_COMPLETED,
-      stage,
-      migrationRan: false,
-    })
-  }
-
   if (stage === WRITE_STAGES.INITIALIZATION) {
     return await runInitializationStage({
       firestore, journal, replay, head, manifest, authorization,
-      initialization, foundation, deployment, rawReaders, nowTimestamp, logger,
+      initialization, foundation, deployment, rawReaders,
+      readAuthCompatibility, nowTimestamp, logger,
     })
   }
 
   return await runCopyStage({
     firestore, journal, replay, head, manifest, authorization,
-    initialization, foundation, deployment, rawReaders, logger,
+    initialization, foundation, deployment, rawReaders,
+    readAuthCompatibility, logger,
+    completed: stage === WRITE_STAGES.COMPLETE,
   })
+}
+
+/**
+ * Keeps sequence, predecessor digest, and predecessor event kind in lockstep.
+ *
+ * Every append needs all three. Threading them as separate mutable locals is how
+ * a call site silently loses track of which event it is transitioning from, so
+ * the cursor owns them together and no append can omit the predecessor.
+ */
+function createJournalCursor(journal, replay) {
+  let sequence = replay?.exists ? replay.nextSequence : 0
+  let previousDigest = replay?.exists ? replay.headDigest : null
+  let previousEvent = replay?.exists ? (replay.head?.event ?? null) : null
+
+  return {
+    get sequence() { return sequence },
+    get previousEvent() { return previousEvent },
+    async append(body) {
+      const installed = await journal.append(body, {
+        expectedSequence: sequence,
+        expectedPreviousDigest: previousDigest,
+        expectedPreviousEvent: previousEvent,
+      })
+      sequence += 1
+      previousDigest = installed.digest
+      previousEvent = body.event
+      return installed
+    },
+  }
 }
 
 async function runInitializationStage({
   firestore, journal, replay, head, manifest, authorization,
-  initialization, foundation, deployment, rawReaders, nowTimestamp, logger,
+  initialization, foundation, deployment, rawReaders, readAuthCompatibility,
+  nowTimestamp, logger,
 }) {
+  const recordedInitializedAt = recoverInitializationTimestamp(
+    replay, nowTimestamp,
+  )
   // Deployment is reinspected immediately before planning or continuing remote
   // writes, on EVERY mutating invocation — never trusted from the journal.
   assertDeploymentExpectations({
@@ -1465,14 +1983,73 @@ async function runInitializationStage({
     stage: WRITE_STAGES.INITIALIZATION,
   })
 
-  let sequence = replay.exists ? replay.nextSequence : 0
-  let previousDigest = replay.exists ? replay.headDigest : null
+  // The RETAINED manifest — not a fresh read — is the baseline. Reproved before
+  // the header is written and before any transaction opens. The digest it
+  // returns is what the transaction reasserts atomically.
+  const reproved = await reproveRetainedEvidence({
+    manifest,
+    rawReaders,
+    readAuthCompatibility,
+    foundation,
+    canonicalLoginCode: initialization.canonicalLoginCode,
+    formattedLoginCode: initialization.formattedLoginCode,
+    stage: WRITE_STAGES.INITIALIZATION,
+    // A journal that already records an attempt means remote state may
+    // legitimately carry this run's own partial work.
+    resuming: replay.exists && replay.events.length > 0,
+    expectedFoundationBodiesSha256: replay.exists
+      ? replay.events[0]?.foundationBodiesSha256
+      : undefined,
+    expectedFoundationStableBodiesSha256: replay.exists
+      ? replay.events[0]?.foundationStableBodiesSha256
+      : undefined,
+    expectedTeacherSourceSha256: replay.exists
+      ? replay.events[0]?.teacherSourceSha256
+      : undefined,
+    initializedAt: recordedInitializedAt,
+  })
+  const boundFoundation = {
+    ...foundation,
+    reprovedFoundationStateDigest: reproved.foundationStateDigest,
+  }
+  const initializedClassroomBody = {
+    ...foundation.classroom.data,
+    studentLoginCode: initialization.formattedLoginCode,
+    nextStudentNumber: initialization.nextStudentNumber,
+  }
+  const derivedInitializedBodySha256 = documentBodyDigest(
+    initializedClassroomBody,
+  )
+  const projectedClassroomData = initialization.projection?.classroom?.data
+  const derivedProjectedBodySha256 = documentBodyDigest(
+    projectedClassroomData === undefined
+      ? initializedClassroomBody
+      : {
+          ...initializedClassroomBody,
+          settings: projectedClassroomData.settings,
+          lastBackupAt: projectedClassroomData.lastBackupAt,
+        },
+  )
+  if ((initialization.classroomInitializedBodySha256 !== undefined &&
+       initialization.classroomInitializedBodySha256 !==
+         derivedInitializedBodySha256) ||
+      (initialization.classroomProjectedBodySha256 !== undefined &&
+       initialization.classroomProjectedBodySha256 !==
+         derivedProjectedBodySha256)) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.PLAN_DIVERGED,
+      'The initialization classroom digests do not match the planned bodies.',
+    )
+  }
+
+  const cursor = createJournalCursor(journal, replay)
 
   // The header binds everything an auditor needs to prove what this run was
   // authorized to do — and binds BOTH expectations digests, so neither can be
   // substituted between the two invocations.
+  let plannedHeader
   if (!replay.exists || replay.events.length === 0) {
-    const header = event(JOURNAL_EVENTS.PLANNED, {
+    plannedHeader = event(JOURNAL_EVENTS.PLANNED, {
       projectId: manifest.projectId,
       teacherUidSha256: sha256Hex(manifest.teacherUid),
       releaseId: manifest.releaseId,
@@ -1500,13 +2077,29 @@ async function runInitializationStage({
       planDigest: initialization.planDigest,
       batchCount: initialization.batchCount,
       countsBySurface: initialization.countsBySurface,
+      // The immutable manifest domains this run is bound to. Recording them in
+      // the header is what lets a later invocation — or an auditor — prove the
+      // run was planned against the reviewed evidence rather than against
+      // whatever production happened to contain at resume time.
+      foundationStateSha256: manifest.domainChecksums.foundationState,
+      foundationBodiesSha256: reproved.foundationBodiesSha256,
+      foundationStableBodiesSha256: reproved.foundationStableBodiesSha256,
+      teacherSourceSha256: reproved.teacherSourceSha256,
+      classroomInitializedBodySha256:
+        derivedInitializedBodySha256,
+      classroomProjectedBodySha256:
+        derivedProjectedBodySha256,
+      legacySourceStateSha256: manifest.domainChecksums.legacySourceState,
+      destinationAbsenceSha256: manifest.domainChecksums.destinationAbsence,
+      authCompatibilitySha256: manifest.domainChecksums.authCompatibility,
+      watermarkSha256: manifest.domainChecksums.identityWatermark,
     })
-    const installed = await journal.append(header, {
-      expectedSequence: sequence,
-      expectedPreviousDigest: previousDigest,
+    await cursor.append(plannedHeader)
+  } else {
+    plannedHeader = replay.events[0]
+    assertHeaderBinding(replay.events[0], {
+      manifest, authorization, initialization, foundation,
     })
-    sequence += 1
-    previousDigest = installed.digest
   }
 
   // If a prior attempt left initialization in flight, classify remote state
@@ -1517,31 +2110,28 @@ async function runInitializationStage({
       initialization.canonicalLoginCode,
     )
     const classroomApplied = classroom.exists === true &&
-      classroom.data.studentLoginCode === initialization.formattedLoginCode &&
-      classroom.data.nextStudentNumber === initialization.nextStudentNumber
-    const codeApplied = code.exists === true &&
-      code.data.classroomId === foundation.classroomId &&
-      code.data.status === 'active'
+      documentBodyDigest(classroom.data) ===
+        plannedHeader.classroomInitializedBodySha256
+    const codeApplied = isExactLoginCodeIndex({
+      document: code,
+      classroomId: foundation.classroomId,
+      canonicalLoginCode: initialization.canonicalLoginCode,
+      initializedAt: recordedInitializedAt,
+    })
 
     if (classroomApplied && codeApplied) {
-      const verified = await journal.append(
+      await cursor.append(
         event(JOURNAL_EVENTS.INITIALIZATION_VERIFIED, {
           recoveredByClassification: true,
         }),
-        { expectedSequence: sequence, expectedPreviousDigest: previousDigest },
       )
-      sequence += 1
-      previousDigest = verified.digest
-      return await finishInitialization({
-        journal, sequence, previousDigest, logger,
-      })
+      return await finishInitialization({ journal, cursor, logger })
     }
     if (classroomApplied !== codeApplied) {
       // Partially applied: a Firestore transaction should be atomic, so this is
       // evidence of interference or a broken assumption. Block for human review.
-      await journal.append(
+      await cursor.append(
         event(JOURNAL_EVENTS.INDETERMINATE, { phase: 'initialization' }),
-        { expectedSequence: sequence, expectedPreviousDigest: previousDigest },
       )
       return Object.freeze({
         result: WRITE_RESULTS.BLOCKED_INDETERMINATE,
@@ -1553,19 +2143,19 @@ async function runInitializationStage({
   }
 
   if (head?.event !== JOURNAL_EVENTS.INITIALIZATION_VERIFIED) {
-    const inFlight = await journal.append(
+    // A resumed run reuses the header's initialization Timestamp so a retry
+    // cannot stamp a different initializedAt than the one already recorded.
+    const initializedAt = recordedInitializedAt
+    await cursor.append(
       event(JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT, {
-        initializedAtSeconds: nowTimestamp.seconds,
-        initializedAtNanoseconds: nowTimestamp.nanoseconds,
+        initializedAtSeconds: initializedAt.seconds,
+        initializedAtNanoseconds: initializedAt.nanoseconds,
       }),
-      { expectedSequence: sequence, expectedPreviousDigest: previousDigest },
     )
-    sequence += 1
-    previousDigest = inFlight.digest
 
     await runInitializationTransaction({
-      firestore, foundation, initialization,
-      initializedAt: nowTimestamp, manifest,
+      firestore, foundation: boundFoundation, initialization,
+      initializedAt, manifest,
     })
 
     // Read back and verify exactly before recording success.
@@ -1574,26 +2164,57 @@ async function runInitializationStage({
       initialization.canonicalLoginCode,
     )
     if (classroom.exists !== true ||
-        classroom.data.studentLoginCode !== initialization.formattedLoginCode ||
-        classroom.data.nextStudentNumber !== initialization.nextStudentNumber ||
-        code.exists !== true ||
-        code.data.classroomId !== foundation.classroomId ||
-        code.data.status !== 'active') {
+        documentBodyDigest(classroom.data) !==
+          plannedHeader.classroomInitializedBodySha256 ||
+        !isExactLoginCodeIndex({
+          document: code,
+          classroomId: foundation.classroomId,
+          canonicalLoginCode: initialization.canonicalLoginCode,
+          initializedAt,
+        })) {
       fail(
         PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED,
         'The committed initialization did not read back exactly.',
       )
     }
 
-    const verified = await journal.append(
-      event(JOURNAL_EVENTS.INITIALIZATION_VERIFIED, {}),
-      { expectedSequence: sequence, expectedPreviousDigest: previousDigest },
-    )
-    sequence += 1
-    previousDigest = verified.digest
+    await cursor.append(event(JOURNAL_EVENTS.INITIALIZATION_VERIFIED, {}))
   }
 
-  return await finishInitialization({ journal, sequence, previousDigest, logger })
+  return await finishInitialization({ journal, cursor, logger })
+}
+
+/**
+ * Recovers the initialization Timestamp from the journal header.
+ *
+ * A resumed initialization must commit the SAME `initializedAt` the run was
+ * planned with. Taking a fresh clock reading on retry would write a different
+ * value than the header records, so a readback comparison against retained
+ * evidence could never be exact.
+ */
+export function recoverInitializationTimestamp(replay, fallback) {
+  const header = replay?.exists ? replay.events[0] : null
+  if (!header || header.event !== JOURNAL_EVENTS.PLANNED) return fallback
+  if (!Number.isInteger(header.initializedAtSeconds) ||
+      !Number.isInteger(header.initializedAtNanoseconds)) {
+    fail(
+      PRODUCTION_WRITER_CATEGORIES.JOURNAL_CORRUPT,
+      'The journal header carries no valid initialization Timestamp.',
+    )
+  }
+  // Rebuilt from the caller's injected Timestamp class so this module keeps
+  // importing no Firestore SDK surface. Falls back to a structurally identical
+  // plain object when the caller supplied one.
+  const constructor = fallback?.constructor
+  if (typeof constructor === 'function' && constructor.length >= 2) {
+    return new constructor(
+      header.initializedAtSeconds, header.initializedAtNanoseconds,
+    )
+  }
+  return Object.freeze({
+    seconds: header.initializedAtSeconds,
+    nanoseconds: header.initializedAtNanoseconds,
+  })
 }
 
 /**
@@ -1603,11 +2224,8 @@ async function runInitializationStage({
  * occur in this invocation: this function is the only exit from the
  * initialization stage, and it returns before any copy code is reachable.
  */
-async function finishInitialization({ journal, sequence, previousDigest, logger }) {
-  await journal.append(
-    event(JOURNAL_EVENTS.AWAITING_COPY_DEPLOYMENT, {}),
-    { expectedSequence: sequence, expectedPreviousDigest: previousDigest },
-  )
+async function finishInitialization({ cursor, logger }) {
+  await cursor.append(event(JOURNAL_EVENTS.AWAITING_COPY_DEPLOYMENT, {}))
   logger?.log(
     'Initialization committed and verified. MIGRATION HAS NOT RUN. ' +
     'Deploy bridge rules and V2 Functions with the V2 gate off, then run ' +
@@ -1621,8 +2239,9 @@ async function finishInitialization({ journal, sequence, previousDigest, logger 
 }
 
 async function runCopyStage({
-  firestore, journal, replay, authorization,
-  initialization, foundation, deployment, rawReaders, logger,
+  firestore, journal, replay, manifest, authorization,
+  initialization, foundation, deployment, rawReaders, readAuthCompatibility,
+  logger, completed = false,
 }) {
   // The COPY expectations artifact is validated here — not the initialization
   // one — and the inventory is reread immediately before continuing.
@@ -1644,6 +2263,12 @@ async function runCopyStage({
       'A deployment expectations artifact was substituted between invocations.',
     )
   }
+  // The resumed run must be the SAME run, bound to the same manifest, the same
+  // artifacts, and the same retained evidence. Every header field is compared;
+  // a second invocation presenting a different manifest or a different
+  // authorization cannot continue this journal.
+  assertHeaderBinding(header, { manifest, authorization, initialization,
+    foundation })
 
   // Rederive the plan from unchanged sources plus the header's exact
   // initialization values. It must reproduce the stored plan digest.
@@ -1651,16 +2276,136 @@ async function runCopyStage({
     projection: initialization.projection,
     foundation,
     initialization,
+    retainedFoundationBodiesSha256: header.foundationBodiesSha256,
+    retainedClassroomInitializedBodySha256:
+      header.classroomInitializedBodySha256,
+    retainedClassroomProjectedBodySha256:
+      header.classroomProjectedBodySha256,
   })
-  if (plan.planDigest !== header.planDigest) {
+  if (plan.planDigest !== header.planDigest ||
+      plan.batches.length !== header.batchCount ||
+      canonicalDigest(plan.countsBySurface) !==
+        canonicalDigest(header.countsBySurface)) {
     fail(
       PRODUCTION_WRITER_CATEGORIES.PLAN_DIVERGED,
-      'The rederived plan does not reproduce the retained plan digest.',
+      'The rederived plan does not reproduce the retained plan header.',
     )
   }
 
-  let sequence = replay.nextSequence
-  let previousDigest = replay.headDigest
+  const allowedDestinationPaths = new Set([
+    ...plan.batches.flatMap(batch =>
+      batch.operations.map(operation => operation.path)),
+  ])
+
+  // The retained evidence is reproved again on every later invocation, before
+  // any copy write. A source, Auth, foundation, or path-set change made after
+  // preflight must block rather than become the run's accepted baseline.
+  await reproveRetainedEvidence({
+    manifest,
+    rawReaders,
+    readAuthCompatibility,
+    foundation,
+    canonicalLoginCode: initialization.canonicalLoginCode,
+    formattedLoginCode: initialization.formattedLoginCode,
+    stage: WRITE_STAGES.COPY,
+    resuming: true,
+    expectedFoundationBodiesSha256: header.foundationBodiesSha256,
+    expectedFoundationStableBodiesSha256:
+      header.foundationStableBodiesSha256,
+    expectedTeacherSourceSha256: header.teacherSourceSha256,
+    requireFullFoundationBodies:
+      replay.head.event === JOURNAL_EVENTS.AWAITING_COPY_DEPLOYMENT,
+    requireDestinationAbsence:
+      replay.head.event === JOURNAL_EVENTS.AWAITING_COPY_DEPLOYMENT,
+    initializedAt: Object.freeze({
+      seconds: header.initializedAtSeconds,
+      nanoseconds: header.initializedAtNanoseconds,
+    }),
+    allowedDestinationPaths,
+  })
+
+  const retainedEvidence = {
+    legacySourceStateSha256: header.legacySourceStateSha256,
+    foundationBodiesSha256: header.foundationStableBodiesSha256,
+    teacherSourceSha256: header.teacherSourceSha256,
+    watermarkSha256: header.watermarkSha256,
+    computeLegacySourceDigest: ({
+      legacyClassroomData, flatCredentials, flatAuthLogs,
+    }) => hashDomain({
+      present: true,
+      counts: manifest.observations.counts.legacy,
+      credentialCount: flatCredentials.length,
+      authLogCount: flatAuthLogs.length,
+      noncanonicalValueCount:
+        manifest.observations.noncanonicalValueCount ?? 0,
+      sources: {
+        flatAuthLogs: summarizeHashedSource(
+          flatAuthLogs.map(entry =>
+            sourceEntryFromEnvelope(entry, 'flatAuthLogs')),
+          'flatAuthLogs',
+        ),
+        flatCredentials: summarizeHashedSource(
+          flatCredentials.map(entry =>
+            sourceEntryFromEnvelope(entry, 'flatCredentials')),
+          'flatCredentials',
+        ),
+        legacyClassroom: summarizeHashedSource(
+          [sourceEntryFromEnvelope(
+            legacyClassroomData, 'legacyClassroom',
+          )],
+          'legacyClassroom',
+        ),
+      },
+    }),
+    computeFoundationDigest: ({ teacher, classroom }) => {
+      const withoutDelta = { ...classroom.data }
+      delete withoutDelta.studentLoginCode
+      delete withoutDelta.nextStudentNumber
+      delete withoutDelta.settings
+      delete withoutDelta.lastBackupAt
+      return computeFoundationDigest(teacher.data, withoutDelta)
+    },
+    computeTeacherSourceDigest: teacher => hashDomain(summarizeHashedSource(
+      [sourceEntryFromEnvelope(teacher, 'foundationTeacher')],
+      'foundationTeacher',
+    )),
+    computeWatermarkDigest: ({
+      legacyClassroomData, flatCredentials, flatAuthLogs,
+      students, transactions, loginHistory, scopedCredentials, scopedAuthLogs,
+    }) => {
+      const ids = (entries, field) => entries
+        .filter(entry => entry.data?.[field] != null)
+        .map(entry => entry.data[field])
+      return hashDomain(deriveStudentIdWatermark({
+        roster: legacyClassroomData.data.students.map(entry => entry?.id),
+        credentials: ids(flatCredentials, 'studentId'),
+        transactions: legacyClassroomData.data.transactions
+          .filter(entry => entry?.studentId != null).map(entry => entry.studentId),
+        loginHistory: legacyClassroomData.data.loginHistory
+          .filter(entry => entry?.studentId != null).map(entry => entry.studentId),
+        authLogs: ids(flatAuthLogs, 'studentId'),
+        destinationStudents: ids(students, 'id'),
+        destinationCredentials: ids(scopedCredentials, 'studentId'),
+        destinationTransactions: ids(transactions, 'studentId'),
+        destinationLoginHistory: ids(loginHistory, 'studentId'),
+        destinationAuthLogs: ids(scopedAuthLogs, 'studentId'),
+      }))
+    },
+  }
+
+  if (completed) {
+    const reconciliation = await readAndReconcileWriteRun({
+      rawReaders, foundation, initialization, retainedEvidence,
+    })
+    return Object.freeze({
+      result: WRITE_RESULTS.ALREADY_COMPLETED,
+      stage: WRITE_STAGES.COMPLETE,
+      migrationRan: false,
+      reconciliation,
+    })
+  }
+
+  const cursor = createJournalCursor(journal, replay)
   const verifiedBatches = new Set(
     replay.events
       .filter(entry => entry.event === JOURNAL_EVENTS.BATCH_VERIFIED)
@@ -1668,101 +2413,132 @@ async function runCopyStage({
   )
   const head = replay.head
 
+  /**
+   * Reads every destination in a batch and proves it is exactly expected-after.
+   * A `batch-verified` event asserts the remote state IS the projection, so it
+   * may only be appended after this returns.
+   */
+  async function proveBatchApplied(batch) {
+    const observed = new Map()
+    for (const operation of batch.operations) {
+      observed.set(operation.path, await rawReaders.readDocument(operation.path))
+    }
+    return classifyBatchState(batch, observed)
+  }
+
+  async function blockIndeterminate(batchIndex) {
+    await cursor.append(
+      event(JOURNAL_EVENTS.INDETERMINATE, { phase: 'copy', batchIndex }),
+    )
+    return Object.freeze({
+      result: WRITE_RESULTS.BLOCKED_INDETERMINATE,
+      stage: WRITE_STAGES.COPY,
+      migrationRan: false,
+    })
+  }
+
   for (const batch of plan.batches) {
     if (verifiedBatches.has(batch.batchIndex)) continue
 
-    // A batch left in-flight or committed is classified by reading every
-    // document in it before any retry decision.
-    const resuming = (head?.event === JOURNAL_EVENTS.BATCH_IN_FLIGHT ||
-      head?.event === JOURNAL_EVENTS.BATCH_COMMITTED) &&
-      head.batchIndex === batch.batchIndex
-    if (resuming) {
-      const observed = new Map()
-      for (const operation of batch.operations) {
-        observed.set(operation.path, await rawReaders.readDocument(operation.path))
-      }
-      const classification = classifyBatchState(batch, observed)
+    const resumingInFlight = head?.event === JOURNAL_EVENTS.BATCH_IN_FLIGHT &&
+      head.batchIndex === batch.batchIndex &&
+      cursor.previousEvent === JOURNAL_EVENTS.BATCH_IN_FLIGHT
+    const resumingCommitted = head?.event === JOURNAL_EVENTS.BATCH_COMMITTED &&
+      head.batchIndex === batch.batchIndex &&
+      cursor.previousEvent === JOURNAL_EVENTS.BATCH_COMMITTED
+
+    if (resumingInFlight) {
+      const classification = await proveBatchApplied(batch)
       if (classification === BATCH_CLASSIFICATIONS.MIXED) {
-        await journal.append(
-          event(JOURNAL_EVENTS.INDETERMINATE, {
-            phase: 'copy', batchIndex: batch.batchIndex,
-          }),
-          { expectedSequence: sequence, expectedPreviousDigest: previousDigest },
-        )
-        return Object.freeze({
-          result: WRITE_RESULTS.BLOCKED_INDETERMINATE,
-          stage: WRITE_STAGES.COPY,
-          migrationRan: false,
-        })
+        return await blockIndeterminate(batch.batchIndex)
       }
       if (classification === BATCH_CLASSIFICATIONS.ALL_AFTER) {
-        const verified = await journal.append(
+        // The batch committed but crashed before its journal event. Recovery
+        // walks the LEGAL path in-flight -> committed -> verified rather than
+        // jumping straight to verified, which the transition table forbids and
+        // which would make every later replay fail as journal-corrupt.
+        await cursor.append(
+          event(JOURNAL_EVENTS.BATCH_COMMITTED, {
+            batchIndex: batch.batchIndex,
+            batchDigest: batch.batchDigest,
+            recoveredByClassification: true,
+          }),
+        )
+        await cursor.append(
           event(JOURNAL_EVENTS.BATCH_VERIFIED, {
             batchIndex: batch.batchIndex,
             batchDigest: batch.batchDigest,
             recoveredByClassification: true,
           }),
-          { expectedSequence: sequence, expectedPreviousDigest: previousDigest },
         )
-        sequence += 1
-        previousDigest = verified.digest
         continue
       }
-      // ALL_BEFORE: safe to retry with freshly observed preconditions.
+      // ALL_BEFORE: nothing was applied, so the batch is retried below. The
+      // in-flight head permits a repeated batch-in-flight event.
+    } else if (resumingCommitted) {
+      const classification = await proveBatchApplied(batch)
+      if (classification !== BATCH_CLASSIFICATIONS.ALL_AFTER) {
+        // A committed batch whose documents are absent or partial means
+        // something outside this writer changed the destination. There is no
+        // safe automated recovery: retrying would rewrite state a committed
+        // event already claimed, so this blocks for human review.
+        return await blockIndeterminate(batch.batchIndex)
+      }
+      await cursor.append(
+        event(JOURNAL_EVENTS.BATCH_VERIFIED, {
+          batchIndex: batch.batchIndex,
+          batchDigest: batch.batchDigest,
+          recoveredByClassification: true,
+        }),
+      )
+      continue
     }
 
-    const inFlight = await journal.append(
+    await cursor.append(
       event(JOURNAL_EVENTS.BATCH_IN_FLIGHT, {
         batchIndex: batch.batchIndex,
         batchDigest: batch.batchDigest,
         operationCount: batch.operations.length,
         estimatedBytes: batch.estimatedBytes,
       }),
-      { expectedSequence: sequence, expectedPreviousDigest: previousDigest },
     )
-    sequence += 1
-    previousDigest = inFlight.digest
 
     await commitCopyBatch({ firestore, batch })
 
-    const committed = await journal.append(
+    await cursor.append(
       event(JOURNAL_EVENTS.BATCH_COMMITTED, {
         batchIndex: batch.batchIndex,
         batchDigest: batch.batchDigest,
       }),
-      { expectedSequence: sequence, expectedPreviousDigest: previousDigest },
     )
-    sequence += 1
-    previousDigest = committed.digest
 
-    const verified = await journal.append(
+    // Real readback before claiming verification. The commit returning without
+    // throwing is not proof the destination holds the projected bytes.
+    const applied = await proveBatchApplied(batch)
+    if (applied !== BATCH_CLASSIFICATIONS.ALL_AFTER) {
+      return await blockIndeterminate(batch.batchIndex)
+    }
+
+    await cursor.append(
       event(JOURNAL_EVENTS.BATCH_VERIFIED, {
         batchIndex: batch.batchIndex,
         batchDigest: batch.batchDigest,
       }),
-      { expectedSequence: sequence, expectedPreviousDigest: previousDigest },
     )
-    sequence += 1
-    previousDigest = verified.digest
   }
 
-  const verifying = await journal.append(
-    event(JOURNAL_EVENTS.COPY_VERIFYING, {}),
-    { expectedSequence: sequence, expectedPreviousDigest: previousDigest },
-  )
-  sequence += 1
-  previousDigest = verifying.digest
+  // A restart whose head is already copy-verifying must NOT append a second
+  // copy-verifying event: that transition is illegal and would corrupt the
+  // chain. Reconciliation runs and the run then completes or blocks.
+  if (cursor.previousEvent !== JOURNAL_EVENTS.COPY_VERIFYING) {
+    await cursor.append(event(JOURNAL_EVENTS.COPY_VERIFYING, {}))
+  }
 
   const reconciliation = await readAndReconcileWriteRun({
-    rawReaders, foundation, initialization,
+    rawReaders, foundation, initialization, retainedEvidence,
   })
 
-  await journal.append(
-    event(JOURNAL_EVENTS.COMPLETED, {
-      countsBySurface: plan.countsBySurface,
-    }),
-    { expectedSequence: sequence, expectedPreviousDigest: previousDigest },
-  )
+  await cursor.append(event(JOURNAL_EVENTS.COMPLETED, {}))
   logger?.log('Copy committed and reconciled.')
   return Object.freeze({
     result: WRITE_RESULTS.COMPLETED,

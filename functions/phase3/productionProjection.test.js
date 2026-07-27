@@ -153,6 +153,8 @@ test('builds the complete Phase 3 projection without a flat destination', () => 
       settings: source.classroomData.data.settings,
       lastBackupAt: null,
     },
+    sourcePath: source.classroomData.path,
+    sourceUpdateTime: source.classroomData.updateTime,
   })
   assert.deepEqual(projection.counts, {
     students: 2,
@@ -184,6 +186,23 @@ test('builds the complete Phase 3 projection without a flat destination', () => 
       assert.equal(typeof entry.write, 'undefined')
       assert.equal(typeof entry.operation, 'undefined')
       assert.equal(typeof entry.sourceIndex, 'undefined')
+    }
+  }
+
+  // Every destination entry must retain the exact source precondition it was
+  // derived from. Without this the copy plan cannot bind an expected-before
+  // digest and commitCopyBatch silently skips rereading the legacy source.
+  for (const surface of ['students', 'transactions', 'loginHistory']) {
+    assert.ok(projection[surface].length > 0, `${surface} fixture is non-empty`)
+    for (const entry of projection[surface]) {
+      assert.equal(
+        entry.sourcePath, source.classroomData.path,
+        `${surface} retains the legacy singleton source path`,
+      )
+      assert.deepEqual(
+        entry.sourceUpdateTime, source.classroomData.updateTime,
+        `${surface} retains the exact legacy source Timestamp`,
+      )
     }
   }
   assert.equal(Object.hasOwn(projection, 'studentCredentials'), false)

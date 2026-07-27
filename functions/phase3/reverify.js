@@ -3,10 +3,15 @@ import { pathToFileURL } from 'node:url'
 
 import { cert } from 'firebase-admin/app'
 
+import { serializeCanonicalState } from '../phase2/canonicalState.js'
+import { normalizeClassroomCode } from '../phase2b/identityNormalization.js'
+
 import {
+  ALLOWED_EMULATOR_PROJECT_ID,
   EXECUTION_CONTEXT,
   PRODUCTION_ENVIRONMENT_CATEGORIES,
   ProductionEnvironmentError,
+  assertServiceAccountArtifact,
   parseJsonArtifact,
   readHashedArtifact,
   redactEnvironmentError,
@@ -17,11 +22,23 @@ import {
 } from './productionEnvironment.js'
 import {
   PreflightAbortError,
+  createProductionReaders,
   createRawDataReaders,
+  createReadOnlyAdminHandles,
+  createReadOnlyDataReaders,
+  deriveStudentIdWatermark,
+  sourceEntryFromEnvelope,
+  summarizeHashedSource,
 } from './productionPreflight.js'
 import {
+  JOURNAL_EVENTS,
   ProductionManifestError,
+  computeFoundationStateDigest,
+  assertManifestWriteEligible,
+  createReadOnlyJournalView,
+  hashDomain,
   readProductionManifest,
+  sha256Hex,
 } from './productionManifest.js'
 import {
   ProductionReconciliationError,
@@ -212,7 +229,7 @@ export function requireCompletedJournal(replay) {
     failArgument('journal-absent', 'No journal exists for this manifest.')
   }
   const head = replay.head
-  if (head.event !== 'completed') {
+  if (head.event !== JOURNAL_EVENTS.COMPLETED) {
     failArgument(
       'journal-not-completed',
       'The retained journal does not record a completed write.',
@@ -220,6 +237,371 @@ export function requireCompletedJournal(replay) {
     )
   }
   return replay
+}
+
+/** The complete deployment surface set — the same five the writer requires. */
+const DEPLOYMENT_SURFACES = Object.freeze([
+  'rules', 'functions', 'hosting', 'indexes', 'gateParameters',
+])
+
+/**
+ * Compares the CURRENT deployment surfaces to the reviewed copy expectations.
+ *
+ * Every surface must be both expected and observed: an expectations artifact
+ * that omits a surface must block rather than silently waive its comparison,
+ * and an inventory that could not enumerate active writers must never read as
+ * proof that there are none.
+ */
+export function assertCopyDeploymentState({ observed, expectations }) {
+  if (observed === null || typeof observed !== 'object' ||
+      expectations === null || typeof expectations !== 'object') {
+    failArgument(
+      'deployment-drift',
+      'A deployment inventory and reviewed expectations are required.',
+    )
+  }
+  const expectedKeys = [...DEPLOYMENT_SURFACES, 'acknowledgedWriters']
+  const expectationKeys = Object.keys(expectations)
+  if (expectationKeys.length !== expectedKeys.length ||
+      expectedKeys.some(key => !Object.hasOwn(expectations, key))) {
+    failArgument(
+      'unbound-expectations',
+      'The copy expectations do not have the exact reviewed surface schema.',
+    )
+  }
+  const canonical = value => serializeCanonicalState(value ?? null)
+  for (const surface of DEPLOYMENT_SURFACES) {
+    if (!Object.hasOwn(expectations, surface)) {
+      failArgument(
+        'unbound-expectations',
+        'The copy expectations omit a required deployment surface.',
+        { surface },
+      )
+    }
+    if (!Object.hasOwn(observed, surface)) {
+      failArgument(
+        'deployment-drift',
+        'The deployment inventory omits a required surface.',
+        { surface },
+      )
+    }
+    if (canonical(observed[surface]) !== canonical(expectations[surface])) {
+      failArgument(
+        'deployment-drift',
+        'The deployed state does not match the reviewed expectations.',
+        { surface },
+      )
+    }
+  }
+  if (!Array.isArray(expectations.acknowledgedWriters)) {
+    failArgument(
+      'unbound-expectations',
+      'The copy expectations must enumerate acknowledged active writers.',
+    )
+  }
+  if (expectations.acknowledgedWriters.some(
+    writer => typeof writer !== 'string' || writer === '',
+  )) {
+    failArgument(
+      'unbound-expectations',
+      'Acknowledged active-writer identifiers must be non-empty strings.',
+    )
+  }
+  if (!Array.isArray(observed.activeWriters) ||
+      observed.activeWritersObservationComplete !== true) {
+    failArgument(
+      'deployment-drift',
+      'The active-writer observation is absent or not attested complete.',
+    )
+  }
+  const unacknowledged = observed.activeWriters.filter(
+    writer => !expectations.acknowledgedWriters.includes(writer),
+  )
+  if (unacknowledged.length > 0) {
+    failArgument(
+      'deployment-drift',
+      'An active writer is not acknowledged by the reviewed expectations.',
+      { count: unacknowledged.length },
+    )
+  }
+  const gate = observed.gateParameters?.MULTI_TEACHER_V2_ENABLED
+  if (gate !== 'false' && gate !== false) {
+    failArgument(
+      'deployment-drift',
+      'The V2 gate is not in the expected copy-stage state.',
+    )
+  }
+  return true
+}
+
+/**
+ * Binds the journal header to the manifest, the authorization, and the exact
+ * artifact bytes presented to THIS invocation.
+ *
+ * Reverify is an audit. Without this it would happily "verify" a run whose
+ * header records a different manifest, release, authorization, or credential
+ * than the artifacts it was handed.
+ */
+export function assertJournalHeaderBinding({
+  header, manifest, validatedAuthorization, artifacts, canonicalLoginCode,
+  classroomId,
+}) {
+  const sha = sha256Hex
+  const expected = {
+    projectId: manifest.projectId,
+    teacherUidSha256: sha(manifest.teacherUid),
+    releaseId: manifest.releaseId,
+    changeId: manifest.changeId,
+    authorizationId: validatedAuthorization.authorizationId,
+    snapshotId: validatedAuthorization.snapshotId,
+    writeFreezeProof: validatedAuthorization.writeFreezeProof,
+    credentialProvenance: validatedAuthorization.credentialProvenance,
+    preflightManifestId: manifest.preflightManifestId,
+    preflightChecksum: manifest.preflightChecksum,
+    writeAuthorizationSha256: artifacts.writeAuthorizationSha256,
+    preflightAuthorizationSha256: artifacts.preflightAuthorizationSha256,
+    credentialSha256: artifacts.credentialSha256,
+    initializationExpectationsSha256: artifacts.initializationExpectationsSha256,
+    copyExpectationsSha256: artifacts.copyExpectationsSha256,
+    loginCodeSha256: sha(canonicalLoginCode),
+    loginCodePathSha256: sha(`classroomLoginCodes/${canonicalLoginCode}`),
+    classroomIdSha256: sha(classroomId),
+    nextStudentNumber: manifest.observations.watermark.nextStudentNumber,
+    foundationStateSha256: manifest.domainChecksums.foundationState,
+    legacySourceStateSha256: manifest.domainChecksums.legacySourceState,
+    destinationAbsenceSha256: manifest.domainChecksums.destinationAbsence,
+    authCompatibilitySha256: manifest.domainChecksums.authCompatibility,
+    watermarkSha256: manifest.domainChecksums.identityWatermark,
+  }
+  for (const [field, value] of Object.entries(expected)) {
+    if (header[field] !== value) {
+      failArgument(
+        'header-binding-mismatch',
+        'The journal header does not match the presented evidence.',
+        { field },
+      )
+    }
+  }
+  return true
+}
+
+/**
+ * Compares the login-code index document against the header's EXACT recorded
+ * initialization Timestamp and the exact key/body shape.
+ */
+export function assertLoginCodeIndexMatchesHeader({
+  document, classroomId, canonicalLoginCode, initializedAt,
+}) {
+  if (document?.exists !== true) {
+    failArgument(
+      'login-code-index-absent',
+      'The authorized classroom login code index document is absent.',
+    )
+  }
+  if (document.path !== `classroomLoginCodes/${canonicalLoginCode}`) {
+    failArgument(
+      'login-code-index-mismatch',
+      'The login code index document is not at its authorized path.',
+    )
+  }
+  const body = document.data ?? {}
+  const keys = Object.keys(body).sort()
+  // EXACT body shape: no extra field may have been added to the index document.
+  if (keys.length !== 3 || keys[0] !== 'classroomId' ||
+      keys[1] !== 'createdAt' || keys[2] !== 'status') {
+    failArgument(
+      'login-code-index-mismatch',
+      'The login code index document does not have its exact reviewed shape.',
+      { keys },
+    )
+  }
+  if (body.classroomId !== classroomId || body.status !== 'active') {
+    failArgument(
+      'login-code-index-mismatch',
+      'The login code index document does not name this classroom as active.',
+    )
+  }
+  if (body.createdAt?.seconds !== initializedAt.seconds ||
+      body.createdAt?.nanoseconds !== initializedAt.nanoseconds) {
+    failArgument(
+      'login-code-index-mismatch',
+      'The login code index createdAt is not the recorded initialization time.',
+    )
+  }
+  return true
+}
+
+/**
+ * Enumerates the GLOBAL foundation roots and the FULL login-code index.
+ *
+ * A scoped read can only confirm the expected documents are right; it cannot
+ * detect an EXTRA teacher, classroom, or code reservation created alongside
+ * them. Those are exactly the collisions a copy must never leave behind.
+ */
+export async function assertNoExtraGlobalState({
+  rawReaders, manifest, classroomId, canonicalLoginCode,
+}) {
+  const codeIndex = await rawReaders.readLoginCodeIndex()
+  if (codeIndex.length !== 1) {
+    failArgument(
+      'extra-global-state',
+      'The classroom login code index does not hold exactly one document.',
+      { count: codeIndex.length },
+    )
+  }
+  if (codeIndex[0].path !== `classroomLoginCodes/${canonicalLoginCode}`) {
+    failArgument(
+      'extra-global-state',
+      'The login code index holds a code this run did not authorize.',
+    )
+  }
+  if (typeof rawReaders.readCollection !== 'function') {
+    failArgument(
+      'extra-global-state',
+      'The foundation root enumeration is unavailable.',
+    )
+  }
+  const [teachers, classrooms] = await Promise.all([
+    rawReaders.readCollection('teachers'),
+    rawReaders.readCollection('classrooms'),
+  ])
+  if (teachers.length !== 1 ||
+      teachers[0].path !== `teachers/${manifest.teacherUid}`) {
+    failArgument(
+      'extra-global-state',
+      'The teacher root set is not exactly the authorized singleton.',
+    )
+  }
+  if (classrooms.length !== 1 ||
+      classrooms[0].path !== `classrooms/${classroomId}`) {
+    failArgument(
+      'extra-global-state',
+      'The classroom root set is not exactly the authorized singleton.',
+    )
+  }
+  return true
+}
+
+/** Rebinds the retained preflight authorization without renewing its validity. */
+export function recoverReverifyLoginCode({
+  manifest, preflightAuthorization, preflightAuthorizationSha256,
+  credentialSha256,
+}) {
+  if (hashDomain({ sha256: preflightAuthorizationSha256 }) !==
+      manifest.domainChecksums.authorizationArtifact) {
+    failArgument(
+      'preflight-authorization-mismatch',
+      'The presented preflight authorization is not the retained artifact.',
+    )
+  }
+  for (const [field, expected] of [
+    ['projectId', manifest.projectId],
+    ['teacherUid', manifest.teacherUid],
+    ['releaseId', manifest.releaseId],
+    ['changeId', manifest.changeId],
+    ['credentialSha256', credentialSha256],
+  ]) {
+    if (preflightAuthorization?.[field] !== expected) {
+      failArgument(
+        'preflight-authorization-mismatch',
+        'The preflight authorization does not match the retained evidence.',
+        { field },
+      )
+    }
+  }
+  let canonical
+  try {
+    canonical = normalizeClassroomCode(
+      preflightAuthorization.studentLoginCode,
+    )
+  } catch {
+    failArgument(
+      'preflight-authorization-mismatch',
+      'The retained login code is malformed.',
+    )
+  }
+  const retainedCodeSha256 = manifest.observations.selectedCodeSha256
+  if (canonical !== preflightAuthorization.studentLoginCode ||
+      (retainedCodeSha256 !== undefined &&
+       sha256Hex(canonical) !== retainedCodeSha256)) {
+    failArgument(
+      'preflight-authorization-mismatch',
+      'The retained login code does not match the code preflight inspected.',
+    )
+  }
+  return canonical
+}
+
+/**
+ * Builds the retained-evidence comparators the reconciler uses.
+ *
+ * The derivations are the SAME ones preflight used, so a digest computed here
+ * over current state is directly comparable to the retained checksum.
+ */
+export function buildRetainedEvidence({ manifest, header }) {
+  const ids = (entries, field) => entries
+    .filter(entry => entry.data?.[field] != null)
+    .map(entry => entry.data[field])
+  return {
+    legacySourceStateSha256: header.legacySourceStateSha256,
+    foundationBodiesSha256: header.foundationStableBodiesSha256,
+    teacherSourceSha256: header.teacherSourceSha256,
+    watermarkSha256: header.watermarkSha256,
+    computeLegacySourceDigest: ({
+      legacyClassroomData, flatCredentials, flatAuthLogs,
+    }) => hashDomain({
+      present: true,
+      counts: manifest.observations.counts.legacy,
+      credentialCount: flatCredentials.length,
+      authLogCount: flatAuthLogs.length,
+      noncanonicalValueCount: manifest.observations.noncanonicalValueCount ?? 0,
+      sources: {
+        flatAuthLogs: summarizeHashedSource(
+          flatAuthLogs.map(e => sourceEntryFromEnvelope(e, 'flatAuthLogs')),
+          'flatAuthLogs',
+        ),
+        flatCredentials: summarizeHashedSource(
+          flatCredentials.map(e => sourceEntryFromEnvelope(e, 'flatCredentials')),
+          'flatCredentials',
+        ),
+        legacyClassroom: summarizeHashedSource(
+          [sourceEntryFromEnvelope(legacyClassroomData, 'legacyClassroom')],
+          'legacyClassroom',
+        ),
+      },
+    }),
+    // The foundation digest compares the classroom with the initialization
+    // delta removed, matching what preflight recorded before the write ran.
+    computeFoundationDigest: ({ teacher, classroom }) => {
+      const withoutDelta = { ...classroom.data }
+      delete withoutDelta.studentLoginCode
+      delete withoutDelta.nextStudentNumber
+      delete withoutDelta.settings
+      delete withoutDelta.lastBackupAt
+      return computeFoundationStateDigest(teacher.data, withoutDelta)
+    },
+    computeTeacherSourceDigest: teacher => hashDomain(summarizeHashedSource(
+      [sourceEntryFromEnvelope(teacher, 'foundationTeacher')],
+      'foundationTeacher',
+    )),
+    computeWatermarkDigest: ({
+      legacyClassroomData, flatCredentials, flatAuthLogs,
+      students, transactions, loginHistory, scopedCredentials, scopedAuthLogs,
+    }) => hashDomain(deriveStudentIdWatermark({
+      roster: legacyClassroomData.data.students.map(entry => entry?.id),
+      credentials: ids(flatCredentials, 'studentId'),
+      transactions: legacyClassroomData.data.transactions
+        .filter(entry => entry?.studentId != null).map(entry => entry.studentId),
+      loginHistory: legacyClassroomData.data.loginHistory
+        .filter(entry => entry?.studentId != null).map(entry => entry.studentId),
+      authLogs: ids(flatAuthLogs, 'studentId'),
+      destinationStudents: ids(students, 'id'),
+      destinationCredentials: ids(scopedCredentials, 'studentId'),
+      destinationTransactions: ids(transactions, 'studentId'),
+      destinationLoginHistory: ids(loginHistory, 'studentId'),
+      destinationAuthLogs: ids(scopedAuthLogs, 'studentId'),
+    })),
+  }
 }
 
 export async function runReverifyMain(argv = process.argv.slice(2), dependencies = {}) {
@@ -300,43 +682,76 @@ export async function runReverifyMain(argv = process.argv.slice(2), dependencies
       validatedAuthorization.preflightManifestId,
       dependencies,
     )
+    const canonicalLoginCode = recoverReverifyLoginCode({
+      manifest,
+      preflightAuthorization,
+      preflightAuthorizationSha256: preflightAuthorizationArtifact.sha256,
+      credentialSha256: credentialArtifact.sha256,
+    })
 
     // The journal is read and required to be COMPLETE before any audit runs.
-    const journal = dependencies.journal
-    if (!journal || typeof journal.replay !== 'function') {
-      failArgument('journal-unavailable', 'A read-only journal view is required.')
+    // The default is a READ-ONLY view from productionManifest.js: it exposes
+    // `replay` and nothing else, so this program cannot append even by mistake,
+    // and reverify never imports productionWriter.js.
+    const journal = dependencies.journal ?? createReadOnlyJournalView({
+      preflightManifestId: manifest.preflightManifestId,
+      ...(dependencies.stateRoot === undefined
+        ? {}
+        : { stateRoot: dependencies.stateRoot }),
+    })
+    // Replay-only: the view must expose no mutating operation at all. Checked
+    // by key set rather than by naming the forbidden method, so the read-only
+    // boundary contract's substring scan stays blunt.
+    const journalOperations = Object.keys(journal).filter(
+      key => typeof journal[key] === 'function',
+    )
+    if (!journalOperations.includes('replay') ||
+        journalOperations.some(key => key !== 'replay')) {
+      failArgument(
+        'journal-unavailable',
+        'Reverify requires a replay-only journal view with no mutating surface.',
+        { operations: journalOperations },
+      )
     }
+    // Replay failures (including a malformed or forged hash chain) are manifest
+    // failures, not merely an unfinished run. Only a valid replay whose head is
+    // absent or incomplete receives the dedicated not-completed exit status.
+    const journalReplay = await journal.replay()
     let replay
     try {
-      replay = requireCompletedJournal(await journal.replay())
+      replay = requireCompletedJournal(journalReplay)
     } catch (error) {
       logger.error(`Reverify: ${error.message}`)
       return { exitCode: REVERIFY_EXIT_CODES.JOURNAL_NOT_COMPLETED, error }
     }
 
-    // Current copy-stage deployment expectations are revalidated. Reverify
-    // compares; it never deploys or repairs.
-    const observedInventory = await dependencies.readDeploymentInventory()
-    const gate = observedInventory?.gateParameters?.MULTI_TEACHER_V2_ENABLED
-    if (Array.isArray(copyExpectations.acknowledgedWriters) === false) {
+    // The manifest must be the kind of manifest that could ever have authorized
+    // this write. Reverify audits the same eligibility the writer required.
+    assertManifestWriteEligible(manifest, {
+      expectedProjectId: validatedEnvironment.projectId,
+    })
+    if (manifest.teacherUid !== validatedAuthorization.teacherUid ||
+        manifest.releaseId !== validatedAuthorization.releaseId ||
+        manifest.changeId !== validatedAuthorization.changeId) {
       failArgument(
-        'unbound-expectations',
-        'The copy expectations must enumerate acknowledged active writers.',
-      )
-    }
-    if (gate !== 'false' && gate !== false) {
-      failArgument(
-        'deployment-drift',
-        'The V2 gate is not in the expected copy-stage state.',
+        'authorization-manifest-mismatch',
+        'The write authorization does not match the retained manifest.',
       )
     }
 
     let credential = null
+    const parsedCredential = parseJsonArtifact(
+      credentialArtifact.contents, 'The credential file',
+    )
     if (isProduction) {
       credential = validateExplicitCredential(
-        parseJsonArtifact(credentialArtifact.contents, 'The credential file'),
+        parsedCredential,
         dependencies.credentialFactory ?? cert,
       )
+    } else {
+      // Emulator: validated as a service-account-shaped artifact naming the
+      // EXACT demo project, never constructed into a credential.
+      assertServiceAccountArtifact(parsedCredential, ALLOWED_EMULATOR_PROJECT_ID)
     }
     const handles = await (dependencies.createHandles ?? defaultCreateHandles)({
       context: validatedEnvironment.context,
@@ -345,10 +760,66 @@ export async function runReverifyMain(argv = process.argv.slice(2), dependencies
     })
     if (handles && typeof handles.close === 'function') managedHandles = handles
 
+    // Current copy-stage deployment state is compared to the REVIEWED
+    // expectations, surface by surface. Reverify compares; it never deploys or
+    // repairs. Same strict schema the writer enforces, so an expectations file
+    // cannot waive a comparison by omitting a surface.
+    const readInventory = dependencies.readDeploymentInventory ??
+      defaultDeploymentInventoryReader({
+        context: validatedEnvironment.context,
+        projectId: validatedEnvironment.projectId,
+        credential,
+        teacherUid: manifest.teacherUid,
+      })
+    if (typeof readInventory !== 'function') {
+      failArgument(
+        'inventory-unavailable',
+        'No deployment inventory observation is available to compare.',
+      )
+    }
+    assertCopyDeploymentState({
+      observed: await readInventory(),
+      expectations: copyExpectations,
+    })
+
     const rawReaders = dependencies.rawReaders ?? createRawDataReaders({
       firestore: handles.firestore,
       teacherUid: manifest.teacherUid,
     })
+
+    // Auth compatibility is REREAD, not assumed from the manifest. A UID
+    // collision or incompatible user introduced after the copy is exactly the
+    // condition an audit exists to surface.
+    const readAuth = dependencies.readAuthCompatibility ??
+      createReadOnlyDataReaders({
+        firestore: handles.firestore,
+        auth: handles.auth,
+        teacherUid: manifest.teacherUid,
+      }).readAuthCompatibility
+    const authState = await readAuth()
+    if (authState?.complete !== true ||
+        !Array.isArray(authState.sourceEntries) ||
+        authState.sourceEntries.length !== authState.examinedUserCount) {
+      failArgument(
+        'auth-inspection-unavailable',
+        'The Auth compatibility observation is not complete.',
+      )
+    }
+    const authCompatibilitySha256 = hashDomain({
+      uidCollisions: authState.uidCollisions,
+      incompatibleUsers: authState.incompatibleUsers,
+      examinedUserCount: authState.examinedUserCount,
+      sources: {
+        authUsers: summarizeHashedSource(authState.sourceEntries, 'authUsers'),
+      },
+    })
+    if (authCompatibilitySha256 !==
+        manifest.domainChecksums.authCompatibility) {
+      failArgument(
+        'auth-incompatible',
+        'Auth compatibility no longer matches the retained preflight evidence.',
+      )
+    }
 
     const teacher = await rawReaders.readTeacher()
     if (teacher.exists !== true) {
@@ -360,7 +831,45 @@ export async function runReverifyMain(argv = process.argv.slice(2), dependencies
       failArgument('foundation-absent', 'The classroom is absent.')
     }
 
-    const canonicalLoginCode = preflightAuthorization.studentLoginCode
+    // ---- bind to the HISTORICAL record, not to current state ----
+    const header = replay.events[0]
+    assertJournalHeaderBinding({
+      header, manifest, validatedAuthorization,
+      artifacts: {
+        writeAuthorizationSha256: writeAuthorizationArtifact.sha256,
+        preflightAuthorizationSha256: preflightAuthorizationArtifact.sha256,
+        credentialSha256: credentialArtifact.sha256,
+        initializationExpectationsSha256:
+          initializationExpectationsArtifact.sha256,
+        copyExpectationsSha256: copyExpectationsArtifact.sha256,
+      },
+      canonicalLoginCode,
+      classroomId,
+    })
+
+    // The initialization Timestamp the run actually recorded. Compared exactly:
+    // a code-index document stamped with any other time was not written by the
+    // run this journal describes.
+    const recordedInitializedAt = Object.freeze({
+      seconds: header.initializedAtSeconds,
+      nanoseconds: header.initializedAtNanoseconds,
+    })
+    const codeIndexDocument = await rawReaders.readLoginCodeIndexDocument(
+      canonicalLoginCode,
+    )
+    assertLoginCodeIndexMatchesHeader({
+      document: codeIndexDocument,
+      classroomId,
+      canonicalLoginCode,
+      initializedAt: recordedInitializedAt,
+    })
+
+    // Enumerate the GLOBAL roots and the FULL code index, so an extra teacher,
+    // classroom, or code reservation cannot hide behind a scoped read.
+    await assertNoExtraGlobalState({
+      rawReaders, manifest, classroomId, canonicalLoginCode,
+    })
+
     const reconciliation = await readAndReconcileWriteRun({
       rawReaders,
       foundation: { teacherUid: manifest.teacherUid, classroomId, classroom },
@@ -369,6 +878,9 @@ export async function runReverifyMain(argv = process.argv.slice(2), dependencies
         formattedLoginCode: classroom.data.studentLoginCode,
         nextStudentNumber: classroom.data.nextStudentNumber,
       },
+      // Current state is compared against the RETAINED evidence rather than
+      // against itself.
+      retainedEvidence: buildRetainedEvidence({ manifest, header }),
     })
 
     logger.log('Reverify succeeded: state matches the reviewed projection.')
@@ -416,10 +928,67 @@ export async function runReverifyMain(argv = process.argv.slice(2), dependencies
   }
 }
 
-async function defaultCreateHandles() {
-  throw new Error(
-    'A handle factory must be supplied; reverify.js constructs no ambient client.',
-  )
+/**
+ * The DEFAULT read-only handle factory.
+ *
+ * The same factory preflight and write use. Reverify holds only read handles;
+ * it never imports the writer, so no transaction, batch, create, or update call
+ * is reachable from this file at all.
+ */
+let reverifyHandleSequence = 0
+async function defaultCreateHandles({ context, projectId, credential }) {
+  if (context === EXECUTION_CONTEXT.PRODUCTION) {
+    if (!credential || typeof credential.getAccessToken !== 'function') {
+      failArgument(
+        'credential-required',
+        'A production reverify requires an explicit validated credential.',
+      )
+    }
+    return createReadOnlyAdminHandles({
+      projectId,
+      credential,
+      appName: `phase3-reverify-${process.pid}-${reverifyHandleSequence += 1}`,
+    })
+  }
+  return createReadOnlyAdminHandles({
+    projectId,
+    appName: `phase3-reverify-${process.pid}-${reverifyHandleSequence += 1}`,
+  })
+}
+
+/**
+ * The DEFAULT bounded, READ-ONLY deployment-inventory reader.
+ *
+ * Identical bounds to the writer's: fixed origins, bounded pagination,
+ * per-request timeouts, redirect rejection. Reverify compares; it never deploys
+ * or repairs.
+ */
+function defaultDeploymentInventoryReader({ context, projectId, credential,
+  teacherUid }) {
+  if (context !== EXECUTION_CONTEXT.PRODUCTION) return null
+  return async () => {
+    const readers = createProductionReaders({
+      projectId, teacherUid, credential,
+    })
+    try {
+      const [inventory, writers] = await Promise.all([
+        readers.readDeploymentInventory(),
+        readers.readActiveWriters(),
+      ])
+      return Object.freeze({
+        rules: inventory.rules,
+        functions: inventory.functions,
+        hosting: inventory.hosting,
+        indexes: inventory.indexes,
+        gateParameters: inventory.gateParameters,
+        activeWriters: writers.writers,
+        activeWritersObservationComplete:
+          inventory.complete === true && writers.complete === true,
+      })
+    } finally {
+      await readers.close()
+    }
+  }
 }
 
 const isDirectExecution = process.argv[1] &&

@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto'
 import { randomUUID } from 'node:crypto'
-import { link, mkdir, open, readFile, unlink } from 'node:fs/promises'
+import { link, mkdir, open, readdir, readFile, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath, URL } from 'node:url'
 
-import { serializeCanonicalState } from '../phase2/canonicalState.js'
+import {
+  encodeCanonicalFirestoreValue,
+  serializeCanonicalState,
+} from '../phase2/canonicalState.js'
 import { ALLOWED_EMULATOR_PROJECT_ID } from './productionEnvironment.js'
 
 /**
@@ -74,6 +77,22 @@ export const PRODUCTION_STATE_DIRECTORY = fileURLToPath(
  * attributed to a specific area of production state instead of collapsing into
  * one opaque mismatch, and a later writer can compare domains independently.
  */
+/**
+ * The exact destination surfaces a v2 manifest must count.
+ *
+ * Declared here rather than imported from `productionPreflight.js`: that module
+ * imports the Admin SDK at module scope, and the manifest reader must stay free
+ * of it. A contract test pins these two lists to the same value.
+ */
+export const DESTINATION_COUNT_SURFACES = Object.freeze([
+  'classroomStudents',
+  'classroomTransactions',
+  'classroomLoginHistory',
+  'scopedCredentials',
+  'scopedLogs',
+  'loginCodeIndex',
+])
+
 export const CHECKSUM_DOMAINS = Object.freeze([
   'deploymentInventory',
   'legacySourceState',
@@ -169,6 +188,8 @@ export const PRODUCTION_MANIFEST_CATEGORIES = Object.freeze({
   NOT_FOUND: 'manifest-not-found',
   SECRET_MATERIAL: 'manifest-secret-material',
   WRITE_FAILED: 'manifest-write-failed',
+  JOURNAL_CORRUPT: 'journal-corrupt',
+  NOT_ELIGIBLE: 'manifest-not-eligible',
 })
 
 export class ProductionManifestError extends Error {
@@ -461,6 +482,31 @@ export function validateProductionManifest(manifest) {
       PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
       'A v2 manifest must record per-surface destination counts.',
     )
+  }
+  // EXACTLY the declared surfaces — no missing surface, no extra one, every
+  // value a non-negative integer. A manifest that counts fewer surfaces than
+  // preflight declares has not observed the destination, and the eligibility
+  // conjunction below would otherwise pass it on an incomplete observation.
+  {
+    const counts = manifest.observations.destinationCounts
+    const keys = Object.keys(counts)
+    if (keys.length !== DESTINATION_COUNT_SURFACES.length ||
+        DESTINATION_COUNT_SURFACES.some(surface => !Object.hasOwn(counts, surface))) {
+      fail(
+        PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
+        'destinationCounts must contain exactly the declared destination surfaces.',
+        { expected: [...DESTINATION_COUNT_SURFACES] },
+      )
+    }
+    for (const surface of DESTINATION_COUNT_SURFACES) {
+      if (!Number.isInteger(counts[surface]) || counts[surface] < 0) {
+        fail(
+          PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
+          'Each destination count must be a non-negative integer.',
+          { surface },
+        )
+      }
+    }
   }
 
   // Internal consistency: a manifest cannot claim write eligibility while also
@@ -784,4 +830,782 @@ export async function readProductionManifest(preflightManifestId, dependencies =
   }
 
   return validated
+}
+
+/* ------------------------------------------------------------------------- *
+ * Read-only journal replay
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The append-only journal's event vocabulary and legal transitions.
+ *
+ * Declared HERE, in a module with no mutation capability, so a read-only
+ * consumer can replay and validate a journal without importing
+ * `productionWriter.js`. The writer imports these rather than declaring its own,
+ * so there is exactly one transition table in the system: a reader and a writer
+ * that disagreed about legality is precisely how an illegal event became durable
+ * and then bricked every later replay.
+ */
+/**
+ * Journal schema version 2.
+ *
+ * Correction B added exact retained-evidence fields to the planned header and
+ * made payload validation unconditional for read-only replay. A v1 chain cannot
+ * express that contract, so accepting it would turn absent evidence into an
+ * implicit waiver. No production journal exists yet and the retained state
+ * directory is empty; the format is therefore versioned now rather than
+ * carrying an ambiguous compatibility path into the first production run.
+ */
+export const JOURNAL_SCHEMA_VERSION = 2
+export const JOURNAL_KIND = 'phase3-production-write-journal'
+
+export const JOURNAL_EVENTS = Object.freeze({
+  PLANNED: 'planned',
+  INITIALIZATION_IN_FLIGHT: 'initialization-in-flight',
+  INITIALIZATION_VERIFIED: 'initialization-verified',
+  AWAITING_COPY_DEPLOYMENT: 'awaiting-copy-deployment',
+  BATCH_IN_FLIGHT: 'batch-in-flight',
+  BATCH_COMMITTED: 'batch-committed',
+  BATCH_VERIFIED: 'batch-verified',
+  COPY_VERIFYING: 'copy-verifying',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+  INDETERMINATE: 'indeterminate',
+})
+
+export const LEGAL_TRANSITIONS = Object.freeze({
+  [JOURNAL_EVENTS.PLANNED]: Object.freeze([
+    JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT,
+    JOURNAL_EVENTS.FAILED,
+    JOURNAL_EVENTS.INDETERMINATE,
+  ]),
+  [JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT]: Object.freeze([
+    JOURNAL_EVENTS.INITIALIZATION_VERIFIED,
+    JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT,
+    JOURNAL_EVENTS.FAILED,
+    JOURNAL_EVENTS.INDETERMINATE,
+  ]),
+  [JOURNAL_EVENTS.INITIALIZATION_VERIFIED]: Object.freeze([
+    JOURNAL_EVENTS.AWAITING_COPY_DEPLOYMENT,
+    JOURNAL_EVENTS.FAILED,
+    JOURNAL_EVENTS.INDETERMINATE,
+  ]),
+  [JOURNAL_EVENTS.AWAITING_COPY_DEPLOYMENT]: Object.freeze([
+    JOURNAL_EVENTS.BATCH_IN_FLIGHT,
+    JOURNAL_EVENTS.FAILED,
+    JOURNAL_EVENTS.INDETERMINATE,
+  ]),
+  [JOURNAL_EVENTS.BATCH_IN_FLIGHT]: Object.freeze([
+    JOURNAL_EVENTS.BATCH_COMMITTED,
+    JOURNAL_EVENTS.BATCH_IN_FLIGHT,
+    JOURNAL_EVENTS.FAILED,
+    JOURNAL_EVENTS.INDETERMINATE,
+  ]),
+  [JOURNAL_EVENTS.BATCH_COMMITTED]: Object.freeze([
+    JOURNAL_EVENTS.BATCH_VERIFIED,
+    JOURNAL_EVENTS.FAILED,
+    JOURNAL_EVENTS.INDETERMINATE,
+  ]),
+  [JOURNAL_EVENTS.BATCH_VERIFIED]: Object.freeze([
+    JOURNAL_EVENTS.BATCH_IN_FLIGHT,
+    JOURNAL_EVENTS.COPY_VERIFYING,
+    JOURNAL_EVENTS.FAILED,
+    JOURNAL_EVENTS.INDETERMINATE,
+  ]),
+  [JOURNAL_EVENTS.COPY_VERIFYING]: Object.freeze([
+    JOURNAL_EVENTS.COMPLETED,
+    JOURNAL_EVENTS.FAILED,
+    JOURNAL_EVENTS.INDETERMINATE,
+  ]),
+  [JOURNAL_EVENTS.COMPLETED]: Object.freeze([]),
+  [JOURNAL_EVENTS.FAILED]: Object.freeze([]),
+  [JOURNAL_EVENTS.INDETERMINATE]: Object.freeze([]),
+})
+
+const MAX_JOURNAL_EVENTS = 100_000
+
+function journalFail(message, details) {
+  fail(PRODUCTION_MANIFEST_CATEGORIES.JOURNAL_CORRUPT, message, details)
+}
+
+/** The exact copy surfaces recorded in a planned journal header. */
+export const JOURNAL_COPY_SURFACES = Object.freeze([
+  'classroom',
+  'students',
+  'transactions',
+  'loginHistory',
+  'scopedCredentials',
+  'scopedAuthLogs',
+])
+
+const JOURNAL_EVENT_BASE_KEYS = Object.freeze([
+  'schemaVersion', 'kind', 'event', 'sequence', 'previousDigest',
+])
+
+const isJournalSha256 = value =>
+  typeof value === 'string' && SHA256_HEX.test(value)
+const isNonEmptyJournalString = value =>
+  typeof value === 'string' && value !== ''
+const isJournalIndex = value => Number.isInteger(value) && value >= 0
+const isPositiveJournalIndex = value =>
+  Number.isInteger(value) && value > 0
+const isJournalNanoseconds = value =>
+  isJournalIndex(value) && value <= 999_999_999
+const isBooleanTrue = value => value === true
+const isJournalCounts = value => isPlainObject(value) &&
+  JOURNAL_COPY_SURFACES.every(surface => isJournalIndex(value[surface])) &&
+  Object.keys(value).length === JOURNAL_COPY_SURFACES.length &&
+  Object.keys(value).every(key => JOURNAL_COPY_SURFACES.includes(key)) &&
+  value.classroom === 1
+
+/**
+ * Exact payload schema for every durable journal event.
+ *
+ * This declaration lives with read-only replay, not with the writer. A journal
+ * file must have one meaning whether it is opened by write.js or reverify.js;
+ * making payload validation injectable allowed a read-only consumer to accept a
+ * chain the writer would reject.
+ */
+const JOURNAL_EVENT_SCHEMAS = Object.freeze({
+  [JOURNAL_EVENTS.PLANNED]: Object.freeze({
+    required: Object.freeze({
+      projectId: isNonEmptyJournalString,
+      teacherUidSha256: isJournalSha256,
+      releaseId: isNonEmptyJournalString,
+      changeId: isNonEmptyJournalString,
+      authorizationId: isNonEmptyJournalString,
+      snapshotId: isNonEmptyJournalString,
+      writeFreezeProof: isNonEmptyJournalString,
+      credentialProvenance: isNonEmptyJournalString,
+      preflightManifestId: isJournalSha256,
+      preflightChecksum: isJournalSha256,
+      writeAuthorizationSha256: isJournalSha256,
+      preflightAuthorizationSha256: isJournalSha256,
+      credentialSha256: isJournalSha256,
+      initializationExpectationsSha256: isJournalSha256,
+      copyExpectationsSha256: isJournalSha256,
+      loginCodeSha256: isJournalSha256,
+      loginCodePathSha256: isJournalSha256,
+      classroomIdSha256: isJournalSha256,
+      nextStudentNumber: isJournalIndex,
+      initializedAtSeconds: Number.isSafeInteger,
+      initializedAtNanoseconds: isJournalNanoseconds,
+      planDigest: isJournalSha256,
+      batchCount: isPositiveJournalIndex,
+      countsBySurface: isJournalCounts,
+      foundationStateSha256: isJournalSha256,
+      foundationBodiesSha256: isJournalSha256,
+      foundationStableBodiesSha256: isJournalSha256,
+      teacherSourceSha256: isJournalSha256,
+      classroomInitializedBodySha256: isJournalSha256,
+      classroomProjectedBodySha256: isJournalSha256,
+      legacySourceStateSha256: isJournalSha256,
+      destinationAbsenceSha256: isJournalSha256,
+      authCompatibilitySha256: isJournalSha256,
+      watermarkSha256: isJournalSha256,
+    }),
+    optional: Object.freeze({}),
+  }),
+  [JOURNAL_EVENTS.INITIALIZATION_IN_FLIGHT]: Object.freeze({
+    required: Object.freeze({
+      initializedAtSeconds: Number.isSafeInteger,
+      initializedAtNanoseconds: isJournalNanoseconds,
+    }),
+    optional: Object.freeze({}),
+  }),
+  [JOURNAL_EVENTS.INITIALIZATION_VERIFIED]: Object.freeze({
+    required: Object.freeze({}),
+    optional: Object.freeze({ recoveredByClassification: isBooleanTrue }),
+  }),
+  [JOURNAL_EVENTS.AWAITING_COPY_DEPLOYMENT]: Object.freeze({
+    required: Object.freeze({}), optional: Object.freeze({}),
+  }),
+  [JOURNAL_EVENTS.BATCH_IN_FLIGHT]: Object.freeze({
+    required: Object.freeze({
+      batchIndex: isJournalIndex,
+      batchDigest: isJournalSha256,
+      operationCount: value => isPositiveJournalIndex(value) && value <= 400,
+      estimatedBytes: value =>
+        isPositiveJournalIndex(value) && value <= 8 * 1024 * 1024,
+    }),
+    optional: Object.freeze({}),
+  }),
+  [JOURNAL_EVENTS.BATCH_COMMITTED]: Object.freeze({
+    required: Object.freeze({
+      batchIndex: isJournalIndex, batchDigest: isJournalSha256,
+    }),
+    optional: Object.freeze({ recoveredByClassification: isBooleanTrue }),
+  }),
+  [JOURNAL_EVENTS.BATCH_VERIFIED]: Object.freeze({
+    required: Object.freeze({
+      batchIndex: isJournalIndex, batchDigest: isJournalSha256,
+    }),
+    optional: Object.freeze({ recoveredByClassification: isBooleanTrue }),
+  }),
+  [JOURNAL_EVENTS.COPY_VERIFYING]: Object.freeze({
+    required: Object.freeze({}),
+    optional: Object.freeze({ reconciledAfterRestart: isBooleanTrue }),
+  }),
+  [JOURNAL_EVENTS.COMPLETED]: Object.freeze({
+    required: Object.freeze({}), optional: Object.freeze({}),
+  }),
+  [JOURNAL_EVENTS.FAILED]: Object.freeze({
+    required: Object.freeze({ reason: isNonEmptyJournalString }),
+    optional: Object.freeze({
+      phase: isNonEmptyJournalString, batchIndex: isJournalIndex,
+    }),
+  }),
+  [JOURNAL_EVENTS.INDETERMINATE]: Object.freeze({
+    required: Object.freeze({ phase: isNonEmptyJournalString }),
+    optional: Object.freeze({ batchIndex: isJournalIndex }),
+  }),
+})
+
+const FORBIDDEN_JOURNAL_KEYS = Object.freeze(new Set([
+  'pin', 'pins', 'pinhash', 'pinhashes', 'password', 'passwords',
+  'secret', 'secrets', 'token', 'tokens', 'email', 'emails',
+  'emailaddress', 'email_address', 'privatekey', 'private_key',
+  'apikey', 'api_key', 'accesstoken', 'access_token',
+  'refreshtoken', 'refresh_token', 'clientsecret', 'client_secret',
+  'logincode', 'login_code', 'studentlogincode', 'student_login_code',
+  'classroomcode', 'classroom_code', 'code', 'rawcode', 'raw_code',
+  'data', 'body', 'document', 'documents', 'contents',
+  'path', 'paths', 'documentpath', 'document_path', 'sourcepath',
+  'targetpath', 'credentialpath', 'credential_path',
+  'credentialbody', 'credential_body', 'rawcredential', 'raw_credential',
+  'serviceaccount', 'service_account',
+]))
+
+const FORBIDDEN_JOURNAL_SUBSTRINGS = Object.freeze([
+  'pinhash', 'privatekey', 'private_key', 'accesstoken', 'access_token',
+  'refreshtoken', 'refresh_token', 'clientsecret', 'client_secret',
+  'credentialpath', 'credentialbody', 'rawcredential',
+  'serviceaccount', 'service_account',
+])
+
+const FORBIDDEN_JOURNAL_VALUE_PATTERNS = Object.freeze([
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./,
+  /\bya29\.[A-Za-z0-9_-]{10,}/,
+  /\bBearer\s+[A-Za-z0-9._-]{10,}/i,
+  /@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/,
+  /\$2[aby]\$\d{2}\$/,
+  /\b(?:classrooms|teachers|studentCredentials|studentAuthLogs|morganBank|classroomLoginCodes)\/[^\s"]+/,
+])
+
+/** Rejects raw identities, paths, document bodies, and credentials in a journal. */
+export function assertNoJournalSecrets(value, label = '$') {
+  if (typeof value === 'string') {
+    if (FORBIDDEN_JOURNAL_VALUE_PATTERNS.some(pattern => pattern.test(value))) {
+      journalFail('A journal event contains sensitive material.', { label })
+    }
+    return true
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) =>
+      assertNoJournalSecrets(entry, `${label}[${index}]`))
+    return true
+  }
+  if (isPlainObject(value)) {
+    for (const [key, entry] of Object.entries(value)) {
+      const normalized = key.toLowerCase()
+      if (FORBIDDEN_JOURNAL_KEYS.has(normalized) ||
+          FORBIDDEN_JOURNAL_SUBSTRINGS.some(part => normalized.includes(part))) {
+        journalFail('A journal event contains a forbidden field name.', {
+          label: `${label}.${key}`,
+        })
+      }
+      assertNoJournalSecrets(entry, `${label}.${key}`)
+    }
+  }
+  return true
+}
+
+/** Validates one event's exact base envelope, payload, and secret-free shape. */
+export function validateJournalEvent(event, sequence) {
+  if (!isPlainObject(event)) {
+    journalFail('A journal event must be a plain object.', { sequence })
+  }
+  for (const key of JOURNAL_EVENT_BASE_KEYS) {
+    if (!Object.hasOwn(event, key)) {
+      journalFail('A journal event is missing a required field.', {
+        sequence, field: key,
+      })
+    }
+  }
+  if (event.schemaVersion !== JOURNAL_SCHEMA_VERSION ||
+      event.kind !== JOURNAL_KIND) {
+    journalFail('A journal event declares an unsupported schema or kind.', {
+      sequence,
+    })
+  }
+  if (!Object.values(JOURNAL_EVENTS).includes(event.event)) {
+    journalFail('A journal event declares an unrecognized event kind.', { sequence })
+  }
+  if (event.sequence !== sequence) {
+    journalFail('A journal event declares the wrong sequence.', { sequence })
+  }
+  if (sequence === 0) {
+    if (event.previousDigest !== null) {
+      journalFail('The header event must have a null predecessor digest.', {
+        sequence,
+      })
+    }
+  } else if (!isJournalSha256(event.previousDigest)) {
+    journalFail('A journal event has no valid predecessor digest.', { sequence })
+  }
+
+  const schema = JOURNAL_EVENT_SCHEMAS[event.event]
+  if (schema === undefined) {
+    journalFail('A journal event has no declared schema.', {
+      sequence, event: event.event,
+    })
+  }
+  for (const [field, predicate] of Object.entries(schema.required)) {
+    if (!Object.hasOwn(event, field) || !predicate(event[field])) {
+      journalFail('A journal event is missing or misdeclares a required field.', {
+        sequence, event: event.event, field,
+      })
+    }
+  }
+  for (const field of Object.keys(event)) {
+    if (JOURNAL_EVENT_BASE_KEYS.includes(field) ||
+        Object.hasOwn(schema.required, field)) continue
+    if (Object.hasOwn(schema.optional, field)) {
+      if (!schema.optional[field](event[field])) {
+        journalFail('A journal event misdeclares an optional field.', {
+          sequence, event: event.event, field,
+        })
+      }
+      continue
+    }
+    journalFail('A journal event carries an undeclared field.', {
+      sequence, event: event.event, field,
+    })
+  }
+  assertNoJournalSecrets(event, `event[${sequence}]`)
+  return true
+}
+
+/**
+ * Validates the meaning shared across journal events, not just each event's
+ * individual shape.
+ *
+ * The planned header commits to an ordered list of batch digests. A chain that
+ * merely carried checksum-shaped values could otherwise claim one plan in its
+ * header and execute unrelated batches while remaining transition-valid. This
+ * function binds every in-flight/committed/verified record to one descriptor,
+ * requires consecutive batch indices, and reconstructs the exact plan digest
+ * once the complete descriptor set is present. It is intentionally owned by
+ * this read-only module so `write.js` and `reverify.js` cannot disagree.
+ */
+export function validateJournalSemantics(events) {
+  if (!Array.isArray(events) || events.length === 0) return true
+
+  const header = events[0]
+  const batches = new Map()
+  let nextBatchIndex = 0
+
+  const semanticFail = (message, details = {}) =>
+    journalFail(message, details)
+  const requireBatch = event => {
+    const recorded = batches.get(event.batchIndex)
+    if (recorded === undefined || recorded.batchDigest !== event.batchDigest) {
+      semanticFail(
+        'A journal batch event does not match its in-flight descriptor.',
+        { sequence: event.sequence, batchIndex: event.batchIndex },
+      )
+    }
+    return recorded
+  }
+
+  for (const event of events.slice(1)) {
+    if (event.event === JOURNAL_EVENTS.BATCH_IN_FLIGHT) {
+      const existing = batches.get(event.batchIndex)
+      if (existing !== undefined) {
+        if (existing.verified === true ||
+            existing.batchDigest !== event.batchDigest ||
+            existing.operationCount !== event.operationCount ||
+            existing.estimatedBytes !== event.estimatedBytes) {
+          semanticFail(
+            'A repeated in-flight batch does not reproduce its descriptor.',
+            { sequence: event.sequence, batchIndex: event.batchIndex },
+          )
+        }
+        continue
+      }
+      if (event.batchIndex !== nextBatchIndex ||
+          event.batchIndex >= header.batchCount) {
+        semanticFail(
+          'Journal batches are not consecutive within the planned bounds.',
+          { sequence: event.sequence, batchIndex: event.batchIndex },
+        )
+      }
+      batches.set(event.batchIndex, {
+        batchDigest: event.batchDigest,
+        operationCount: event.operationCount,
+        estimatedBytes: event.estimatedBytes,
+        committed: false,
+        verified: false,
+      })
+      nextBatchIndex += 1
+      continue
+    }
+
+    if (event.event === JOURNAL_EVENTS.BATCH_COMMITTED) {
+      const recorded = requireBatch(event)
+      if (recorded.committed === true || recorded.verified === true) {
+        semanticFail('A journal batch is committed more than once.', {
+          sequence: event.sequence, batchIndex: event.batchIndex,
+        })
+      }
+      recorded.committed = true
+      continue
+    }
+
+    if (event.event === JOURNAL_EVENTS.BATCH_VERIFIED) {
+      const recorded = requireBatch(event)
+      if (recorded.committed !== true || recorded.verified === true) {
+        semanticFail('A journal batch is verified without one matching commit.', {
+          sequence: event.sequence, batchIndex: event.batchIndex,
+        })
+      }
+      recorded.verified = true
+    }
+  }
+
+  const descriptorSetComplete = batches.size === header.batchCount
+  if (descriptorSetComplete) {
+    const ordered = Array.from({ length: header.batchCount }, (_, index) => {
+      const batch = batches.get(index)
+      if (batch === undefined) {
+        semanticFail('The journal plan has a missing batch descriptor.', { index })
+      }
+      return batch
+    })
+    const reconstructedPlanDigest = createHash('sha256')
+      .update(serializeCanonicalState(
+        ordered.map(batch => batch.batchDigest),
+      ), 'utf8')
+      .digest('hex')
+    if (reconstructedPlanDigest !== header.planDigest) {
+      semanticFail(
+        'The journal batches do not reconstruct the planned digest.',
+      )
+    }
+    const plannedOperationCount = Object.values(header.countsBySurface)
+      .reduce((total, count) => total + count, 0)
+    const describedOperationCount = ordered
+      .reduce((total, batch) => total + batch.operationCount, 0)
+    if (describedOperationCount !== plannedOperationCount) {
+      semanticFail(
+        'The journal batch sizes do not match the planned surface counts.',
+      )
+    }
+  }
+
+  const head = events.at(-1)
+  if (head.event === JOURNAL_EVENTS.COPY_VERIFYING ||
+      head.event === JOURNAL_EVENTS.COMPLETED) {
+    if (!descriptorSetComplete ||
+        [...batches.values()].some(batch => batch.verified !== true)) {
+      semanticFail(
+        'The journal entered reconciliation before every planned batch verified.',
+      )
+    }
+  }
+
+  return true
+}
+
+export function journalSequenceFilename(sequence) {
+  return `${String(sequence).padStart(6, '0')}.json`
+}
+
+/** Resolves a journal directory, refusing anything outside the state root. */
+export function resolveJournalDirectory(preflightManifestId,
+  stateRoot = PRODUCTION_STATE_DIRECTORY) {
+  if (typeof preflightManifestId !== 'string' ||
+      !SHA256_HEX.test(preflightManifestId)) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.INVALID_IDENTIFIER,
+      'A journal requires a SHA-256 preflight manifest ID.',
+    )
+  }
+  const directory = path.join(stateRoot, `write-${preflightManifestId}`)
+  const expectedPrefix = stateRoot.endsWith(path.sep)
+    ? stateRoot
+    : `${stateRoot}${path.sep}`
+  if (!directory.startsWith(expectedPrefix)) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.INVALID_IDENTIFIER,
+      'A resolved journal directory escaped the Phase 3 state directory.',
+    )
+  }
+  return directory
+}
+
+/**
+ * Replays a journal READ-ONLY and validates the complete chain.
+ *
+ * Opens nothing for writing, creates no directory, and appends nothing. Both the
+ * writer's journal and the read-only re-verifier call this, so the two can never
+ * disagree about whether a stored chain is valid.
+ *
+ * Exact payload and secret validation is unconditional and owned here. A
+ * read-only replay therefore accepts exactly the same bytes as the writer.
+ */
+export async function replayWriteJournal({
+  directory,
+  fs: injectedFs = {},
+} = {}) {
+  const readDirectory = injectedFs.readdir ?? readdir
+  const readEventFile = injectedFs.readFile ?? readFile
+
+  let names
+  try {
+    names = await readDirectory(directory)
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return Object.freeze({
+        exists: false,
+        events: Object.freeze([]),
+        head: undefined,
+        headDigest: null,
+        nextSequence: 0,
+      })
+    }
+    throw error
+  }
+
+  const eventFiles = names.filter(name => /^\d{6}\.json$/.test(name)).sort()
+
+  const events = []
+  let previousDigest = null
+  for (let sequence = 0; sequence < eventFiles.length; sequence += 1) {
+    const expectedName = journalSequenceFilename(sequence)
+    if (eventFiles[sequence] !== expectedName) {
+      journalFail('The journal has a gap or out-of-order sequence file.',
+        { sequence })
+    }
+    const contents = await readEventFile(
+      path.join(directory, expectedName), 'utf8',
+    )
+    let parsed
+    try {
+      parsed = JSON.parse(contents)
+    } catch {
+      journalFail('A journal event is not parseable JSON.', { sequence })
+    }
+    // Canonical round-trip: proves the stored bytes were not hand-edited into
+    // an equivalent-but-different form.
+    if (serializeCanonicalState(parsed) !== contents) {
+      journalFail('A journal event is not in canonical serialized form.',
+        { sequence })
+    }
+    if (!isPlainObject(parsed)) {
+      journalFail('A journal event must be a plain object.', { sequence })
+    }
+    if (parsed.schemaVersion !== JOURNAL_SCHEMA_VERSION ||
+        parsed.kind !== JOURNAL_KIND) {
+      journalFail('A journal event declares an unsupported schema or kind.',
+        { sequence })
+    }
+    if (!Object.values(JOURNAL_EVENTS).includes(parsed.event)) {
+      journalFail('A journal event declares an unrecognized event kind.',
+        { sequence })
+    }
+    if (parsed.sequence !== sequence) {
+      journalFail('A journal event declares the wrong sequence.', { sequence })
+    }
+    if (parsed.previousDigest !== previousDigest) {
+      journalFail('A journal event does not chain to its predecessor.',
+        { sequence })
+    }
+    if (sequence === 0) {
+      if (parsed.event !== JOURNAL_EVENTS.PLANNED) {
+        journalFail('A journal must begin with a planned header event.')
+      }
+    } else {
+      const legal = LEGAL_TRANSITIONS[events[sequence - 1].event] ?? []
+      if (!legal.includes(parsed.event)) {
+        journalFail('A journal event is not a legal successor of its predecessor.',
+          { sequence, from: events[sequence - 1].event, to: parsed.event })
+      }
+    }
+    validateJournalEvent(parsed, sequence)
+
+    events.push(parsed)
+    previousDigest = createHash('sha256')
+      .update(serializeCanonicalState(parsed), 'utf8')
+      .digest('hex')
+    if (sequence >= MAX_JOURNAL_EVENTS) {
+      journalFail('The journal exceeded its bounded event count.')
+    }
+  }
+
+  validateJournalSemantics(events)
+
+  return Object.freeze({
+    exists: true,
+    events: Object.freeze(events),
+    head: events.at(-1),
+    headDigest: previousDigest,
+    nextSequence: events.length,
+  })
+}
+
+/**
+ * A READ-ONLY journal view for the re-verifier.
+ *
+ * Exposes `replay` and nothing else. There is no `append`, so a caller holding
+ * this object has no way to modify the record even by mistake.
+ */
+export function createReadOnlyJournalView({
+  preflightManifestId,
+  stateRoot = PRODUCTION_STATE_DIRECTORY,
+  fs: injectedFs = {},
+} = {}) {
+  const directory = resolveJournalDirectory(preflightManifestId, stateRoot)
+  return Object.freeze({
+    directory,
+    replay: () => replayWriteJournal({
+      directory, fs: injectedFs,
+    }),
+  })
+}
+
+/**
+ * The exact foundation-state digest.
+ *
+ * Declared in this mutation-free module so the writer (which BINDS it), the
+ * initialization transaction (which REPROVES it), and the read-only re-verifier
+ * (which COMPARES it) all derive it identically. Three copies of this
+ * derivation would be three chances for a comparison to silently never match.
+ */
+export function computeFoundationStateDigest(teacherData, classroomData) {
+  return createHash('sha256')
+    .update(serializeCanonicalState({
+      teacher: encodeCanonicalFirestoreValue(teacherData),
+      classroom: encodeCanonicalFirestoreValue(classroomData),
+    }), 'utf8')
+    .digest('hex')
+}
+
+/**
+ * Proves a retained manifest may authorize Commit 5 writes.
+ *
+ * A diagnostic manifest — foundation absent, an acknowledged anomaly, an
+ * acknowledged destination count, or a present code — is explicitly NOT
+ * write-eligible. Correction A: the existing foundation is created or repaired
+ * administratively under Release Order step 8 and preflight is rerun; this
+ * writer validates an existing reciprocal foundation and never invents one.
+ */
+export function assertManifestWriteEligible(manifest, { expectedProjectId }) {
+  if (!isPlainObject(manifest)) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.INVALID_SCHEMA,
+      'A retained manifest is required.',
+    )
+  }
+  if (manifest.schemaVersion !== 2) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE,
+      'Only a schema v2 manifest may authorize a write.',
+    )
+  }
+  if (manifest.outcome !== 'succeeded') {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE,
+      'Only a succeeded preflight may authorize a write.',
+    )
+  }
+  if (manifest.projectId !== expectedProjectId) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE,
+      'The retained manifest names a different project than this invocation.',
+    )
+  }
+  const observations = manifest.observations
+  if (!isPlainObject(observations)) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE,
+      'The retained manifest has no observations.',
+    )
+  }
+  if (observations.foundationPresent !== true) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE,
+      'A manifest recording an absent foundation must not authorize a write.',
+    )
+  }
+  if (observations.selectedCodePresent !== false) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE,
+      'The selected classroom login code was already present at preflight.',
+    )
+  }
+  if (observations.acknowledgedAnomalyCount !== 0) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE,
+      'An acknowledged-anomaly manifest must not authorize a write.',
+    )
+  }
+  const counts = observations.destinationCounts
+  if (!isPlainObject(counts)) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE,
+      'The retained manifest records no destination counts.',
+    )
+  }
+  // EXACTLY the six declared surfaces, each exactly zero. Iterating only the
+  // keys that happen to be present let a manifest satisfy this by omission: one
+  // declaring nothing but `{loginCodeIndex: 0}` proved five surfaces were empty
+  // without ever having examined them.
+  const countedSurfaces = Object.keys(counts)
+  const missingSurfaces = DESTINATION_COUNT_SURFACES.filter(
+    surface => !Object.hasOwn(counts, surface),
+  )
+  if (missingSurfaces.length > 0) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE,
+      'The retained manifest did not count every destination surface.',
+      { missing: missingSurfaces },
+    )
+  }
+  const unknownSurfaces = countedSurfaces.filter(
+    surface => !DESTINATION_COUNT_SURFACES.includes(surface),
+  )
+  if (unknownSurfaces.length > 0) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE,
+      'The retained manifest counts an undeclared destination surface.',
+      { unknown: unknownSurfaces },
+    )
+  }
+  for (const surface of DESTINATION_COUNT_SURFACES) {
+    if (counts[surface] !== 0) {
+      fail(
+        PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE,
+        'A destination surface was not empty at preflight.',
+        { surface },
+      )
+    }
+  }
+  if (observations.writeEligible !== true) {
+    fail(
+      PRODUCTION_MANIFEST_CATEGORIES.NOT_ELIGIBLE,
+      'The retained manifest does not declare itself write-eligible.',
+    )
+  }
+  return manifest
+}
+
+/**
+ * Hashes a UTF-8 string. Exported so read-only consumers can derive the same
+ * identifier digests the writer binds without holding a hashing idiom that a
+ * blunt read-only boundary scan would have to special-case.
+ */
+export function sha256Hex(value) {
+  return createHash('sha256').update(value, 'utf8').digest('hex')
 }
