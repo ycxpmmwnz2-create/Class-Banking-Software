@@ -28,6 +28,10 @@ The repository uses a Codex, Claude, and Grok engineering workflow:
   Andrew is not expected to perform technical review or decide whether an
   implementation is correct or secure.
 
+These fixed roles deliberately replace the former rotating builder/reviewer
+assignment: Codex remains the primary implementer, Claude remains the detailed
+reviewer, and Grok remains the final systems-level reviewer.
+
 There is no unattended AI reviewer and no repository-stored model credential.
 The retired Meta/OpenCode workflow must not be reintroduced without Andrew's
 explicit approval and a new security review.
