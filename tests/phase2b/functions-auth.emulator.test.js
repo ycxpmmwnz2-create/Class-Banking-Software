@@ -589,20 +589,20 @@ if (testMode === 'gate-on') {
   const INDEX_SPECIFIER = './index.js'
   const INDEX_URL = pathToFileURL(path.join(FUNCTIONS_DIR, 'index.js')).href
 
-  /**
-   * Child-process guard probe. It imports `firebase-admin/app` first, then
-   * attempts to import `functions/index.js`, then reports both whether the
-   * import threw *and* how many Admin apps exist. `apps === 0` after a throw is
-   * the observable proof that the environment check ran before
-   * `initializeApp()`, which asserting on the throw alone cannot show.
-   */
+  /** Child-process discovery and per-invocation guard probe. */
   const GUARD_PROBE = [
     "const { getApps } = await import('firebase-admin/app')",
     'let threw = false',
     'let message = ""',
-    `try { await import(${JSON.stringify(INDEX_SPECIFIER)}) }`,
+    'let imported = null',
+    'let invocation = null',
+    `try { imported = await import(${JSON.stringify(INDEX_SPECIFIER)}) }`,
     'catch (error) { threw = true; message = String(error && error.message) }',
-    "console.log('GUARD_RESULT ' + JSON.stringify({ threw, apps: getApps().length, message }))",
+    'if (imported && process.env.RUN_V2_PROBE === "true") {',
+    '  try { await imported.studentPinLoginV2.run({ data: {} }); invocation = { succeeded: true } }',
+    '  catch (error) { invocation = { succeeded: false, code: error?.code || null, message: String(error?.message || error) } }',
+    '}',
+    "console.log('GUARD_RESULT ' + JSON.stringify({ threw, apps: getApps().length, message, invocation, reviewedRelease: imported?.REVIEWED_V2_FUNCTIONS_RELEASE_ID || null, releaseParamAvailable: Boolean(imported?.MULTI_TEACHER_V2_RELEASE_ID), exportsAvailable: Boolean(imported?.studentPinLogin && imported?.studentPinLoginV2 && imported?.syncStudentProfilesV2) }))",
     'process.exit(0)',
   ].join('\n')
 
@@ -631,10 +631,24 @@ if (testMode === 'gate-on') {
     return JSON.parse(line.slice('GUARD_RESULT '.length))
   }
 
-  function assertRefusedBeforeInit(envOverrides, label) {
+  function assertDiscoverySurvives(envOverrides, label) {
     const result = runGuardProbe(envOverrides)
-    assert.equal(result.threw, true, `${label}: import should have thrown`)
-    assert.equal(result.apps, 0, `${label}: initializeApp() ran before the environment was validated`)
+    assert.equal(result.threw, false, `${label}: module discovery must not throw`)
+    assert.ok(result.apps === 0 || result.apps === 1, `${label}: discovery created an invalid Admin app count`)
+    assert.equal(result.exportsAvailable, true, `${label}: legacy and V2 exports must remain discoverable`)
+    assert.equal(result.releaseParamAvailable, true, `${label}: the release parameter must remain declared`)
+  }
+
+  function assertV2RefusedAtInvocation(envOverrides, label) {
+    const result = runGuardProbe({ ...envOverrides, RUN_V2_PROBE: 'true' })
+    assert.equal(result.threw, false, `${label}: module discovery must not throw`)
+    assert.equal(result.exportsAvailable, true, `${label}: exports must remain discoverable`)
+    assert.equal(result.releaseParamAvailable, true, `${label}: the release parameter must remain declared`)
+    assert.deepEqual(result.invocation, {
+      succeeded: false,
+      code: 'failed-precondition',
+      message: 'Multi-teacher V2 is disabled.',
+    })
   }
 
   describe('Gate-on: real-emulator V2 acceptance', () => {
@@ -648,78 +662,167 @@ if (testMode === 'gate-on') {
     })
 
     // -----------------------------------------------------------------------
-    describe('A. Pre-initialization environment guards', () => {
-      it('refuses a missing Auth emulator host before initializeApp()', () => {
-        assertRefusedBeforeInit({ FIREBASE_AUTH_EMULATOR_HOST: undefined }, 'missing auth host')
+    describe('A. Discovery-safe per-invocation environment guards', () => {
+      it('keeps discovery alive with a missing Auth emulator host', () => {
+        assertDiscoverySurvives({ FIREBASE_AUTH_EMULATOR_HOST: undefined }, 'missing auth host')
       })
 
-      it('refuses a missing Firestore emulator host before initializeApp()', () => {
-        assertRefusedBeforeInit({ FIRESTORE_EMULATOR_HOST: undefined }, 'missing firestore host')
+      it('keeps discovery alive with a missing Firestore emulator host', () => {
+        assertDiscoverySurvives({ FIRESTORE_EMULATOR_HOST: undefined }, 'missing firestore host')
       })
 
-      it('refuses FUNCTIONS_EMULATOR that is not exactly "true"', () => {
-        assertRefusedBeforeInit({ FUNCTIONS_EMULATOR: 'TRUE' }, 'FUNCTIONS_EMULATOR=TRUE')
-        assertRefusedBeforeInit({ FUNCTIONS_EMULATOR: '1' }, 'FUNCTIONS_EMULATOR=1')
-        assertRefusedBeforeInit({ FUNCTIONS_EMULATOR: undefined }, 'FUNCTIONS_EMULATOR unset')
+      it('keeps discovery alive when FUNCTIONS_EMULATOR is not exactly "true"', () => {
+        assertDiscoverySurvives({ FUNCTIONS_EMULATOR: 'TRUE' }, 'FUNCTIONS_EMULATOR=TRUE')
+        assertDiscoverySurvives({ FUNCTIONS_EMULATOR: '1' }, 'FUNCTIONS_EMULATOR=1')
+        assertDiscoverySurvives({ FUNCTIONS_EMULATOR: undefined }, 'FUNCTIONS_EMULATOR unset')
       })
 
-      it('refuses malformed host:port values', () => {
-        assertRefusedBeforeInit({ FIRESTORE_EMULATOR_HOST: '127.0.0.1' }, 'firestore without port')
-        assertRefusedBeforeInit({ FIRESTORE_EMULATOR_HOST: '127.0.0.1:notaport' }, 'firestore bad port')
-        assertRefusedBeforeInit({ FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099:9099' }, 'auth extra colon')
-        assertRefusedBeforeInit({ FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:0' }, 'auth port zero')
+      it('keeps discovery alive with malformed host:port values', () => {
+        assertDiscoverySurvives({ FIRESTORE_EMULATOR_HOST: '127.0.0.1' }, 'firestore without port')
+        assertDiscoverySurvives({ FIRESTORE_EMULATOR_HOST: '127.0.0.1:notaport' }, 'firestore bad port')
+        assertDiscoverySurvives({ FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099:9099' }, 'auth extra colon')
+        assertDiscoverySurvives({ FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:0' }, 'auth port zero')
       })
 
-      it('refuses a non-loopback Auth host', () => {
-        assertRefusedBeforeInit({ FIREBASE_AUTH_EMULATOR_HOST: '10.0.0.5:9099' }, 'non-loopback auth')
-        assertRefusedBeforeInit(
+      it('keeps discovery alive with a non-loopback Auth host', () => {
+        assertDiscoverySurvives({ FIREBASE_AUTH_EMULATOR_HOST: '10.0.0.5:9099' }, 'non-loopback auth')
+        assertDiscoverySurvives(
           { FIREBASE_AUTH_EMULATOR_HOST: 'identitytoolkit.googleapis.com:443' },
           'production auth host',
         )
       })
 
-      it('refuses a non-loopback Firestore host', () => {
-        assertRefusedBeforeInit({ FIRESTORE_EMULATOR_HOST: '192.168.1.1:8080' }, 'non-loopback firestore')
-        assertRefusedBeforeInit(
+      it('keeps discovery alive with a non-loopback Firestore host', () => {
+        assertDiscoverySurvives({ FIRESTORE_EMULATOR_HOST: '192.168.1.1:8080' }, 'non-loopback firestore')
+        assertDiscoverySurvives(
           { FIRESTORE_EMULATOR_HOST: 'firestore.googleapis.com:443' },
           'production firestore host',
         )
       })
 
-      it('refuses a missing project identity', () => {
-        assertRefusedBeforeInit(
+      it('keeps discovery alive with a missing project identity', () => {
+        assertDiscoverySurvives(
           { GCLOUD_PROJECT: undefined, FIREBASE_CONFIG: undefined },
           'no project at all',
         )
       })
 
-      it('refuses conflicting GCLOUD_PROJECT and FIREBASE_CONFIG', () => {
-        assertRefusedBeforeInit(
+      it('keeps discovery alive with conflicting project sources', () => {
+        assertDiscoverySurvives(
           {
             GCLOUD_PROJECT: GATE_ON_PROJECT_ID,
             FIREBASE_CONFIG: JSON.stringify({ projectId: 'demo-some-other-project' }),
           },
           'conflicting project ids',
         )
-        assertRefusedBeforeInit(
+        assertDiscoverySurvives(
           { GCLOUD_PROJECT: undefined, FIREBASE_CONFIG: '{not json' },
           'unparseable FIREBASE_CONFIG',
         )
       })
 
-      it('refuses the production project and any non-allowlisted project', () => {
-        assertRefusedBeforeInit({ GCLOUD_PROJECT: 'morgan-bank' }, 'production project')
-        assertRefusedBeforeInit(
-          { GCLOUD_PROJECT: undefined, FIREBASE_CONFIG: JSON.stringify({ projectId: 'morgan-bank' }) },
-          'production project via FIREBASE_CONFIG',
-        )
-        assertRefusedBeforeInit({ GCLOUD_PROJECT: GATE_OFF_PROJECT_ID }, 'gate-off project with gate on')
+      it('keeps discovery alive for production and non-allowlisted identities', () => {
+        assertDiscoverySurvives({ GCLOUD_PROJECT: 'morgan-bank' }, 'production project with emulator flags')
+        assertDiscoverySurvives({ GCLOUD_PROJECT: GATE_OFF_PROJECT_ID }, 'gate-off project with gate on')
       })
 
       it('accepts the valid demo-project emulator environment and initializes exactly one app', () => {
         const result = runGuardProbe({})
         assert.equal(result.threw, false, `valid environment threw: ${result.message}`)
         assert.equal(result.apps, 1)
+      })
+
+      it('fails only the V2 invocation for an invalid emulator identity', () => {
+        assertV2RefusedAtInvocation({ GCLOUD_PROJECT: GATE_OFF_PROJECT_ID }, 'wrong demo project')
+        assertV2RefusedAtInvocation({ FIRESTORE_EMULATOR_HOST: 'firestore.googleapis.com:443' }, 'non-loopback host')
+      })
+
+      it('requires the production release parameter to match the reviewed Functions artifact', () => {
+        const production = {
+          FUNCTIONS_EMULATOR: undefined,
+          FIRESTORE_EMULATOR_HOST: undefined,
+          FIREBASE_AUTH_EMULATOR_HOST: undefined,
+          FIREBASE_CONFIG: undefined,
+          GCLOUD_PROJECT: 'morgan-bank',
+          MULTI_TEACHER_V2_RELEASE_ID: 'wrong-release',
+        }
+        assertV2RefusedAtInvocation(production, 'mismatched production release')
+        const accepted = runGuardProbe({
+          ...production,
+          MULTI_TEACHER_V2_RELEASE_ID: 'phase3-commit8-functions-v1',
+        })
+        assert.equal(accepted.threw, false)
+        assert.equal(accepted.reviewedRelease, 'phase3-commit8-functions-v1')
+        assert.equal(accepted.invocation, null)
+      })
+    })
+
+    // -----------------------------------------------------------------------
+    describe('A2. Gate-on legacy compatibility refusal', () => {
+      const maintenanceMessage = 'This client version is unavailable during multi-teacher maintenance.'
+
+      it('rejects legacy login, PIN reset, and bootstrap before any legacy read or write', async () => {
+        const oldHash = await bcrypt.hash('1234', 12)
+        const credentialRef = db.collection('studentCredentials').doc('legacy-gate-on')
+        await credentialRef.set({
+          schemaVersion: 1,
+          loginId: 'legacy-gate-on',
+          pinHash: oldHash,
+          authUid: 'legacy-gate-on-auth',
+          classroomId: 'morgan',
+          studentId: '77',
+          active: true,
+          failedAttempts: 4,
+          lockedUntil: null,
+        })
+
+        const anonymous = createTestClientApp()
+        await expectCallableError(
+          () => httpsCallable(anonymous.functions, 'studentPinLogin')({
+            loginId: 'legacy-gate-on', pin: '1234',
+          }),
+          'failed-precondition',
+          maintenanceMessage,
+        )
+        assert.equal((await db.collection('studentAuthLogs').get()).size, 0)
+        assert.equal((await credentialRef.get()).data().failedAttempts, 4)
+
+        const teacherToken = await adminAuth.createCustomToken(LEGACY_TEACHER_UID)
+        const teacher = createTestClientApp()
+        await signInWithCustomToken(teacher.auth, teacherToken)
+        await expectCallableError(
+          () => httpsCallable(teacher.functions, 'resetStudentPin')({
+            classroomId: 'morgan', studentId: '77', newPin: '9999',
+          }),
+          'failed-precondition',
+          maintenanceMessage,
+        )
+        await expectCallableError(
+          () => httpsCallable(teacher.functions, 'ensureTeacherClassroom')({}),
+          'failed-precondition',
+          maintenanceMessage,
+        )
+
+        const after = (await credentialRef.get()).data()
+        assert.equal(after.pinHash, oldHash)
+        assert.equal(after.failedAttempts, 4)
+        assert.equal((await db.collection('teachers').get()).size, 0)
+        assert.equal((await db.collection('classrooms').get()).size, 0)
+      })
+
+      it('keeps the legacy aggregate trigger inert while the V2 gate is on', async () => {
+        await db.collection('morganBank').doc('classroomData').set({
+          students: [{ id: 88, name: 'Must Not Sync', balance: 50 }],
+          transactions: [],
+        })
+
+        await waitForStableAbsence(async () => {
+          const [credential, mirror] = await Promise.all([
+            db.collection('studentCredentials').doc('must-not-sync').get(),
+            db.collection('classrooms').doc('morgan').collection('students').doc('88').get(),
+          ])
+          return credential.exists || mirror.exists
+        }, { label: 'a legacy trigger write while V2 is authoritative' })
       })
     })
 

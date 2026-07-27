@@ -11,7 +11,8 @@
 | 5 | Production writer and crash/restart recovery | complete |
 | 6 | Student lifecycle callables | complete |
 | 7 | Client V2 data layer, PIN-free UI, PIN-free export | complete |
-| 8–11 | Student login wiring, rules, rehearsal | not started |
+| 8 | Classroom-code student login and Function gate compatibility | complete |
+| 9–11 | Bridge/final rules and release/rollback rehearsal | not started |
 
 Commit 5 adds the bounded production writer, its append-only durable journal,
 and the read-only re-verifier. The writer owns exactly two remote mutations: one
@@ -44,8 +45,11 @@ all**, and the student loader was never wired, failing every V2 student with
 `src/phase3/tenantDataService.js` (injected Firestore primitives) replace it,
 alongside the PIN-free V2 UI, PIN-free export, and disabled V2 import.
 
-Student **login** wiring (`studentPinLoginV2` and classroom-code login), rules
-artifacts, and deployment logic remain unimplemented. `firestore.rules` is
+Commit 8 wires classroom-qualified `studentPinLoginV2` through real custom-token
+Auth and the exact student self-document loader. It also makes the Functions
+gate discovery-safe and invocation-enforced, while refusing legacy callables and
+leaving the legacy aggregate trigger inert when the V2 gate is on. Rules
+artifacts and deployment logic remain unimplemented. `firestore.rules` is
 unchanged.
 
 ## Commands
@@ -87,10 +91,12 @@ asserts their absence and will admit each one only alongside the suite it runs.
 
 ## Evidence layer — read this before citing these tests
 
-Every suite in **this directory** is **static/source evidence**. Each suite parses
-repository text (`package.json`, the reconciled brief, `index.html`) or checks
-filesystem and checksum facts. Every test title begins with `source contract:`
-or `boundary:` for that reason.
+Every `*.contract.test.js` suite in **this directory** is **static/source
+evidence**. Each parses repository text (`package.json`, the reconciled brief,
+`index.html`) or checks filesystem and checksum facts. Every test title begins
+with `source contract:` or `boundary:` for that reason. The separately registered
+`tenant-data.browser.spec.js` is runtime browser/emulator evidence and is not
+selected by `test:phase3:contracts`.
 
 These suites prove:
 
@@ -101,7 +107,7 @@ These suites prove:
 - that the client **constructs** its own data service rather than reading a
   window hook, and that the browser harness seam still matches `index.html`.
 
-These suites do **not** prove:
+The source-contract suites do **not** prove:
 
 - that credential isolation works at runtime — nothing here starts an emulator
   or the Firebase CLI;
@@ -224,8 +230,10 @@ Verified and pinned:
   the legacy blob;
 - the V2 UI is PIN-free after authentication, V2 export is PIN-free, and V2 import
   refuses before it can reach `normalizeData`;
-- student login still calls legacy `studentPinLogin({loginId, pin})` with no
-  `studentPinLoginV2` wiring and no classroom-code input.
+- gate-on student login takes a classroom code, calls exactly
+  `studentPinLoginV2({classroomCode, loginId, pin})`, validates the exact token
+  envelope, and consumes the token only while the captured tenant epoch remains
+  current; the default-off arm preserves the legacy two-field callable.
 
 **Pinned defects.** The preserved default-off legacy add path still places a
 plaintext `pin` on its roster object, and the legacy `importBackup` path still
@@ -279,15 +287,32 @@ dropped field as affected. Injected primitives run no rules layer, so only
 `test:phase2b:browser` could surface it. The root is now merged while every other
 document still overwrites, and both halves are pinned.
 
-Browser evidence comes from the Item 10 suite (21/21), which instruments the
+Browser evidence comes from the combined Item 10/Commit 8 suite (22/22), which instruments the
 production service by **decorating its injected primitives** rather than replacing
 an adapter, so the response barriers, failure injection, and call counters sit
 under the real code path. Verified non-vacuous by mutation: with the wrapper made
 inert, the barrier-dependent tests fail.
 
-**Deferred.** `tests/phase3/tenant-data.browser.spec.js` (Section 11-listed) is
-deferred to Commit 8: it cannot honestly exercise the real service until V2 student
-login is wired end to end.
+The Commit 8 case activates two same-login-ID students through the production
+teacher PIN-reset UI, refuses both cross-classroom/PIN pairings generically,
+then signs into each tenant through the real V2 callable and Auth emulator. It
+observes exactly one read of each authenticated student's own document and no
+teacher cache, legacy aggregate, or submitted PIN persistence.
+
+## Commit 8 — classroom-code login and Function gate evidence
+
+The client unit suite proves the exact V2 request/response contract, malformed
+response refusal, stale-token suppression, and canonical student claim matrix.
+The service unit suite independently rejects malformed classroom IDs, student
+IDs, and UIDs before constructing a Firestore path.
+
+The gate-on Functions emulator suite proves module discovery remains available
+under invalid runtime environments while each V2 invocation refuses generically;
+the exact reviewed release ID is required for the production environment; and
+legacy login, PIN reset, bootstrap, and aggregate sync cannot read or write while
+the gate is enabled. The corresponding gate-off suite proves the legacy exports
+remain compatible. These are emulator observations only—no production function,
+rule, gate parameter, or Hosting release was changed.
 
 ## Commit 6 — student lifecycle evidence
 

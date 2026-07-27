@@ -139,6 +139,17 @@ function requireCanonicalStudentId(value) {
   return value;
 }
 
+function requireCanonicalClassroomId(value) {
+  if (typeof value !== "string" || !value || value !== value.trim() ||
+      value === "." || value === ".." || value.includes("/")) {
+    throw new TenantDataServiceError(
+      "invalid-classroom-id",
+      "The student claim does not contain a canonical classroom id."
+    );
+  }
+  return value;
+}
+
 /**
  * Build the production `loadNetworkFn` adapter: read the classroom root and the
  * three scoped collections, then project them into the aggregate view.
@@ -208,13 +219,21 @@ export function createStudentDataLoader({ db, session, firestore, defaultSetting
     // session's own classroom is not yet set. Validate the claims against each
     // other and require both, rather than against a resolved tenant that does
     // not exist yet.
-    const tenant = typeof classroomId === "string" ? classroomId.trim() : "";
-    const student = typeof studentId === "string" ? studentId.trim() : "";
-    const identity = typeof uid === "string" ? uid.trim() : "";
+    const tenant = typeof classroomId === "string" ? classroomId : "";
+    const student = typeof studentId === "string" ? studentId : "";
+    const identity = typeof uid === "string" ? uid : "";
     if (!tenant || !student || !identity) {
       throw new TenantDataServiceError(
         "incomplete-student-claims",
         "Student classroom, student id, and uid claims are all required."
+      );
+    }
+
+    requireCanonicalClassroomId(tenant);
+    if (identity !== identity.trim()) {
+      throw new TenantDataServiceError(
+        "identity-mismatch",
+        "The requesting identity is not canonical."
       );
     }
 

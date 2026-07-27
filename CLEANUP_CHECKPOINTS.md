@@ -35,7 +35,7 @@ Cleanup checkpoints require review; they do not authorize automatic code deletio
   each take roughly 60–70 seconds while the Firestore emulator releases a
   transaction lock after the deliberately rejected trigger is terminated.
 - This is currently a performance nuisance, not a correctness failure: the
-  complete server suite passed repeatedly with 9 gate-off and 56 gate-on
+  complete server suite passed repeatedly with 9 gate-off and 60 gate-on
   tests.
 - Tighten the cleanup only if the suite becomes flaky or exceeds the CI time
   budget. Preserve the real-trigger denial assertions, bounded cleanup, and

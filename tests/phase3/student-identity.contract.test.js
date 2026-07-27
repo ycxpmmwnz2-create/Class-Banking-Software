@@ -417,20 +417,16 @@ describe('Phase 3 student-identity source contract', () => {
     )
   })
 
-  it('source contract: student login is not yet branched to the V2 callable', () => {
-    // Pins the Section 4 gap that Commit 8 closes: the legacy payload shape and
-    // the absence of a classroom-code input.
+  it('source contract: student login branches explicitly between the V2 classroom-qualified and legacy payloads', () => {
     assert.match(indexHtml, /httpsCallable\(functions, "studentPinLogin"\)/)
     assert.match(indexHtml, /studentPinLogin\(\{ loginId, pin \}\)/)
-    assert.equal(
-      matchingLines(/studentPinLoginV2/).length,
-      0,
-      'studentPinLoginV2 must not be wired until Commit 8',
-    )
-    assert.equal(
-      matchingLines(/classroomCode/).length,
-      0,
-      'no classroom-code input exists yet',
+    assert.match(indexHtml, /orchestrateStudentLogin\(/)
+    assert.match(indexHtml, /\{ classroomCode, loginId, pin \}/)
+    assert.match(indexHtml, /id="studentClassroomCode"/)
+    assert.match(indexHtml, /IS_MULTI_TEACHER_V2_ENABLED[\s\S]*studentClassroomCode/)
+    assert.match(
+      readFileSync(new URL('../../src/phase2b/tenantClient.js', import.meta.url), 'utf8'),
+      /callableAdapter\("studentPinLoginV2", payload\)/,
     )
   })
 })

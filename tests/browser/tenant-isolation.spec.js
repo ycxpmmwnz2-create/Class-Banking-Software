@@ -36,6 +36,7 @@ import {
   readClassroomWithRulesDisabled,
   seedAll
 } from "./phase2b-fixtures.js";
+import { registerTenantDataBrowserTests } from "../phase3/tenant-data.browser.spec.js";
 
 // Documented quiescence window. Two consecutive stable polls at this interval
 // are what licenses any bounded "no further effect" claim below.
@@ -1073,4 +1074,10 @@ test("a released stale SAVE completion cannot affect the incoming tenant's clien
   // orchestrator must not write A's late data into any incoming client cache.
   const aKey = cacheKey(PROJECT_ID, seeded.aUid, TENANT_A.classroomId);
   expect(await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), aKey)).toBeNull();
+});
+
+registerTenantDataBrowserTests({
+  getSeeded: () => seeded,
+  gotoApp,
+  waitForQuiescence
 });

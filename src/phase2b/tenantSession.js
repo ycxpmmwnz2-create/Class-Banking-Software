@@ -72,6 +72,7 @@ export function createDefaultGlobalState() {
     loggedInStudentId: null,
     teacherProfileStudentId: null,
     message: "",
+    studentClassroomCodeDraft: "",
     studentLoginIdDraft: "",
     studentLoginPending: false,
     studentAuthLogs: [],
@@ -104,6 +105,7 @@ export function resetGlobalApplicationState(stateObj, defaultDataFn = null) {
   stateObj.loggedInStudentId = defaults.loggedInStudentId;
   stateObj.teacherProfileStudentId = defaults.teacherProfileStudentId;
   stateObj.message = defaults.message;
+  stateObj.studentClassroomCodeDraft = defaults.studentClassroomCodeDraft;
   stateObj.studentLoginIdDraft = defaults.studentLoginIdDraft;
   stateObj.studentLoginPending = defaults.studentLoginPending;
   stateObj.studentAuthLogs = defaults.studentAuthLogs;
@@ -144,6 +146,7 @@ export class TenantSession {
     this.uid = null;
     this.role = null;
     this.classroomId = null;
+    this.studentId = null;
     this.teacher = null;
     this.classroom = null;
     this.errorMessage = "";
@@ -169,6 +172,7 @@ export class TenantSession {
       uid: this.uid,
       role: this.role,
       classroomId: this.classroomId,
+      studentId: this.studentId,
       epoch: this.epoch,
       state: this.state
     };
@@ -179,6 +183,7 @@ export class TenantSession {
       uid: this.uid,
       role: this.role,
       classroomId: this.classroomId,
+      studentId: this.studentId,
       epoch: this.epoch
     };
   }
@@ -192,7 +197,8 @@ export class TenantSession {
       captured.epoch === this.epoch &&
       captured.uid === this.uid &&
       captured.role === this.role &&
-      captured.classroomId === this.classroomId
+      captured.classroomId === this.classroomId &&
+      captured.studentId === this.studentId
     );
   }
 
@@ -266,6 +272,7 @@ export class TenantSession {
     if (context.uid !== undefined) this.uid = context.uid;
     if (context.role !== undefined) this.role = context.role;
     if (context.classroomId !== undefined) this.classroomId = context.classroomId;
+    if (context.studentId !== undefined) this.studentId = context.studentId;
     if (context.teacher !== undefined) this.teacher = context.teacher;
     if (context.classroom !== undefined) this.classroom = context.classroom;
     if (context.errorMessage !== undefined) this.errorMessage = context.errorMessage;
@@ -319,10 +326,12 @@ export class TenantSession {
     const newUid = newIdentity.uid || null;
     const newRole = newIdentity.role || null;
     const newClassroomId = newIdentity.classroomId || null;
+    const newStudentId = newIdentity.studentId || null;
 
     this.uid = newUid;
     this.role = newRole;
     this.classroomId = newClassroomId;
+    this.studentId = newStudentId;
     this.teacher = newIdentity.teacher || null;
     this.classroom = newIdentity.classroom || null;
     this.errorMessage = newIdentity.errorMessage || "";

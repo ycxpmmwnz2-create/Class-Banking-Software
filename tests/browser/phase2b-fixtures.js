@@ -253,7 +253,8 @@ async function seedTenantDocs(db, tenant, uid) {
   // The login-code index the server maintains for code -> classroom lookup.
   await db.doc(`classroomLoginCodes/${tenant.studentLoginCode.replace("-", "")}`).set({
     classroomId: tenant.classroomId,
-    ownerUid: uid
+    ownerUid: uid,
+    status: "active"
   });
 
   // Exactly the five-field student contract from Section 4. The `transactions`

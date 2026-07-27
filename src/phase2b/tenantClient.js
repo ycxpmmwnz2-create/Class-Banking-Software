@@ -47,6 +47,71 @@ export async function orchestrateProductionLogout(session, authAdapter, onRender
   return session.signOut(authAdapter);
 }
 
+function exactObject(value, keys) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+/**
+ * Runs the unauthenticated V2 student-login handoff without admitting a stale
+ * custom token. Authorization still comes only from the token's server-minted
+ * claims and the subsequent student data loader; this function validates only
+ * the callable response envelope and the session epoch before Auth consumes it.
+ */
+export async function orchestrateStudentLogin(
+  session,
+  callableAdapter,
+  signInAdapter,
+  { classroomCode, loginId, pin }
+) {
+  if (!session || typeof session.captureIdentity !== "function") {
+    throw new Error("Tenant session is required.");
+  }
+  if (typeof callableAdapter !== "function" || typeof signInAdapter !== "function") {
+    throw new Error("Callable and custom-token sign-in adapters are required.");
+  }
+
+  const payload = { classroomCode, loginId, pin };
+  if (!exactObject(payload, ["classroomCode", "loginId", "pin"]) ||
+      !Object.values(payload).every(value => typeof value === "string" && value.length > 0)) {
+    return { executed: false, reason: "invalid-login-request" };
+  }
+
+  const captured = session.captureIdentity();
+  try {
+    const response = await callableAdapter("studentPinLoginV2", payload);
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+
+    const result = response?.data;
+    if (!exactObject(result, ["token"]) ||
+        typeof result.token !== "string" || !result.token.trim()) {
+      return { executed: false, reason: "malformed-login-response" };
+    }
+
+    // Last possible synchronous epoch check before Firebase Auth consumes the
+    // token. The auth observer owns every effect after authentication begins.
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+    const credential = await signInAdapter(result.token);
+    return { executed: true, credential };
+  } catch (err) {
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+    return {
+      executed: false,
+      reason: "student-login-failed",
+      error: mapSafeClientError(err),
+      rawCode: normalizeFirebaseErrorCode(err)
+    };
+  }
+}
+
 export async function orchestrateTeacherResolution(session, callableAdapter) {
   if (!session) throw new Error("Tenant session is required.");
   if (!callableAdapter || typeof callableAdapter !== "function") {
@@ -246,7 +311,9 @@ export async function loadClassroomDataWithCacheFallback(session, { loadNetworkF
 
 export async function handleAuthTransition(session, user, tokenResult, { callAdapter, loadNetworkFn, loadStudentNetworkFn, storageAdapter, projectId }) {
   const uid = user?.uid || null;
-  const role = tokenResult?.claims?.role || (user ? "teacher" : null);
+  const claims = tokenResult?.claims;
+  const claimedRole = claims?.role;
+  const role = claimedRole === undefined ? (user ? "teacher" : null) : claimedRole;
 
   // Compare with current resolved identity to prevent redundant invalidations
   if (session.uid === uid && session.role === role && session.state !== SESSION_STATES.SIGNED_OUT) {
@@ -260,11 +327,30 @@ export async function handleAuthTransition(session, user, tokenResult, { callAda
     return { state: SESSION_STATES.SIGNED_OUT };
   }
 
-  if (role === "student") {
-    const classroomId = typeof tokenResult?.claims?.classroomId === "string" ? tokenResult.claims.classroomId.trim() : "";
-    const studentId = typeof tokenResult?.claims?.studentId === "string" ? tokenResult.claims.studentId.trim() : "";
+  const roleIsValid = role === "teacher" || role === "student";
+  const teacherClaimsAreConsistent = role !== "teacher" ||
+    (claims?.classroomId === undefined && claims?.studentId === undefined);
+  if (!roleIsValid || !teacherClaimsAreConsistent) {
+    const safeMsg = "The authenticated role or identity claims are invalid.";
+    session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMsg });
+    session.invalidate("auth-claims-invalid", {
+      state: SESSION_STATES.DENIED_OR_INCONSISTENT,
+      errorMessage: safeMsg
+    });
+    return { success: false, reason: "auth-claims-invalid", error: safeMsg };
+  }
 
-    if (!classroomId || !studentId || !uid) {
+  if (role === "student") {
+    const rawClassroomId = claims?.classroomId;
+    const rawStudentId = claims?.studentId;
+    const classroomId = typeof rawClassroomId === "string" ? rawClassroomId : "";
+    const studentId = typeof rawStudentId === "string" ? rawStudentId : "";
+    const canonicalClassroomId = classroomId.length > 0 && classroomId === classroomId.trim() &&
+      classroomId !== "." && classroomId !== ".." && !classroomId.includes("/");
+    const canonicalStudentId = /^[1-9][0-9]*$/.test(studentId) &&
+      Number.isSafeInteger(Number(studentId));
+
+    if (!canonicalClassroomId || !canonicalStudentId || !uid) {
       const safeMsg = "Student identity or classroom claim is missing or invalid.";
       session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMsg });
       session.invalidate("student-claims-invalid", {
@@ -414,18 +500,10 @@ export async function orchestrateStudentPinReset(session, resetFn, payload) {
   return { executed: true, result };
 }
 
-function isExactObject(value, keys) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const actualKeys = Object.keys(value).sort();
-  const expectedKeys = [...keys].sort();
-  return actualKeys.length === expectedKeys.length &&
-    actualKeys.every((key, index) => key === expectedKeys[index]);
-}
-
 function validateCreatedStudentResponse(response) {
   const result = response?.data || response;
-  if (!isExactObject(result, ["student", "loginId"])) return null;
-  if (!isExactObject(result.student, ["id", "name", "balance", "frozen"])) return null;
+  if (!exactObject(result, ["student", "loginId"])) return null;
+  if (!exactObject(result.student, ["id", "name", "balance", "frozen"])) return null;
   if (
     !Number.isSafeInteger(result.student.id) || result.student.id < 1 ||
     typeof result.student.name !== "string" || !result.student.name.trim() ||
@@ -485,7 +563,7 @@ export async function orchestrateRemoveStudent(session, callableAdapter, payload
     payload,
     response => {
       const result = response?.data || response;
-      return isExactObject(result, ["success"]) && result.success === true ? result : null;
+      return exactObject(result, ["success"]) && result.success === true ? result : null;
     }
   );
 }

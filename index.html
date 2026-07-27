@@ -756,7 +756,7 @@ import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, writeB
 import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
-import { mapSafeClientError, orchestrateProductionLogout, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
+import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 
@@ -819,6 +819,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let loggedInStudentId = null;
     let teacherProfileStudentId = null;
     let message = "";
+    let studentClassroomCodeDraft = "";
     let studentLoginIdDraft = "";
     let studentLoginPending = false;
     let studentAuthLogs = [];
@@ -1465,9 +1466,19 @@ function toggleStudentDropdown() {
     async function loginStudent() {
       if (studentLoginPending) return;
 
+      const classroomCode = IS_MULTI_TEACHER_V2_ENABLED
+        ? document.getElementById("studentClassroomCode")?.value.trim() || ""
+        : "";
       const loginId = document.getElementById("studentLoginId").value.trim();
       const pin = document.getElementById("studentPin").value;
+      studentClassroomCodeDraft = classroomCode;
       studentLoginIdDraft = loginId;
+
+      if (IS_MULTI_TEACHER_V2_ENABLED && !classroomCode) {
+        message = "Enter your classroom code.";
+        render();
+        return;
+      }
 
       if (!loginId) {
         message = "Enter your student login ID.";
@@ -1486,6 +1497,32 @@ function toggleStudentDropdown() {
       render();
 
       try {
+        if (IS_MULTI_TEACHER_V2_ENABLED) {
+          const callableAdapter = async (name, payload) => {
+            const callable = httpsCallable(functions, name);
+            return await callable(payload);
+          };
+          const signInAdapter = async (token) => {
+            await setPersistence(auth, browserSessionPersistence);
+            return signInWithCustomToken(auth, token);
+          };
+          const result = await orchestrateStudentLogin(
+            v2TenantSession,
+            callableAdapter,
+            signInAdapter,
+            { classroomCode, loginId, pin }
+          );
+          if (!result.executed) {
+            message = result.rawCode === "unauthenticated"
+              ? "Wrong classroom code, student login ID, or PIN."
+              : "Student login is unavailable. Please try again.";
+            return;
+          }
+          studentClassroomCodeDraft = "";
+          studentLoginIdDraft = "";
+          return;
+        }
+
         const studentPinLogin = httpsCallable(functions, "studentPinLogin");
         const response = await studentPinLogin({ loginId, pin });
 
@@ -1496,7 +1533,9 @@ function toggleStudentDropdown() {
         await signInWithCustomToken(auth, response.data.token);
         studentLoginIdDraft = "";
       } catch (error) {
-        console.error("Student sign-in failed:", error);
+        if (!IS_MULTI_TEACHER_V2_ENABLED) {
+          console.error("Student sign-in failed:", error);
+        }
         message = error.code === "functions/unauthenticated"
           ? "Wrong student login ID or PIN."
           : "Student login is unavailable. Please try again.";
@@ -2649,7 +2688,13 @@ link.click();
           isTeacher = v2TenantSession.role === "teacher";
           resolvedClassroom = v2TenantSession.classroom;
           resolvedTeacher = v2TenantSession.teacher;
-          if (screen === "login") screen = "teacher";
+          if (v2TenantSession.role === "student") {
+            loggedInStudentId = Number(v2TenantSession.studentId);
+            loginTab = "student";
+            if (screen === "login") screen = "student";
+          } else if (screen === "login") {
+            screen = "teacher";
+          }
         }
       }
 
@@ -2734,6 +2779,10 @@ link.click();
             ` : `
               <h2>Student Login</h2>
               ${message ? `<div class="backup-reminder" role="status" aria-live="polite">${escapeHtml(message)}</div>` : ""}
+              ${IS_MULTI_TEACHER_V2_ENABLED ? `
+                <label for="studentClassroomCode">Classroom code</label>
+                <input id="studentClassroomCode" value="${escapeHtml(studentClassroomCodeDraft)}" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
+              ` : ""}
               <label for="studentLoginId">Student login ID</label>
               <input id="studentLoginId" value="${escapeHtml(studentLoginIdDraft)}" placeholder="Student login ID" autocomplete="username" autocapitalize="none" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
               <label for="studentPin">PIN / password</label>
@@ -3335,6 +3384,8 @@ if (screen === "editSettingsLists" && isTeacher) {
       set teacherProfileStudentId(val) { teacherProfileStudentId = val; },
       get message() { return message; },
       set message(val) { message = val; },
+      get studentClassroomCodeDraft() { return studentClassroomCodeDraft; },
+      set studentClassroomCodeDraft(val) { studentClassroomCodeDraft = val; },
       get studentLoginIdDraft() { return studentLoginIdDraft; },
       set studentLoginIdDraft(val) { studentLoginIdDraft = val; },
       get studentLoginPending() { return studentLoginPending; },

@@ -344,7 +344,7 @@ describe('Phase 3 tenant data service — student loader', () => {
     )
   })
 
-  it('rejects a non-canonical student id before constructing a Firestore path', async () => {
+  it('rejects non-canonical student or classroom claims before constructing a Firestore path', async () => {
     let reads = 0
     const double = createFirestoreDouble(seededStore())
     const firestore = {
@@ -357,10 +357,18 @@ describe('Phase 3 tenant data service — student loader', () => {
     const session = createResolvingStudentSession()
     const load = createStudentDataLoader({ db: {}, session, firestore })
 
-    await assert.rejects(
-      () => load({ uid: 'student-uid', classroomId: CLASSROOM, studentId: '1/other' }),
-      err => err instanceof TenantDataServiceError && err.reason === 'invalid-student-id',
-    )
+    for (const [claims, reason] of [
+      [{ uid: 'student-uid', classroomId: CLASSROOM, studentId: '1/other' }, 'invalid-student-id'],
+      [{ uid: 'student-uid', classroomId: `${CLASSROOM}/foreign`, studentId: '1' }, 'invalid-classroom-id'],
+      [{ uid: 'student-uid', classroomId: ` ${CLASSROOM}`, studentId: '1' }, 'invalid-classroom-id'],
+      [{ uid: 'student-uid', classroomId: '..', studentId: '1' }, 'invalid-classroom-id'],
+      [{ uid: ' student-uid', classroomId: CLASSROOM, studentId: '1' }, 'identity-mismatch'],
+    ]) {
+      await assert.rejects(
+        () => load(claims),
+        err => err instanceof TenantDataServiceError && err.reason === reason,
+      )
+    }
     assert.equal(reads, 0)
   })
 })

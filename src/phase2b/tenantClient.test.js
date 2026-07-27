@@ -7,6 +7,7 @@ import {
   mapSafeClientError,
   normalizeFirebaseErrorCode,
   orchestrateProductionLogout,
+  orchestrateStudentLogin,
   orchestrateTeacherResolution,
   orchestrateTeacherOnboarding,
   loadClassroomDataWithCacheFallback,
@@ -86,6 +87,73 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.equal(mapSafeClientError(precond), "This account cannot be set up automatically. Contact your administrator for assistance.");
     assert.equal(mapSafeClientError(invalid), "The request was invalid.");
     assert.equal(mapSafeClientError(internal), "An unexpected internal error occurred.");
+  });
+
+  test("Commit 8 V2 student login sends the exact classroom-qualified payload and consumes only an exact token response", async () => {
+    const session = new TenantSession();
+    const calls = [];
+    const signIns = [];
+    const result = await orchestrateStudentLogin(
+      session,
+      async (name, payload) => {
+        calls.push({ name, payload });
+        return { data: { token: "custom-token" } };
+      },
+      async token => {
+        signIns.push(token);
+        return { user: { uid: "student-auth-11" } };
+      },
+      { classroomCode: "AAAA-2345", loginId: "shared-name", pin: "2468" }
+    );
+
+    assert.equal(result.executed, true);
+    assert.deepEqual(calls, [{
+      name: "studentPinLoginV2",
+      payload: { classroomCode: "AAAA-2345", loginId: "shared-name", pin: "2468" }
+    }]);
+    assert.deepEqual(signIns, ["custom-token"]);
+
+    for (const malformed of [
+      null,
+      {},
+      { token: "" },
+      { token: "ok", pin: "leak" },
+      { token: 123 }
+    ]) {
+      let consumed = false;
+      const rejected = await orchestrateStudentLogin(
+        session,
+        async () => ({ data: malformed }),
+        async () => { consumed = true; },
+        { classroomCode: "AAAA-2345", loginId: "shared-name", pin: "2468" }
+      );
+      assert.equal(rejected.executed, false);
+      assert.equal(rejected.reason, "malformed-login-response");
+      assert.equal(consumed, false, "a malformed response must never reach Firebase Auth");
+    }
+  });
+
+  test("Commit 8 V2 student login suppresses a token response that resolves after session invalidation", async () => {
+    const session = new TenantSession();
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    let consumed = false;
+    const login = orchestrateStudentLogin(
+      session,
+      async () => pending,
+      async () => { consumed = true; },
+      { classroomCode: "AAAA-2345", loginId: "shared-name", pin: "2468" }
+    );
+
+    session.invalidate("new-auth-identity", {
+      uid: "teacher-new",
+      role: "teacher",
+      state: SESSION_STATES.AUTHENTICATING
+    });
+    release({ data: { token: "stale-custom-token" } });
+
+    assert.deepEqual(await login, { executed: false, reason: "stale-epoch-ignored" });
+    assert.equal(consumed, false, "a stale custom token must not replace the newer identity");
   });
 
   test("orchestrateTeacherOnboarding onboardTeacherClassroomV2 flow", async () => {
@@ -891,7 +959,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     let resolveStudentLoad;
     const pendingStudentLoad = new Promise((r) => { resolveStudentLoad = r; });
 
-    const studentClaims = { claims: { role: "student", classroomId: "room_s", studentId: "student_9" } };
+    const studentClaims = { claims: { role: "student", classroomId: "room_s", studentId: "9" } };
     const transitionPromise = handleAuthTransition(session, { uid: "student_uid_9" }, studentClaims, {
       callAdapter: async () => {},
       loadNetworkFn: async () => {},
@@ -985,7 +1053,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.equal(session.getState(), SESSION_STATES.DENIED_OR_INCONSISTENT);
 
     // 2. Valid claims without loadStudentNetworkFn fail closed explicitly
-    const validClaims = { claims: { role: "student", classroomId: "room_student", studentId: "student_101" } };
+    const validClaims = { claims: { role: "student", classroomId: "room_student", studentId: "101" } };
     const resNoAdapter = await handleAuthTransition(session, studentUser, validClaims, {
       callAdapter: async () => {},
       loadNetworkFn: async () => {},
@@ -1012,6 +1080,32 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.equal(session.role, "student");
     assert.equal(session.classroomId, "room_student");
     assert.equal(storage.store.size, 0, "Student session MUST remain memory-only and write no localStorage");
+    assert.equal(session.studentId, "101");
+
+    for (const claims of [
+      { role: "administrator" },
+      { role: "teacher", classroomId: "forged-room" },
+      { role: "student", classroomId: "room/foreign", studentId: "101" },
+      { role: "student", classroomId: " room_student", studentId: "101" },
+      { role: "student", classroomId: "room_student", studentId: "01" },
+      { role: "student", classroomId: "room_student", studentId: "1/other" }
+    ]) {
+      const denied = await handleAuthTransition(
+        session,
+        { uid: "malformed-claim-user" },
+        { claims },
+        {
+          callAdapter: async () => { throw new Error("must not resolve"); },
+          loadNetworkFn: async () => { throw new Error("must not load"); },
+          loadStudentNetworkFn: async () => { throw new Error("must not load"); },
+          storageAdapter: createMockStorage(),
+          projectId: PROJECT_ID
+        }
+      );
+      assert.equal(denied.success, false);
+      assert.ok(["auth-claims-invalid", "student-claims-invalid"].includes(denied.reason));
+      assert.equal(session.getState(), SESSION_STATES.DENIED_OR_INCONSISTENT);
+    }
   });
 
   // SOURCE GUARD, NOT BEHAVIOURAL PROOF.
