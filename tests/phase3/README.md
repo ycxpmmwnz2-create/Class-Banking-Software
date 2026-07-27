@@ -156,12 +156,15 @@ cannot become vacuous if the file were replaced by something unrelated.
 
 ### `student-identity.contract.test.js`
 
-Pins the current client identity facts that Phase 3 must change.
+Pins the current client identity facts and Commit 6 lifecycle wiring.
 
 Verified and pinned:
 
-- exactly one live student allocator, `max(roster)+1`, with one
-  `data.students.push` site;
+- the default-off legacy `max(roster)+1` allocator remains available, while the
+  V2 create branch calls only `createStudentV2`, admits only its PIN-free public
+  student response, and returns before the legacy allocator or save path;
+- the V2 remove branch calls only `removeStudentV2`, applies the successful
+  response to the in-memory view, and returns before the legacy save path;
 - all seven `Date.now()` ID sites are transaction/login-history records, proven
   by required `studentId`/`studentName` siblings and the absence of
   `const newStudent` — these are **not** student allocators;
@@ -176,12 +179,26 @@ Verified and pinned:
 - student login still calls legacy `studentPinLogin({loginId, pin})` with no
   `studentPinLoginV2` wiring and no classroom-code input.
 
-**Pinned defects.** Some assertions deliberately require a *known defect* to
-still be present: `importBackup` accepting unvalidated imported student IDs
-through `normalizeData`, and `addStudent` placing a plaintext `pin` on the roster
-object. They are pinned so the Section 4/5 requirements that depend on them
-cannot be quietly dropped. When Commits 6–8 fix these, the owning commit is
-expected to **update** these assertions to the new contract — not delete them.
+**Pinned defects.** `importBackup` still accepts unvalidated imported student
+IDs through `normalizeData`, and the preserved default-off legacy add path still
+places a plaintext `pin` on its roster object. V2 lifecycle creation does not.
+Commit 7 owns the broader PIN-free UI/data-service work and disabled V2 import;
+the assertions remain explicit until that owning boundary changes them.
+
+## Commit 6 — student lifecycle evidence
+
+`functions/phase3/studentLifecycle.test.js` behaviorally proves input and tenant
+validation, pre-transaction PIN hashing, monotonic counter allocation, scoped
+login collision handling, exact student/credential atomic writes, removal by
+student plus unique credential identity, credential retention/deactivation,
+counter preservation, retry behavior, and secret-redacted callable results.
+
+The directly affected Phase 2B sync unit suite proves that only the exact
+credential shape atomically created by the lifecycle callable is accepted as an
+idempotent create-trigger state; divergent and duplicate credentials still
+block. The client unit/source suites prove exact versioned callable names and
+payloads, malformed-response rejection, stale-epoch suppression, and no second
+legacy persistence mutation in V2 add/remove branches.
 
 ## Commit 2 — production guard unit suite
 

@@ -80,6 +80,13 @@ const {
 const { serializeCanonicalState } = await import(
   '../../functions/phase2/canonicalState.js'
 )
+const {
+  createStudentV2Service,
+  removeStudentV2Service,
+} = await import('../../functions/phase3/studentLifecycle.js')
+const { syncStudentProfilesV2Handler } = await import(
+  '../../functions/phase2b/syncStudentProfiles.js'
+)
 
 // MUST be the single demo project Commit 2's allowlist permits. Widening
 // ALLOWED_EMULATOR_PROJECT_ID to give this suite its own project would weaken a
@@ -2738,6 +2745,149 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
     assert.notEqual(
       drifted.exitCode, reverifyModule.REVERIFY_EXIT_CODES.SUCCESS,
       'a post-copy source edit must never self-mask as success',
+    )
+  })
+})
+
+describe('Phase 3 student lifecycle against live Firestore emulator transactions', () => {
+  const teacherA = `lifecycle-teacher-a-${RUN_TOKEN}`
+  const teacherB = `lifecycle-teacher-b-${RUN_TOKEN}`
+  const classroomA = `lifecycle-class-a-${RUN_TOKEN}`
+  const classroomB = `lifecycle-class-b-${RUN_TOKEN}`
+
+  before(async () => {
+    await Promise.all([
+      firestore.doc(`teachers/${teacherA}`).set({
+        uid: teacherA, classroomId: classroomA, status: 'active',
+      }),
+      firestore.doc(`classrooms/${classroomA}`).set({
+        ownerUid: teacherA, nextStudentNumber: 31,
+      }),
+      firestore.doc(`teachers/${teacherB}`).set({
+        uid: teacherB, classroomId: classroomB, status: 'active',
+      }),
+      firestore.doc(`classrooms/${classroomB}`).set({
+        ownerUid: teacherB, nextStudentNumber: 81,
+      }),
+    ])
+  })
+
+  after(async () => {
+    const descendantCollections = [
+      `classrooms/${classroomA}/students`,
+      `classrooms/${classroomA}/studentCredentials`,
+      `classrooms/${classroomB}/students`,
+      `classrooms/${classroomB}/studentCredentials`,
+    ]
+    for (const collectionPath of descendantCollections) {
+      const snapshot = await firestore.collection(collectionPath).get()
+      await Promise.all(snapshot.docs.map(document => document.ref.delete()))
+    }
+    await Promise.all([
+      firestore.doc(`classrooms/${classroomA}`).delete(),
+      firestore.doc(`classrooms/${classroomB}`).delete(),
+      firestore.doc(`teachers/${teacherA}`).delete(),
+      firestore.doc(`teachers/${teacherB}`).delete(),
+    ])
+  })
+
+  test('concurrent creates allocate distinct monotonic identities, sync verifies them, and removal never reuses the counter', async () => {
+    let hashCalls = 0
+    const hashPin = async pin => {
+      hashCalls += 1
+      return `emulator_hash_${pin}_${hashCalls}`
+    }
+    const [first, second] = await Promise.all([
+      createStudentV2Service(
+        { name: 'Emulator Student', startingBalance: 4, pin: '1234' },
+        { firestore, auth: { uid: teacherA }, hashPin, now: () => 1000 },
+      ),
+      createStudentV2Service(
+        { name: 'Emulator Student', startingBalance: 8, pin: '5678' },
+        { firestore, auth: { uid: teacherA }, hashPin, now: () => 2000 },
+      ),
+    ])
+
+    assert.equal(hashCalls, 2, 'transaction retries must not repeat PIN hashing')
+    assert.deepEqual(
+      [first.student.id, second.student.id].sort((left, right) => left - right),
+      [31, 32],
+    )
+    assert.deepEqual(
+      [first.loginId, second.loginId].sort(),
+      ['emulator-student', 'emulator-student-2'],
+    )
+    assert.equal(
+      (await firestore.doc(`classrooms/${classroomA}`).get()).data().nextStudentNumber,
+      33,
+    )
+
+    for (const created of [first, second]) {
+      const studentId = String(created.student.id)
+      const studentRef = firestore.doc(`classrooms/${classroomA}/students/${studentId}`)
+      const studentSnapshot = await studentRef.get()
+      assert.deepEqual(Object.keys(studentSnapshot.data()).sort(), [
+        'balance', 'frozen', 'id', 'name', 'transactions',
+      ])
+      const syncResult = await syncStudentProfilesV2Handler({
+        params: { classroomId: classroomA, studentId },
+        data: {
+          before: { exists: false },
+          after: studentSnapshot,
+        },
+      }, {
+        firestore,
+        hashPin: async () => 'unused-default-hash',
+      })
+      assert.equal(syncResult.action, 'lifecycle_verified')
+      assert.equal(syncResult.loginId, created.loginId)
+    }
+
+    const removed = first.student.id < second.student.id ? first : second
+    const retained = removed === first ? second : first
+    await assert.rejects(
+      removeStudentV2Service(
+        { studentId: String(removed.student.id) },
+        { firestore, auth: { uid: teacherB } },
+      ),
+      error => error.code === 'not-found',
+    )
+    assert.equal(
+      (await firestore.doc(
+        `classrooms/${classroomA}/students/${removed.student.id}`,
+      ).get()).exists,
+      true,
+      'a cross-tenant removal attempt must be inert',
+    )
+
+    assert.deepEqual(
+      await removeStudentV2Service(
+        { studentId: String(removed.student.id) },
+        { firestore, auth: { uid: teacherA }, now: () => 3000 },
+      ),
+      { success: true },
+    )
+    assert.equal(
+      (await firestore.doc(
+        `classrooms/${classroomA}/students/${removed.student.id}`,
+      ).get()).exists,
+      false,
+    )
+    assert.equal(
+      (await firestore.doc(
+        `classrooms/${classroomA}/studentCredentials/${removed.loginId}`,
+      ).get()).data().active,
+      false,
+    )
+    assert.equal(
+      (await firestore.doc(`classrooms/${classroomA}`).get()).data().nextStudentNumber,
+      33,
+    )
+    assert.equal(
+      (await firestore.doc(
+        `classrooms/${classroomA}/students/${retained.student.id}`,
+      ).get()).exists,
+      true,
     )
   })
 })

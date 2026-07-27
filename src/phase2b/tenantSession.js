@@ -79,6 +79,7 @@ export function createDefaultGlobalState() {
     studentAuthLogsError: "",
     studentPinResetPending: false,
     bulkOperationPending: false,
+    studentLifecyclePending: false,
     messageTimeout: null,
     resolvedClassroom: null,
     resolvedTeacher: null,
@@ -110,6 +111,7 @@ export function resetGlobalApplicationState(stateObj, defaultDataFn = null) {
   stateObj.studentAuthLogsError = defaults.studentAuthLogsError;
   stateObj.studentPinResetPending = defaults.studentPinResetPending;
   stateObj.bulkOperationPending = defaults.bulkOperationPending;
+  stateObj.studentLifecyclePending = defaults.studentLifecyclePending;
 
   if (stateObj.messageTimeout !== null && stateObj.messageTimeout !== undefined) {
     try {

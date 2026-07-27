@@ -15,7 +15,9 @@ import {
   orchestrateClassroomDataSave,
   orchestrateAuthLogsFetch,
   orchestrateStudentPinReset,
-  orchestrateBulkOperation
+  orchestrateBulkOperation,
+  orchestrateCreateStudent,
+  orchestrateRemoveStudent
 } from "./tenantClient.js";
 import { connectPhase2bEmulatorsIfConfigured, isPortValid } from "../firebase/firebase.js";
 import { purgeTenantCache, purgeLegacyCache, buildCacheKey, writeTeacherCache } from "./tenantCache.js";
@@ -418,6 +420,83 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.equal(res.executed, true);
     assert.deepEqual(calledPayload, { studentId: "s101", newPin: "4321" });
     assert.equal("classroomId" in calledPayload, false, "Must NOT send classroomId in V2 PIN callable contract");
+  });
+
+  test("Commit 6 lifecycle orchestration calls only versioned names with exact payloads", async () => {
+    const session = new TenantSession();
+    session.transitionTo(SESSION_STATES.AUTHENTICATING);
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_1", role: "teacher", classroomId: "room_1" });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
+
+    const calls = [];
+    const callable = async (name, payload) => {
+      calls.push({ name, payload });
+      if (name === "createStudentV2") {
+        return { data: {
+          student: { id: 9, name: "Ada", balance: 5, frozen: false },
+          loginId: "ada"
+        } };
+      }
+      if (name === "removeStudentV2") return { data: { success: true } };
+      throw new Error("unexpected callable");
+    };
+
+    const created = await orchestrateCreateStudent(session, callable, {
+      name: "Ada", startingBalance: 5, pin: "1234"
+    });
+    const removed = await orchestrateRemoveStudent(session, callable, { studentId: "9" });
+
+    assert.equal(created.executed, true);
+    assert.deepEqual(created.result, {
+      student: { id: 9, name: "Ada", balance: 5, frozen: false },
+      loginId: "ada"
+    });
+    assert.deepEqual(removed, { executed: true, result: { success: true } });
+    assert.deepEqual(calls, [
+      { name: "createStudentV2", payload: { name: "Ada", startingBalance: 5, pin: "1234" } },
+      { name: "removeStudentV2", payload: { studentId: "9" } }
+    ]);
+  });
+
+  test("Commit 6 lifecycle orchestration rejects malformed and stale responses without applying them", async () => {
+    const readySession = () => {
+      const session = new TenantSession();
+      session.transitionTo(SESSION_STATES.AUTHENTICATING);
+      session.transitionTo(SESSION_STATES.RESOLVING);
+      session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_1", role: "teacher", classroomId: "room_1" });
+      session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+      session.transitionTo(SESSION_STATES.READY);
+      return session;
+    };
+
+    for (const response of [
+      { student: { id: 1, name: "A", balance: 0, frozen: false, pin: "1234" }, loginId: "a" },
+      { student: { id: "1", name: "A", balance: 0, frozen: false }, loginId: "a" },
+      { student: { id: 1, name: "A", balance: 0, frozen: false }, loginId: "A" },
+      { student: { id: 1, name: "A", balance: 0, frozen: false }, loginId: "a", pinHash: "secret" }
+    ]) {
+      const result = await orchestrateCreateStudent(
+        readySession(),
+        async () => response,
+        { name: "A", startingBalance: 0, pin: "1234" }
+      );
+      assert.equal(result.executed, false);
+      assert.equal(result.reason, "malformed-lifecycle-response");
+    }
+
+    const session = readySession();
+    let resolveCall;
+    const pending = new Promise(resolve => { resolveCall = resolve; });
+    const resultPromise = orchestrateCreateStudent(
+      session,
+      () => pending,
+      { name: "A", startingBalance: 0, pin: "1234" }
+    );
+    session.invalidate("tenant-switched");
+    resolveCall({ student: { id: 1, name: "A", balance: 0, frozen: false }, loginId: "a" });
+    assert.deepEqual(await resultPromise, { executed: false, reason: "stale-epoch-ignored" });
   });
 
   test("4. USE THE SCOPED V2 AUTH-LOG PATH: orchestrateAuthLogsFetch requires READY teacher session and exact resolved classroom ID", async () => {
@@ -1093,6 +1172,8 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       ["studentAuthLogs", "openStudentAuthLogs"],
       ["orchestrateProductionLogout", "logout"],
       ["orchestrateBulkOperation", "bulkActivateStudents"],
+      ["orchestrateCreateStudent", "addStudent"],
+      ["orchestrateRemoveStudent", "removeStudent"],
       ["handleAuthTransition", "the auth observer"]
     ];
 

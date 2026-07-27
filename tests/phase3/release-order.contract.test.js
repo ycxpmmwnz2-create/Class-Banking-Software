@@ -274,37 +274,27 @@ describe('Phase 3 release-order source contract', () => {
       '.gitignore must ignore functions/phase3/.state/ so retained manifests are never committed',
     )
 
-    // Commit 2 earns exactly the environment guard module and its test.
+    // Commit 2 earned exactly the environment guard module and its test.
     // Everything else in Section 11's list belongs to Commits 3-6. Both the
     // implementation AND its test are pinned: listing only the .js files would
     // let a later commit's test file appear without its implementation, which is
     // the mirror image of the placeholder problem Section 12 forbids.
     // Commit 3 earned productionPreflight, productionManifest, and preflight.js;
     // Commit 4 earned productionProjection and productionReconciliation;
-    // Commit 5 earns productionWriter (with its colocated test), write.js, and
-    // reverify.js. Only the student lifecycle remains unearned — it belongs to
-    // Commit 6. Both implementation and test names stay pinned, so a later
-    // commit's test cannot appear without its implementation either.
-    const NOT_YET_EARNED = [
-      'studentLifecycle.js', 'studentLifecycle.test.js',
-    ]
+    // Commit 5 earned productionWriter (with its colocated test), write.js, and
+    // reverify.js. Commit 6 earns the student lifecycle module and its test.
 
-    // Commit 5 must actually deliver its files, not merely be permitted to.
+    // Completed commits must actually deliver their files, not merely be permitted to.
     // Pinning presence here is what stops the boundary test from silently
     // passing if the writer were dropped from the commit.
     for (const name of [
       'productionWriter.js', 'productionWriter.test.js',
       'write.js', 'reverify.js',
+      'studentLifecycle.js', 'studentLifecycle.test.js',
     ]) {
       assert.ok(
         actual.includes(name),
-        `functions/phase3/${name} is earned by Commit 5 and must exist`,
-      )
-    }
-    for (const name of NOT_YET_EARNED) {
-      assert.ok(
-        !actual.includes(name),
-        `functions/phase3/${name} belongs to a later commit than the current one`,
+        `functions/phase3/${name} is earned by a completed commit and must exist`,
       )
     }
 
