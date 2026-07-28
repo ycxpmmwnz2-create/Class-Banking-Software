@@ -93,6 +93,10 @@ export const FORBIDDEN_CREDENTIAL_FIELDS = Object.freeze([
   "passwordHash"
 ]);
 
+const FORBIDDEN_CREDENTIAL_FIELD_SET = new Set(FORBIDDEN_CREDENTIAL_FIELDS);
+const MAX_CREDENTIAL_SCAN_DEPTH = 32;
+const MAX_CREDENTIAL_SCAN_NODES = 50_000;
+
 export const LOGIN_HISTORY_LIMIT = 500;
 
 export const PROJECTION_CATEGORIES = Object.freeze({
@@ -128,22 +132,95 @@ function hasExactKeys(value, expected) {
 }
 
 /**
- * A credential field anywhere in a document body is fatal. Checked before any
- * other field validation so the error names the real problem rather than
- * reporting an unexpected extra key.
+ * Phase 2A preserves an existing Firestore Timestamp in `lastBackupAt`
+ * losslessly. The legacy aggregate view model uses an ISO string, so accept a
+ * genuine Timestamp-like value at the storage boundary and normalize it before
+ * render/cache. Arbitrary objects and invalid dates still fail closed.
  */
-function assertNoCredentialFields(record, where) {
-  if (!isPlainObject(record)) return;
-  for (const field of FORBIDDEN_CREDENTIAL_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(record, field)) {
-      // The field NAME is reported; the value never is.
+function projectLastBackupAt(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string") {
+    return requireString(value, "root", "lastBackupAt");
+  }
+  if (typeof value === "object" && typeof value.toDate === "function") {
+    let date;
+    try {
+      date = value.toDate();
+    } catch {
       fail(
-        PROJECTION_CATEGORIES.CREDENTIAL,
-        `${where} must not carry credential field "${field}".`,
-        { where, field }
+        PROJECTION_CATEGORIES.SHAPE,
+        '"lastBackupAt" in root must be a string, null, or valid Firestore Timestamp.',
+        { where: "root", field: "lastBackupAt" }
       );
     }
+    if (date instanceof Date && Number.isFinite(date.getTime())) {
+      return date.toISOString();
+    }
   }
+  fail(
+    PROJECTION_CATEGORIES.SHAPE,
+    '"lastBackupAt" in root must be a string, null, or valid Firestore Timestamp.',
+    { where: "root", field: "lastBackupAt" }
+  );
+}
+
+/**
+ * A credential field anywhere in a document body is fatal. The bounded,
+ * recursive walk covers nested maps and arrays as well as the top-level shape.
+ * It is checked before other field validation so the error names the real
+ * problem rather than reporting an unexpected extra key.
+ */
+function assertNoCredentialFields(value, where) {
+  const ancestors = new WeakSet();
+  let scannedNodes = 0;
+
+  function visit(current, currentWhere, depth) {
+    if (typeof current !== "object" || current === null) return;
+    if (depth > MAX_CREDENTIAL_SCAN_DEPTH) {
+      fail(
+        PROJECTION_CATEGORIES.SHAPE,
+        `${where} exceeds the safe nested-data depth.`,
+        { where }
+      );
+    }
+    scannedNodes += 1;
+    if (scannedNodes > MAX_CREDENTIAL_SCAN_NODES) {
+      fail(
+        PROJECTION_CATEGORIES.SHAPE,
+        `${where} exceeds the safe nested-data size.`,
+        { where }
+      );
+    }
+    if (ancestors.has(current)) {
+      fail(
+        PROJECTION_CATEGORIES.SHAPE,
+        `${where} must not contain a cyclic value.`,
+        { where }
+      );
+    }
+
+    ancestors.add(current);
+    if (Array.isArray(current)) {
+      for (let index = 0; index < current.length; index += 1) {
+        visit(current[index], `${currentWhere}[${index}]`, depth + 1);
+      }
+    } else {
+      for (const [field, nested] of Object.entries(current)) {
+        if (FORBIDDEN_CREDENTIAL_FIELD_SET.has(field)) {
+          // The field NAME is reported; the value never is.
+          fail(
+            PROJECTION_CATEGORIES.CREDENTIAL,
+            `${currentWhere} must not carry credential field "${field}".`,
+            { where: currentWhere, field }
+          );
+        }
+        visit(nested, `${currentWhere}.${field}`, depth + 1);
+      }
+    }
+    ancestors.delete(current);
+  }
+
+  visit(value, where, 0);
 }
 
 /**
@@ -292,9 +369,10 @@ function projectTransaction(
   }
 
   const studentId = normalizeStudentId(raw.studentId, where);
-  // A transaction referencing a student outside this roster is an inconsistent
-  // reference, which Section 4 requires rejecting before render.
-  if (!knownStudentIds.has(studentId)) {
+  // A student's embedded mirror may reference only that student. Top-level
+  // ledger records can legitimately outlive roster membership after the
+  // supported removeStudentV2 flow, so callers omit this set for that surface.
+  if (knownStudentIds && !knownStudentIds.has(studentId)) {
     fail(
       PROJECTION_CATEGORIES.REFERENCE,
       `${where} references a student that is not on this classroom roster.`,
@@ -317,7 +395,7 @@ function projectTransaction(
   };
 }
 
-function projectLoginHistoryEntry(raw, expectedClassroomId, index, knownStudentIds) {
+function projectLoginHistoryEntry(raw, expectedClassroomId, index) {
   const where = `loginHistory[${index}]`;
   if (!isPlainObject(raw)) {
     fail(PROJECTION_CATEGORIES.SHAPE, `${where} must be an object.`, { where });
@@ -334,17 +412,11 @@ function projectLoginHistoryEntry(raw, expectedClassroomId, index, knownStudentI
   }
 
   // A failed login legitimately has no student, so `null` is allowed here in a
-  // way it is not for a transaction. A non-null value must still resolve.
+  // way it is not for a transaction. A canonical non-null historical student
+  // ID may outlive roster membership after the supported removal flow.
   let studentId = null;
   if (raw.studentId !== null) {
     studentId = normalizeStudentId(raw.studentId, where);
-    if (!knownStudentIds.has(studentId)) {
-      fail(
-        PROJECTION_CATEGORIES.REFERENCE,
-        `${where} references a student that is not on this classroom roster.`,
-        { where }
-      );
-    }
   }
 
   return {
@@ -447,7 +519,10 @@ function transactionBodiesEqual(left, right) {
 function assertTransactionMirrorParity(students, transactions) {
   const authoritativeByStudent = new Map(students.map(student => [student.id, new Map()]));
   for (const transaction of transactions) {
-    authoritativeByStudent.get(transaction.studentId).set(transaction.id, transaction);
+    const activeStudentTransactions = authoritativeByStudent.get(transaction.studentId);
+    if (activeStudentTransactions) {
+      activeStudentTransactions.set(transaction.id, transaction);
+    }
   }
 
   for (const student of students) {
@@ -526,7 +601,7 @@ export function projectClassroomData({
   const projectedTransactions = [];
   const seenTransactionIds = new Set();
   for (let index = 0; index < transactions.length; index += 1) {
-    const transaction = projectTransaction(transactions[index], classroomId, index, seenStudentIds);
+    const transaction = projectTransaction(transactions[index], classroomId, index, null);
     if (seenTransactionIds.has(transaction.id)) {
       fail(
         PROJECTION_CATEGORIES.DUPLICATE,
@@ -541,7 +616,7 @@ export function projectClassroomData({
   const projectedHistory = [];
   const seenHistoryIds = new Set();
   for (let index = 0; index < loginHistory.length; index += 1) {
-    const entry = projectLoginHistoryEntry(loginHistory[index], classroomId, index, seenStudentIds);
+    const entry = projectLoginHistoryEntry(loginHistory[index], classroomId, index);
     if (seenHistoryIds.has(entry.id)) {
       fail(
         PROJECTION_CATEGORIES.DUPLICATE,
@@ -560,9 +635,7 @@ export function projectClassroomData({
   projectedHistory.sort((a, b) => b.id - a.id);
   assertTransactionMirrorParity(projectedStudents, projectedTransactions);
 
-  const lastBackupAt = root && root.lastBackupAt !== undefined && root.lastBackupAt !== null
-    ? requireString(root.lastBackupAt, "root", "lastBackupAt")
-    : null;
+  const lastBackupAt = projectLastBackupAt(root?.lastBackupAt);
 
   return {
     students: projectedStudents,
@@ -641,7 +714,7 @@ export function decomposeClassroomMutation({
       transactions[index],
       classroomId,
       index,
-      seenStudentIds
+      null
     );
     if (seenTransactionIds.has(projected.id)) {
       fail(
@@ -660,8 +733,7 @@ export function decomposeClassroomMutation({
     const projected = projectLoginHistoryEntry(
       loginHistory[index],
       classroomId,
-      index,
-      seenStudentIds
+      index
     );
     if (seenHistoryIds.has(projected.id)) {
       fail(
@@ -673,6 +745,10 @@ export function decomposeClassroomMutation({
     seenHistoryIds.add(projected.id);
     projectedHistory.push(projected);
   }
+
+  // Retention applies to the newest records, independent of the caller's
+  // current array ordering.
+  projectedHistory.sort((a, b) => b.id - a.id);
 
   const studentWrites = [];
   for (const projected of projectedStudents) {
@@ -870,6 +946,10 @@ export function projectBackupExport({ data, exportedAt } = {}) {
     fail(PROJECTION_CATEGORIES.SHAPE, "A backup export requires an aggregate data object.", { where: "data" });
   }
   requireString(exportedAt, "backup", "exportedAt");
+  // Scan the complete aggregate before selecting export fields. This covers
+  // settings, raw top-level records, student transaction mirrors, and nested
+  // maps/arrays; no shareable object is returned after a credential finding.
+  assertNoCredentialFields(data, "data");
 
   const students = Array.isArray(data.students) ? data.students : [];
   const exportedStudents = students.map((student, index) => {

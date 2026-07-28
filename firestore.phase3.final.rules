@@ -49,7 +49,23 @@ service cloud.firestore {
     }
 
     function idMatchesPath(value, documentId) {
-      return value == documentId || value == int(documentId);
+      return value is int
+        && value > 0
+        && string(value) == documentId;
+    }
+
+    function validClassroomRootUpdate() {
+      return request.resource.data.keys()
+          .hasAll(['settings', 'lastBackupAt', 'updatedAt'])
+        && request.resource.data.settings is map
+        && (
+          request.resource.data.lastBackupAt == null
+          || request.resource.data.lastBackupAt is string
+          || request.resource.data.lastBackupAt is timestamp
+        )
+        && request.resource.data.updatedAt is string
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['settings', 'lastBackupAt', 'updatedAt']);
     }
 
     function validStudentBody(studentId) {
@@ -139,8 +155,7 @@ service cloud.firestore {
       allow get: if isActiveOwner(classroomId);
       allow list, create, delete: if false;
       allow update: if isActiveOwner(classroomId)
-        && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['settings', 'lastBackupAt', 'updatedAt']);
+        && validClassroomRootUpdate();
 
       match /students/{studentId} {
         allow get: if isActiveOwner(classroomId)
@@ -166,7 +181,8 @@ service cloud.firestore {
           && validLoginHistoryBody(entryId);
         allow update: if isActiveOwner(classroomId)
           && validLoginHistoryUpdate(entryId);
-        // The V2 client trims the bounded history collection to 500 entries.
+        // Owners may clear or trim this user-facing history. Server-side
+        // studentAuthLogs remain a separate read-only audit surface.
         allow delete: if isActiveOwner(classroomId);
       }
 

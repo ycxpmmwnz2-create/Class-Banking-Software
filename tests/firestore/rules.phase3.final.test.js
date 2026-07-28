@@ -16,7 +16,7 @@ import {
 
 const FINAL_RULES_PATH = 'firestore.phase3.final.rules'
 const FINAL_RULES_SHA256 =
-  '3a169ad65f911aa80d25c524aec219775773952019cd53a57a776e14c711793d'
+  '414ab5cad328b4b254fe4397ec891f0b7639548c324d2ae0ee74c8db0a9639f3'
 const PRODUCTION_RULES_SHA256 =
   '0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50'
 
@@ -281,13 +281,34 @@ describe('Phase 3 Item 10 final rules', () => {
       ).delete())
     })
 
-    test(`${direction.marker}: root writes are limited to presentation and backup fields`, async () => {
+    test(`${direction.marker}: root writes preserve required mutable fields and their types`, async () => {
       const own = teacher(direction.owner)
       await assertSucceeds(own.doc(`classrooms/${direction.room}`).update({
         settings: { theme: 'changed' },
         lastBackupAt: '2026-07-27T13:00:00.000Z',
         updatedAt: '2026-07-27T13:00:00.000Z',
       }))
+      await assertSucceeds(own.doc(`classrooms/${direction.room}`).update({
+        lastBackupAt: new Date('2026-07-27T13:30:00.000Z'),
+        updatedAt: '2026-07-27T13:30:00.000Z',
+      }))
+
+      const completeRoot = {
+        ownerUid: direction.owner,
+        name: `${direction.marker} classroom`,
+        version: 1,
+        settings: { theme: 'changed' },
+        lastBackupAt: null,
+        updatedAt: '2026-07-27T14:00:00.000Z',
+      }
+      for (const field of ['settings', 'lastBackupAt', 'updatedAt']) {
+        const missingField = { ...completeRoot }
+        delete missingField[field]
+        await assertFails(own.doc(`classrooms/${direction.room}`).set(missingField))
+      }
+      await assertFails(own.doc(`classrooms/${direction.room}`).update({ settings: 'not-a-map' }))
+      await assertFails(own.doc(`classrooms/${direction.room}`).update({ lastBackupAt: 123 }))
+      await assertFails(own.doc(`classrooms/${direction.room}`).update({ updatedAt: false }))
       await assertFails(own.doc(`classrooms/${direction.room}`).update({ ownerUid: direction.intruder }))
       await assertFails(own.doc(`classrooms/${direction.room}`).update({ name: 'renamed' }))
       await assertFails(own.doc(`classrooms/${direction.room}`).delete())
@@ -341,7 +362,7 @@ describe('Phase 3 Item 10 final rules', () => {
       await assertFails(existing.delete())
     })
 
-    test(`${direction.marker}: login history enforces exact bodies, immutable identity, and bounded deletion`, async () => {
+    test(`${direction.marker}: login history enforces exact bodies and immutable identity while owner deletion stays available`, async () => {
       const own = teacher(direction.owner)
       const existing = own.doc(`classrooms/${direction.room}/loginHistory/${direction.history}`)
       const newId = direction.marker === 'A' ? '2101' : '2102'
@@ -364,6 +385,47 @@ describe('Phase 3 Item 10 final rules', () => {
       await assertSucceeds(existing.delete())
     })
   }
+
+  test('student, transaction, and login-history body ids are positive integers matching canonical numeric paths', async () => {
+    const own = teacher(A_UID)
+    const invalidIdentities = [
+      { pathId: 'not-numeric', bodyId: 'not-numeric' },
+      { pathId: '0301', bodyId: 301 },
+      { pathId: '0', bodyId: 0 },
+      { pathId: '-1', bodyId: -1 },
+      { pathId: '301', bodyId: 302 },
+      { pathId: '302', bodyId: '302' },
+    ]
+
+    for (const { pathId, bodyId } of invalidIdentities) {
+      await assertFails(own.doc(`classrooms/${A_ROOM}/transactions/${pathId}`).set({
+        ...transactionBody('301', A_STUDENT, 'A'),
+        id: bodyId,
+      }))
+      await assertFails(own.doc(`classrooms/${A_ROOM}/loginHistory/${pathId}`).set({
+        ...historyBody('301', A_STUDENT, 'A'),
+        id: bodyId,
+      }))
+    }
+
+    await testEnv.withSecurityRulesDisabled(async context => {
+      const db = context.firestore()
+      for (const { pathId, bodyId } of invalidIdentities.slice(0, 4)) {
+        await db.doc(`classrooms/${A_ROOM}/students/${pathId}`).set({
+          id: bodyId,
+          name: 'invalid identity fixture',
+          balance: 0,
+          frozen: false,
+          transactions: [],
+        })
+      }
+    })
+    for (const { pathId } of invalidIdentities.slice(0, 4)) {
+      await assertFails(own.doc(`classrooms/${A_ROOM}/students/${pathId}`).update({
+        name: 'must remain denied',
+      }))
+    }
+  })
 
   test('students retain exact self-read and receive no list, cross-student, or write permission', async () => {
     for (const [room, ownId, otherRoom, otherId] of [

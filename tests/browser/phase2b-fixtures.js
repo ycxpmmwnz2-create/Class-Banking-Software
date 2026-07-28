@@ -254,7 +254,9 @@ async function seedTenantDocs(db, tenant, uid) {
     studentLoginCode: tenant.studentLoginCode,
     schemaVersion: 1,
     marker: tenant.classroomMarker,
-    settings: { ...COMPLETE_SETTINGS, label: tenant.classroomMarker }
+    settings: { ...COMPLETE_SETTINGS, label: tenant.classroomMarker },
+    lastBackupAt: null,
+    updatedAt: "2026-01-01T00:00:00.000Z"
   });
 
   // The login-code index the server maintains for code -> classroom lookup.

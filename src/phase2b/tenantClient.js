@@ -54,6 +54,30 @@ function exactObject(value, keys) {
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
+function isWellFormedUnicode(value) {
+  if (typeof String.prototype.isWellFormed === "function") {
+    return value.isWellFormed();
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (nextCodeUnit < 0xDC00 || nextCodeUnit > 0xDFFF) return false;
+      index += 1;
+    } else if (codeUnit >= 0xDC00 && codeUnit <= 0xDFFF) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isCanonicalClassroomId(value) {
+  return typeof value === "string" && value.length > 0 &&
+    value === value.trim() && value !== "." && value !== ".." &&
+    !value.includes("/") && !/^__[\s\S]*__$/.test(value) &&
+    isWellFormedUnicode(value) && new TextEncoder().encode(value).length <= 1500;
+}
+
 /**
  * Runs the unauthenticated V2 student-login handoff without admitting a stale
  * custom token. Authorization still comes only from the token's server-minted
@@ -133,7 +157,18 @@ export async function orchestrateTeacherResolution(session, callableAdapter) {
       return { success: true, state: "onboarding-required", eligibility: res.eligibility };
     }
 
-    if (res?.state === "active" && res.classroom?.id) {
+    if (res?.state === "active") {
+      const classroomId = res.classroom?.id;
+      if (!isCanonicalClassroomId(classroomId)) {
+        const safeMessage = "Server classroom identity missing or invalid.";
+        session.transitionTo(SESSION_STATES.DENIED_OR_INCONSISTENT, { errorMessage: safeMessage });
+        session.invalidate("resolution-invalid-classroom-id", {
+          state: SESSION_STATES.DENIED_OR_INCONSISTENT,
+          errorMessage: safeMessage
+        });
+        return { success: false, reason: "invalid-server-classroom-id" };
+      }
+
       const teacherUid = typeof res.teacher?.uid === "string" ? res.teacher.uid.trim() : "";
       if (!teacherUid || (session.uid && teacherUid !== session.uid)) {
         const safeMessage = "Server teacher identity missing or mismatched.";
@@ -146,7 +181,7 @@ export async function orchestrateTeacherResolution(session, callableAdapter) {
       }
 
       // If resolved classroom identity changes for the same UID/role, invalidate first
-      if (session.classroomId && session.classroomId !== res.classroom.id) {
+      if (session.classroomId && session.classroomId !== classroomId) {
         session.invalidate("resolved-classroom-changed", {
           uid: teacherUid,
           role: "teacher",
@@ -157,7 +192,7 @@ export async function orchestrateTeacherResolution(session, callableAdapter) {
       session.transitionTo(SESSION_STATES.ACTIVE, {
         uid: teacherUid,
         role: "teacher",
-        classroomId: res.classroom.id,
+        classroomId,
         teacher: res.teacher,
         classroom: res.classroom
       });
@@ -315,8 +350,16 @@ export async function handleAuthTransition(session, user, tokenResult, { callAda
   const claimedRole = claims?.role;
   const role = claimedRole === undefined ? (user ? "teacher" : null) : claimedRole;
 
-  // Compare with current resolved identity to prevent redundant invalidations
-  if (session.uid === uid && session.role === role && session.state !== SESSION_STATES.SIGNED_OUT) {
+  // Compare the complete resolved identity to prevent redundant invalidations.
+  // A same-UID student token can legitimately carry a newly minted classroom or
+  // student identity; ignoring that observer event would retain the old tenant.
+  const claimsMatchResolvedIdentity = role === "student"
+    ? claims?.classroomId === session.classroomId && claims?.studentId === session.studentId
+    : role === "teacher"
+      ? claims?.classroomId === undefined && claims?.studentId === undefined
+      : false;
+  if (session.uid === uid && session.role === role && claimsMatchResolvedIdentity &&
+      session.state !== SESSION_STATES.SIGNED_OUT) {
     return { state: session.getState(), ignored: true };
   }
 

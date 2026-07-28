@@ -190,6 +190,35 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.equal(session.classroomId, "room_new");
   });
 
+  test("teacher resolution rejects a non-canonical server classroom id before activating", async () => {
+    for (const classroomId of [
+      " room-a",
+      "room-a/foreign",
+      ".",
+      "..",
+      "__reserved__",
+      "\uD83D",
+      "a".repeat(1501),
+      7
+    ]) {
+      const session = new TenantSession();
+      session.transitionTo(SESSION_STATES.AUTHENTICATING, { uid: "teacher_1", role: "teacher" });
+
+      const result = await orchestrateTeacherResolution(session, async () => ({
+        data: {
+          state: "active",
+          teacher: { uid: "teacher_1" },
+          classroom: { id: classroomId }
+        }
+      }));
+
+      assert.equal(result.success, false);
+      assert.equal(result.reason, "invalid-server-classroom-id");
+      assert.equal(session.getState(), SESSION_STATES.DENIED_OR_INCONSISTENT);
+      assert.equal(session.classroomId, null);
+    }
+  });
+
   test("orchestrateClassroomDataLoad loads data and invokes apply callback if epoch remains valid", async () => {
     const session = new TenantSession();
     session.transitionTo(SESSION_STATES.AUTHENTICATING);
@@ -1106,6 +1135,57 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       assert.ok(["auth-claims-invalid", "student-claims-invalid"].includes(denied.reason));
       assert.equal(session.getState(), SESSION_STATES.DENIED_OR_INCONSISTENT);
     }
+  });
+
+  test("same-UID student auth dedupe compares classroom and student claims", async () => {
+    const session = new TenantSession();
+    session.transitionTo(SESSION_STATES.AUTHENTICATING, { uid: "student_uid", role: "student" });
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    session.transitionTo(SESSION_STATES.ACTIVE, {
+      uid: "student_uid",
+      role: "student",
+      classroomId: "room_old",
+      studentId: "1"
+    });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
+
+    const loads = [];
+    const options = {
+      callAdapter: async () => { throw new Error("teacher resolution must not run"); },
+      loadNetworkFn: async () => { throw new Error("teacher load must not run"); },
+      loadStudentNetworkFn: async identity => {
+        loads.push(identity);
+        return { student: identity.studentId };
+      },
+      storageAdapter: createMockStorage(),
+      projectId: PROJECT_ID
+    };
+    const changedClaims = {
+      claims: { role: "student", classroomId: "room_new", studentId: "2" }
+    };
+
+    const changed = await handleAuthTransition(
+      session,
+      { uid: "student_uid" },
+      changedClaims,
+      options
+    );
+    assert.equal(changed.executed, true);
+    assert.equal(session.classroomId, "room_new");
+    assert.equal(session.studentId, "2");
+    assert.equal(loads.length, 1);
+    assert.equal(loads[0].classroomId, "room_new");
+    assert.equal(loads[0].studentId, "2");
+
+    const repeated = await handleAuthTransition(
+      session,
+      { uid: "student_uid" },
+      changedClaims,
+      options
+    );
+    assert.equal(repeated.ignored, true);
+    assert.equal(loads.length, 1, "only the complete same identity may be deduplicated");
   });
 
   // SOURCE GUARD, NOT BEHAVIOURAL PROOF.

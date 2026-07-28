@@ -3,11 +3,12 @@
 Status: **Historical design plus current local implementation record.** This
 document began as a read-only architecture proposal on `feature/multi-teacher`.
 Its design-time descriptions remain as rationale, while Part 3 records later
-implementation status. Phase 2A, Phase 2B, and Phase 3 Items 1–11 are now
-implemented and reviewed from local repository, unit, source-contract,
-emulator, rules, browser, release-rehearsal, and rollback-rehearsal evidence.
-Phase 3 Item 12 is evidence-only documentation correction. **Production
-deployment state remains unknown and is not inferred from local evidence.**
+implementation status. Phase 2A, Phase 2B, and Phase 3 Items 1–12 are now
+implemented from local repository, unit, source-contract, emulator, rules,
+browser, release-rehearsal, and rollback-rehearsal evidence. The later
+production-readiness correction pass remains subject to focused Claude
+re-review and the final Grok checkpoint. **Production deployment state remains
+unknown and is not inferred from local evidence.**
 
 This document builds directly on `GOOGLE_AUTH_MIGRATION_PLAN.md` (Phase B),
 `SECURITY_PLAN.md` ("Version 2.0 Items"), and `GOOGLE_AUTH_PHASE1_CHECKLIST.md`
@@ -3338,9 +3339,9 @@ emulator evidence)**
 - No production migration, deployment, gate activation, or real second-teacher
   onboarding occurred.
 
-**Phase 3 — Local implementation and rehearsal complete through Item 11;
+**Phase 3 — Local implementation and rehearsal complete through Item 12;
 production cutover not run**
-- Items 1–11 in `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` now provide the
+- Items 1–12 in `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` now provide the
   production environment guards, read-only preflight and immutable manifest,
   bounded two-stage writer and journal, reconciliation/reverification,
   student lifecycle, V2 tenant data layer and classroom-code login, three
@@ -3359,8 +3360,8 @@ production cutover not run**
   production validation, then separate write/deploy authorization, verified
   freeze and snapshot, bridge-before-copy, reconciliation-before-activation,
   final rules before gate and Hosting, acceptance before write resumption, and
-  rollback-safe rules after a default-off Hosting rollback. Item 12 authorizes
-  none of those operations.
+  rollback-safe rules after a default-off Hosting rollback. The completed Item
+  12 documentation boundary authorizes none of those operations.
 
 **Phase 4 — Production verification**
 - Full manual + automated acceptance pass (Part 2, "Testing strategy" §4)

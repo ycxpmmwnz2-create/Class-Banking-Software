@@ -90,6 +90,28 @@ describe('Phase 3 tenant data projection — load', () => {
     assert.equal(result.settings.requireTeacherApproval, false)
   })
 
+  it('normalizes a migrated Firestore lastBackupAt Timestamp to the ISO view model', () => {
+    const result = load({
+      root: {
+        settings: {},
+        lastBackupAt: {
+          seconds: 1_767_225_600,
+          nanoseconds: 0,
+          toDate: () => new Date('2026-01-01T00:00:00.000Z'),
+        },
+      },
+    })
+
+    assert.equal(result.lastBackupAt, '2026-01-01T00:00:00.000Z')
+  })
+
+  it('rejects an invalid Timestamp-like lastBackupAt value', () => {
+    expectRejection(
+      () => load({ root: { settings: {}, lastBackupAt: { toDate: () => new Date('invalid') } } }),
+      PROJECTION_CATEGORIES.SHAPE,
+    )
+  })
+
   it('normalizes a canonical string student id to a number', () => {
     const mirrored = transaction({ studentId: '7' })
     const result = load({
@@ -155,14 +177,26 @@ describe('Phase 3 tenant data projection — load', () => {
     )
   })
 
-  it('rejects a transaction or login entry referencing an off-roster student', () => {
+  it('retains canonical same-tenant history after a student is removed from the roster', () => {
+    const result = load({
+      students: [],
+      transactions: [transaction({ studentId: 99, studentName: 'Removed Student' })],
+      loginHistory: [historyEntry({ studentId: 99, studentName: 'Removed Student' })],
+    })
+
+    assert.deepEqual(result.students, [])
+    assert.equal(result.transactions[0].studentId, 99)
+    assert.equal(result.loginHistory[0].studentId, 99)
+  })
+
+  it('still rejects malformed historical student references', () => {
     expectRejection(
-      () => load({ transactions: [transaction({ studentId: 99 })] }),
-      PROJECTION_CATEGORIES.REFERENCE,
+      () => load({ students: [], transactions: [transaction({ studentId: '099' })] }),
+      PROJECTION_CATEGORIES.SHAPE,
     )
     expectRejection(
-      () => load({ loginHistory: [historyEntry({ studentId: 99 })] }),
-      PROJECTION_CATEGORIES.REFERENCE,
+      () => load({ students: [], loginHistory: [historyEntry({ studentId: '0' })] }),
+      PROJECTION_CATEGORIES.SHAPE,
     )
   })
 
@@ -207,6 +241,16 @@ describe('Phase 3 tenant data projection — load', () => {
         PROJECTION_CATEGORIES.REFERENCE,
       )
     }
+  })
+
+  it('rejects an active student mirror that references a different or removed student', () => {
+    expectRejection(
+      () => load({
+        students: [student({ transactions: [transaction({ studentId: 99 })] })],
+        transactions: [],
+      }),
+      PROJECTION_CATEGORIES.REFERENCE,
+    )
   })
 
   it('rejects malformed student field types', () => {
@@ -378,6 +422,42 @@ describe('Phase 3 tenant data projection — mutation decomposition', () => {
     assert.deepEqual(plan.students[0].body.transactions, [transaction()])
   })
 
+  it('accepts retained transaction and login history for a removed student', () => {
+    const plan = decomposeClassroomMutation({
+      classroomId: CLASSROOM,
+      data: {
+        ...data,
+        students: [],
+        transactions: [transaction()],
+        loginHistory: [historyEntry()],
+      },
+    })
+
+    assert.deepEqual(plan.students, [])
+    assert.deepEqual(plan.transactions.map(write => write.id), ['1700000000000'])
+    assert.deepEqual(plan.loginHistory.map(write => write.id), ['1700000000001'])
+  })
+
+  it('sorts login history newest-first before applying the retention limit', () => {
+    const oldestFirst = Array.from({ length: LOGIN_HISTORY_LIMIT + 2 }, (_, index) =>
+      historyEntry({ id: 1_000_000 + index }))
+    const plan = decomposeClassroomMutation({
+      classroomId: CLASSROOM,
+      data: {
+        ...data,
+        students: [],
+        transactions: [],
+        loginHistory: oldestFirst,
+      },
+      maxWrites: LOGIN_HISTORY_LIMIT + 10,
+    })
+
+    assert.equal(plan.loginHistory.length, LOGIN_HISTORY_LIMIT)
+    assert.equal(plan.loginHistory[0].id, String(1_000_000 + LOGIN_HISTORY_LIMIT + 1))
+    assert.equal(plan.loginHistory.at(-1).id, '1000002')
+    assert.ok(!plan.loginHistory.some(write => write.id === '1000000' || write.id === '1000001'))
+  })
+
   it('deletes login-history records trimmed beyond the cap', () => {
     const previous = { ...data, loginHistory: [historyEntry({ id: 1 }), historyEntry({ id: 2 })] }
     const next = { ...data, loginHistory: [historyEntry({ id: 2 })] }
@@ -465,6 +545,43 @@ describe('Phase 3 tenant data projection — backup export', () => {
       }),
       PROJECTION_CATEGORIES.CREDENTIAL,
     )
+  })
+
+  it('rejects credential fields on every nested export surface without reporting values', () => {
+    const cases = [
+      {
+        students: [student({
+          transactions: [{ ...transaction(), metadata: [{ pinHash: 'mirror-secret' }] }],
+        })],
+      },
+      { transactions: [{ ...transaction(), metadata: { authUid: 'transaction-secret' } }] },
+      { loginHistory: [{ ...historyEntry(), metadata: [{ token: 'history-secret' }] }] },
+      { settings: { nested: { password: 'settings-secret' } } },
+    ]
+
+    for (const [index, surface] of cases.entries()) {
+      const secret = [
+        'mirror-secret',
+        'transaction-secret',
+        'history-secret',
+        'settings-secret',
+      ][index]
+      const error = expectRejection(
+        () => projectBackupExport({
+          data: {
+            students: [student()],
+            transactions: [transaction()],
+            loginHistory: [historyEntry()],
+            settings: {},
+            ...surface,
+          },
+          exportedAt: '2026-01-01T00:00:00.000Z',
+        }),
+        PROJECTION_CATEGORIES.CREDENTIAL,
+      )
+      assert.ok(!error.message.includes(secret))
+      assert.ok(!JSON.stringify(error.details).includes(secret))
+    }
   })
 
   it('requires an exportedAt stamp', () => {

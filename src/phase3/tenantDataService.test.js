@@ -112,6 +112,18 @@ function transaction(overrides = {}) {
   }
 }
 
+function historyEntry(overrides = {}) {
+  return {
+    id: 1700000000001,
+    date: '1/1/2026, 9:05:00 AM',
+    studentId: 1,
+    studentName: 'Ada',
+    result: 'Success',
+    note: '',
+    ...overrides,
+  }
+}
+
 function seededStore() {
   return {
     [`classrooms/${CLASSROOM}`]: { settings: { requireTeacherApproval: true }, lastBackupAt: null },
@@ -193,6 +205,59 @@ describe('Phase 3 tenant data service — loader', () => {
       () => load({}),
       err => err instanceof TenantDataServiceError && err.reason === 'unresolved-tenant',
     )
+  })
+
+  it('rejects non-canonical resolved or requested classroom ids before any read', async () => {
+    for (const classroomId of [
+      `${CLASSROOM}/foreign`,
+      ` ${CLASSROOM}`,
+      '..',
+      '__reserved__',
+      '\uD83D',
+      'a'.repeat(1501),
+    ]) {
+      let reads = 0
+      const double = createFirestoreDouble(seededStore())
+      const firestore = {
+        ...double.firestore,
+        getDoc: async ref => {
+          reads += 1
+          return double.firestore.getDoc(ref)
+        },
+        getDocs: async ref => {
+          reads += 1
+          return double.firestore.getDocs(ref)
+        },
+      }
+      const session = createActiveSession({ classroomId })
+      const load = createTenantDataLoader({ db: {}, session, firestore })
+
+      await assert.rejects(
+        () => load({}),
+        err => err instanceof TenantDataServiceError && err.reason === 'invalid-classroom-id',
+      )
+      assert.equal(reads, 0)
+    }
+
+    let reads = 0
+    const double = createFirestoreDouble(seededStore())
+    const firestore = {
+      ...double.firestore,
+      getDoc: async ref => {
+        reads += 1
+        return double.firestore.getDoc(ref)
+      },
+    }
+    const load = createTenantDataLoader({
+      db: {},
+      session: createActiveSession(),
+      firestore,
+    })
+    await assert.rejects(
+      () => load({ classroomId: `${CLASSROOM}/foreign` }),
+      err => err instanceof TenantDataServiceError && err.reason === 'invalid-classroom-id',
+    )
+    assert.equal(reads, 0)
   })
 
   it('discards a read that completed after the tenant changed', async () => {
@@ -525,6 +590,49 @@ describe('Phase 3 tenant data service — saver', () => {
 
     const deletes = double.commits.flat().filter(op => op.kind === 'delete')
     assert.ok(deletes.every(op => !op.path.includes('/students/')))
+  })
+
+  it('reloads and subsequently saves after a supported server-side student removal', async () => {
+    const seed = seededStore()
+    seed[`classrooms/${CLASSROOM}/loginHistory/1700000000001`] = historyEntry()
+    const double = createFirestoreDouble(seed)
+    const session = createActiveSession()
+    const load = createTenantDataLoader({ db: {}, session, firestore: double.firestore })
+
+    const beforeRemoval = await load({})
+    assert.equal(beforeRemoval.students.length, 1)
+
+    // removeStudentV2 deletes only the roster document. Its transaction and
+    // login-history records are intentionally retained as classroom history.
+    double.store.delete(`classrooms/${CLASSROOM}/students/1`)
+    const afterRemoval = await load({})
+    assert.deepEqual(afterRemoval.students, [])
+    assert.equal(afterRemoval.transactions[0].studentId, 1)
+    assert.equal(afterRemoval.loginHistory[0].studentId, 1)
+
+    const save = createTenantDataSaver({
+      db: {},
+      session,
+      firestore: double.firestore,
+      previousRef: () => afterRemoval,
+      nowFn: () => '2026-01-02T00:00:00.000Z',
+    })
+    const next = {
+      ...afterRemoval,
+      settings: { ...afterRemoval.settings, requireTeacherApproval: false },
+    }
+    const result = await save(next, session.captureIdentity())
+
+    assert.equal(result.skipped, false)
+    assert.equal(
+      double.store.get(`classrooms/${CLASSROOM}/transactions/1700000000000`).studentId,
+      1,
+    )
+    assert.equal(
+      double.store.get(`classrooms/${CLASSROOM}/loginHistory/1700000000001`).studentId,
+      1,
+    )
+    assert.equal(double.store.get(`classrooms/${CLASSROOM}`).settings.requireTeacherApproval, false)
   })
 
   it('skips the write entirely when nothing changed', async () => {

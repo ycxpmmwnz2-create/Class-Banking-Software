@@ -692,7 +692,13 @@ test("native BroadcastChannel: outbound payloads carry exactly type/uidDigest/ep
 
   for (const p of payloads) {
     expect(Object.keys(p).sort()).toEqual(["epoch", "type", "uidDigest"]);
-    const serialized = JSON.stringify(p);
+    expect(p.type).toBe("session-invalidated");
+    expect(p.uidDigest).toMatch(/^sha256_[0-9a-f]{64}$/);
+    expect(Number.isInteger(p.epoch) && p.epoch >= 0).toBe(true);
+
+    // Exact keys prove there is no tenant-data field. Compare exact values too,
+    // rather than searching inside the irreversible digest: any short marker
+    // (for example student ID "11") can occur coincidentally in SHA-256 hex.
     for (const forbidden of [
       TENANT_A.classroomId,
       TENANT_A.studentId,
@@ -702,7 +708,7 @@ test("native BroadcastChannel: outbound payloads carry exactly type/uidDigest/ep
       SHARED_LOGIN_ID,
       seeded.aUid
     ]) {
-      expect(serialized, `Broadcast payload must not contain ${forbidden}`).not.toContain(forbidden);
+      expect(Object.values(p), `Broadcast payload must not expose ${forbidden}`).not.toContain(forbidden);
     }
   }
 

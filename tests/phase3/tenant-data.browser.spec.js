@@ -177,4 +177,51 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     expect(after.body).toContain(TENANT_A.studentMarker)
     expect(before.body).toContain(TENANT_A.studentMarker)
   })
+
+  test('Phase 3 supported student removal survives reload and a later scoped save', async ({ page }) => {
+    const seeded = getSeeded()
+    await gotoApp(page)
+    await signInTeacher(page, TENANT_A)
+    await waitForQuiescence(page)
+
+    page.once('dialog', dialog => dialog.accept())
+    await page.evaluate(studentId => window.removeStudent(Number(studentId)), TENANT_A.studentId)
+    await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain(
+      `${TENANT_A.studentMarker} removed.`,
+    )
+
+    // Reload through the production Auth observer and tenant-data loader. The
+    // removed roster document is gone, while its transaction and login-history
+    // records intentionally remain under the same classroom.
+    await gotoApp(page)
+    await expect.poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBe(
+      seeded.aUid,
+    )
+    await waitForQuiescence(page)
+
+    await page.evaluate(() => window.setScreen('roster'))
+    await expect(page.locator(`#name-${TENANT_A.studentId}`)).toHaveCount(0)
+    await expect(page.locator(`#name-${TENANT_A.sharedStudentId}`)).toBeVisible()
+
+    await page.evaluate(() => window.setScreen('teacher'))
+    await expect(page.getByRole('cell', { name: TENANT_A.transactionMarker, exact: true })).toBeVisible()
+
+    // A successful later UI save proves decomposition also accepts the
+    // historical off-roster records; merely rendering after reload would not.
+    const savesBefore = await page.evaluate(
+      () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
+    )
+    await page.evaluate(() => {
+      window.setScreen('editSettingsLists')
+      const input = document.getElementById('purchaseCategoryList')
+      if (!input) throw new Error('settings list input did not render')
+      input.value = 'POST_REMOVAL_SAVE'
+      window.saveSettingsLists()
+    })
+    await expect.poll(() => page.evaluate(
+      () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
+    )).toBeGreaterThan(savesBefore)
+    await waitForQuiescence(page)
+    expect(await page.evaluate(() => window.__PHASE2B_TEST__.lastError())).toBeNull()
+  })
 }

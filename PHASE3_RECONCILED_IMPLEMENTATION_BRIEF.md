@@ -1,12 +1,13 @@
 # Phase 3 Reconciled Implementation and Release Brief
 
 Status: **planning and review only** as a production-authorization document.
-Items 1–11 are implemented and independently reviewed from local repository,
-unit, source-contract, emulator, rules, browser, release-rehearsal, and
-rollback-rehearsal evidence. Item 12 is the remaining evidence-only
-documentation boundary. Production state remains unknown. This document does
-not authorize production inspection, migration, deployment, a rules change,
-feature-gate activation, real-account onboarding, cleanup, commit, or push.
+Items 1–12 are implemented from local repository, unit, source-contract,
+emulator, rules, browser, release-rehearsal, and rollback-rehearsal evidence.
+The subsequent production-readiness correction pass is local and awaits the
+required focused Claude re-review and final Grok checkpoint. Production state
+remains unknown. This document does not authorize production inspection,
+migration, deployment, a rules change, feature-gate activation, real-account
+onboarding, cleanup, commit, or push.
 
 Baseline when reconciled:
 

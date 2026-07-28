@@ -62,17 +62,18 @@ function resolveTenant(session, { uid, classroomId } = {}) {
     throw new TenantDataServiceError("missing-session", "A tenant session is required.");
   }
 
-  const sessionClassroomId = typeof session.classroomId === "string" ? session.classroomId.trim() : "";
-  if (!sessionClassroomId) {
+  const rawSessionClassroomId = typeof session.classroomId === "string" ? session.classroomId : "";
+  if (!rawSessionClassroomId) {
     throw new TenantDataServiceError(
       "unresolved-tenant",
       "The session has no resolved classroom."
     );
   }
+  const sessionClassroomId = requireCanonicalClassroomId(rawSessionClassroomId);
 
   if (classroomId !== undefined && classroomId !== null) {
-    const requested = typeof classroomId === "string" ? classroomId.trim() : "";
-    if (!requested || requested !== sessionClassroomId) {
+    const requested = requireCanonicalClassroomId(classroomId);
+    if (requested !== sessionClassroomId) {
       throw new TenantDataServiceError(
         "tenant-mismatch",
         "The requested classroom does not match the resolved tenant."
@@ -141,13 +142,32 @@ function requireCanonicalStudentId(value) {
 
 function requireCanonicalClassroomId(value) {
   if (typeof value !== "string" || !value || value !== value.trim() ||
-      value === "." || value === ".." || value.includes("/")) {
+      value === "." || value === ".." || value.includes("/") ||
+      /^__[\s\S]*__$/.test(value) || !isWellFormedUnicode(value) ||
+      new TextEncoder().encode(value).length > 1500) {
     throw new TenantDataServiceError(
       "invalid-classroom-id",
-      "The student claim does not contain a canonical classroom id."
+      "The classroom identity is not canonical."
     );
   }
   return value;
+}
+
+function isWellFormedUnicode(value) {
+  if (typeof String.prototype.isWellFormed === "function") {
+    return value.isWellFormed();
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (nextCodeUnit < 0xDC00 || nextCodeUnit > 0xDFFF) return false;
+      index += 1;
+    } else if (codeUnit >= 0xDC00 && codeUnit <= 0xDFFF) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**

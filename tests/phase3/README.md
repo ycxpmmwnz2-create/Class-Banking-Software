@@ -15,6 +15,7 @@
 | 9 | Bridge rules and tests | complete |
 | 10 | Final and rollback-safe rules and tests | complete |
 | 11 | Full release and rollback rehearsal | complete |
+| 12 | Evidence-only documentation corrections | complete |
 
 Commit 5 adds the bounded production writer, its append-only durable journal,
 and the read-only re-verifier. The writer owns exactly two remote mutations: one
@@ -286,11 +287,11 @@ student self-read, broken foundations, credential isolation, sensitive paths,
 and anonymous denial. `tests/firestore/rules.phase3.rollback.test.js` covers the
 hardcoded exception, foreign teachers, legacy students, scoped shutdown, both
 credential shapes, sensitive collections, and fail-closed fallthrough. Together
-with the unchanged bridge suite, `test:phase3:rules` provides 38 behavioral
+with the unchanged bridge suite, `test:phase3:rules` provides 39 behavioral
 emulator tests across the three deployment states.
 
 The final SHA-256 is
-`3a169ad65f911aa80d25c524aec219775773952019cd53a57a776e14c711793d`.
+`414ab5cad328b4b254fe4397ec891f0b7639548c324d2ae0ee74c8db0a9639f3`.
 The rollback-safe SHA-256 is
 `c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d`.
 The bridge and unchanged production pins remain as recorded above. These are
@@ -373,6 +374,76 @@ Item 11 verification on 2026-07-27:
 
 All results are local. No production read, write, deployment, gate/parameter
 change, Hosting change, commit, or push was performed.
+
+## 2026-07-28 production-readiness correction pass
+
+The correction pass following Claude's consolidated review is implemented in
+the local working tree and awaits focused Claude re-review followed by the Grok
+checkpoint. It does not represent production authorization or deployment.
+
+Accepted findings are now pinned by behavioral tests:
+
+- the final classroom-root rule preserves required mutable fields, validates
+  their types, and permits the native Firestore `Timestamp` value Phase 2A may
+  preserve for `lastBackupAt`; the V2 storage projection normalizes that value
+  to the UI's ISO-string view model;
+- student, transaction, and login-history body IDs are positive integers that
+  exactly match canonical numeric document paths;
+- backup export scans the complete aggregate recursively for credential fields,
+  including nested maps and arrays, before returning any shareable object;
+- the supported `removeStudentV2` shape retains same-tenant transaction and
+  login history, reloads without requiring the student to remain on the roster,
+  and permits a later scoped save while active-student mirrors remain strict;
+- teacher resolution and tenant-service path construction reject noncanonical
+  classroom IDs, and Auth-observer deduplication compares the complete resolved
+  student identity rather than UID and role alone;
+- login-history retention sorts newest-first before applying the 500-entry cap;
+  the owner deletion rule is documented as the user-facing clear/trim path, not
+  as deletion of the separate server-authentication audit collection; and
+- Item 12 status text now distinguishes completed local implementation from the
+  still-pending independent review and unknown production state.
+
+The suggested bridge/rollback flat auth-log list denial was not adopted. The
+gate-off client performs a collection query on `studentAuthLogs`, so denying
+`list` would break the required default-off and rollback compatibility path.
+That disposition changes no bridge or rollback rule bytes.
+
+The final-rules SHA-256 for this correction is
+`414ab5cad328b4b254fe4397ec891f0b7639548c324d2ae0ee74c8db0a9639f3`.
+The bridge, rollback, and checked-in production-rule hashes are unchanged.
+
+Correction verification on 2026-07-28:
+
+| Command | Result |
+| --- | --- |
+| `npm run test:phase3:release-rehearsal:runner` | 49/49 |
+| `npm run test:phase3:release-rehearsal:browser` | 24/24 |
+| `npm run test:phase3:rollback-rehearsal` | 3/3 |
+| `npm run test:phase3:rules` | 15/15 bridge + 17/17 final + 7/7 rollback |
+| `npm run test:phase3:contracts` | 63/63 |
+| `npm run test:phase3:unit` | 441/441 |
+| `npm run test:phase3:migration` | 48/48 active + 1 expected non-release skip |
+| `npm run test:functions` | 718/718 |
+| `npm run test:rules` | 36/36 |
+| `npm run test:migration` | 38/38 |
+| `npm run test:phase2b:server` | 9/9 gate-off + 60/60 gate-on |
+| `npm run test:phase2b:client` | 90/90 |
+| `npm run test:phase2b:rules` | 29/29 |
+| `npm run test:phase2b:browser` | 24/24 |
+| `npm run test:phase2b:build-contract` | 7/7 |
+| default-off and V2 production builds | clean |
+| root and Functions lint | clean |
+
+During final-rules browser verification, an existing assertion searched for the
+short student ID `"11"` anywhere inside a SHA-256 digest and failed when those
+hex digits occurred coincidentally. The assertion now proves the exact three-key
+payload shape, digest format, epoch domain, and absence of raw tenant values
+without making a probabilistic substring claim. The corrected full suite then
+passed 24/24.
+
+All correction results are local and credential-isolated. No production read,
+write, deployment, gate/parameter change, Hosting change, commit, or push was
+performed.
 
 ### `student-identity.contract.test.js`
 

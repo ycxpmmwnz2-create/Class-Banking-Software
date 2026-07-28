@@ -41,7 +41,7 @@ Record and independently compare all four hashes before any authorized release:
 | --- | --- | --- |
 | `firestore.rules` | `0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50` | unchanged legacy baseline; never redeploy after scoped credentials exist |
 | `firestore.phase3.bridge.rules` | `4bf76a85e576a1d5b30573c3c3d5eba0d3561fb9d9a19ac14ac6382dced8d7f0` | gate-off migration bridge |
-| `firestore.phase3.final.rules` | `3a169ad65f911aa80d25c524aec219775773952019cd53a57a776e14c711793d` | gate-on V2 policy |
+| `firestore.phase3.final.rules` | `414ab5cad328b4b254fe4397ec891f0b7639548c324d2ae0ee74c8db0a9639f3` | gate-on V2 policy |
 | `firestore.phase3.rollback.rules` | `c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d` | default-off recovery policy |
 
 Never copy a candidate over `firestore.rules` for testing. The rehearsals load
