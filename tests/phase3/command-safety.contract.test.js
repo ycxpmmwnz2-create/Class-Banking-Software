@@ -319,21 +319,45 @@ describe('Phase 3 command-safety source contract', () => {
    * `test:phase3:unit` was added in Commit 2 alongside the colocated
    * `functions/phase3/*.test.js` guard suite it genuinely runs. Item 9 earns
    * `test:phase3:rules` alongside its bridge-rules emulator suite, and Item 10
-   * extends that gate with the final and rollback-safe suites. The two rehearsal
-   * gates stay absent: a placeholder exiting 0 would report green for work that
-   * does not exist.
+   * extends that gate with the final and rollback-safe suites. Boundary 11 earns
+   * both rehearsal gates alongside the behavioral suites they execute.
    */
   it('source contract: no behavioral gate exists without the suite it runs', () => {
+    const releaseGate = scripts['test:phase3:release-rehearsal']
+    assert.equal(typeof releaseGate, 'string')
+    assert.equal(
+      releaseGate,
+      'npm run test:phase3:release-rehearsal:runner && npm run test:phase3:release-rehearsal:browser',
+    )
+    const releaseRunner = scripts['test:phase3:release-rehearsal:runner']
+    const releaseBrowser = scripts['test:phase3:release-rehearsal:browser']
+    assert.match(releaseRunner, /production-runner\.emulator\.test\.js/)
+    assert.match(releaseBrowser, /playwright test/)
+    assert.match(releaseRunner, /PHASE3_REHEARSAL_MODE=release/)
+    assert.match(releaseBrowser, /PHASE3_REHEARSAL_MODE=release/)
+
+    const rollbackGate = scripts['test:phase3:rollback-rehearsal']
+    assert.equal(typeof rollbackGate, 'string')
+    assert.match(rollbackGate, /rollback-rehearsal\.test\.js/)
+    assert.match(rollbackGate, /PHASE3_REHEARSAL_MODE=rollback/)
+    assert.ok(existsSync(new URL('./rollback-rehearsal.test.js', import.meta.url)))
+
     for (const name of [
-      'test:phase3:release-rehearsal',
+      'test:phase3:release-rehearsal:runner',
+      'test:phase3:release-rehearsal:browser',
       'test:phase3:rollback-rehearsal',
     ]) {
-      assert.equal(
-        scripts[name],
-        undefined,
-        `${name} must not exist until its behavioral suite does`,
+      assert.ok(ISOLATED_EMULATOR_COMMANDS.includes(name))
+      assert.ok(
+        scrubsVariable(scripts[name], 'PHASE3_REHEARSAL_MODE'),
+        `${name} must scrub an inherited rehearsal selector before setting its own`,
       )
     }
+
+    assert.ok(
+      scrubsVariable(scripts['test:phase2b:browser'], 'PHASE3_REHEARSAL_MODE'),
+      'the historical browser gate must scrub the final-rules rehearsal selector',
+    )
 
     // test:phase3:migration was earned in Commit 3 alongside the real
     // production-runner emulator suite. It must name the suite it runs, and that

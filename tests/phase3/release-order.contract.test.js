@@ -18,6 +18,18 @@ const brief = readFileSync(
   new URL('../../PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md', import.meta.url),
   'utf8',
 )
+const runbook = readFileSync(
+  new URL('../../PHASE3_RELEASE_RUNBOOK.md', import.meta.url),
+  'utf8',
+)
+const releaseRehearsal = readFileSync(
+  new URL('./production-runner.emulator.test.js', import.meta.url),
+  'utf8',
+)
+const rollbackRehearsal = readFileSync(
+  new URL('./rollback-rehearsal.test.js', import.meta.url),
+  'utf8',
+)
 
 /** The unchanged production-rules pin carried throughout Phase 3. */
 const EXPECTED_RULES_SHA256 =
@@ -88,6 +100,15 @@ function stepIndex(steps, ...patterns) {
     `no step matched ${patterns.map(String).join(' + ')}`,
   )
   return index
+}
+
+function assertOrderedMarkers(source, markers, description) {
+  let previous = -1
+  for (const marker of markers) {
+    const current = source.indexOf(marker, previous + 1)
+    assert.ok(current > previous, `${description}: ${marker} must appear in order`)
+    previous = current
+  }
 }
 
 describe('Phase 3 release-order source contract', () => {
@@ -210,6 +231,83 @@ describe('Phase 3 release-order source contract', () => {
         `${file} must match its reviewed checksum`,
       )
     }
+  })
+
+  it('boundary: Boundary 11 runbook binds release and rollback to the reviewed order', () => {
+    assert.match(runbook, /local rehearsal evidence only; not production authorization/i)
+    assertOrderedMarkers(runbook, [
+      'maintenance/write freeze',
+      'teacher/classroom foundation',
+      'first invocation',
+      'bridge-rules hash',
+      'Functions with the V2 gate off',
+      'second time',
+      'reverify.js',
+      'final-rules hash',
+      'MULTI_TEACHER_V2_RELEASE_ID',
+      'gate-on Hosting artifact',
+      'existing-teacher and existing-student acceptance',
+      'End the write freeze',
+      'rollback window',
+    ], 'production release checklist')
+    assertOrderedMarkers(runbook, [
+      'Retain or re-enter and verify the write freeze',
+      'Roll Hosting back',
+      'Disable the V2 server gate',
+      'rollback-safe rules',
+      'Reconcile the untouched legacy aggregate',
+      'legacy existing-teacher and existing-student acceptance',
+      'Resume writes',
+    ], 'production rollback checklist')
+    assert.match(runbook, /Never\s+deploy the recursive `firestore\.rules` baseline/i)
+    assert.match(runbook, /Never record credential contents, private keys, access\/refresh tokens, PINs/i)
+  })
+
+  it('boundary: the release rehearsal executes real runner and candidate-rules evidence', () => {
+    assert.match(releaseRehearsal, /initializeTestEnvironment/)
+    assert.match(releaseRehearsal, /runWriteMain/)
+    assert.match(releaseRehearsal, /runReverifyMain/)
+    assertOrderedMarkers(releaseRehearsal, [
+      "'freeze-entered'",
+      "'foundation-verified'",
+      "'initialization-verified'",
+      "'bridge-rules-verified'",
+      "'functions-gate-off-verified'",
+      "'copy-reconciled'",
+      "'final-rules-verified'",
+      "'release-id-gate-enabled'",
+      "'gate-on-hosting-verified'",
+      "'existing-user-acceptance-passed'",
+      "'freeze-released'",
+      "'rollback-window-observing'",
+    ], 'release rehearsal ledger')
+    for (const hash of [EXPECTED_BRIDGE_RULES_SHA256, EXPECTED_FINAL_RULES_SHA256]) {
+      assert.match(releaseRehearsal, new RegExp(hash))
+    }
+    assert.doesNotMatch(
+      releaseRehearsal,
+      /firebase\s+deploy|copyFileSync\([^)]*firestore\.rules/,
+    )
+  })
+
+  it('boundary: the rollback rehearsal retains credentials and blocks early writes', () => {
+    assert.match(rollbackRehearsal, /initializeTestEnvironment/)
+    assertOrderedMarkers(rollbackRehearsal, [
+      "'freeze-retained'",
+      "'hosting-default-off-restored'",
+      "'server-gate-disabled'",
+      "'rollback-rules-verified'",
+      "'legacy-state-reconciled'",
+      "'legacy-acceptance-passed'",
+      "'writes-resumed'",
+    ], 'rollback rehearsal ledger')
+    assert.match(rollbackRehearsal, new RegExp(EXPECTED_FINAL_RULES_SHA256))
+    assert.match(rollbackRehearsal, new RegExp(EXPECTED_ROLLBACK_RULES_SHA256))
+    assert.match(rollbackRehearsal, /legacy writes cannot resume yet/)
+    assert.doesNotMatch(
+      rollbackRehearsal,
+      /firebase\s+deploy|copyFileSync\([^)]*firestore\.rules/,
+    )
   })
 
   it('boundary: src/phase3 contains only the modules Section 11 permits', () => {

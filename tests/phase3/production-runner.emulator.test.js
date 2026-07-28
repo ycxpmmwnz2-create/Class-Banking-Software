@@ -23,6 +23,11 @@ import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { after, before, describe, test } from 'node:test'
+import {
+  assertFails,
+  assertSucceeds,
+  initializeTestEnvironment,
+} from '@firebase/rules-unit-testing'
 
 // The harness owns the emulator hosts. Assert before importing anything that
 // guards on them, so a bare `node --test` fails loudly instead of reaching out.
@@ -1974,6 +1979,74 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
   let e2eArtifactRoot
   let artifacts
   let retainedManifest
+  let releaseRulesEnvironment
+
+  const RELEASE_REHEARSAL_SEQUENCE = Object.freeze([
+    'freeze-entered',
+    'foundation-verified',
+    'initialization-verified',
+    'bridge-rules-verified',
+    'functions-gate-off-verified',
+    'copy-reconciled',
+    'final-rules-verified',
+    'release-id-gate-enabled',
+    'gate-on-hosting-verified',
+    'existing-user-acceptance-passed',
+    'freeze-released',
+    'rollback-window-observing',
+  ])
+
+  class ReleaseRehearsalLedger {
+    constructor() {
+      this.events = []
+    }
+
+    append(event, evidence = {}) {
+      const expected = RELEASE_REHEARSAL_SEQUENCE[this.events.length]
+      if (event !== expected) {
+        throw new Error(`release-order-abort: expected ${expected}, received ${event}`)
+      }
+      if (evidence === null || Array.isArray(evidence) || typeof evidence !== 'object') {
+        throw new Error('release-evidence-abort: evidence must be an object')
+      }
+      const record = Object.freeze({ ...evidence, sequence: this.events.length + 1, event })
+      const encoded = JSON.stringify(record)
+      for (const forbidden of [
+        ...Object.values(SEEDED_PIN_HASHES),
+        'private_key',
+        'access_token',
+        'pinHash',
+      ]) {
+        if (encoded.includes(forbidden)) {
+          throw new Error(`release-evidence-abort: secret-bearing marker ${forbidden}`)
+        }
+      }
+      this.events.push(record)
+      return record
+    }
+
+    complete() {
+      if (this.events.length !== RELEASE_REHEARSAL_SEQUENCE.length) {
+        throw new Error('release-order-abort: the rehearsal is incomplete')
+      }
+      return Object.freeze([...this.events])
+    }
+  }
+
+  async function loadReleaseRules(fileName, expectedSha256) {
+    await releaseRulesEnvironment?.cleanup()
+    const bytes = fs.readFileSync(fileName)
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), expectedSha256)
+    releaseRulesEnvironment = await initializeTestEnvironment({
+      projectId: EMULATOR_PROJECT_ID,
+      firestore: {
+        rules: bytes.toString('utf8'),
+        host: '127.0.0.1',
+        port: 8080,
+      },
+    })
+    return releaseRulesEnvironment
+  }
 
   const DEPLOYMENT_SURFACES_E2E = Object.freeze({
     rules: { release: 'bridge-e2e' },
@@ -2370,13 +2443,28 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
     }
   })
 
-  after(() => {
+  after(async () => {
+    await releaseRulesEnvironment?.cleanup()
     for (const root of [e2eStateRoot, e2eArtifactRoot]) {
       if (root) fs.rmSync(root, { recursive: true, force: true })
     }
   })
 
   test('drives the complete two-invocation copy and then reverifies', async () => {
+    const isReleaseRehearsal = process.env.PHASE3_REHEARSAL_MODE === 'release'
+    const releaseLedger = isReleaseRehearsal ? new ReleaseRehearsalLedger() : null
+    if (releaseLedger) {
+      releaseLedger.append('freeze-entered', {
+        snapshotBound: true,
+        manifestId: retainedManifest.preflightManifestId,
+        sourceChecksum: retainedManifest.domainChecksums.legacySourceState,
+      })
+      releaseLedger.append('foundation-verified', {
+        teacherCount: 1,
+        classroomCount: 1,
+      })
+    }
+
     // ---- 1. invocation one: initialization ONLY ----
     const first = await runWrite()
     assert.equal(
@@ -2391,6 +2479,10 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
     assert.equal(classroomAfterInit.data().nextStudentNumber, 6)
     // Pre-existing fields survived untouched.
     assert.equal(classroomAfterInit.data().name, 'E2E Period 1')
+    releaseLedger?.append('initialization-verified', {
+      nextStudentNumber: classroomAfterInit.data().nextStudentNumber,
+      loginCodeChecksum: createHash('sha256').update(E2E_CODE).digest('hex'),
+    })
 
     // ---- 2. NOTHING was copied yet ----
     for (const collection of [
@@ -2399,6 +2491,27 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
       const docs = await firestore
         .collection(`classrooms/${E2E_CLASSROOM_ID}/${collection}`).get()
       assert.equal(docs.size, 0, `${collection} must be empty after step 1`)
+    }
+
+    if (releaseLedger) {
+      const bridge = await loadReleaseRules(
+        'firestore.phase3.bridge.rules',
+        '4bf76a85e576a1d5b30573c3c3d5eba0d3561fb9d9a19ac14ac6382dced8d7f0',
+      )
+      const owner = bridge.authenticatedContext(E2E_TEACHER_UID).firestore()
+      const legacyTeacher = bridge.authenticatedContext(TEACHER_UID).firestore()
+      await assertSucceeds(legacyTeacher.doc('morganBank/classroomData').get())
+      await assertSucceeds(owner.doc(`classrooms/${E2E_CLASSROOM_ID}`).get())
+      await assertFails(owner.doc(`classrooms/${E2E_CLASSROOM_ID}`).update({
+        settings: { reasons: ['forbidden-before-copy'] },
+      }))
+      releaseLedger.append('bridge-rules-verified', {
+        rulesSha256: '4bf76a85e576a1d5b30573c3c3d5eba0d3561fb9d9a19ac14ac6382dced8d7f0',
+      })
+      releaseLedger.append('functions-gate-off-verified', {
+        functionsRevision: DEPLOYMENT_SURFACES_E2E.functions.studentPinLoginV2,
+        gateEnabled: false,
+      })
     }
 
     // ---- 3. invocation two, gate OFF: the copy runs ----
@@ -2464,6 +2577,85 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
       `reverify must succeed (got ${reverified.error?.message ?? ''})`,
     )
     assert.equal(reverified.journalHead, 'completed')
+
+    if (releaseLedger) {
+      releaseLedger.append('copy-reconciled', {
+        studentCount: students.size,
+        transactionCount: transactions.size,
+        loginHistoryCount: history.size,
+        scopedCredentialCount: 2,
+        scopedLogCount: scopedLogs.size,
+        journalHead: reverified.journalHead,
+      })
+
+      const finalRules = await loadReleaseRules(
+        'firestore.phase3.final.rules',
+        '3a169ad65f911aa80d25c524aec219775773952019cd53a57a776e14c711793d',
+      )
+      const owner = finalRules.authenticatedContext(E2E_TEACHER_UID).firestore()
+      const foreign = finalRules.authenticatedContext('foreign-teacher').firestore()
+      const student = finalRules.authenticatedContext('existing-student', {
+        role: 'student', classroomId: E2E_CLASSROOM_ID, studentId: '1',
+      }).firestore()
+      await assertSucceeds(owner.doc(`classrooms/${E2E_CLASSROOM_ID}`).get())
+      await assertSucceeds(owner.doc(`classrooms/${E2E_CLASSROOM_ID}/students/1`).get())
+      await assertFails(owner.doc(
+        `classrooms/${E2E_CLASSROOM_ID}/studentCredentials/ada`,
+      ).get())
+      await assertFails(foreign.doc(`classrooms/${E2E_CLASSROOM_ID}`).get())
+      await assertSucceeds(student.doc(
+        `classrooms/${E2E_CLASSROOM_ID}/students/1`,
+      ).get())
+      releaseLedger.append('final-rules-verified', {
+        rulesSha256: '3a169ad65f911aa80d25c524aec219775773952019cd53a57a776e14c711793d',
+        sensitivePathDenied: true,
+      })
+      releaseLedger.append('release-id-gate-enabled', {
+        releaseIdBound: retainedManifest.releaseId === 'phase3-rel-emulator',
+        gateEnabled: true,
+      })
+      releaseLedger.append('gate-on-hosting-verified', {
+        hostingRelease: 'gate-on-emulator-artifact',
+      })
+      releaseLedger.append('existing-user-acceptance-passed', {
+        teacherAccepted: true,
+        studentAccepted: true,
+      })
+      releaseLedger.append('freeze-released', { acceptancePassed: true })
+
+      const roots = await enumerateExistingRoots()
+      assert.deepEqual(roots.teacherIds, [E2E_TEACHER_UID])
+      assert.deepEqual(roots.classroomIds, [E2E_CLASSROOM_ID])
+      releaseLedger.append('rollback-window-observing', {
+        teacherCount: roots.teacherIds.length,
+        secondTeacherOnboarded: false,
+      })
+      const evidence = releaseLedger.complete()
+      assert.equal(evidence.length, RELEASE_REHEARSAL_SEQUENCE.length)
+      assert.deepEqual(evidence.map(entry => entry.event), RELEASE_REHEARSAL_SEQUENCE)
+    }
+  })
+
+  test('release rehearsal ordering rejects skipped or premature transitions', {
+    skip: process.env.PHASE3_REHEARSAL_MODE !== 'release',
+  }, () => {
+    const skippedFoundation = new ReleaseRehearsalLedger()
+    assert.throws(
+      () => skippedFoundation.append('initialization-verified'),
+      /release-order-abort/,
+    )
+
+    const earlyActivation = new ReleaseRehearsalLedger()
+    earlyActivation.append('freeze-entered')
+    earlyActivation.append('foundation-verified')
+    earlyActivation.append('initialization-verified')
+    earlyActivation.append('bridge-rules-verified')
+    earlyActivation.append('functions-gate-off-verified')
+    assert.throws(
+      () => earlyActivation.append('release-id-gate-enabled'),
+      /release-order-abort/,
+    )
+    assert.throws(() => earlyActivation.complete(), /rehearsal is incomplete/)
   })
 
   test('a third invocation is idempotent and writes nothing', async () => {

@@ -417,6 +417,36 @@ describe('Phase 3 student-identity source contract', () => {
     )
   })
 
+  it('source contract: V2 destructive controls fail closed before confirmation or persistence', () => {
+    for (const [functionName, unavailableMessage] of [
+      ['clearTransactions', 'Clearing transaction history is unavailable in this version.'],
+      ['resetEverything', 'Reset Everything is unavailable in this version.'],
+    ]) {
+      const start = indexHtml.indexOf(`function ${functionName}()`)
+      assert.notEqual(start, -1, `${functionName} must remain defined for the legacy artifact`)
+      const nextFunction = indexHtml.indexOf('\n    function ', start + 1)
+      const body = indexHtml.slice(start, nextFunction)
+      const gateIndex = body.indexOf('IS_MULTI_TEACHER_V2_ENABLED')
+      const confirmIndex = body.indexOf('confirm(')
+      const saveIndex = body.indexOf('saveData()')
+
+      assert.ok(gateIndex !== -1 && confirmIndex !== -1 && saveIndex !== -1)
+      assert.ok(gateIndex < confirmIndex, `${functionName} must refuse V2 before confirmation`)
+      assert.ok(gateIndex < saveIndex, `${functionName} must refuse V2 before persistence`)
+      const refusal = body.slice(gateIndex, confirmIndex)
+      assert.match(refusal, new RegExp(unavailableMessage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+      assert.match(refusal, /return;/)
+    }
+
+    const settingsStart = indexHtml.indexOf('<h3>Cleanup</h3>')
+    const settingsEnd = indexHtml.indexOf('</div>', settingsStart)
+    const cleanupMarkup = indexHtml.slice(settingsStart, settingsEnd)
+    assert.match(cleanupMarkup, /IS_MULTI_TEACHER_V2_ENABLED/)
+    assert.match(cleanupMarkup, /clearTransactions\(\)/)
+    assert.match(cleanupMarkup, /resetEverything\(\)/)
+    assert.match(cleanupMarkup, /separately reviewed server workflow/)
+  })
+
   it('source contract: student login branches explicitly between the V2 classroom-qualified and legacy payloads', () => {
     assert.match(indexHtml, /httpsCallable\(functions, "studentPinLogin"\)/)
     assert.match(indexHtml, /studentPinLogin\(\{ loginId, pin \}\)/)

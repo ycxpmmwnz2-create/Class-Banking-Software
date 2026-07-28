@@ -14,7 +14,7 @@
 | 8 | Classroom-code student login and Function gate compatibility | complete |
 | 9 | Bridge rules and tests | complete |
 | 10 | Final and rollback-safe rules and tests | complete |
-| 11 | Full release and rollback rehearsal | not started |
+| 11 | Full release and rollback rehearsal | complete |
 
 Commit 5 adds the bounded production writer, its append-only durable journal,
 and the read-only re-verifier. The writer owns exactly two remote mutations: one
@@ -53,8 +53,9 @@ gate discovery-safe and invocation-enforced, while refusing legacy callables and
 leaving the legacy aggregate trigger inert when the V2 gate is on. At the end of
 that commit, rules artifacts and deployment logic remained unimplemented. Items
 9 and 10 now supply the three separately deployable, checksum-pinned rules
-artifacts without changing `firestore.rules`; deployment and rehearsal remain
-Item 11 work.
+artifacts without changing `firestore.rules`. Item 11 now binds those artifacts
+to credential-isolated release and rollback rehearsals plus the operator runbook;
+no deployment or production access occurred.
 
 ## Commands
 
@@ -64,6 +65,8 @@ Item 11 work.
 | `npm run test:phase3:unit` | no | no |
 | `npm run test:phase3:migration` | yes | no |
 | `npm run test:phase3:rules` | yes | no |
+| `npm run test:phase3:release-rehearsal` | yes | yes |
+| `npm run test:phase3:rollback-rehearsal` | yes | no |
 
 `test:phase3:contracts` selects `tests/phase3/*.contract.test.js` — deliberately
 **not** `*.test.js`. The broader glob would also select the emulator-backed runner
@@ -88,23 +91,27 @@ The `src/phase3` suites stay emulator-free because the service takes every
 Firestore primitive by injection, so a unit test constructs no Firebase handle and
 reaches no network. That is a structural property, not a convention.
 
-Two Section 12 gates remain **deliberately undeclared** —
-`test:phase3:release-rehearsal` and `test:phase3:rollback-rehearsal`. A passing
-placeholder under either name would report green for work that does not exist;
-the command-safety contract asserts their absence and will admit each one only
-alongside the suite it runs. Item 9 earns `test:phase3:rules` with the real
-bridge-rules emulator suite, and Item 10 extends that gate with the final and
-rollback-safe emulator suites. The three suites execute sequentially against one
-credential-isolated Firestore emulator.
+Boundary 11 earns both remaining Section 12 gates. The release gate deliberately
+uses two fresh emulator lifecycles: the runner suite uses Auth + Firestore with
+the real production entrypoint modules, while the browser suite uses Auth +
+Functions + Firestore + Chromium under final rules. Splitting the lifecycles
+prevents asynchronous Firestore triggers from contending with runner fixture
+teardown. The rollback gate uses a separate Firestore-only lifecycle. Every
+child command is independently subject to the credential-isolation contract.
+
+Item 9 earned `test:phase3:rules` with the bridge-rules emulator suite, and Item
+10 extended that gate with final and rollback-safe suites. The three rules suites
+still execute sequentially against one credential-isolated Firestore emulator.
 
 ## Evidence layer — read this before citing these tests
 
 Every `*.contract.test.js` suite in **this directory** is **static/source
 evidence**. Each parses repository text (`package.json`, the reconciled brief,
-`index.html`) or checks filesystem and checksum facts. Every test title begins
-with `source contract:` or `boundary:` for that reason. The separately registered
-`tenant-data.browser.spec.js` is runtime browser/emulator evidence and is not
-selected by `test:phase3:contracts`.
+the release runbook, rehearsal sources, or `index.html`) or checks filesystem and
+checksum facts. Every test title begins with `source contract:` or `boundary:`
+for that reason. The separately registered `tenant-data.browser.spec.js`,
+`production-runner.emulator.test.js`, and `rollback-rehearsal.test.js` are runtime
+emulator evidence and are not selected by `test:phase3:contracts`.
 
 These suites prove:
 
@@ -121,7 +128,8 @@ The source-contract suites do **not** prove:
 - that credential isolation works at runtime — nothing here starts an emulator
   or the Firebase CLI;
 - that a production release or rollback executes correctly in the stated order;
-- any runtime behavior of the Phase 3 runner or the rules artifacts;
+- runtime behavior of the Phase 3 runner or rules artifacts (that evidence lives
+  in the separately invoked emulator suites);
 - anything about deployed production state, which remains unknown by design.
 
 Per `AI_COLLABORATION_WORKFLOW.md` rule 7, do not present these results as
@@ -286,8 +294,8 @@ The final SHA-256 is
 The rollback-safe SHA-256 is
 `c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d`.
 The bridge and unchanged production pins remain as recorded above. These are
-local source/emulator artifacts only: no rules were deployed, no migration or
-release rehearsal was run, and Item 11 remains unstarted.
+local source/emulator artifacts only: no rules were deployed and no production
+migration occurred.
 
 Item 10 verification on 2026-07-27:
 
@@ -301,6 +309,70 @@ Item 10 verification on 2026-07-27:
 | `npm run test:phase3:migration` | 48/48 |
 | `npm run lint` | clean |
 | `npm --prefix functions run lint` | clean |
+
+## Item 11 — release and rollback rehearsal evidence
+
+`PHASE3_RELEASE_RUNBOOK.md` distinguishes executable local data-plane evidence
+from modeled control-plane ordering and gives the production operator an exact
+release checklist, evidence schema, abort criteria, and post-credential rollback
+sequence. It repeats the absolute prohibition on redeploying the recursive
+baseline rules after scoped credentials exist. It is guidance, not production
+authorization.
+
+`test:phase3:release-rehearsal:runner` executes the real preflight, two-invocation
+writer, and re-verifier against isolated Auth/Firestore emulators. Candidate
+rules bytes are loaded directly from `firestore.phase3.bridge.rules` and
+`firestore.phase3.final.rules` and rejected on checksum mismatch; the suite never
+copies over `firestore.rules`. Its strict ledger rejects skipped or premature
+freeze, foundation, initialization, bridge, gate-off Functions, copy,
+reconciliation, final rules, release-ID/gate, Hosting, acceptance, freeze-release,
+and rollback-window transitions. Real rules checks prove legacy bridge access,
+owner isolation, final teacher/student access, and foreign/sensitive-path denial.
+
+`test:phase3:release-rehearsal:browser` starts a fresh Auth/Functions/Firestore
+lifecycle and runs the full tenant browser suite with the final rules selected by
+the fixture loader. It includes a V2 cleanup regression: Clear Transaction
+History and Reset Everything are absent, direct calls are inert, and Reset All
+Balances plus Clear Login History remain available. Student/transaction deletion
+still requires a separately reviewed server workflow.
+
+`test:phase3:rollback-rehearsal` starts from final rules, then installs the
+checksum-pinned rollback-safe candidate in the Firestore emulator. It proves
+flat credentials and legacy data are unchanged, scoped credentials remain stored
+but client-denied, the recursive baseline is not the rollback artifact, legacy
+teacher/student acceptance passes, and a disposable legacy write remains blocked
+by the rehearsal ledger until the ordered acceptance transition. Negative
+controls reject out-of-order events, early resumption, and secret-bearing
+evidence.
+
+The freeze, Functions deployment, gate/parameter changes, Hosting deployment,
+human acceptance sign-off, and observation window are necessarily modeled in
+local ledgers. A green rehearsal does not claim those production control-plane
+events occurred.
+
+Item 11 verification on 2026-07-27:
+
+| Command | Result |
+| --- | --- |
+| `npm run test:phase3:release-rehearsal` | 49/49 runner + 23/23 browser |
+| `npm run test:phase3:rollback-rehearsal` | 3/3 |
+| `npm run test:phase3:contracts` | 63/63 |
+| `npm run test:phase3:unit` | 432/432 |
+| `npm run test:phase3:migration` | 48/48 active + 1 expected non-release skip |
+| `npm run test:phase3:rules` | 15/15 bridge + 16/16 final + 7/7 rollback |
+| `npm run test:functions` | 718/718 |
+| `npm run test:rules` | 36/36 |
+| `npm run test:migration` | 38/38 |
+| `npm run test:phase2b:server` | 60/60 gate-on; gate-off compatibility passed |
+| `npm run test:phase2b:client` | 88/88 |
+| `npm run test:phase2b:rules` | 29/29 |
+| `npm run test:phase2b:browser` | 23/23 |
+| `npm run test:phase2b:build-contract` | 7/7 |
+| default-off and V2 production builds | clean |
+| root and Functions lint | clean |
+
+All results are local. No production read, write, deployment, gate/parameter
+change, Hosting change, commit, or push was performed.
 
 ### `student-identity.contract.test.js`
 

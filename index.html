@@ -2280,6 +2280,10 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
 
     function clearTransactions() {
       if (!requireTeacher()) return;
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        showMessage("Clearing transaction history is unavailable in this version.");
+        return;
+      }
       const confirmed = confirm("Clear all transaction history? Balances will stay the same.");
       if (!confirmed) return;
       data.transactions = [];
@@ -2300,6 +2304,10 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
 
     function resetEverything() {
       if (!requireTeacher()) return;
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        showMessage("Reset Everything is unavailable in this version.");
+        return;
+      }
       const confirmed = confirm("Reset EVERYTHING? This will erase students, balances, PINs, settings, and transactions from this browser.");
       if (!confirmed) return;
       data = cloneDefault();
@@ -3197,9 +3205,15 @@ ${transactionTarget !== "whole" ? `
               <button onclick="clearLoginHistory()">Clear All Login History</button>
 
               <h3>Cleanup</h3>
+              ${IS_MULTI_TEACHER_V2_ENABLED ? `
+              <p class="small-note">Transaction-history clearing and full classroom reset are unavailable in this version because student and transaction deletion must be completed by a separately reviewed server workflow.</p>
+              ` : `
               <button onclick="clearTransactions()">Clear Transaction History</button>
+              `}
               <button onclick="resetBalancesToZero()">Reset All Balances to $0</button>
+              ${IS_MULTI_TEACHER_V2_ENABLED ? "" : `
               <button class="danger" onclick="resetEverything()">Reset Everything</button>
+              `}
 
               <p class="small-note">
                 Teacher settings are only visible after teacher login. This is still a classroom app structure, not bank-level security.

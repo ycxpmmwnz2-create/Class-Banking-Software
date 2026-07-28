@@ -138,4 +138,42 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     ])
     expect(await page.evaluate(() => document.body.innerText)).not.toContain(TENANT_A.studentMarker)
   })
+
+  test('Phase 3 V2 destructive controls are absent and direct invocation is inert', async ({ page }) => {
+    await gotoApp(page)
+    await signInTeacher(page, TENANT_A)
+    await waitForQuiescence(page)
+    await page.evaluate(() => window.setScreen('settings'))
+
+    await expect(page.getByRole('button', { name: 'Clear Transaction History' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Reset Everything', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Clear All Login History' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Reset All Balances to $0' })).toBeVisible()
+    await expect(page.getByText(/separately reviewed server workflow/)).toBeVisible()
+
+    const before = await page.evaluate(() => ({
+      uid: window.__PHASE2B_TEST__.currentUid(),
+      eventCount: window.__PHASE2B_TEST__.events().length,
+      body: document.body.innerText,
+    }))
+
+    await page.evaluate(() => window.clearTransactions())
+    await expect(page.getByText('Clearing transaction history is unavailable in this version.'))
+      .toBeVisible()
+    await waitForQuiescence(page)
+
+    await page.evaluate(() => window.resetEverything())
+    await expect(page.getByText('Reset Everything is unavailable in this version.')).toBeVisible()
+    await waitForQuiescence(page)
+
+    const after = await page.evaluate(() => ({
+      uid: window.__PHASE2B_TEST__.currentUid(),
+      eventCount: window.__PHASE2B_TEST__.events().length,
+      body: document.body.innerText,
+    }))
+    expect(after.uid).toBe(before.uid)
+    expect(after.eventCount).toBe(before.eventCount)
+    expect(after.body).toContain(TENANT_A.studentMarker)
+    expect(before.body).toContain(TENANT_A.studentMarker)
+  })
 }

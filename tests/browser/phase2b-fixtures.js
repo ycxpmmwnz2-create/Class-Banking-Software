@@ -18,8 +18,11 @@
 // Auth user creation stays on REST: the Auth emulator has no rules layer, and
 // its REST signUp endpoint is the documented way to mint local accounts.
 //
-// The browser emulator loads firestore.phase2b.proposed.rules, so the browser
-// suite exercises the SAME rules the rules contract asserts.
+// The normal Phase 2B browser gate loads firestore.phase2b.proposed.rules, so
+// it continues to exercise the historical rules contract. Boundary 11's
+// explicitly selected release rehearsal loads the checksum-pinned Phase 3
+// final candidate instead. Neither path copies over firestore.rules or deploys
+// anything.
 
 import { readFileSync } from "node:fs";
 import { initializeTestEnvironment } from "@firebase/rules-unit-testing";
@@ -33,6 +36,10 @@ export const AUTH_PORT = 9099;
 export const PROJECT_ID = "demo-morgan-bank-phase2b-server-test";
 
 export const PROPOSED_RULES_PATH = "firestore.phase2b.proposed.rules";
+export const FINAL_RULES_PATH = "firestore.phase3.final.rules";
+export const BROWSER_RULES_PATH = process.env.PHASE3_REHEARSAL_MODE === "release"
+  ? FINAL_RULES_PATH
+  : PROPOSED_RULES_PATH;
 
 // resolveTeacherTenantV2 REQUIRES classrooms/{id}.studentLoginCode to be a
 // nonempty, canonical, display-formatted code
@@ -125,7 +132,7 @@ async function env() {
     testEnv = await initializeTestEnvironment({
       projectId: PROJECT_ID,
       firestore: {
-        rules: readFileSync(PROPOSED_RULES_PATH, "utf8"),
+        rules: readFileSync(BROWSER_RULES_PATH, "utf8"),
         host: EMULATOR_HOST,
         port: FIRESTORE_PORT
       }
