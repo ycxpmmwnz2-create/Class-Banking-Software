@@ -3340,7 +3340,7 @@ emulator evidence)**
   onboarding occurred.
 
 **Phase 3 — Local implementation and rehearsal complete through Item 12;
-production cutover not run**
+production-readiness Item 13 in focused review; production cutover not run**
 - Items 1–12 in `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` now provide the
   production environment guards, read-only preflight and immutable manifest,
   bounded two-stage writer and journal, reconciliation/reverification,
@@ -3355,9 +3355,19 @@ production cutover not run**
   snapshot/write-freeze inputs, manifest/journal controls, abort criteria, and
   rollback ordering are locally tested. This is implementation evidence, not
   evidence that production state satisfies any assumption.
+- Item 13 adds a separate production-only, control-plane-only inventory
+  boundary to obtain the opaque Rules, Functions, Hosting, parameter, index,
+  and active-writer values needed to author reviewed preflight expectations.
+  It uses an exact commit/credential/time-bound authorization, fixed GET-only
+  Google API origins, complete pagination, and one immutable secret-scanned
+  local observation. It creates no Admin app, reads no Firestore application
+  data or Auth users, carries no preflight/write eligibility, and performs no
+  production operation as part of local implementation or review.
 - Any production validation or release still requires the separate approvals
-  and ordered procedure in `PHASE3_RELEASE_RUNBOOK.md`: first read-only
-  production validation, then separate write/deploy authorization, verified
+  and ordered procedure in `PHASE3_RELEASE_RUNBOOK.md`: separately authorized
+  control-plane inventory, independent corroboration and review, expectations
+  authoring, separately authorized full read-only production preflight, then
+  separate write/deploy authorization, verified
   freeze and snapshot, bridge-before-copy, reconciliation-before-activation,
   final rules before gate and Hosting, acceptance before write resumption, and
   rollback-safe rules after a default-off Hosting rollback. The completed Item
@@ -3392,8 +3402,9 @@ authorization:
   shapes currently exist in the live project.
 - **The production runner has not inspected or changed production.** Its
   checked-in implementation and local review do not satisfy the separately
-  authorized read-only production preflight, snapshot/write-freeze proof, or
-  operator evidence required by the runbook.
+  authorized control-plane inventory, inventory review, read-only production
+  preflight, snapshot/write-freeze proof, or operator evidence required by the
+  runbook.
 - **No production cutover approval exists.** Migration, rules and Functions
   deployment, gate/release-parameter activation, Hosting deployment, write
   resumption, and rollback each remain explicit future authority boundaries.

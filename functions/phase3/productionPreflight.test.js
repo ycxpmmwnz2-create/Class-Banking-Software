@@ -17,6 +17,7 @@ import {
   PRODUCTION_GOOGLE_API_ORIGINS,
   PreflightAbortError,
   createBoundedGoogleApiClient,
+  createProductionControlPlaneReaders,
   createProductionReaders,
   createReadOnlyDataReaders,
   deriveStudentIdWatermark,
@@ -2391,6 +2392,28 @@ describe('Phase 3 production preflight', () => {
         call.options.redirect === 'manual' && call.options.body === undefined))
       await readers.close()
       assert.equal(closed, 1)
+
+      let forbiddenAdminFactoryCalls = 0
+      const controlPlaneReaders = createProductionControlPlaneReaders({
+        projectId: 'morgan-bank',
+        credential,
+        // Deliberately passed as an extra property: the control-plane factory
+        // has no such seam and must neither inspect nor invoke it.
+        adminHandleFactory: () => { forbiddenAdminFactoryCalls += 1 },
+        fetchImpl: async (url, options) => {
+          calls.push({ url, options })
+          return jsonResponse(payloadFor(url))
+        },
+      })
+      assert.deepEqual(Object.keys(controlPlaneReaders).sort(), [
+        'readActiveWriters',
+        'readDeploymentInventory',
+      ])
+      await controlPlaneReaders.readDeploymentInventory()
+      await controlPlaneReaders.readActiveWriters()
+      assert.equal(forbiddenAdminFactoryCalls, 0)
+      assert.ok(calls.every(call => call.options.method === 'GET' &&
+        call.options.redirect === 'manual' && call.options.body === undefined))
     })
 
     it('refuses project lookalikes, ambient credentials and widened timeouts', () => {

@@ -201,8 +201,9 @@ describe('Phase 3 release-order source contract', () => {
     }
   })
 
-  it('source contract: preflight, write, and reverify are separate entrypoints', () => {
+  it('source contract: inventory, preflight, write, and reverify are separate entrypoints', () => {
     const section = brief.split('## 8. Production runner contract')[1].split('\n## ')[0]
+    assert.match(section, /functions\/phase3\/inventory\.js/)
     assert.match(section, /functions\/phase3\/preflight\.js/)
     assert.match(section, /functions\/phase3\/write\.js/)
     assert.match(section, /functions\/phase3\/reverify\.js/)
@@ -236,6 +237,11 @@ describe('Phase 3 release-order source contract', () => {
   it('boundary: Boundary 11 runbook binds release and rollback to the reviewed order', () => {
     assert.match(runbook, /local rehearsal evidence only; not production authorization/i)
     assertOrderedMarkers(runbook, [
+      'control-plane-only inventory',
+      'inventory.js',
+      'Independently corroborate',
+      'preflight expectations',
+      'preflight.js',
       'maintenance/write freeze',
       'teacher/classroom foundation',
       'first invocation',
@@ -359,8 +365,10 @@ describe('Phase 3 release-order source contract', () => {
       'productionPreflight.js', 'productionPreflight.test.js',
       'productionProjection.js', 'productionProjection.test.js',
       'productionManifest.js', 'productionManifest.test.js',
+      'productionInventory.js', 'productionInventory.test.js',
       'productionWriter.js', 'productionWriter.test.js',
       'productionReconciliation.js', 'productionReconciliation.test.js',
+      'inventory.js', 'inventory.test.js',
       'preflight.js', 'write.js', 'reverify.js',
       'studentLifecycle.js', 'studentLifecycle.test.js',
     ])
@@ -412,6 +420,8 @@ describe('Phase 3 release-order source contract', () => {
     // Commit 4 earned productionProjection and productionReconciliation;
     // Commit 5 earned productionWriter (with its colocated test), write.js, and
     // reverify.js. Commit 6 earns the student lifecycle module and its test.
+    // Item 13 earns the control-plane inventory module and separate entrypoint,
+    // each with its colocated behavioral test.
 
     // Completed commits must actually deliver their files, not merely be permitted to.
     // Pinning presence here is what stops the boundary test from silently
@@ -420,6 +430,8 @@ describe('Phase 3 release-order source contract', () => {
       'productionWriter.js', 'productionWriter.test.js',
       'write.js', 'reverify.js',
       'studentLifecycle.js', 'studentLifecycle.test.js',
+      'productionInventory.js', 'productionInventory.test.js',
+      'inventory.js', 'inventory.test.js',
     ]) {
       assert.ok(
         actual.includes(name),
@@ -488,7 +500,7 @@ describe('Phase 3 release-order source contract', () => {
     // from here — the sibling entrypoints do not exist yet, and this file must
     // never import them or a writer module.
     for (const forbidden of [
-      './write.js', './reverify.js', './productionWriter.js',
+      './inventory.js', './write.js', './reverify.js', './productionWriter.js',
       './productionProjection.js', './productionReconciliation.js',
       './studentLifecycle.js',
     ]) {

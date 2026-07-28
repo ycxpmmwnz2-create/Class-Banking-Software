@@ -3048,27 +3048,25 @@ export function createRawDataReaders({
 }
 
 /**
- * Constructs the complete production reader set from one explicit credential.
- * Construction never reads remotely; the returned functions perform the reads
- * only after the entrypoint has validated arguments, environment, artifacts and
- * authorization inputs.
+ * Constructs the control-plane-only production reader set from one explicit
+ * credential.
+ *
+ * This factory deliberately creates no Admin app and exposes no Firestore or
+ * Auth reader. It exists so the separately authorized inventory boundary can
+ * observe the opaque deployed values needed to prepare reviewed expectations
+ * without reaching application data or authentication records.
  */
-export function createProductionReaders({
+export function createProductionControlPlaneReaders({
   projectId,
-  teacherUid,
   credential,
   fetchImpl = globalThis.fetch,
   timeoutMs = PRODUCTION_READER_TIMEOUT_MS,
-  adminHandleFactory = createReadOnlyAdminHandles,
 }) {
   if (projectId !== 'morgan-bank') {
-    failInspection('The production reader factory requires the exact production project.')
+    failInspection('The production control-plane reader requires the exact production project.')
   }
   if (!credential || typeof credential.getAccessToken !== 'function') {
-    failInspection('The production reader factory requires an explicit credential.')
-  }
-  if (!CANONICAL_ID.test(teacherUid)) {
-    failInspection('The production reader factory requires a canonical teacher UID.')
+    failInspection('The production control-plane reader requires an explicit credential.')
   }
   const ambientEmulatorMarker = [
     ...EMULATOR_HOST_VARIABLES,
@@ -3081,35 +3079,7 @@ export function createProductionReaders({
       { variable: ambientEmulatorMarker },
     )
   }
-  if (typeof adminHandleFactory !== 'function') {
-    failInspection('The production Admin handle factory is unavailable.')
-  }
-  // Validate HTTP and timeout configuration before constructing an Admin app, so
-  // an invalid test seam cannot leave even a local SDK handle behind.
   const client = createBoundedGoogleApiClient({ credential, fetchImpl, timeoutMs })
-
-  const handles = adminHandleFactory({
-    projectId,
-    credential,
-    appName: `phase3-production-preflight-${process.pid}-${productionReaderSequence += 1}`,
-  })
-  if (!handles || typeof handles.close !== 'function') {
-    failInspection('The production Admin handle factory returned no closable handles.')
-  }
-  let dataReaders
-  try {
-    dataReaders = createReadOnlyDataReaders({
-      firestore: handles.firestore,
-      auth: handles.auth,
-      teacherUid,
-      timeoutMs,
-    })
-  } catch (error) {
-    // Factory construction is synchronous, while deleteApp is asynchronous.
-    // Start cleanup immediately and retain the original fail-closed error.
-    Promise.resolve().then(() => handles.close()).catch(() => {})
-    throw error
-  }
   let inventoryPromise
 
   async function readControlPlane() {
@@ -3135,7 +3105,6 @@ export function createProductionReaders({
   }
 
   return Object.freeze({
-    ...dataReaders,
     readDeploymentInventory: async () => {
       const inventory = await readControlPlane()
       return Object.freeze({
@@ -3151,6 +3120,65 @@ export function createProductionReaders({
       const inventory = await readControlPlane()
       return Object.freeze({ complete: true, writers: inventory.writers })
     },
+  })
+}
+
+/**
+ * Constructs the complete production reader set from one explicit credential.
+ * Construction never reads remotely; the returned functions perform the reads
+ * only after the entrypoint has validated arguments, environment, artifacts and
+ * authorization inputs.
+ */
+export function createProductionReaders({
+  projectId,
+  teacherUid,
+  credential,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = PRODUCTION_READER_TIMEOUT_MS,
+  adminHandleFactory = createReadOnlyAdminHandles,
+}) {
+  if (!CANONICAL_ID.test(teacherUid)) {
+    failInspection('The production reader factory requires a canonical teacher UID.')
+  }
+  if (typeof adminHandleFactory !== 'function') {
+    failInspection('The production Admin handle factory is unavailable.')
+  }
+
+  // Validate every control-plane input before constructing an Admin app, so an
+  // invalid test seam cannot leave even a local SDK handle behind.
+  const controlPlaneReaders = createProductionControlPlaneReaders({
+    projectId,
+    credential,
+    fetchImpl,
+    timeoutMs,
+  })
+
+  const handles = adminHandleFactory({
+    projectId,
+    credential,
+    appName: `phase3-production-preflight-${process.pid}-${productionReaderSequence += 1}`,
+  })
+  if (!handles || typeof handles.close !== 'function') {
+    failInspection('The production Admin handle factory returned no closable handles.')
+  }
+  let dataReaders
+  try {
+    dataReaders = createReadOnlyDataReaders({
+      firestore: handles.firestore,
+      auth: handles.auth,
+      teacherUid,
+      timeoutMs,
+    })
+  } catch (error) {
+    // Factory construction is synchronous, while deleteApp is asynchronous.
+    // Start cleanup immediately and retain the original fail-closed error.
+    Promise.resolve().then(() => handles.close()).catch(() => {})
+    throw error
+  }
+
+  return Object.freeze({
+    ...dataReaders,
+    ...controlPlaneReaders,
     close: async () => handles.close(),
   })
 }

@@ -94,42 +94,71 @@ The following is an operator checklist, not permission to execute it.
 
 1. Complete local implementation, required independent review, and every local
    gate above. Record the reviewed commit and artifact hashes.
-2. Obtain explicit read-only production-validation authorization. Run only the
-   separate `functions/phase3/preflight.js` entrypoint with its four required
-   reviewed inputs: teacher UID, read-authorization file, expectations file,
-   and explicit credential file. Record its immutable manifest. Abort on any
+2. Make a separate human decision about a least-privilege explicit credential
+   and its IAM bindings. Obtain one time-bounded, checksum-bound authorization
+   for the control-plane-only inventory, tied to `morgan-bank`, the reviewed
+   commit, change/authorization identifiers, credential provenance, and the
+   exact credential SHA-256. The interval must be no more than two hours, and
+   the actual anchored checkout must have that exact HEAD with a clean worktree.
+   Credential creation or IAM changes are not part of the inventory operation
+   and require their own authority.
+3. Run only the separate `functions/phase3/inventory.js` entrypoint with its
+   three required inputs: full reviewed commit SHA, inventory-authorization
+   file, and explicit credential file. It may read only Rules, Functions,
+   Hosting, Firestore indexes, gate parameters, and active-writer names through
+   fixed Google API origins. Retain the one immutable local
+   `inventory-<sha256>.json` artifact. It is not an expectations file, a
+   preflight manifest, or write authorization.
+4. Independently corroborate in Firebase or Google Cloud Console the named
+   deployment surfaces, counts, current release/version identities, gate
+   parameters, index presence, and active writers. Console evidence is not
+   claimed to reproduce canonical resource digests. Any disagreement or
+   unexplained surface aborts. Claude performs detailed read-only review of the
+   exact retained inventory and corroboration record; Grok then performs the
+   independent 5,000-foot review. Andrew transports complete verdicts and is
+   not expected to judge technical correctness.
+5. Only after both reviews close and Andrew approves the next boundary, author
+   and checksum the exact preflight expectations from the reviewed inventory.
+   Obtain a new, separate read-only preflight authorization bound to those
+   exact bytes and the explicit credential. Do not use a failing preflight as
+   discovery: its retained/error evidence intentionally does not disclose the
+   opaque deployed values needed to author expectations.
+6. Run only the separate `functions/phase3/preflight.js` entrypoint with its
+   four required reviewed inputs: teacher UID, read-authorization file,
+   expectations file, and explicit credential file. Record its immutable
+   manifest. Abort on any
    unexpected path, shape, count, ID, duplicate, UID mapping, credential/log,
    Auth compatibility, index, active writer, or recovery prerequisite.
-3. Obtain separate production write/deploy authorization. Enter and verify the
+7. Obtain separate production write/deploy authorization. Enter and verify the
    maintenance/write freeze. Capture the approved export/snapshot and final
    checksums; writes remain frozen through acceptance.
-4. Administratively create or validate the existing reciprocal
+8. Administratively create or validate the existing reciprocal
    teacher/classroom foundation. Do not create an invitation.
-5. Invoke `functions/phase3/write.js` with only the reviewed write
+9. Invoke `functions/phase3/write.js` with only the reviewed write
    authorization, preflight authorization, initialization expectations, copy
    expectations, and explicit credential artifacts. The first invocation must
    stop with `ACTION_REQUIRED/AWAITING_DEPLOYMENT` (exit 10) after reserving the
    login code and initializing the counter. Any other result blocks progress.
-6. Deploy and verify the exact bridge-rules hash. Then deploy the reviewed V2
+10. Deploy and verify the exact bridge-rules hash. Then deploy the reviewed V2
    Functions with the V2 gate off. Confirm the deployed surfaces and gate-off
    state independently before continuing.
-7. Invoke the same `write.js` entrypoint with the same immutable artifact set a
+11. Invoke the same `write.js` entrypoint with the same immutable artifact set a
    second time. Its journal—not an operator stage flag—selects copy. Require a
    completed copy result.
-8. Run the separate remote/local read-only `functions/phase3/reverify.js`
+12. Run the separate remote/local read-only `functions/phase3/reverify.js`
    entrypoint with the same five artifacts. Reconcile every path, count,
    checksum, UID mapping, source-immutability assertion, Auth compatibility
    fact, active-writer fact, and sensitive-path denial. Any mismatch aborts
    before activation.
-9. Deploy and verify the exact final-rules hash. Only after that, set the exact
+13. Deploy and verify the exact final-rules hash. Only after that, set the exact
    reviewed `MULTI_TEACHER_V2_RELEASE_ID` and enable the server gate. Then deploy
    the reviewed gate-on Hosting artifact.
-10. Perform existing-teacher and existing-student acceptance, including tenant
+14. Perform existing-teacher and existing-student acceptance, including tenant
     isolation and the V2 cleanup-control policy: Reset All Balances and Clear
     Login History remain available; Clear Transaction History and Reset
     Everything are absent and direct invocation is inert because deletion
     requires a separately reviewed server workflow.
-11. End the write freeze only after acceptance passes. Observe through the
+15. End the write freeze only after acceptance passes. Observe through the
     recorded rollback window and do not onboard a second real teacher.
 
 ## Abort criteria
@@ -139,6 +168,9 @@ resume writes when any of these occurs:
 
 - an approval, reviewed artifact, checksum, project, release ID, deployment
   surface, snapshot, or recovery prerequisite is missing or mismatched;
+- the inventory authorization, credential checksum, validity interval, fixed
+  endpoint boundary, completeness declaration, independent corroboration, or
+  inventory review is missing or mismatched;
 - the first writer invocation does not stop at the deployment boundary, or the
   journal is indeterminate;
 - any unexplained path, malformed/missing ID, duplicate, count/shape drift,

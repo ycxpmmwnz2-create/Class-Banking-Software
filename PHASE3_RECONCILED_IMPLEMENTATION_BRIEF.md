@@ -9,10 +9,11 @@ remains unknown. This document does not authorize production inspection,
 migration, deployment, a rules change, feature-gate activation, real-account
 onboarding, cleanup, commit, or push.
 
-Baseline when reconciled:
+Reviewed baseline for the production-readiness correction:
 
 - Branch: `feature/multi-teacher`
-- HEAD and expected remote: `5db34e5e63848d9ac421db16dcf6ea2564718015`
+- HEAD and expected remote:
+  `c39b40c50abd5e31e56d68eb9d80ae3ba5761215`
 - Checked-in `firestore.rules` SHA-256:
   `0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50`
 - Production state remains unknown by design.
@@ -272,13 +273,56 @@ actually proven necessary.
 
 ## 8. Production runner contract
 
-Phase 3 has separate entrypoints:
+Phase 3 has four separate entrypoints:
 
 ```
+node functions/phase3/inventory.js ...
 node functions/phase3/preflight.js ...
 node functions/phase3/write.js ...
 node functions/phase3/reverify.js ...
 ```
+
+The inventory entrypoint closes the expectations-bootstrap gap without widening
+preflight. It is a separately authorized, production-only, control-plane-only
+observation. Its exact inputs are a full reviewed commit SHA, an inventory
+authorization file, and an explicit service-account credential file. The
+authorization has an exact schema and binds `morgan-bank`, the commit, change
+and authorization identifiers, credential provenance, the exact credential
+SHA-256, and a maximum two-hour UTC validity interval. Before opening either
+artifact, the entrypoint also proves its actual Git HEAD is the authorized full
+SHA and that the anchored repository worktree is clean. Credential creation and
+IAM assignment are separate human decisions; neither this implementation nor
+an inventory authorization creates or changes a credential or binding.
+
+After every local artifact binding succeeds, `inventory.js` may issue GET-only
+reads to the fixed Firebase Rules, Cloud Functions, Firebase Hosting, and
+Firestore Admin API origins. It consumes every page or aborts, records the
+active rules release/checksum, complete Functions inventory and V2 parameters,
+complete Hosting release inventory, complete composite/field index inventory,
+and derived active-writer names, then creates one immutable content-addressed,
+secret-scanned local inventory under `functions/phase3/.state/`. It creates no
+Admin app, Firestore data handle, or Auth handle and reads no application data,
+student data, teacher data, credentials collection, logs, or Auth users.
+
+The inventory is an observation, not an authorization or expectation. Its exact
+schema contains no `writeEligible`, `preflightManifestId`, or `expectations`
+field. It cannot be supplied to `write.js` or `reverify.js`, does not satisfy
+preflight authorization, and does not create a preflight manifest. An operator
+must independently corroborate the named deployment surfaces and current
+releases/parameters through Firebase or Google Cloud Console, retain the
+inventory for detailed Claude and independent Grok review, and obtain Andrew's
+separate approval before its opaque observed values may be transcribed into a
+checksum-bound expectations artifact. The console check corroborates the
+surface names, counts, current release/version identities, parameters, and
+index/writer presence; it is not claimed to reproduce the implementation's
+canonical resource digests. Any mismatch or unexplained surface aborts.
+
+Only after that review may a new, separately authorized preflight inspect the
+teacher/classroom, Firestore application data, credential/log, Auth, and
+control-plane surfaces against the exact expectations artifact. Discovery by a
+deliberately failing preflight is prohibited: preflight error telemetry does not
+retain the opaque observed values and cannot bootstrap trustworthy
+expectations.
 
 There is no shared write subcommand, `--force`, production override,
 manifest-path override, state-directory override, or implicit credential
@@ -317,30 +361,41 @@ can invalidate retained Phase 3 manifest checksums.
 1. Complete and independently review local Phase 3 implementation.
 2. Run credential-isolated unit, rules, migration, browser, release, and
    rollback rehearsals.
-3. Obtain separate authorization for read-only production validation.
-4. Record deployed rules, Functions, Hosting, parameters, foundation, paths,
+3. Obtain separate, checksum-bound authorization for one control-plane-only
+   production inventory and make the separate least-privilege credential/IAM
+   decision.
+4. Run only `functions/phase3/inventory.js`; retain its immutable,
+   non-authorizing artifact.
+5. Independently corroborate the deployment surface names, counts, current
+   releases/versions, parameters, indexes, and active writers. Complete Claude
+   detailed review and Grok independent review of the retained inventory. Abort
+   on any disagreement or unexplained surface.
+6. Author and checksum the exact preflight expectations from the reviewed
+   inventory, then obtain separate authorization for the full read-only
+   production preflight.
+7. Record deployed rules, Functions, Hosting, parameters, foundation, paths,
    counts, shapes, IDs, credentials/logs, Auth compatibility, indexes, and
    active writers.
-5. Abort on any unexplained state, malformed ID, duplicate, divergence,
+8. Abort on any unexplained state, malformed ID, duplicate, divergence,
    missing recovery prerequisite, or unreviewed production assumption.
-6. Obtain separate production write/deploy authorization.
-7. Enter maintenance/write freeze and capture the production export/snapshot
+9. Obtain separate production write/deploy authorization.
+10. Enter maintenance/write freeze and capture the production export/snapshot
    plus final immutable checksums.
-8. Create or validate the existing teacher/classroom foundation
+11. Create or validate the existing teacher/classroom foundation
    administratively. No invitation is created.
-9. Initialize/reserve classroom login code and student counter under the
+12. Initialize/reserve classroom login code and student counter under the
    reviewed manifest.
-10. Deploy and verify bridge rules.
-11. Deploy V2 Functions with the V2 gate off.
-12. Run classroom migration and scoped credential/log copy.
-13. Reconcile all paths, counts, checksums, UID mappings, source immutability,
+13. Deploy and verify bridge rules.
+14. Deploy V2 Functions with the V2 gate off.
+15. Run classroom migration and scoped credential/log copy.
+16. Reconcile all paths, counts, checksums, UID mappings, source immutability,
     and sensitive-path denials. Any mismatch aborts before activation.
-14. Deploy final ownership rules.
-15. Set the reviewed release identifier and enable the server gate.
-16. Deploy the gate-on Hosting artifact.
-17. Run existing-teacher and existing-student acceptance.
-18. End write freeze only after acceptance succeeds.
-19. Observe through the rollback window; do not onboard a second real teacher.
+17. Deploy final ownership rules.
+18. Set the reviewed release identifier and enable the server gate.
+19. Deploy the gate-on Hosting artifact.
+20. Run existing-teacher and existing-student acceptance.
+21. End write freeze only after acceptance succeeds.
+22. Observe through the rollback window; do not onboard a second real teacher.
 
 Rollback after scoped credentials exist:
 
@@ -384,6 +439,9 @@ Existing files:
 - `firestore.indexes.json` only with evidence of a required new index
 - `tests/phase3/README.md`, updated only to describe suites and evidence that
   actually exist in the same commit
+- `MULTI_TEACHER_ARCHITECTURE_PLAN.md`, this brief, and
+  `PHASE3_RELEASE_RUNBOOK.md`, only to record the separately reviewed
+  production-readiness correction boundary
 - final evidence-only documentation updates
 
 New files:
@@ -398,10 +456,14 @@ functions/phase3/
   productionProjection.test.js
   productionManifest.js
   productionManifest.test.js
+  productionInventory.js
+  productionInventory.test.js
   productionWriter.js
   productionWriter.test.js
   productionReconciliation.js
   productionReconciliation.test.js
+  inventory.js
+  inventory.test.js
   preflight.js
   write.js
   reverify.js
@@ -415,6 +477,7 @@ src/phase3/
   tenantDataService.test.js
 
 tests/phase3/
+  control-plane-inventory.contract.test.js
   production-runner.emulator.test.js
   tenant-data.browser.spec.js
   release-order.contract.test.js
@@ -431,9 +494,11 @@ PHASE3_RELEASE_RUNBOOK.md
 
 Each colocated `functions/phase3/*.test.js` file is permitted only in the same
 commit as the corresponding implementation module and must exercise real
-behavior; it may not be added as a placeholder. The three entrypoints are
-covered through the production-runner suites rather than additional unlisted
-entrypoint test files.
+behavior; it may not be added as a placeholder. The preflight, write, and
+reverify entrypoints remain covered through the production-runner suites. The
+new inventory entrypoint has a colocated behavioral suite because it cannot be
+executed by an emulator-backed runner without ceasing to test the real
+production-only environment boundary.
 
 Any additional file requires an architecture update before editing. Phase 2A
 runtime algorithms, manifests, recovery tools, legacy sources, flat
@@ -505,6 +570,12 @@ under the narrower `npm run test:phase3:contracts` name.
 11. Full release/rollback rehearsal and observability.
 12. Evidence-only documentation corrections, including the stale Phase 2B
     Part 3 summary and stale line references.
+13. Production-readiness expectations-bootstrap correction: separate
+    control-plane-only inventory entrypoint, immutable non-authorizing artifact,
+    focused behavioral/source contracts, and governing-document updates. This
+    local item performs no production read and requires focused Claude review,
+    Grok independent review, and Andrew's approval before any operational
+    inventory authorization is prepared or used.
 
 Claude and Codex retain the detailed plan-build-review-correct loop. After a
 material item reaches review-quality, Grok performs the bounded read-only

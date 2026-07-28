@@ -16,6 +16,49 @@
 | 10 | Final and rollback-safe rules and tests | complete |
 | 11 | Full release and rollback rehearsal | complete |
 | 12 | Evidence-only documentation corrections | complete |
+| 13 | Expectations-bootstrap control-plane inventory correction | focused review |
+
+Item 13 adds `inventory.js` as a fourth, separately authorized entrypoint. It
+is production-only but control-plane-only: after exact project, commit,
+authorization-window, and credential-checksum binding, its reader may enumerate
+only Firebase Rules, Cloud Functions, Firebase Hosting, Firestore Admin index,
+gate-parameter, and active-writer surfaces through the existing fixed-origin,
+GET-only, completely paginated API client. It creates no Admin app and has no
+Firestore application-data or Auth-user reader.
+
+`productionInventory.test.js` behaviorally proves the exact authorization and
+artifact schemas, content addressing, secret rejection, no read before guard,
+complete-observation requirement, and atomic no-overwrite local persistence.
+`inventory.test.js` behaviorally proves the strict three-flag CLI, rejection of
+write/target/preflight/state overrides, no artifact read before environment
+and clean-reviewed-checkout validation, no credential construction or
+control-plane reader before authorization binding, completion inside the
+canonical maximum two-hour authorization interval, and redacted unexpected
+failures. `control-plane-inventory.contract.test.js` is static source evidence
+that pins the separate import boundary and governing-document order.
+
+All Item 13 tests are local, injected, and network-free. They do not contact
+production, prove live state, create a credential, change IAM, create an
+expectations file, or authorize preflight or write. A later inventory artifact
+is only a non-authorizing observation; it must be independently corroborated and
+reviewed before its opaque values can be transcribed into separately checksummed
+preflight expectations under a new approval.
+
+### Item 13 local verification before focused review
+
+| Gate | Result |
+| --- | --- |
+| `npm run test:phase3:contracts` | 67/67 |
+| `npm run test:phase3:unit` | 462/462 |
+| `npm run test:phase3:migration` | 48 passed + 1 expected non-release skip |
+| `npm run test:phase3:rules` | 15/15 bridge + 17/17 final + 7/7 rollback |
+| `npm run test:phase3:release-rehearsal` | 49/49 runner + 24/24 browser |
+| `npm run test:phase3:rollback-rehearsal` | 3/3 |
+| root and Functions ESLint | passed |
+
+The emulator-backed gates used only their credential-isolated `demo-` project
+wrappers. No Item 13 test invoked the production inventory entrypoint with real
+artifacts, created a `.state/inventory-*.json` file, or contacted production.
 
 Commit 5 adds the bounded production writer, its append-only durable journal,
 and the read-only re-verifier. The writer owns exactly two remote mutations: one
