@@ -2,8 +2,9 @@
 //
 // EVIDENCE LAYER: static analysis of PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md
 // plus filesystem/checksum facts. This suite proves the brief still *states* the
-// safe ordering and that Commit 1 has not created later-commit artifacts. It
-// does NOT execute a release, deploy anything, or prove production ordering.
+// safe ordering and that the completed boundary has exactly the expected
+// artifacts. It does NOT execute a release, deploy anything, or prove
+// production ordering.
 // See tests/phase3/README.md.
 //
 // Authority: PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md Sections 2, 9, 11, 14.
@@ -23,6 +24,10 @@ const EXPECTED_RULES_SHA256 =
   '0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50'
 const EXPECTED_BRIDGE_RULES_SHA256 =
   '4bf76a85e576a1d5b30573c3c3d5eba0d3561fb9d9a19ac14ac6382dced8d7f0'
+const EXPECTED_FINAL_RULES_SHA256 =
+  '3a169ad65f911aa80d25c524aec219775773952019cd53a57a776e14c711793d'
+const EXPECTED_ROLLBACK_RULES_SHA256 =
+  'c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d'
 
 /**
  * Parses a markdown numbered list into whole steps.
@@ -188,28 +193,21 @@ describe('Phase 3 release-order source contract', () => {
   })
 
   // -------------------------------------------------------------------------
-  // Commit boundary. Item 9 earns only the bridge artifact; final and rollback
-  // rules remain Item 10 work.
+  // Commit boundary. Item 10 earns all three separately deployable rules
+  // artifacts while the production rules file remains unchanged.
   // -------------------------------------------------------------------------
 
-  it('boundary: Item 9 delivers only the checksum-pinned bridge artifact', () => {
-    const bridge = readFileSync(
-      new URL('../../firestore.phase3.bridge.rules', import.meta.url),
-    )
-    assert.equal(
-      createHash('sha256').update(bridge).digest('hex'),
-      EXPECTED_BRIDGE_RULES_SHA256,
-      'the reviewed bridge artifact must match its pinned checksum',
-    )
-
-    for (const file of [
-      'firestore.phase3.final.rules',
-      'firestore.phase3.rollback.rules',
+  it('boundary: Item 10 delivers three independently checksum-pinned rules artifacts', () => {
+    for (const [file, expectedHash] of [
+      ['firestore.phase3.bridge.rules', EXPECTED_BRIDGE_RULES_SHA256],
+      ['firestore.phase3.final.rules', EXPECTED_FINAL_RULES_SHA256],
+      ['firestore.phase3.rollback.rules', EXPECTED_ROLLBACK_RULES_SHA256],
     ]) {
+      const artifact = readFileSync(new URL(`../../${file}`, import.meta.url))
       assert.equal(
-        existsSync(new URL(`../../${file}`, import.meta.url)),
-        false,
-        `${file} belongs to Item 10, not Item 9`,
+        createHash('sha256').update(artifact).digest('hex'),
+        expectedHash,
+        `${file} must match its reviewed checksum`,
       )
     }
   })

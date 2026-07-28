@@ -1,0 +1,213 @@
+rules_version = '2';
+
+// PHASE 3 FINAL RULES — CANDIDATE DEPLOYMENT ARTIFACT, NOT CURRENT RULES.
+//
+// Installed only after the bridge-protected migration has reconciled. This
+// artifact is intentionally separate from firestore.rules and from the
+// rollback-safe artifact so each release state can be checksum-pinned and
+// reviewed independently.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function teacherDoc(uid) {
+      return get(/databases/$(database)/documents/teachers/$(uid));
+    }
+
+    function classroomDoc(classroomId) {
+      return get(/databases/$(database)/documents/classrooms/$(classroomId));
+    }
+
+    // At most two distinct lookups: the caller's teacher record and the
+    // requested classroom root. Repeated references to either path are cached
+    // by the rules engine.
+    function isActiveTeacher(uid) {
+      return isSignedIn()
+        && request.auth.uid == uid
+        && teacherDoc(uid).data.uid == uid
+        && teacherDoc(uid).data.status == "active";
+    }
+
+    function isActiveOwner(classroomId) {
+      return isActiveTeacher(request.auth.uid)
+        && teacherDoc(request.auth.uid).data.classroomId == classroomId
+        && classroomDoc(classroomId).data.ownerUid == request.auth.uid;
+    }
+
+    function isStudentOf(classroomId, studentId) {
+      return isSignedIn()
+        && request.auth.token.role == "student"
+        && request.auth.token.classroomId == classroomId
+        && request.auth.token.studentId == studentId;
+    }
+
+    function hasExactKeys(value, keys) {
+      return value.keys().hasAll(keys) && value.keys().hasOnly(keys);
+    }
+
+    function idMatchesPath(value, documentId) {
+      return value == documentId || value == int(documentId);
+    }
+
+    function validStudentBody(studentId) {
+      return hasExactKeys(
+          request.resource.data,
+          ['id', 'name', 'balance', 'frozen', 'transactions']
+        )
+        && idMatchesPath(request.resource.data.id, studentId)
+        && request.resource.data.name is string
+        && request.resource.data.balance is number
+        && request.resource.data.frozen is bool
+        && request.resource.data.transactions is list;
+    }
+
+    function validStudentUpdate(studentId) {
+      return validStudentBody(studentId)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['name', 'balance', 'frozen', 'transactions']);
+    }
+
+    function validTransactionBody(transactionId) {
+      return hasExactKeys(
+          request.resource.data,
+          [
+            'id', 'date', 'studentId', 'studentName', 'type', 'amount',
+            'reason', 'memo', 'category', 'status', 'source'
+          ]
+        )
+        && idMatchesPath(request.resource.data.id, transactionId)
+        && request.resource.data.date is string
+        && request.resource.data.studentId is int
+        && request.resource.data.studentId > 0
+        && request.resource.data.studentName is string
+        && request.resource.data.type is string
+        && request.resource.data.amount is number
+        && request.resource.data.reason is string
+        && request.resource.data.memo is string
+        && request.resource.data.category is string
+        && request.resource.data.status is string
+        && request.resource.data.source is string;
+    }
+
+    function validTransactionUpdate(transactionId) {
+      return validTransactionBody(transactionId)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.date == resource.data.date
+        && request.resource.data.studentId == resource.data.studentId
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['studentName', 'status']);
+    }
+
+    function validLoginHistoryBody(entryId) {
+      return hasExactKeys(
+          request.resource.data,
+          ['id', 'date', 'studentId', 'studentName', 'result', 'note']
+        )
+        && idMatchesPath(request.resource.data.id, entryId)
+        && request.resource.data.date is string
+        && (
+          request.resource.data.studentId == null
+          || (request.resource.data.studentId is int
+            && request.resource.data.studentId > 0)
+        )
+        && request.resource.data.studentName is string
+        && request.resource.data.result is string
+        && request.resource.data.note is string;
+    }
+
+    function validLoginHistoryUpdate(entryId) {
+      return validLoginHistoryBody(entryId)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.date == resource.data.date
+        && request.resource.data.studentId == resource.data.studentId
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['studentName', 'result', 'note']);
+    }
+
+    match /teachers/{teacherUid} {
+      allow get: if isActiveTeacher(teacherUid);
+      allow list, create, update, delete: if false;
+    }
+
+    // No recursive classrooms/** allow exists. Every permitted surface is
+    // enumerated, and the credential subtree is explicitly denied.
+    match /classrooms/{classroomId} {
+      allow get: if isActiveOwner(classroomId);
+      allow list, create, delete: if false;
+      allow update: if isActiveOwner(classroomId)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['settings', 'lastBackupAt', 'updatedAt']);
+
+      match /students/{studentId} {
+        allow get: if isActiveOwner(classroomId)
+          || isStudentOf(classroomId, studentId);
+        allow list: if isActiveOwner(classroomId);
+        allow create, delete: if false;
+        allow update: if isActiveOwner(classroomId)
+          && validStudentUpdate(studentId);
+      }
+
+      match /transactions/{transactionId} {
+        allow get, list: if isActiveOwner(classroomId);
+        allow create: if isActiveOwner(classroomId)
+          && validTransactionBody(transactionId);
+        allow update: if isActiveOwner(classroomId)
+          && validTransactionUpdate(transactionId);
+        allow delete: if false;
+      }
+
+      match /loginHistory/{entryId} {
+        allow get, list: if isActiveOwner(classroomId);
+        allow create: if isActiveOwner(classroomId)
+          && validLoginHistoryBody(entryId);
+        allow update: if isActiveOwner(classroomId)
+          && validLoginHistoryUpdate(entryId);
+        // The V2 client trims the bounded history collection to 500 entries.
+        allow delete: if isActiveOwner(classroomId);
+      }
+
+      match /studentCredentials/{loginId} {
+        allow read, write: if false;
+      }
+    }
+
+    match /studentAuthLogs/{classroomId}/logs/{logId} {
+      allow get, list: if isActiveOwner(classroomId);
+      allow create, update, delete: if false;
+    }
+
+    // Flat legacy logs are not part of the final client data path.
+    match /studentAuthLogs/{logId} {
+      allow read, write: if false;
+    }
+
+    match /studentCredentials/{loginId} {
+      allow read, write: if false;
+    }
+
+    match /teacherInvitations/{inviteId} {
+      allow read, write: if false;
+    }
+
+    match /classroomLoginCodes/{codeId} {
+      allow read, write: if false;
+    }
+
+    match /studentLoginThrottle/{throttleId} {
+      allow read, write: if false;
+    }
+
+    match /studentAuthUnresolvedLogs/{logId} {
+      allow read, write: if false;
+    }
+
+    // The final V2 client must never read from or write to the legacy blob.
+    match /morganBank/{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

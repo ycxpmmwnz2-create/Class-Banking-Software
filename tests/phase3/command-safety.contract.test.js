@@ -318,9 +318,10 @@ describe('Phase 3 command-safety source contract', () => {
    *
    * `test:phase3:unit` was added in Commit 2 alongside the colocated
    * `functions/phase3/*.test.js` guard suite it genuinely runs. Item 9 earns
-   * `test:phase3:rules` alongside its bridge-rules emulator suite. The two
-   * rehearsal gates stay absent: a placeholder exiting 0 would report green
-   * for work that does not exist.
+   * `test:phase3:rules` alongside its bridge-rules emulator suite, and Item 10
+   * extends that gate with the final and rollback-safe suites. The two rehearsal
+   * gates stay absent: a placeholder exiting 0 would report green for work that
+   * does not exist.
    */
   it('source contract: no behavioral gate exists without the suite it runs', () => {
     for (const name of [
@@ -358,23 +359,26 @@ describe('Phase 3 command-safety source contract', () => {
       'the Phase 3 emulator gate must be covered by automatic discovery',
     )
 
-    // test:phase3:rules is earned in Item 9 alongside the real bridge suite.
-    // It must select only that suite, and automatic discovery must apply the
-    // complete credential-isolation contract to it.
+    // test:phase3:rules is earned in Item 9 and extended in Item 10. It must
+    // select every independently deployable rules suite, and automatic discovery
+    // must apply the complete credential-isolation contract to the gate.
     const rulesGate = scripts['test:phase3:rules']
     assert.equal(
       typeof rulesGate,
       'string',
-      'test:phase3:rules must exist in Item 9',
+      'test:phase3:rules must exist from Item 9 onward',
     )
-    assert.match(rulesGate, /rules\.phase3\.bridge\.test\.js/)
-    assert.ok(
-      existsSync(new URL(
-        '../../tests/firestore/rules.phase3.bridge.test.js',
-        import.meta.url,
-      )),
-      'the Phase 3 rules gate must have its bridge suite present',
-    )
+    for (const suite of [
+      'rules.phase3.bridge.test.js',
+      'rules.phase3.final.test.js',
+      'rules.phase3.rollback.test.js',
+    ]) {
+      assert.match(rulesGate, new RegExp(suite.replaceAll('.', '\\.')))
+      assert.ok(
+        existsSync(new URL(`../../tests/firestore/${suite}`, import.meta.url)),
+        `the Phase 3 rules gate must have ${suite} present`,
+      )
+    }
     assert.ok(
       ISOLATED_EMULATOR_COMMANDS.includes('test:phase3:rules'),
       'the Phase 3 rules gate must be covered by automatic discovery',

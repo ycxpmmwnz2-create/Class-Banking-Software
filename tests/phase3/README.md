@@ -13,7 +13,8 @@
 | 7 | Client V2 data layer, PIN-free UI, PIN-free export | complete |
 | 8 | Classroom-code student login and Function gate compatibility | complete |
 | 9 | Bridge rules and tests | complete |
-| 10–11 | Final/rollback rules and release/rollback rehearsal | not started |
+| 10 | Final and rollback-safe rules and tests | complete |
+| 11 | Full release and rollback rehearsal | not started |
 
 Commit 5 adds the bounded production writer, its append-only durable journal,
 and the read-only re-verifier. The writer owns exactly two remote mutations: one
@@ -49,9 +50,11 @@ alongside the PIN-free V2 UI, PIN-free export, and disabled V2 import.
 Commit 8 wires classroom-qualified `studentPinLoginV2` through real custom-token
 Auth and the exact student self-document loader. It also makes the Functions
 gate discovery-safe and invocation-enforced, while refusing legacy callables and
-leaving the legacy aggregate trigger inert when the V2 gate is on. Rules
-artifacts and deployment logic remain unimplemented. `firestore.rules` is
-unchanged.
+leaving the legacy aggregate trigger inert when the V2 gate is on. At the end of
+that commit, rules artifacts and deployment logic remained unimplemented. Items
+9 and 10 now supply the three separately deployable, checksum-pinned rules
+artifacts without changing `firestore.rules`; deployment and rehearsal remain
+Item 11 work.
 
 ## Commands
 
@@ -90,7 +93,9 @@ Two Section 12 gates remain **deliberately undeclared** —
 placeholder under either name would report green for work that does not exist;
 the command-safety contract asserts their absence and will admit each one only
 alongside the suite it runs. Item 9 earns `test:phase3:rules` with the real
-bridge-rules emulator suite.
+bridge-rules emulator suite, and Item 10 extends that gate with the final and
+rollback-safe emulator suites. The three suites execute sequentially against one
+credential-isolated Firestore emulator.
 
 ## Evidence layer — read this before citing these tests
 
@@ -105,7 +110,8 @@ These suites prove:
 
 - the declared emulator commands **carry** the credential-isolation contract;
 - the brief still **states** the safe release and rollback ordering;
-- Commit 1 has **not** created later-commit artifacts or edited `firestore.rules`;
+- the completed boundary contains exactly the expected checksum-pinned rules
+  artifacts and has not edited `firestore.rules`;
 - the current client identity/adapter/login facts are exactly as surveyed;
 - that the client **constructs** its own data service rather than reading a
   window hook, and that the browser harness seam still matches `index.html`.
@@ -194,10 +200,10 @@ Parsing the section into steps matters: a raw `indexOf` over the whole document
 would also match the identical wording in Sections 2 and 7 and could pass for
 the wrong reason.
 
-Boundary assertions pin the Item 9 bridge artifact and require the future final
-and rollback artifacts to remain absent. They also require `firestore.rules` to
-still hash to `0659a857…cff2cf50`. The suite additionally asserts the baseline
-file **still contains** the recursive
+Boundary assertions independently pin the bridge, final, and rollback-safe
+artifacts. They also require `firestore.rules` to still hash to
+`0659a857…cff2cf50`. The suite additionally asserts the baseline file **still
+contains** the recursive
 `classrooms/{document=**}` allow, so the checksum pin cannot become vacuous if the
 file were replaced by something unrelated.
 
@@ -248,6 +254,53 @@ The unchanged production `firestore.rules` remains
 `0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50`.
 These results are local source/emulator evidence only. They do not establish
 deployment state, authorize bridge deployment, or prove production data shape.
+
+## Item 10 — final and rollback-safe rules evidence
+
+`firestore.phase3.final.rules` is the gate-on client policy. It requires active
+reciprocal teacher/classroom ownership, enumerates each allowed classroom
+surface, and permits only the exact client mutations used by the V2 data layer.
+Student creation and deletion remain server-only. Student, transaction, and
+login-history documents are shape-checked; immutable identity fields and
+allowed update fields are bounded with `affectedKeys()`. Credential documents,
+ownership, sensitive control-plane collections, the legacy aggregate, and every
+unenumerated path remain client-denied.
+
+`firestore.phase3.rollback.rules` is a separate default-off recovery artifact.
+It removes all generic scoped classroom access, keeps scoped and flat credentials
+denied, and restores only the hardcoded legacy teacher's aggregate and flat-log
+access plus exact legacy student self-read. It therefore cannot expose scoped
+credentials if legacy writes resume after rollback.
+
+`tests/firestore/rules.phase3.final.test.js` exercises two teachers and two
+classrooms bidirectionally, exact root/student/transaction/log mutations,
+student self-read, broken foundations, credential isolation, sensitive paths,
+and anonymous denial. `tests/firestore/rules.phase3.rollback.test.js` covers the
+hardcoded exception, foreign teachers, legacy students, scoped shutdown, both
+credential shapes, sensitive collections, and fail-closed fallthrough. Together
+with the unchanged bridge suite, `test:phase3:rules` provides 38 behavioral
+emulator tests across the three deployment states.
+
+The final SHA-256 is
+`3a169ad65f911aa80d25c524aec219775773952019cd53a57a776e14c711793d`.
+The rollback-safe SHA-256 is
+`c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d`.
+The bridge and unchanged production pins remain as recorded above. These are
+local source/emulator artifacts only: no rules were deployed, no migration or
+release rehearsal was run, and Item 11 remains unstarted.
+
+Item 10 verification on 2026-07-27:
+
+| Command | Result |
+| --- | --- |
+| `npm run test:phase3:rules` | 15/15 bridge + 16/16 final + 7/7 rollback |
+| `npm run test:phase3:contracts` | 59/59 |
+| `npm run test:rules` | 36/36 |
+| `npm run test:phase2b:rules` | 29/29 |
+| `npm run test:phase3:unit` | 432/432 |
+| `npm run test:phase3:migration` | 48/48 |
+| `npm run lint` | clean |
+| `npm --prefix functions run lint` | clean |
 
 ### `student-identity.contract.test.js`
 
