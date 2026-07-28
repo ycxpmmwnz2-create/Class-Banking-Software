@@ -26,8 +26,7 @@ holds; it extends it into a concrete, phased implementation plan.
 > Phase 2B and Phase 3 evidence. Treat line-level and “current” language in
 > this historical analysis as design provenance, not as the current branch
 > inventory; use symbol names and `tests/phase3/README.md` for current evidence.
-> **Whether
-> any of the Phase 1 branch-state facts noted below (the `teachers`/
+> **Whether any of the Phase 1 branch-state facts noted below (the `teachers`/
 > `classrooms` documents, or the `ensureTeacherClassroom` callable) exist in
 > the live deployed Firebase project is unknown and is not asserted or
 > inferred anywhere in this document** — the existence of code capable of

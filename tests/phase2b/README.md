@@ -60,12 +60,12 @@ is tenant-scoped.
 
 ### Boot regression this work depended on
 
-The `window.updateStudent = updateStudent` export in `index.html` remained, but
-commit `d1765f2` had renamed the definition to `toggleStudentFrozen` while
-leaving both the roster Save button and the export on the old name. The
-resulting top-level `ReferenceError` aborted the entire inline module, so the
-app never booted in a browser — invisible to unit tests, which import the
-extracted modules instead of executing `index.html`.
+The `window.updateStudent = updateStudent` export in `index.html` was present at
+that baseline, but commit `d1765f2` had renamed the definition to
+`toggleStudentFrozen` while leaving both the roster Save button and the export
+on the old name. The resulting top-level `ReferenceError` aborted the entire
+inline module, so the app never booted in a browser — invisible to unit tests,
+which import the extracted modules instead of executing `index.html`.
 
 Fixed in a separate commit (`19ec8a7`), with two regression guards in
 `tenantClient.test.js`: a general one requiring every `window.X = X` export to
