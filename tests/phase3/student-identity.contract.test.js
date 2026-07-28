@@ -49,6 +49,31 @@ function enclosingV2Branch(needle) {
   assert.fail(`Unterminated V2 branch enclosing ${needle}`)
 }
 
+function hasV2HiddenCleanupControls(markup) {
+  const clearGateStart = markup.indexOf('${IS_MULTI_TEACHER_V2_ENABLED ? `')
+  const clearFalseBranch = markup.indexOf('` : `', clearGateStart)
+  const clearCall = markup.indexOf('clearTransactions()', clearFalseBranch)
+  const clearGateEnd = markup.indexOf('`}', clearFalseBranch)
+  const explanation = markup.indexOf('separately reviewed server workflow', clearGateStart)
+
+  const resetGateStart = markup.indexOf(
+    '${IS_MULTI_TEACHER_V2_ENABLED ? "" : `',
+    clearGateEnd,
+  )
+  const resetCall = markup.indexOf('resetEverything()', resetGateStart)
+  const resetGateEnd = markup.indexOf('`}', resetGateStart)
+
+  return clearGateStart !== -1 &&
+    explanation > clearGateStart &&
+    explanation < clearFalseBranch &&
+    clearFalseBranch !== -1 &&
+    clearCall > clearFalseBranch &&
+    clearCall < clearGateEnd &&
+    resetGateStart > clearGateEnd &&
+    resetCall > resetGateStart &&
+    resetCall < resetGateEnd
+}
+
 describe('Phase 3 student-identity source contract', () => {
   it('source contract: V2 creation returns before the preserved legacy allocator', () => {
     const allocators = matchingLines(/id:\s*maxId \+ 1/)
@@ -441,10 +466,30 @@ describe('Phase 3 student-identity source contract', () => {
     const settingsStart = indexHtml.indexOf('<h3>Cleanup</h3>')
     const settingsEnd = indexHtml.indexOf('</div>', settingsStart)
     const cleanupMarkup = indexHtml.slice(settingsStart, settingsEnd)
-    assert.match(cleanupMarkup, /IS_MULTI_TEACHER_V2_ENABLED/)
-    assert.match(cleanupMarkup, /clearTransactions\(\)/)
-    assert.match(cleanupMarkup, /resetEverything\(\)/)
-    assert.match(cleanupMarkup, /separately reviewed server workflow/)
+    assert.ok(
+      hasV2HiddenCleanupControls(cleanupMarkup),
+      'each unsupported cleanup call must be confined to its V2-false branch',
+    )
+
+    const unwrappedClear = cleanupMarkup.replace(
+      '${IS_MULTI_TEACHER_V2_ENABLED ? `',
+      '',
+    )
+    assert.equal(
+      hasV2HiddenCleanupControls(unwrappedClear),
+      false,
+      'an unconditional Clear Transaction History control must fail the contract',
+    )
+
+    const unwrappedReset = cleanupMarkup.replace(
+      '${IS_MULTI_TEACHER_V2_ENABLED ? "" : `',
+      '',
+    )
+    assert.equal(
+      hasV2HiddenCleanupControls(unwrappedReset),
+      false,
+      'an unconditional Reset Everything control must fail the contract',
+    )
   })
 
   it('source contract: student login branches explicitly between the V2 classroom-qualified and legacy payloads', () => {

@@ -54,6 +54,10 @@ const ISOLATED_EMULATOR_COMMANDS = discoverIsolatedEmulatorCommands(scripts)
  * project or authenticate it with real credentials.
  */
 const REQUIRED_SCRUBBED_VARIABLES = Object.freeze([
+  // Boundary 11's runner and browser harness use this selector to opt into
+  // release-only behavior. Every emulator command clears an inherited value so
+  // one named gate cannot silently impersonate another.
+  'PHASE3_REHEARSAL_MODE',
   'GOOGLE_APPLICATION_CREDENTIALS',
   'google_application_credentials',
   'FIREBASE_TOKEN',

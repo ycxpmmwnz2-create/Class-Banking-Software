@@ -3,8 +3,9 @@
 // Playwright's credential-isolated config intentionally discovers only
 // tests/browser. tests/browser/tenant-isolation.spec.js imports and registers
 // this authorized Phase 3 suite so it runs inside the same real Auth,
-// Functions, Firestore, proposed-rules, Vite, and Chromium harness without a
-// second emulator command or a production test hook.
+// Functions, Firestore, Vite, and Chromium harness without a second emulator
+// command or a production test hook. The invoking command selects either the
+// historical proposed rules or the checksum-pinned Phase 3 final candidate.
 
 import { expect, test } from '@playwright/test'
 
