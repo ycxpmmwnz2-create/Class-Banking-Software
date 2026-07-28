@@ -29,7 +29,8 @@ Cleanup checkpoints require review; they do not authorize automatic code deletio
 
 ### Phase 2B server-emulator cleanup latency
 
-- Revisit during Phase 2B Item 11 readiness verification.
+- Phase 2B Item 11 and the later Phase 3 Item 11 matrix completed without this
+  becoming a correctness failure; keep it as a performance follow-up only.
 - In `tests/phase2b/functions-auth.emulator.test.js`, the negative V2 sync
   cases for a disabled teacher and an inconsistent reciprocal ownership link
   each take roughly 60–70 seconds while the Firestore emulator releases a

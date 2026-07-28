@@ -1,7 +1,11 @@
 # Phase 3 Reconciled Implementation and Release Brief
 
-Status: **planning and review only**. This document does not authorize Phase 3
-implementation, production inspection, migration, deployment, a rules change,
+Status: **planning and review only** as a production-authorization document.
+Items 1–11 are implemented and independently reviewed from local repository,
+unit, source-contract, emulator, rules, browser, release-rehearsal, and
+rollback-rehearsal evidence. Item 12 is the remaining evidence-only
+documentation boundary. Production state remains unknown. This document does
+not authorize production inspection, migration, deployment, a rules change,
 feature-gate activation, real-account onboarding, cleanup, commit, or push.
 
 Baseline when reconciled:
@@ -17,7 +21,13 @@ repository evidence and the authoritative Phase 2B completion gate. It does
 not replace `MULTI_TEACHER_ARCHITECTURE_PLAN.md`; it resolves the Phase 3
 implementation decisions that document intentionally left open.
 
-## 1. Challenge-finding disposition
+## 1. Historical challenge-finding disposition
+
+This section records the pre-implementation findings that shaped the Phase 3
+contracts. Statements about missing client, Function, rules, or runner behavior
+describe the baseline at reconciliation commit `5db34e5`; they are not a
+current inventory. Current local implementation and evidence are recorded in
+`tests/phase3/README.md`. Production state remains unknown.
 
 - **Accepted:** the client data layer is substantially under-scoped. One
   injected adapter file cannot safely translate the legacy aggregate blob into
@@ -446,8 +456,8 @@ Before Phase 3 implementation proceeds beyond acceptance tests,
 - never resolve or authenticate to a real project.
 
 Every Phase 3 emulator/browser/release command inherits those protections.
-Required future local gates, added only in the same commit as the behavior they
-actually exercise, include:
+The local gates were added only when their corresponding behavior existed and
+are all present after Item 11:
 
 ```
 npm run test:phase3:unit
@@ -501,10 +511,12 @@ systems-level/residual-risk checkpoint defined in
 `AI_COLLABORATION_WORKFLOW.md`. A deeper third review remains required at the
 production-readiness gate.
 
-## 14. Commit 1 boundary
+## 14. Historical Commit 1 boundary
 
-No implementation is currently authorized. If separately authorized, Claude's
-first implementation item is only:
+This section preserves the acceptance boundary used for the first Phase 3
+implementation commit, `575b438`. Its absence and future-tense statements are
+historical assertions about that commit boundary, not the current repository.
+The first implementation item was:
 
 > Phase 3 acceptance contracts and credential-isolated emulator commands.
 

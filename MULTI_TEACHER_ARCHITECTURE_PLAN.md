@@ -1,12 +1,13 @@
 # Multi-Teacher Architecture Plan (Version 2.0)
 
-Status: **Planning only. No source files, Firestore rules, Cloud Functions, or
-Firebase configuration have been changed to produce this document.** This is
-a read-only architectural analysis and design proposal, written on
-`feature/multi-teacher`. **Production deployment state is unknown and is not
-inferred anywhere in this document** — statements throughout refer to what
-is checked in on this branch, not to what is currently running against the
-live Firebase project.
+Status: **Historical design plus current local implementation record.** This
+document began as a read-only architecture proposal on `feature/multi-teacher`.
+Its design-time descriptions remain as rationale, while Part 3 records later
+implementation status. Phase 2A, Phase 2B, and Phase 3 Items 1–11 are now
+implemented and reviewed from local repository, unit, source-contract,
+emulator, rules, browser, release-rehearsal, and rollback-rehearsal evidence.
+Phase 3 Item 12 is evidence-only documentation correction. **Production
+deployment state remains unknown and is not inferred from local evidence.**
 
 This document builds directly on `GOOGLE_AUTH_MIGRATION_PLAN.md` (Phase B),
 `SECURITY_PLAN.md` ("Version 2.0 Items"), and `GOOGLE_AUTH_PHASE1_CHECKLIST.md`
@@ -15,16 +16,17 @@ holds; it extends it into a concrete, phased implementation plan.
 
 ---
 
-## Part 1 — Current Architecture Analysis
+## Part 1 — Historical Legacy Architecture Analysis
 
-> **Scope of Part 1:** this section describes the **legacy runtime and data
-> paths** — the code paths every client request still goes through today,
-> unchanged by anything on `feature/multi-teacher` — plus, where noted, the
-> **additive Phase 1 branch state** now checked in alongside it. The two are
-> kept in the same numbered list below (rather than split into two separate
-> parts) because that is how they actually coexist in this repository right
-> now: the legacy paths run exactly as described, and the Phase 1 additions
-> sit beside them, not yet wired into the legacy read/write path. **Whether
+> **Scope of Part 1:** this section preserves the **legacy runtime and data
+> baseline** from which the migration was designed, plus the additive Phase 1
+> branch state that existed when this analysis was written. Those legacy paths
+> remain available in the default-off compatibility arm, but the branch now
+> also contains the default-off V2 implementation described by the later
+> Phase 2B and Phase 3 evidence. Treat line-level and “current” language in
+> this historical analysis as design provenance, not as the current branch
+> inventory; use symbol names and `tests/phase3/README.md` for current evidence.
+> **Whether
 > any of the Phase 1 branch-state facts noted below (the `teachers`/
 > `classrooms` documents, or the `ensureTeacherClassroom` callable) exist in
 > the live deployed Firebase project is unknown and is not asserted or
@@ -105,24 +107,26 @@ such document exists in the live deployed project is unknown.
 
 **Teacher (as of v1.1.0):** Google Sign-In (`signInWithPopup`) or legacy
 email/password, both resolving to one Firebase Auth user via account linking
-(`linkWithPopup`), so `auth.currentUser.uid` is stable. Teacher identity is
-decided by exactly one check, in `onAuthStateChanged` (`index.html:2925-2928`):
+(`linkWithPopup`), so `auth.currentUser.uid` is stable. In the preserved
+default-off arm, teacher identity is decided by the `isAuthenticatedTeacher`
+check inside `index.html`'s `onAuthStateChanged` callback:
 
 ```js
 const isAuthenticatedTeacher = user?.uid === TEACHER_UID;
 ```
 
-`TEACHER_UID` (`index.html:758`) is a literal string, duplicated verbatim in
+`TEACHER_UID` in `index.html` is a literal string, duplicated verbatim in
 (source, non-test, files — see §7 for the exhaustive inventory including
 test fixtures):
-- `index.html:758`
+- `index.html` (`TEACHER_UID`)
 - `firestore.rules` (`isTeacher()`)
 - `functions/resetStudentPin.js`
 - `functions/phase1/ensureTeacherClassroom.js` (Phase 1 branch addition —
   the `ensureTeacherClassroom` callable's own authorization check, see §5)
 
-`requireTeacher()` (`index.html:822-828`) gates ~30+ teacher-only actions by
-re-checking the same module-level `isTeacher` boolean and UID equality.
+The default-off branch of `requireTeacher()` in `index.html` gates ~30+
+teacher-only actions by re-checking the same module-level `isTeacher` boolean
+and UID equality.
 Session persistence is `browserSessionPersistence` (sign-out on full browser
 close), provider-agnostic, unaffected by this migration.
 
@@ -131,8 +135,8 @@ close), provider-agnostic, unaffected by this migration.
 5-attempt/5-minute lockout, logs every attempt to `studentAuthLogs`, and on
 success mints a Firebase custom token with claims
 `{ role: "student", classroomId, studentId }`. Client calls
-`signInWithCustomToken`, then `onAuthStateChanged`'s student branch
-(`index.html:2945-2960`) reads back the claims and does:
+`signInWithCustomToken`, then the default-off student branch of `index.html`'s
+`onAuthStateChanged` callback reads back the claims and does:
 
 ```js
 const isSecureStudent = role === "student"
@@ -238,35 +242,40 @@ happen** — see Part 2, Ownership Model.
 
 | Assumption | Location |
 |---|---|
-| `TEACHER_UID` literal, sole authorization check | `index.html:758`, `firestore.rules`, `functions/resetStudentPin.js`, and (Phase 1 branch addition) `functions/phase1/ensureTeacherClassroom.js` (4 independent copies in source, not counting test fixtures — see §7) |
-| `classroomId === "morgan"` client-side gate | `index.html:2948` (in the `onAuthStateChanged` student branch) |
-| `"morgan"` hardcoded as a Firestore path segment | `index.html:1137` (`viewStudentProfile`), and 3 `resetStudentPin({ classroomId: "morgan", ... })` call sites at `index.html:1181,1776,1817` |
-| Single global document, no classroom key in path | `morganBank/classroomData` — read in `loadData()` (`index.html:885`), written in `saveData()` (`index.html:906`) |
-| Global mutable module-level state (`data`, `isTeacher`, `screen`, etc.) | `index.html:807-820` — one in-memory session for the whole running app; no per-teacher/session isolation concept exists at all |
-| Single fixed `localStorage` key | `STORAGE_KEY = "mrMorganClassCashDataV5"` (`index.html:757`) — would collide across teachers on a shared device |
+| `TEACHER_UID` literal, sole default-off authorization check | `index.html` (`TEACHER_UID`), `firestore.rules`, `functions/resetStudentPin.js`, and (Phase 1 branch addition) `functions/phase1/ensureTeacherClassroom.js` (4 independent copies in source, not counting test fixtures — see §7) |
+| `classroomId === "morgan"` client-side gate | `index.html` (the default-off `onAuthStateChanged` student branch) |
+| `"morgan"` hardcoded as a Firestore path segment | `index.html` (`viewStudentProfile` and the default-off PIN-reset/activation branches) |
+| Single global document, no classroom key in path | `morganBank/classroomData` — read in `loadData()` and written in the default-off branch of `saveData()` in `index.html` |
+| Global mutable module-level state (`data`, `isTeacher`, `screen`, etc.) | `index.html`'s inline-module state — one legacy in-memory session for the whole running app |
+| Single fixed `localStorage` key | `STORAGE_KEY = "mrMorganClassCashDataV5"` in `index.html` — would collide across teachers on a shared device without the V2 tenant cache |
 | `syncStudentProfiles` hardcodes `'morgan'` | `functions/syncStudentProfiles.js` (3 places) |
 | Admin scripts hardcode `'morgan'` / single project | `functions/scripts/checkData.js`, `checkStudent.js`, `seedTestStudent.js` |
 | No routing layer to scope by teacher/classroom | Entire app — `screen` is a plain string switch, no URL segments, no router of any kind |
 
-### 7. Hard-coded teacher UID / classroom references (exhaustive, including
-Phase 1 branch state)
+### 7. Historical hard-coded teacher UID / classroom references at the design
+baseline
 
-**Teacher UID `YkYUzIzy0aW7roolM1VaLcIJPuN2`**: `index.html:758`,
+**Teacher UID `YkYUzIzy0aW7roolM1VaLcIJPuN2`**: `index.html`
+(`TEACHER_UID`),
 `firestore.rules:7`, `functions/resetStudentPin.js:5` (+ its test fixture),
 and — checked in on `feature/multi-teacher`, not present before Phase 1 —
 `functions/phase1/ensureTeacherClassroom.js:6` (+ its test fixture,
-`functions/phase1/ensureTeacherClassroom.test.js`). Confirmed by direct
-search of the checked-in tree: exactly these four source files plus three
-test-fixture files contain the literal.
+`functions/phase1/ensureTeacherClassroom.test.js`). Those were the four
+production-source copies at this design baseline. Later Phase 2B/Phase 3
+candidate rules, guards, rehearsals, and tests intentionally contain the same
+legacy UID as compatibility or negative-control evidence, so this list is not
+a current exhaustive repository search.
 
-**Classroom ID `"morgan"`**: `index.html:1137,1181,1776,1817,2948`;
+**Classroom ID `"morgan"`**: the legacy/default-off profile, PIN-reset,
+activation, and student-auth branches in `index.html`;
 `functions/syncStudentProfiles.js:31,67,126`;
 `functions/scripts/seedTestStudent.js:5`; test fixtures in
 `functions/resetStudentPin.test.js` and
 `functions/studentCredentialVerifier.test.js`.
 
 **Singleton document path** `morganBank/classroomData`:
-`index.html:885,906`; `functions/syncStudentProfiles.js:6` (trigger is bound
+`index.html` (`loadData()` and the default-off `saveData()` branch);
+`functions/syncStudentProfiles.js:6` (trigger is bound
 to this exact path — the trigger itself must be redesigned, not just its
 body); `functions/scripts/checkData.js`, `seedTestStudent.js`.
 
@@ -290,7 +299,7 @@ single most important rules-layer fix for V2.
 
 Settings are not a separate document — `data.settings` is a nested object
 inside the one `morganBank/classroomData` document, defined by
-`defaultSettings` (`index.html:759-797`) and merged in `normalizeData()`.
+`defaultSettings` and merged in `normalizeData()` in `index.html`.
 Every settings write (`saveSettings()`, `saveSettingsLists()`) rewrites the
 *entire* classroom document via the same global `saveData()`. There is
 structurally no way for a second teacher to have independent settings today
@@ -421,18 +430,19 @@ the correct trade.
 ### New Firestore hierarchy (final)
 
 > **Field provenance note:** the fields below marked *(Phase 1, implemented)*
-> are exactly what `functions/phase1/teacherClassroomModels.js` builds today.
-> The `"disabled"` status marked *(Phase 2B decision)* is not implemented or
-> written by any Phase 1 or Phase 2A code and must not be read as current fact.
-> Phase 2B explicitly declines durable profile-picture and last-login fields.
+> are exactly what `functions/phase1/teacherClassroomModels.js` built at this
+> design baseline. The `"disabled"` status and `studentLoginCode` were Phase 2B
+> decisions not written by Phase 1 or Phase 2A; they were later implemented in
+> the local Phase 2B boundary. Phase 2B declined durable profile-picture and
+> last-login fields.
 
 ```
 teachers/{teacherUid}
   {
     uid, classroomId,                   // (Phase 1, implemented)
     createdAt, updatedAt,                // (Phase 1, implemented)
-    status: "active",                    // (Phase 1, implemented — TEACHER_STATUS.ACTIVE;
-                                          // "disabled" is a Phase 2B decision, not built)
+    status: "active",                    // (Phase 1 baseline; Phase 2B later
+                                          // added the disabled status contract)
     displayName, email                   // (Phase 1, implemented — optional strings)
   }
 
@@ -443,7 +453,7 @@ classrooms/{classroomId}
     settings: {},                        // (Phase 1, implemented — empty object at creation;
                                           // same shape as today's data.settings once populated
                                           // by Phase 2A migration)
-    studentLoginCode                     // (Phase 2B decision — not implemented)
+    studentLoginCode                     // (Phase 2B decision, later implemented locally)
   }
 
 classrooms/{classroomId}/students/{studentId}
@@ -661,14 +671,16 @@ equality check, `onAuthStateChanged` (or an equivalent) now:
 > This document describes what is checked in on `feature/multi-teacher`,
 > not what is currently running in production.
 >
-> What remains **actually unbuilt**, and is Phase 2B scope,
-> is the **general** multi-teacher onboarding flow: a callable any newly
+> At this design baseline, what remained **unbuilt**, and became Phase 2B
+> scope, was the **general** multi-teacher onboarding flow: a callable any newly
 > signed-in teacher (not just the one hardcoded UID) can call to create
 > their *own* classroom with a name they choose, plus the "Create your
 > classroom" UI step for that case. `ensureTeacherClassroom` as it exists
 > today only ever provisions the one foundation classroom for the one
-> hardcoded teacher; it does not generalize without further authorization
-> and UX work.
+> hardcoded teacher; it did not generalize without further authorization and
+> UX work. The later local Phase 2B implementation added that
+> invitation-controlled V2 flow behind the default-off gate; no real second
+> teacher was onboarded.
 
 The normative Phase 2B design below chooses one invitation-controlled
 `onboardTeacherClassroom` transaction rather than the earlier speculative
@@ -2085,8 +2097,8 @@ the migration runtime starts.
 
 #### Small commit sequence
 
-No implementation commit is authorized by this document. If and when
-implementation is separately authorized, the recommended sequence is:
+At this historical design boundary, no implementation commit was authorized by
+the document. The recommended sequence was:
 
 1. This corrected, normative architecture document only.
 2. `emulatorEnvironment.js`, `cli.js`, `firestoreDocumentId.js`,
@@ -2298,17 +2310,16 @@ point in Phase 2A rehearsal is low-risk and manifest-driven:
 
 ---
 
-### Phase 2B — Broader cutover readiness (detailed design)
+### Phase 2B — Broader cutover readiness (historical detailed design)
 
-> **Status and authority.** This section is the normative Phase 2B design.
-> It resolves the design gap previously recorded in Part 3. It describes
-> implementation work that has **not** been performed merely by writing this
-> plan. Repository facts are cited as current implemented facts; requirements
-> in this section are Phase 2B design decisions. Production deployment state
-> remains unknown. Phase 2B uses only local tests and the Auth, Functions, and
-> Firestore emulators: it does not migrate production data, deploy Functions or
-> rules, change the live client's primary path, or onboard a second real
-> teacher.
+> **Status and authority.** This section preserves the normative Phase 2B
+> design that preceded implementation. Its future-tense requirements describe
+> that design boundary. Phase 2B later satisfied its local completion gate at
+> commit `5db34e5`, with evidence recorded below and in
+> `tests/phase2b/README.md`; later Phase 3 work refined the gated implementation
+> without establishing production state. No Phase 2B work migrated production
+> data, deployed Functions or rules, changed the live client's primary path, or
+> onboarded a second real teacher.
 
 #### 1. Scope, invariants, and the Phase 3 boundary
 
@@ -2626,8 +2637,8 @@ and the deterministic `authUid` is derived from it. Two credentials sharing one
 `failed-precondition` for that student) and alias two distinct login IDs onto a
 single Firebase Auth identity and claim set. The current client makes that
 collision reachable: `addStudent` allocates `max(existing id) + 1`
-(`index.html:1743-1745`) over a roster that `removeStudent` shrinks
-(`index.html:1875`), so removing the highest-numbered student and adding
+in its preserved default-off branch over a roster that `removeStudent`
+shrinks, so removing the highest-numbered student and adding
 another reuses that student's ID. **Version 2 requires `studentId` to be unique
 and never reused within a classroom**; Phase 3's client/data service owns
 allocating IDs that satisfy this, and until it does the V2 handler fails closed
@@ -2654,10 +2665,11 @@ exports are exactly `resolveTeacherTenantV2`, `onboardTeacherClassroomV2`,
 `studentPinLoginV2`, `resetStudentPinV2`, and `syncStudentProfilesV2`. They
 enforce a `defineBoolean('MULTI_TEACHER_V2_ENABLED', { default: false })`
 server gate before any Firestore access; the emulator acceptance command sets
-it true explicitly. Pure handlers are directly unit-tested. Phase 3 maps
-the stable public names to the approved V2 handlers and deploys them with the
-client/rules/migration. No handler may silently choose legacy versus V2 based
-on whether a document happens to exist.
+it true explicitly. Pure handlers are directly unit-tested. The reconciled
+Phase 3 contract later retained the versioned V2 names because their payloads
+are incompatible with the legacy handlers; it did not map stable legacy names
+to V2. No handler may silently choose legacy versus V2 based on whether a
+document happens to exist.
 
 Every function logs only correlation ID, operation, result category, and
 redacted identifiers. Tests cover unauthenticated, disabled, missing,
@@ -2699,12 +2711,13 @@ does not revise or delete that tooling. Emulator fixtures add a *separate*
 credential re-key projection proving every flat legacy credential maps to one
 scoped path with all security fields preserved except the explicitly derived
 V2 `authUid`; the projection records old/new UID values and verifies that
-claims resolve to the same classroom/student identity. The future Phase 3
-production runner must (1) assign/reserve the existing classroom's login code,
+claims resolve to the same classroom/student identity. The Phase 3 production
+runner was required to (1) assign/reserve the existing classroom's login code,
 (2) copy credentials to scoped paths with update-time/checksum preconditions,
 (3) keep flat credentials untouched for rollback, and (4) switch
-verifier/PIN-reset handlers only after scoped parity succeeds. During Phase 2B
-and before Phase 3,
+verifier/PIN-reset handlers only after scoped parity succeeds. That runner now
+exists and is locally rehearsed; it has not run against production. During
+Phase 2B and before Phase 3,
 flat credentials and the old two-field login remain authoritative. There is no
 dual-read fallback: after cutover, absence/divergence at the scoped path fails
 closed rather than consulting a potentially ambiguous flat record. Existing
@@ -2715,11 +2728,12 @@ UIDs.
 #### 6. Browser account switching and cache isolation
 
 The current client has one global `data` object and session variables
-(`index.html:807-820`), and `loadData()` silently falls back to the shared
-`mrMorganClassCashDataV5` key (`:883-899`). `saveData()` writes that same key
-before its Firestore attempt (`:902-909`). The existing `authStateVersion`
-guards only two auth-observer awaits (`:2924-2960`), while log loads, PIN
-resets, provisioning, bulk loops, and saves have no tenant epoch check.
+in `index.html`, and the preserved default-off `loadData()` silently falls back
+to the shared `mrMorganClassCashDataV5` key. The default-off `saveData()` writes
+that same key before its Firestore attempt. At the Phase 2B design baseline,
+the existing auth-state generation guard covered only the auth-observer awaits,
+while log loads, PIN resets, provisioning, bulk loops, and saves had no tenant
+epoch check.
 
 Phase 2B introduces a small client session module rather than spreading more
 globals. Every auth transition increments a monotonically increasing epoch and
@@ -2787,9 +2801,10 @@ The layers are deliberately distinct:
   student code lookup, duplicate login IDs, scoped logs, lockout, and forged
   inputs against real emulator transactions.
 - **Firestore rules emulator contract tests:** Phase 2B adds a proposed-rules
-  fixture/suite without editing deployed `firestore.rules`. It proves the
-  predicates Phase 3 must implement. Existing baseline tests continue against
-  the checked-in legacy rules.
+  fixture/suite without editing the checked-in baseline `firestore.rules`. It
+  proves the predicates the later Phase 3 bridge/final/rollback candidates
+  implement. Existing baseline tests continue against the checked-in legacy
+  rules.
 - **Browser tests:** run the app/test harness against all three emulators and
   prove rendering/reset/cache behavior. Use a real browser runner because
   `localStorage`, `BroadcastChannel`, auth persistence, and delayed callbacks
@@ -3151,8 +3166,9 @@ and docs only).**
 - **Dependencies/non-goals:** Items 1–10; no cleanup, production adaptation,
   migration, rules deploy, client cutover, second real teacher, commit squash,
   or publish without authorization.
-- **Commit boundary:** readiness evidence/docs only; Phase 3 remains blocked
-  pending independent review and explicit authorization.
+- **Commit boundary:** readiness evidence/docs only; at this item boundary,
+  Phase 3 remained blocked pending independent review and explicit
+  authorization.
 
 **Item 11 verification record — 2026-07-26.** The full matrix was rerun at
 local commit `36dc850` before this documentation-only update: root lint clean;
@@ -3269,7 +3285,7 @@ already anticipated this.
 ### Implementation phases
 
 **Phase 0 — Foundations (complete in the local repository)**
-- This architecture document (current deliverable).
+- This architecture document established the original design boundary.
 - Firestore Rules Unit Testing harness and emulator config, committed and
   running today (`tests/firestore/rules.baseline.test.js`, `npm run
   test:rules`) — tests *against the current checked-in `firestore.rules`*
@@ -3293,100 +3309,59 @@ callable; general invitation-controlled onboarding is Phase 2B scope)**
   implemented and tested in the local `feature/multi-teacher` commit today.
   That callable is restricted to the existing hardcoded `TEACHER_UID` and a
   fixed classroom name — it is **not** the future general multi-teacher
-  onboarding flow. A callable an invited newly signed-in teacher can use to
-  create their *own*, arbitrarily-named classroom remains unbuilt and is Phase
-  2B scope — see "New teacher onboarding flow" and the detailed Phase 2B
-  section in Part 2 for the corrected status of that work.
-- No changes yet to `morganBank/classroomData`, existing rules, or the
-  client's read/write path — purely additive, verified inert before
-  anything depends on it. **Whether this local commit has been deployed to
-  production is unknown and must not be inferred from the repository.**
+  onboarding flow. Phase 2B later implemented the invitation-controlled V2
+  callable behind the default-off gate; see its historical design and
+  completion record below.
+- At the Phase 1 boundary there were no changes to
+  `morganBank/classroomData`, existing rules, or the client's read/write path.
+  Later phases did not retroactively change that historical boundary.
 
-**Phase 2A — Migration tooling + Firestore-emulator rehearsal (fully
-specified — see Part 2, "Data migration strategy")**
-- Build the independent, strictly read-only foundation validator; the
-  shared document-ID validator; the projection logic for students,
-  transactions, login history, credentials, and auth logs; the
-  operation-specific preflight classifier; the versioned, restart-safe
-  manifest; the batch writer; and the CLI — per the exact module inventory,
-  CLI contract, manifest schema, and commit sequence specified in Part 2.
-- Rehearse entirely against the Firestore emulator per the 21-step
-  rehearsal procedure in Part 2, seeded via `provisionTeacherClassroom` for
-  the Phase 1 foundation. Firestore-only emulation is sufficient — no Auth
-  or Functions emulator is needed, since the tooling never touches either.
-- Harden `checkData.js`, `checkStudent.js`, and `seedTestStudent.js` per
-  "Diagnostic-script requirements" in Part 2 (emulator-only, no cached
-  Firebase-CLI-token/temp-ADC reads, no hardcoded production project).
-- Do **not** run against production. No production override path exists in
-  the tooling at all.
-- **No implementation commit for any of the above is authorized by this
-  document.** Per the "Small commit sequence" in Part 2, the first
-  authorized commit is this corrected architecture document alone, and
-  further implementation commits require this document to pass another
-  independent review first.
+**Phase 2A — Migration tooling + Firestore-emulator rehearsal (complete in the
+local repository)**
+- The independent foundation validator, document-ID validation, projection,
+  preflight classification, restart-safe manifest, bounded batch writer, CLI,
+  reconciliation, diagnostic hardening, and emulator rehearsal described in
+  Part 2 are implemented under `functions/phase2/` and `tests/migration/`.
+- The tooling remains emulator-only and has no production override. Its local
+  matrix continued to pass through Phase 3 Item 11; it has never been run
+  against production by this work.
 
-**Phase 2B — Broader cutover readiness (detailed design complete; implementation
-not started)**
-- Everything Phase 2A intentionally defers: generalizing
-  `ensureTeacherClassroom` beyond its current single-hardcoded-teacher
-  restriction into a real multi-teacher onboarding callable, plus
-  emulator-backed validation of that generalized flow's ownership/isolation
-  guarantees (distinct from Phase 5's real-account onboarding of an actual
-  second teacher), Cloud Functions changes (`syncStudentProfiles`,
-  `resetStudentPin`, `studentCredentialVerifier`) needed for
-  multi-classroom operation, Auth-side changes and Auth-emulator-backed
-  testing, credential-collision handling at the product/UX level (beyond
-  the migration's data-level parity), and browser account-switch/cache
-  safety (e.g., the
-  `mrMorganClassCashDataV5` localStorage-namespacing gap flagged in
-  `PHASE1_IMPLEMENTATION_CHECKLIST.md` item 1).
-- This phase is a **mandatory prerequisite for Phase 3**. Its normative
-  contracts, file boundaries, eleven implementation items, and completion gate
-  are now specified in Part 2, "Phase 2B — Broader cutover readiness (detailed
-  design)." Phase 3 remains blocked until that implementation and gate are
-  complete; a completed design is not a completed phase.
+**Phase 2B — Broader cutover readiness (complete from local repository and
+emulator evidence)**
+- The eleven implementation items and completion gate in Part 2 were completed
+  locally at `5db34e5`, with results recorded in `tests/phase2b/README.md`.
+  Later Phase 3 corrections refined the gated client and server paths without
+  changing that evidence boundary into a production claim.
+- Invitation-controlled onboarding, reciprocal tenant resolution, scoped
+  credentials and logs, classroom-code login, V2 PIN reset and sync, browser
+  epoch/cache isolation, proposed ownership rules, and two-tenant emulator and
+  browser evidence now exist behind the default-off compatibility boundary.
+- No production migration, deployment, gate activation, or real second-teacher
+  onboarding occurred.
 
-**Phase 3 — Rules rewrite + client cutover (single coordinated release)**
-- New ownership-based `firestore.rules`, deployed together with the updated
-  client that reads/writes `classrooms/{classroomId}` instead of
-  `morganBank/classroomData`, and the updated `syncStudentProfiles`/
-  `resetStudentPin`/`studentCredentialVerifier` functions, classroom-code
-  index, scoped credentials/logs, and tenant state/cache path specified by
-  Phase 2B.
-- **Phase 2A's tooling is emulator-only by construction (it hard-refuses to
-  run without `FIRESTORE_EMULATOR_HOST` and has no production override
-  path) and proves the migration *logic* only — it does not authorize and
-  cannot itself provide a production execution path.** Running it
-  unchanged against production is explicitly **not** the plan. Before any
-  production migration run, Phase 3 must separately produce:
-  - A **separately reviewed production adaptation or runner** — not the
-    Phase 2A emulator-guarded CLI invoked with a different project ID, but
-    a distinct, independently reviewed execution path built for production
-    use, since Phase 2A's design (manifest, checksums, batch limits) proves
-    the algorithm, not a production-safe deployment of it.
-  - **Explicit production authorization** as a separate, deliberate step —
-    not a flag on the Phase 2A CLI.
-  - **Production project identity safeguards** (e.g., confirming the target
-    project ID against an allowlist, distinct from Phase 2A's emulator
-    project ID checks).
-  - A **production export/snapshot or write-freeze strategy** covering the
-    live `morganBank/classroomData`, `studentCredentials`, and
-    `studentAuthLogs` collections before the run.
-  - A **production rollback runbook** — the manifest-driven manual
-    procedure in Part 2's "Rollback strategy" is scoped to emulator
-    rehearsal only and explicitly does not cover `firestore.rules` or
-    Hosting rollback.
-  - **Revalidation of every Phase 2A assumption against real production
-    state** (document counts, field shapes, credential states) before
-    trusting the rehearsed plan against production data, since production
-    data may have drifted from what Phase 2A's synthetic fixture models.
-  - **Coordinated migration, rules, Functions, and client cutover
-    ordering** — the migration run, the rules deploy, and the client deploy
-    must happen in the safe sequence Part 2 already establishes (migrate
-    first, flip rules and client together second), not independently.
-- This is the only phase that touches production data or rules — everything
-  before it (2A, 2B) is additive/inert/tooling-only, everything after it is
-  verification/rollback readiness.
+**Phase 3 — Local implementation and rehearsal complete through Item 11;
+production cutover not run**
+- Items 1–11 in `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` now provide the
+  production environment guards, read-only preflight and immutable manifest,
+  bounded two-stage writer and journal, reconciliation/reverification,
+  student lifecycle, V2 tenant data layer and classroom-code login, three
+  checksum-pinned rules artifacts, release runbook, and credential-isolated
+  release/rollback rehearsals.
+- The checked-in legacy `firestore.rules` remains unchanged. The bridge, final,
+  and rollback-safe rules are separate candidate artifacts; no rule, Function,
+  Hosting artifact, parameter, gate, or data migration was deployed.
+- The distinct `functions/phase3/` runner is implemented and independently
+  reviewed. Its project allowlist, immutable authorization artifacts,
+  snapshot/write-freeze inputs, manifest/journal controls, abort criteria, and
+  rollback ordering are locally tested. This is implementation evidence, not
+  evidence that production state satisfies any assumption.
+- Any production validation or release still requires the separate approvals
+  and ordered procedure in `PHASE3_RELEASE_RUNBOOK.md`: first read-only
+  production validation, then separate write/deploy authorization, verified
+  freeze and snapshot, bridge-before-copy, reconciliation-before-activation,
+  final rules before gate and Hosting, acceptance before write resumption, and
+  rollback-safe rules after a default-off Hosting rollback. Item 12 authorizes
+  none of those operations.
 
 **Phase 4 — Production verification**
 - Full manual + automated acceptance pass (Part 2, "Testing strategy" §4)
@@ -3409,37 +3384,26 @@ not started)**
 
 ### Genuine remaining blockers
 
-These are remaining blockers outside the decisions settled by the detailed
-Phase 2B design; they must not be mistaken for implementation authorization:
-- **Production deployment state is unknown to this document by design** —
-  per the task constraints this revision was written under, production
-  state must not be inferred from the local repository. Phase 1B is
-  committed locally but its actual production deployment status is not
-  something this document can or should assert.
-- **The production adaptation runner named in Phase 3 does not exist.**
-  Phase 2A's tooling deliberately cannot run against production; something
-  else has to, and that something is unbuilt and unreviewed.
-- **The exact conservative per-write overhead allowance** for batch-size
-  estimation (see "Batch safety" in Part 2) is a documented policy this
-  plan requires but does not itself compute a number for — that requires
-  either empirical measurement against the Firestore emulator or a
-  cited platform figure, not an invented constant.
-- **Whether `syncStudentProfiles`' existing mirror-write behavior should be
-  imported as a shared function** rather than re-implemented in
-  `projection.js` (see "Proposed files and module boundaries") is an open
-  implementation-time judgment call, not resolved here — re-implementing
-  keeps Phase 2A's module free of a runtime dependency on
-  `functions/syncStudentProfiles.js`, but risks drift if that file's mirror
-  logic changes later without a corresponding update here.
-
-**No implementation commit for Phase 2A (or any later phase) is authorized
-by this document.** This revision itself is the only thing authorized to be
-committed, and only after it passes another independent review — see
-"Small commit sequence" in Part 2.
+These remaining gates must not be mistaken for implementation or production
+authorization:
+- **Production deployment and data state remain unknown by design.** Local
+  source, emulator, browser, and rehearsal evidence cannot establish which
+  rules, Functions, Hosting artifact, parameters, indexes, writers, or data
+  shapes currently exist in the live project.
+- **The production runner has not inspected or changed production.** Its
+  checked-in implementation and local review do not satisfy the separately
+  authorized read-only production preflight, snapshot/write-freeze proof, or
+  operator evidence required by the runbook.
+- **No production cutover approval exists.** Migration, rules and Functions
+  deployment, gate/release-parameter activation, Hosting deployment, write
+  resumption, and rollback each remain explicit future authority boundaries.
+- **Phase 4 and Phase 5 evidence is still absent.** The existing real classroom
+  has not completed post-cutover production acceptance, and no second real
+  teacher has been invited or onboarded by this work.
 
 ---
 
-*This document is planning output only. Per the project's stated
-development philosophy (`VERSION.md`), nothing here should be implemented
-until explicitly requested, and implementation should proceed phase-by-phase
-with verification at each step rather than as one large change.*
+*This document preserves the original planning rationale and the later local
+implementation record. It does not authorize production activity. Any further
+work must continue phase-by-phase with the confirmation, review, and evidence
+requirements in `AI_COLLABORATION_WORKFLOW.md`.*
