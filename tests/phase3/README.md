@@ -12,7 +12,8 @@
 | 6 | Student lifecycle callables | complete |
 | 7 | Client V2 data layer, PIN-free UI, PIN-free export | complete |
 | 8 | Classroom-code student login and Function gate compatibility | complete |
-| 9–11 | Bridge/final rules and release/rollback rehearsal | not started |
+| 9 | Bridge rules and tests | complete |
+| 10–11 | Final/rollback rules and release/rollback rehearsal | not started |
 
 Commit 5 adds the bounded production writer, its append-only durable journal,
 and the read-only re-verifier. The writer owns exactly two remote mutations: one
@@ -59,6 +60,7 @@ unchanged.
 | `npm run test:phase3:contracts` | no | no |
 | `npm run test:phase3:unit` | no | no |
 | `npm run test:phase3:migration` | yes | no |
+| `npm run test:phase3:rules` | yes | no |
 
 `test:phase3:contracts` selects `tests/phase3/*.contract.test.js` — deliberately
 **not** `*.test.js`. The broader glob would also select the emulator-backed runner
@@ -83,11 +85,12 @@ The `src/phase3` suites stay emulator-free because the service takes every
 Firestore primitive by injection, so a unit test constructs no Firebase handle and
 reaches no network. That is a structural property, not a convention.
 
-Three Section 12 gates remain **deliberately undeclared** —
-`test:phase3:rules`, `test:phase3:release-rehearsal`,
-`test:phase3:rollback-rehearsal`. A passing placeholder under any of those names
-would report green for work that does not exist; the command-safety contract
-asserts their absence and will admit each one only alongside the suite it runs.
+Two Section 12 gates remain **deliberately undeclared** —
+`test:phase3:release-rehearsal` and `test:phase3:rollback-rehearsal`. A passing
+placeholder under either name would report green for work that does not exist;
+the command-safety contract asserts their absence and will admit each one only
+alongside the suite it runs. Item 9 earns `test:phase3:rules` with the real
+bridge-rules emulator suite.
 
 ## Evidence layer — read this before citing these tests
 
@@ -191,9 +194,10 @@ Parsing the section into steps matters: a raw `indexOf` over the whole document
 would also match the identical wording in Sections 2 and 7 and could pass for
 the wrong reason.
 
-Boundary assertions pin that the three future rules artifacts are absent and that
-`firestore.rules` still hashes to `0659a857…cff2cf50`. The suite additionally
-asserts the baseline file **still contains** the recursive
+Boundary assertions pin the Item 9 bridge artifact and require the future final
+and rollback artifacts to remain absent. They also require `firestore.rules` to
+still hash to `0659a857…cff2cf50`. The suite additionally asserts the baseline
+file **still contains** the recursive
 `classrooms/{document=**}` allow, so the checksum pin cannot become vacuous if the
 file were replaced by something unrelated.
 
@@ -201,6 +205,49 @@ The former blanket "`src/phase3` is absent" boundary became false in Commit 7, a
 is now a **Section 11 content allowlist**: only the four permitted files may exist
 there, and each implementation file must be paired with its test suite. That keeps
 the boundary enforcing scope rather than deleting the check outright.
+
+## Item 9 — bridge-rules evidence
+
+`firestore.phase3.bridge.rules` is a separately checksum-pinned deployment
+artifact. It is not copied over `firestore.rules` and no test deploys it. The
+bridge deletes the recursive `classrooms/{document=**}` client permission,
+requires exact active reciprocal ownership, and grants an owner read-only access
+to the scoped classroom surfaces needed for migration verification. All scoped
+writes remain denied during the bridge window.
+
+The existing hardcoded teacher retains the legacy aggregate read/write and flat
+authentication-log read required during maintenance. This exception is not
+broadened to other active teachers. Exact student self-read remains available,
+including the legacy mirror, while every student list and write is denied. Flat
+and scoped credentials, invitations, login-code indexes, throttles, unresolved
+logs, ownership mutations, and unenumerated paths deny every client.
+
+`tests/firestore/rules.phase3.bridge.test.js` is behavioral emulator evidence. It
+runs Teacher A/Classroom A and Teacher B/Classroom B in both directions and
+covers disabled, missing, UID-mismatched, owner-mismatched, and invalid-status
+foundations; students; anonymous clients; forged paths; both auth-log shapes;
+and every credential verb. A phantom classroom fixture proves that a missing
+root cannot pass merely because its subcollection exists.
+
+Item 9 verification on 2026-07-27:
+
+| Command | Result |
+| --- | --- |
+| `npm run test:phase3:rules` | 15/15 |
+| `npm run test:phase3:contracts` | 59/59 |
+| `npm run test:rules` | 36/36 |
+| `npm run test:phase2b:rules` | 29/29 |
+| `npm run test:phase3:unit` | 432/432 |
+| `npm run test:phase3:migration` | 48/48 |
+| `npm run lint` | clean |
+| `npm --prefix functions run lint` | clean |
+
+The bridge SHA-256 is
+`4bf76a85e576a1d5b30573c3c3d5eba0d3561fb9d9a19ac14ac6382dced8d7f0`.
+The unchanged production `firestore.rules` remains
+`0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50`.
+These results are local source/emulator evidence only. They do not establish
+deployment state, authorize bridge deployment, or prove production data shape.
 
 ### `student-identity.contract.test.js`
 

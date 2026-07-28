@@ -18,9 +18,11 @@ const brief = readFileSync(
   'utf8',
 )
 
-/** The Item 10 pin, extended into Phase 3. Commit 1 must not touch rules. */
+/** The unchanged production-rules pin carried throughout Phase 3. */
 const EXPECTED_RULES_SHA256 =
   '0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50'
+const EXPECTED_BRIDGE_RULES_SHA256 =
+  '4bf76a85e576a1d5b30573c3c3d5eba0d3561fb9d9a19ac14ac6382dced8d7f0'
 
 /**
  * Parses a markdown numbered list into whole steps.
@@ -186,20 +188,28 @@ describe('Phase 3 release-order source contract', () => {
   })
 
   // -------------------------------------------------------------------------
-  // Commit 1 boundary. These assertions fail if a later commit's artifacts are
-  // created early, which is the specific scope risk of a multi-commit plan.
+  // Commit boundary. Item 9 earns only the bridge artifact; final and rollback
+  // rules remain Item 10 work.
   // -------------------------------------------------------------------------
 
-  it('boundary: the three future rules artifacts are absent in Commit 1', () => {
+  it('boundary: Item 9 delivers only the checksum-pinned bridge artifact', () => {
+    const bridge = readFileSync(
+      new URL('../../firestore.phase3.bridge.rules', import.meta.url),
+    )
+    assert.equal(
+      createHash('sha256').update(bridge).digest('hex'),
+      EXPECTED_BRIDGE_RULES_SHA256,
+      'the reviewed bridge artifact must match its pinned checksum',
+    )
+
     for (const file of [
-      'firestore.phase3.bridge.rules',
       'firestore.phase3.final.rules',
       'firestore.phase3.rollback.rules',
     ]) {
       assert.equal(
         existsSync(new URL(`../../${file}`, import.meta.url)),
         false,
-        `${file} belongs to Commit 9/10, not Commit 1`,
+        `${file} belongs to Item 10, not Item 9`,
       )
     }
   })

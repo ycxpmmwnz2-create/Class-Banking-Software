@@ -317,13 +317,13 @@ describe('Phase 3 command-safety source contract', () => {
    * present, and each entry below records which commit earned it.
    *
    * `test:phase3:unit` was added in Commit 2 alongside the colocated
-   * `functions/phase3/*.test.js` guard suite it genuinely runs. The remaining
-   * four stay absent: a placeholder exiting 0 would report green for work that
-   * does not exist.
+   * `functions/phase3/*.test.js` guard suite it genuinely runs. Item 9 earns
+   * `test:phase3:rules` alongside its bridge-rules emulator suite. The two
+   * rehearsal gates stay absent: a placeholder exiting 0 would report green
+   * for work that does not exist.
    */
   it('source contract: no behavioral gate exists without the suite it runs', () => {
     for (const name of [
-      'test:phase3:rules',
       'test:phase3:release-rehearsal',
       'test:phase3:rollback-rehearsal',
     ]) {
@@ -356,6 +356,28 @@ describe('Phase 3 command-safety source contract', () => {
     assert.ok(
       ISOLATED_EMULATOR_COMMANDS.includes('test:phase3:migration'),
       'the Phase 3 emulator gate must be covered by automatic discovery',
+    )
+
+    // test:phase3:rules is earned in Item 9 alongside the real bridge suite.
+    // It must select only that suite, and automatic discovery must apply the
+    // complete credential-isolation contract to it.
+    const rulesGate = scripts['test:phase3:rules']
+    assert.equal(
+      typeof rulesGate,
+      'string',
+      'test:phase3:rules must exist in Item 9',
+    )
+    assert.match(rulesGate, /rules\.phase3\.bridge\.test\.js/)
+    assert.ok(
+      existsSync(new URL(
+        '../../tests/firestore/rules.phase3.bridge.test.js',
+        import.meta.url,
+      )),
+      'the Phase 3 rules gate must have its bridge suite present',
+    )
+    assert.ok(
+      ISOLATED_EMULATOR_COMMANDS.includes('test:phase3:rules'),
+      'the Phase 3 rules gate must be covered by automatic discovery',
     )
 
     // test:phase3:unit must exist AND must actually execute the colocated
