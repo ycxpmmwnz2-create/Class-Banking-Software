@@ -2353,7 +2353,8 @@ describe('Phase 3 production preflight', () => {
             ? null
             : 'indexes-next'
           assert.equal(parsed.searchParams.get('filter'), null)
-          assert.equal(parsed.searchParams.get('pageSize'), '1000')
+          // Firestore Admin rejects any non-zero pageSize on the wildcard.
+          assert.equal(parsed.searchParams.get('pageSize'), '0')
           assert.equal(parsed.searchParams.get('pageToken'), expectedToken)
           assert.deepEqual([...parsed.searchParams.keys()].sort(),
             expectedToken === null ? ['pageSize'] : ['pageSize', 'pageToken'])
@@ -2370,7 +2371,8 @@ describe('Phase 3 production preflight', () => {
             parsed.searchParams.get('filter'),
             'indexConfig.usesAncestorConfig:false',
           )
-          assert.equal(parsed.searchParams.get('pageSize'), '1000')
+          // Firestore Admin rejects any non-zero pageSize on the wildcard.
+          assert.equal(parsed.searchParams.get('pageSize'), '0')
           assert.equal(parsed.searchParams.get('pageToken'), expectedToken)
           assert.deepEqual([...parsed.searchParams.keys()].sort(), expectedToken === null
             ? ['filter', 'pageSize']

@@ -1738,6 +1738,9 @@ export const PRODUCTION_GOOGLE_API_ORIGINS = Object.freeze({
 export const PRODUCTION_READER_TIMEOUT_MS = 10_000
 const PRODUCTION_PAGE_LIMIT = 10_000
 const PRODUCTION_LIST_PAGE_SIZE = 1_000
+// The Firestore Admin API rejects every non-zero pageSize on the
+// collectionGroups wildcard: "Invalid page size. Only 0 is supported."
+const FIRESTORE_ADMIN_PAGE_SIZE = 0
 let productionReaderSequence = 0
 
 function canonicalDigest(value) {
@@ -2166,12 +2169,16 @@ async function readIndexesInventory(client, projectId) {
       originKey: 'firestoreAdmin',
       apiPath: `${parent}/indexes`,
       itemsField: 'indexes',
+      query: { pageSize: FIRESTORE_ADMIN_PAGE_SIZE },
     }),
     client.listAll({
       originKey: 'firestoreAdmin',
       apiPath: `${parent}/fields`,
       itemsField: 'fields',
-      query: { filter: 'indexConfig.usesAncestorConfig:false' },
+      query: {
+        filter: 'indexConfig.usesAncestorConfig:false',
+        pageSize: FIRESTORE_ADMIN_PAGE_SIZE,
+      },
     }),
   ])
   const inventory = {}
