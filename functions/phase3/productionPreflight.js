@@ -2171,7 +2171,7 @@ async function readIndexesInventory(client, projectId) {
       originKey: 'firestoreAdmin',
       apiPath: `${parent}/fields`,
       itemsField: 'fields',
-      query: { filter: 'indexConfig.usesAncestorConfig=false' },
+      query: { filter: 'indexConfig.usesAncestorConfig:false' },
     }),
   ])
   const inventory = {}

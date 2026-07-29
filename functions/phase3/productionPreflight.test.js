@@ -2292,6 +2292,9 @@ describe('Phase 3 production preflight', () => {
 
     it('assembles and caches the complete production inventory with no mutating call', async () => {
       const calls = []
+      const firestorePageTokens = { indexes: [], fields: [] }
+      const firestoreParent =
+        '/v1/projects/morgan-bank/databases/(default)/collectionGroups/-'
       let closed = 0
       let factoryArguments
       const payloadFor = url => {
@@ -2345,8 +2348,38 @@ describe('Phase 3 production preflight', () => {
             },
           ] }
         }
-        if (parsed.pathname.endsWith('/indexes')) return { indexes: [] }
-        if (parsed.pathname.endsWith('/fields')) return { fields: [] }
+        if (parsed.pathname === `${firestoreParent}/indexes`) {
+          const expectedToken = firestorePageTokens.indexes.length % 2 === 0
+            ? null
+            : 'indexes-next'
+          assert.equal(parsed.searchParams.get('filter'), null)
+          assert.equal(parsed.searchParams.get('pageSize'), '1000')
+          assert.equal(parsed.searchParams.get('pageToken'), expectedToken)
+          assert.deepEqual([...parsed.searchParams.keys()].sort(),
+            expectedToken === null ? ['pageSize'] : ['pageSize', 'pageToken'])
+          firestorePageTokens.indexes.push(expectedToken)
+          return expectedToken === null
+            ? { indexes: [], nextPageToken: 'indexes-next' }
+            : { indexes: [] }
+        }
+        if (parsed.pathname === `${firestoreParent}/fields`) {
+          const expectedToken = firestorePageTokens.fields.length % 2 === 0
+            ? null
+            : 'fields-next'
+          assert.equal(
+            parsed.searchParams.get('filter'),
+            'indexConfig.usesAncestorConfig:false',
+          )
+          assert.equal(parsed.searchParams.get('pageSize'), '1000')
+          assert.equal(parsed.searchParams.get('pageToken'), expectedToken)
+          assert.deepEqual([...parsed.searchParams.keys()].sort(), expectedToken === null
+            ? ['filter', 'pageSize']
+            : ['filter', 'pageSize', 'pageToken'])
+          firestorePageTokens.fields.push(expectedToken)
+          return expectedToken === null
+            ? { fields: [], nextPageToken: 'fields-next' }
+            : { fields: [] }
+        }
         throw new Error(`unhandled fake URL: ${parsed.pathname}`)
       }
       const readers = createProductionReaders({
@@ -2368,6 +2401,10 @@ describe('Phase 3 production preflight', () => {
       })
 
       const deployment = await readers.readDeploymentInventory()
+      assert.deepEqual(firestorePageTokens, {
+        indexes: [null, 'indexes-next'],
+        fields: [null, 'fields-next'],
+      })
       const callCount = calls.length
       const writers = await readers.readActiveWriters()
       assert.equal(calls.length, callCount, 'inventory must be cached across readers')
