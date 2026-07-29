@@ -120,12 +120,16 @@ The following is an operator checklist, not permission to execute it.
 5. Only after both reviews close and Andrew approves the next boundary, author
    and checksum the exact preflight expectations from the reviewed inventory.
    Obtain a new, separate read-only preflight authorization bound to those
-   exact bytes and the explicit credential. Do not use a failing preflight as
+   exact bytes, the explicit credential, and the full lowercase reviewed commit
+   SHA. The authorization must carry the exact production-preflight kind and a
+   validity interval no longer than two hours. Do not use a failing preflight as
    discovery: its retained/error evidence intentionally does not disclose the
    opaque deployed values needed to author expectations.
 6. Run only the separate `functions/phase3/preflight.js` entrypoint with its
    four required reviewed inputs: teacher UID, read-authorization file,
-   expectations file, and explicit credential file. Record its immutable
+   expectations file, and explicit credential file. The entrypoint
+   machine-verifies the authorization's exact reviewed commit and a clean
+   anchored worktree before opening the credential. Record its immutable
    manifest. Abort on any
    unexpected path, shape, count, ID, duplicate, UID mapping, credential/log,
    Auth compatibility, index, active writer, or recovery prerequisite.
@@ -150,6 +154,17 @@ The following is an operator checklist, not permission to execute it.
    checksum, UID mapping, source-immutability assertion, Auth compatibility
    fact, active-writer fact, and sensitive-path denial. Any mismatch aborts
    before activation.
+
+The exact preflight authorization and explicit credential are retained outside
+Git with mode `0600` through both writer invocations and re-verification. Record
+their raw-byte SHA-256 values without recording their contents or login code,
+and keep a secure recoverable copy of the authorization. The manifest binds the
+authorization's raw-byte digest, and write/reverify require the same credential
+raw-byte SHA-256 while repeating the clean-reviewed-checkout proof. Do not delete
+the key or service account immediately after preflight. Credential privilege
+changes and final teardown are separate approval boundaries whose order must
+preserve those byte bindings.
+
 13. Deploy and verify the exact final-rules hash. Only after that, set the exact
    reviewed `MULTI_TEACHER_V2_RELEASE_ID` and enable the server gate. Then deploy
    the reviewed gate-on Hosting artifact.

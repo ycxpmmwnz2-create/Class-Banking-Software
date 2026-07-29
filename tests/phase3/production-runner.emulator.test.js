@@ -61,6 +61,7 @@ const {
 // the same convention functions/phase2/seedRehearsal.js established.
 const {
   PREFLIGHT_ABORT_CATEGORIES,
+  PRODUCTION_PREFLIGHT_AUTHORIZATION_KIND,
   createReadOnlyAdminHandles,
   createReadOnlyDataReaders,
   createRawDataReaders,
@@ -119,6 +120,19 @@ function emulatorEnvironment(overrides = {}) {
 }
 const TEACHER_UID = 'YkYUzIzy0aW7roolM1VaLcIJPuN2'
 const RUN_TOKEN = `${process.pid}-${randomBytes(6).toString('hex')}`
+const REVIEWED_COMMIT_SHA = 'bdfd551b925dc24168b24bfc6d6dee7f73918c65'
+const AUTHORIZATION_CLOCK = Date.now()
+const AUTHORIZATION_NOT_BEFORE = new Date(
+  AUTHORIZATION_CLOCK - 5 * 60 * 1000,
+).toISOString()
+const AUTHORIZATION_NOT_AFTER = new Date(
+  AUTHORIZATION_CLOCK + 115 * 60 * 1000,
+).toISOString()
+
+async function verifyTestCheckout({ expectedCommitSha }) {
+  assert.equal(expectedCommitSha, REVIEWED_COMMIT_SHA)
+  return { commitSha: REVIEWED_COMMIT_SHA }
+}
 
 let handles
 let firestore
@@ -152,7 +166,9 @@ assert.equal(
 
 function authorizationArtifact(overrides = {}) {
   return {
+    kind: PRODUCTION_PREFLIGHT_AUTHORIZATION_KIND,
     projectId: EMULATOR_PROJECT_ID,
+    commitSha: REVIEWED_COMMIT_SHA,
     teacherUid: TEACHER_UID,
     releaseId: 'phase3-rel-emulator',
     changeId: 'CHG-EMULATOR-001',
@@ -163,8 +179,8 @@ function authorizationArtifact(overrides = {}) {
     // Commit 5: the classroom login code is chosen and bound BEFORE any write,
     // already in canonical (uppercase, unformatted, 8-character) form.
     studentLoginCode: CANONICAL_LOGIN_CODE,
-    notBefore: '2020-01-01T00:00:00.000Z',
-    notAfter: '2099-01-01T00:00:00.000Z',
+    notBefore: AUTHORIZATION_NOT_BEFORE,
+    notAfter: AUTHORIZATION_NOT_AFTER,
     ...overrides,
   }
 }
@@ -514,11 +530,17 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       const explicitCredential = Object.freeze({
         getAccessToken: async () => ({ access_token: 'fake-token' }),
       })
+      let credentialFactoryCalls = 0
+      const credentialFactory = () => {
+        credentialFactoryCalls += 1
+        return explicitCredential
+      }
       let factoryCalls = 0
       let closeCalls = 0
       const outcome = await runPreflightMain(argv, {
         environment: { GCLOUD_PROJECT: 'morgan-bank' },
-        credentialFactory: () => explicitCredential,
+        verifyCheckout: verifyTestCheckout,
+        credentialFactory,
         productionReaderFactory: options => {
           factoryCalls += 1
           assert.strictEqual(options.credential, explicitCredential)
@@ -540,6 +562,7 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
         `${outcome.error?.category ?? ''} ${outcome.error?.message ?? ''}`)
       assert.equal(factoryCalls, 1)
       assert.equal(closeCalls, 1)
+      assert.equal(credentialFactoryCalls, 1)
 
       const unboundAuthorization = writeArtifact(
         'production-wiring-unbound-authorization.json',
@@ -555,7 +578,8 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
         ...argv.slice(4),
       ], {
         environment: { GCLOUD_PROJECT: 'morgan-bank' },
-        credentialFactory: () => explicitCredential,
+        verifyCheckout: verifyTestCheckout,
+        credentialFactory,
         productionReaderFactory: () => {
           factoryCalls += 1
           throw new Error('authorization must bind before reader construction')
@@ -567,6 +591,8 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
         PREFLIGHT_ABORT_CATEGORIES.AUTHORIZATION_UNBOUND)
       assert.equal(factoryCalls, 1,
         'unbound authorization must not construct any Admin reader handle')
+      assert.equal(credentialFactoryCalls, 1,
+        'unbound authorization must not parse or construct the credential')
     })
 
   test('a successful preflight reads live data and writes nothing remote', async () => {
@@ -1182,7 +1208,13 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       type: 'authorized_user', project_id: EMULATOR_PROJECT_ID,
     })
     const expectationsPath = writeArtifact('exp5.json', expectationsArtifact())
-    const authorizationPath = writeArtifact('auth5.json', authorizationArtifact())
+    const authorizationPath = writeArtifact('auth5.json', authorizationArtifact({
+      projectId: 'morgan-bank',
+      credentialSha256: createHash('sha256')
+        .update(fs.readFileSync(credentialPath)).digest('hex'),
+      expectationsSha256: createHash('sha256')
+        .update(fs.readFileSync(expectationsPath)).digest('hex'),
+    }))
 
     // Production context so the credential is actually validated.
     const { exitCode } = await runPreflightMain([
@@ -1192,6 +1224,7 @@ describe('Phase 3 preflight entrypoint against live emulators', () => {
       '--credential-file', credentialPath,
     ], {
       environment: { GCLOUD_PROJECT: 'morgan-bank' },
+      verifyCheckout: verifyTestCheckout,
       readers: liveReaders(),
       logger: { log() {}, error() {} },
     })

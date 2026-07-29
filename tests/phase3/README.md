@@ -60,6 +60,36 @@ The emulator-backed gates used only their credential-isolated `demo-` project
 wrappers. No Item 13 test invoked the production inventory entrypoint with real
 artifacts, created a `.state/inventory-*.json` file, or contacted production.
 
+### 2026-07-29 local production-read safety correction
+
+The production preflight authorization now requires its exact kind, a full
+lowercase reviewed commit SHA, and a validity interval no longer than two hours.
+Before opening the explicit credential, each production preflight, writer, and
+re-verifier invocation proves that the anchored repository has that exact HEAD
+and a clean worktree, including no untracked files. The manifest continues to
+bind the exact preflight authorization through its raw-byte SHA-256; the writer
+and re-verifier also require the same credential raw-byte SHA-256. Therefore the
+authorization and credential artifacts must remain outside Git, mode `0600`,
+and unchanged through both writer invocations and re-verification; a secure
+recoverable copy of the authorization must be retained. Key or service-account
+teardown immediately after preflight would violate that binding and is not part
+of this correction.
+
+The correction was verified locally with the following complete gate. These
+results are emulator and source/unit evidence only; no production service,
+credential, IAM binding, deployment, or remote repository state was accessed or
+changed.
+
+| Gate | Result |
+| --- | --- |
+| `npm run test:phase3:contracts` | 67/67 |
+| `npm run test:phase3:unit` | 469/469 |
+| `npm run test:phase3:migration` | 48 passed + 1 expected non-release skip |
+| `npm run test:phase3:rules` | 15/15 bridge + 17/17 final + 7/7 rollback |
+| `npm run test:phase3:release-rehearsal` | 49/49 runner + 24/24 browser |
+| `npm run test:phase3:rollback-rehearsal` | 3/3 |
+| root and Functions ESLint | passed |
+
 Commit 5 adds the bounded production writer, its append-only durable journal,
 and the read-only re-verifier. The writer owns exactly two remote mutations: one
 atomic initialization transaction that reserves the classroom login code and

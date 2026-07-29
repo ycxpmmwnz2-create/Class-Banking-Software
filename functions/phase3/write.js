@@ -17,6 +17,7 @@ import {
   validateExplicitCredential,
   validateRehearsalWriteAuthorization,
   validateWriteAuthorization,
+  verifyReviewedCheckout,
 } from './productionEnvironment.js'
 import {
   PreflightAbortError,
@@ -76,6 +77,12 @@ export const WRITE_EXIT_CODES = Object.freeze({
   AWAITING_DEPLOYMENT: 10,
   BLOCKED_INDETERMINATE: 11,
 })
+
+const CHECKOUT_ERROR_CATEGORIES = Object.freeze(new Set([
+  PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_DIRTY,
+  PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_MISMATCH,
+  PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_UNVERIFIABLE,
+]))
 
 /** Required flags. Every one takes a value; none is optional. */
 const VALUE_FLAGS = new Map([
@@ -280,12 +287,27 @@ export async function runWriteMain(argv = process.argv.slice(2), dependencies = 
     validatedEnvironment.context === EXECUTION_CONTEXT.PRODUCTION
 
   try {
-    // ---- 3. every artifact: raw bytes, hash before decode, strict parse ----
-    const writeAuthorizationArtifact = await readHashedArtifact(
-      parsed.writeAuthorizationFile, dependencies,
-    )
+    // ---- 3. retained preflight authorization and reviewed checkout ----
     const preflightAuthorizationArtifact = await readHashedArtifact(
       parsed.preflightAuthorizationFile, dependencies,
+    )
+    const preflightAuthorization = parseJsonArtifact(
+      preflightAuthorizationArtifact.contents,
+      'The preflight authorization file',
+    )
+    if (isProduction) {
+      const checkoutVerifier = dependencies.verifyCheckout ??
+        verifyReviewedCheckout
+      await checkoutVerifier({
+        expectedCommitSha: preflightAuthorization.commitSha,
+        runGit: dependencies.runGit,
+      })
+    }
+
+    // Only the exact clean reviewed checkout may open the remaining artifacts,
+    // especially the explicit credential.
+    const writeAuthorizationArtifact = await readHashedArtifact(
+      parsed.writeAuthorizationFile, dependencies,
     )
     // BOTH expectations artifacts are hashed on every invocation so the journal
     // header can bind both, but only the stage-appropriate one is validated.
@@ -301,10 +323,6 @@ export async function runWriteMain(argv = process.argv.slice(2), dependencies = 
 
     const writeAuthorization = parseJsonArtifact(
       writeAuthorizationArtifact.contents, 'The write authorization file',
-    )
-    const preflightAuthorization = parseJsonArtifact(
-      preflightAuthorizationArtifact.contents,
-      'The preflight authorization file',
     )
     const initializationExpectations = parseJsonArtifact(
       initializationExpectationsArtifact.contents,
@@ -540,6 +558,10 @@ export async function runWriteMain(argv = process.argv.slice(2), dependencies = 
     }
     if (error instanceof ProductionEnvironmentError) {
       const redacted = redactEnvironmentError(error)
+      if (CHECKOUT_ERROR_CATEGORIES.has(error.category)) {
+        logger.error(`Write rejected the checkout [${redacted.category}].`)
+        return { exitCode: WRITE_EXIT_CODES.AUTHORIZATION_REJECTED, error }
+      }
       if (ARTIFACT_ERROR_CATEGORIES.has(error.category)) {
         logger.error(`Write rejected an artifact [${redacted.category}].`)
         return { exitCode: WRITE_EXIT_CODES.AUTHORIZATION_REJECTED, error }

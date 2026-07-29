@@ -324,6 +324,19 @@ deliberately failing preflight is prohibited: preflight error telemetry does not
 retain the opaque observed values and cannot bootstrap trustworthy
 expectations.
 
+The strict preflight authorization self-identifies as the production read-
+preflight kind and binds the full lowercase reviewed commit SHA in addition to
+the project, teacher, release/change/authorization identifiers, credential
+provenance and raw-byte SHA-256, expectations raw-byte SHA-256, canonical
+classroom login code, and validity bounds. Its interval is machine-capped at two
+hours. Before a production preflight opens the credential, and again before
+production write or re-verification reopens it, the entrypoint proves that the
+anchored repository has the authorized HEAD and a clean worktree. The manifest's
+authorization-artifact domain binds those exact authorization bytes, so the
+authorization and same-SHA credential must be retained outside Git through both
+writer invocations and re-verification; credential teardown cannot occur
+immediately after preflight.
+
 There is no shared write subcommand, `--force`, production override,
 manifest-path override, state-directory override, or implicit credential
 discovery. Write mode requires the retained successful preflight manifest,

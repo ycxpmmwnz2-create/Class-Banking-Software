@@ -14,6 +14,8 @@ import {
   COLLECTION_ENUMERATION_REQUIREMENT,
   DESTINATION_SURFACES,
   PREFLIGHT_ABORT_CATEGORIES,
+  PRODUCTION_PREFLIGHT_AUTHORIZATION_KIND,
+  PRODUCTION_PREFLIGHT_MAX_AUTHORIZATION_MS,
   PRODUCTION_GOOGLE_API_ORIGINS,
   PreflightAbortError,
   createBoundedGoogleApiClient,
@@ -25,6 +27,11 @@ import {
   runProductionPreflight,
   validateReadAuthorization,
 } from './productionPreflight.js'
+import { PREFLIGHT_EXIT_CODES, runPreflightMain } from './preflight.js'
+import {
+  PRODUCTION_ENVIRONMENT_CATEGORIES,
+  ProductionEnvironmentError,
+} from './productionEnvironment.js'
 import { CHECKSUM_DOMAINS, hashDomain } from './productionManifest.js'
 import {
   formatClassroomCode,
@@ -36,6 +43,7 @@ const TEACHER_UID = 'YkYUzIzy0aW7roolM1VaLcIJPuN2'
 const CREDENTIAL_SHA = 'c'.repeat(64)
 const EXPECTATIONS_SHA = 'e'.repeat(64)
 const AUTHORIZATION_SHA = 'd'.repeat(64)
+const COMMIT_SHA = 'bdfd551b925dc24168b24bfc6d6dee7f73918c65'
 const NOW = Date.parse('2026-07-26T18:00:00.000Z')
 const OBSERVED_AT = '2026-07-26T18:00:00.000Z'
 
@@ -69,7 +77,9 @@ function sourceEntries(label, count, overrides = []) {
 
 function authorization(overrides = {}) {
   return {
+    kind: PRODUCTION_PREFLIGHT_AUTHORIZATION_KIND,
     projectId: 'morgan-bank',
+    commitSha: COMMIT_SHA,
     teacherUid: TEACHER_UID,
     releaseId: 'phase3-rel-2026-07-26a',
     changeId: 'CHG-2026-07-26-001',
@@ -81,7 +91,7 @@ function authorization(overrides = {}) {
     // characters. Any other rendering of the same code must be rejected.
     studentLoginCode: CANONICAL_LOGIN_CODE,
     notBefore: '2026-07-26T17:00:00.000Z',
-    notAfter: '2026-07-26T23:00:00.000Z',
+    notAfter: '2026-07-26T19:00:00.000Z',
     ...overrides,
   }
 }
@@ -357,6 +367,45 @@ describe('Phase 3 production preflight', () => {
       )
       assert.equal(invoked, 0, 'authorization must be validated before reads')
     })
+
+    it('rejects the wrong reviewed checkout before opening expectations or credential bytes',
+      async () => {
+        const pathsRead = []
+        let readerFactoryCalls = 0
+        const result = await runPreflightMain([
+          '--teacher-uid', TEACHER_UID,
+          '--authorization-file', '/artifacts/authorization.json',
+          '--expectations-file', '/artifacts/expectations.json',
+          '--credential-file', '/artifacts/credential.json',
+        ], {
+          environment: { GCLOUD_PROJECT: 'morgan-bank' },
+          readFile: async filePath => {
+            pathsRead.push(filePath)
+            if (filePath === '/artifacts/authorization.json') {
+              return JSON.stringify({ commitSha: COMMIT_SHA })
+            }
+            throw new Error('no later artifact may be opened')
+          },
+          verifyCheckout: async ({ expectedCommitSha }) => {
+            assert.equal(expectedCommitSha, COMMIT_SHA)
+            throw new ProductionEnvironmentError(
+              PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_MISMATCH,
+              'blocked test checkout',
+            )
+          },
+          productionReaderFactory: () => {
+            readerFactoryCalls += 1
+            throw new Error('no reader may be constructed')
+          },
+          logger: { log() {}, error() {} },
+        })
+
+        assert.equal(result.exitCode, PREFLIGHT_EXIT_CODES.AUTHORIZATION_REJECTED)
+        assert.equal(result.error.category,
+          PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_MISMATCH)
+        assert.deepEqual(pathsRead, ['/artifacts/authorization.json'])
+        assert.equal(readerFactoryCalls, 0)
+      })
   })
 
   describe('read authorization', () => {
@@ -370,6 +419,7 @@ describe('Phase 3 production preflight', () => {
         nowMillis: NOW,
       })
       assert.equal(validated.authorizationId, 'AUTH-2026-07-26-001')
+      assert.equal(validated.commitSha, COMMIT_SHA)
       assert.equal(validated.canonicalLoginCode, CANONICAL_LOGIN_CODE)
     })
 
@@ -490,7 +540,7 @@ describe('Phase 3 production preflight', () => {
         'before notBefore must abort',
       )
       await assertAborts(
-        { nowMillis: Date.parse('2026-07-26T23:00:01.000Z') },
+        { nowMillis: Date.parse('2026-07-26T19:00:01.000Z') },
         PREFLIGHT_ABORT_CATEGORIES.AUTHORIZATION_EXPIRED,
         'after notAfter must abort',
       )
@@ -507,6 +557,25 @@ describe('Phase 3 production preflight', () => {
         PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
         'inverted interval must abort',
       )
+    })
+
+    it('enforces the authorization kind, full commit SHA, and two-hour maximum', async () => {
+      assert.equal(PRODUCTION_PREFLIGHT_MAX_AUTHORIZATION_MS, 7_200_000)
+      for (const invalid of [
+        authorization({ kind: 'phase3-production-control-plane-inventory' }),
+        authorization({ commitSha: 'not-a-full-commit' }),
+        authorization({ commitSha: 'A'.repeat(40) }),
+        authorization({
+          notBefore: '2026-07-26T16:59:59.999Z',
+          notAfter: '2026-07-26T19:00:00.000Z',
+        }),
+      ]) {
+        await assertAborts(
+          { authorization: invalid },
+          PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+          'kind, commit, and maximum-window violations must abort',
+        )
+      }
     })
 
     it('aborts on unparseable validity bounds and non-canonical identifiers', async () => {

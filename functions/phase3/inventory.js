@@ -1,8 +1,5 @@
-import { execFile as nodeExecFile } from 'node:child_process'
-import path from 'node:path'
 import process from 'node:process'
-import { promisify } from 'node:util'
-import { fileURLToPath, pathToFileURL, URL } from 'node:url'
+import { pathToFileURL } from 'node:url'
 
 import { cert } from 'firebase-admin/app'
 
@@ -14,6 +11,7 @@ import {
   redactEnvironmentError,
   validateExecutionEnvironment,
   validateExplicitCredential,
+  verifyReviewedCheckout,
 } from './productionEnvironment.js'
 import {
   ProductionInventoryError,
@@ -26,6 +24,8 @@ import {
   PreflightAbortError,
   createProductionControlPlaneReaders,
 } from './productionPreflight.js'
+
+export { verifyReviewedCheckout } from './productionEnvironment.js'
 
 /**
  * Separately authorized control-plane-only inventory entrypoint.
@@ -45,26 +45,6 @@ export const INVENTORY_EXIT_CODES = Object.freeze({
   PERSISTENCE_FAILED: 6,
 })
 
-const COMMIT_SHA = /^[0-9a-f]{40}$/
-const REPOSITORY_ROOT = path.resolve(
-  fileURLToPath(new URL('../../', import.meta.url)),
-)
-const execFile = promisify(nodeExecFile)
-const GIT_ROUTING_VARIABLES = Object.freeze(new Set([
-  'GIT_DIR',
-  'GIT_WORK_TREE',
-  'GIT_COMMON_DIR',
-  'GIT_INDEX_FILE',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_CEILING_DIRECTORIES',
-  'GIT_DISCOVERY_ACROSS_FILESYSTEM',
-  'GIT_CONFIG',
-  'GIT_CONFIG_SYSTEM',
-  'GIT_CONFIG_GLOBAL',
-  'GIT_CONFIG_NOSYSTEM',
-  'GIT_CONFIG_COUNT',
-]))
 const SAFE_PREFLIGHT_ABORT_CATEGORIES = Object.freeze(
   Object.values(PREFLIGHT_ABORT_CATEGORIES),
 )
@@ -135,100 +115,6 @@ export class InventoryArgumentError extends Error {
 
 function rejectArgument(category, message, details) {
   throw new InventoryArgumentError(category, message, details)
-}
-
-async function defaultRunGit(argumentsValue) {
-  const gitEnvironment = {
-    ...Object.fromEntries(
-      Object.entries(process.env).filter(([name]) =>
-        !GIT_ROUTING_VARIABLES.has(name) &&
-        !name.startsWith('GIT_CONFIG_KEY_') &&
-        !name.startsWith('GIT_CONFIG_VALUE_')),
-    ),
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: '/dev/null',
-    GIT_OPTIONAL_LOCKS: '0',
-  }
-  const safeArguments = [
-    '-c', 'core.fsmonitor=false',
-    '-c', 'core.hooksPath=/dev/null',
-    '-c', 'core.untrackedCache=false',
-    ...argumentsValue,
-  ]
-  const { stdout } = await execFile('git', safeArguments, {
-    cwd: REPOSITORY_ROOT,
-    env: gitEnvironment,
-    encoding: 'utf8',
-    timeout: 10_000,
-    windowsHide: true,
-  })
-  return stdout
-}
-
-function oneCanonicalLine(value, label) {
-  if (typeof value !== 'string' || !value.endsWith('\n') ||
-      value.slice(0, -1).includes('\n') || value.includes('\r')) {
-    rejectArgument(
-      'checkout-unverifiable',
-      `Git returned a non-canonical ${label}.`,
-    )
-  }
-  return value.slice(0, -1)
-}
-
-/**
- * Proves the running source is the exact clean reviewed checkout named by the
- * inventory authorization. This is local read-only Git inspection and occurs
- * before either artifact file is opened or any remote reader is constructed.
- */
-export async function verifyReviewedCheckout({
-  expectedCommitSha,
-  runGit = defaultRunGit,
-}) {
-  if (typeof expectedCommitSha !== 'string' ||
-      !COMMIT_SHA.test(expectedCommitSha) ||
-      typeof runGit !== 'function') {
-    rejectArgument(
-      'checkout-unverifiable',
-      'The reviewed checkout cannot be verified.',
-    )
-  }
-  let topLevelOutput
-  let headOutput
-  let statusOutput
-  try {
-    [topLevelOutput, headOutput, statusOutput] = await Promise.all([
-      runGit(['rev-parse', '--show-toplevel']),
-      runGit(['rev-parse', '--verify', 'HEAD']),
-      runGit(['status', '--porcelain=v1', '--untracked-files=all']),
-    ])
-  } catch {
-    rejectArgument(
-      'checkout-unverifiable',
-      'The reviewed checkout cannot be verified.',
-    )
-  }
-  const topLevel = oneCanonicalLine(topLevelOutput, 'repository root')
-  const head = oneCanonicalLine(headOutput, 'commit identity')
-  if (topLevel !== REPOSITORY_ROOT || !COMMIT_SHA.test(head)) {
-    rejectArgument(
-      'checkout-unverifiable',
-      'The inventory entrypoint is not running from its expected repository.',
-    )
-  }
-  if (head !== expectedCommitSha) {
-    rejectArgument(
-      'checkout-mismatch',
-      'The running checkout is not the reviewed commit.',
-    )
-  }
-  if (statusOutput !== '') {
-    rejectArgument(
-      'checkout-dirty',
-      'The reviewed checkout contains local or untracked changes.',
-    )
-  }
-  return Object.freeze({ repositoryRoot: topLevel, commitSha: head })
 }
 
 export function parseInventoryArguments(argv) {

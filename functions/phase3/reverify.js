@@ -19,6 +19,7 @@ import {
   validateExplicitCredential,
   validateRehearsalWriteAuthorization,
   validateWriteAuthorization,
+  verifyReviewedCheckout,
 } from './productionEnvironment.js'
 import {
   PreflightAbortError,
@@ -110,6 +111,12 @@ const ARTIFACT_ERROR_CATEGORIES = Object.freeze(new Set([
   PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_ARTIFACT,
   PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_CREDENTIAL,
   PRODUCTION_ENVIRONMENT_CATEGORIES.WRONG_PROJECT_CREDENTIAL,
+]))
+
+const CHECKOUT_ERROR_CATEGORIES = Object.freeze(new Set([
+  PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_DIRTY,
+  PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_MISMATCH,
+  PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_UNVERIFIABLE,
 ]))
 
 export class ReverifyArgumentError extends Error {
@@ -632,11 +639,26 @@ export async function runReverifyMain(argv = process.argv.slice(2), dependencies
     validatedEnvironment.context === EXECUTION_CONTEXT.PRODUCTION
 
   try {
-    const writeAuthorizationArtifact = await readHashedArtifact(
-      parsed.writeAuthorizationFile, dependencies,
-    )
     const preflightAuthorizationArtifact = await readHashedArtifact(
       parsed.preflightAuthorizationFile, dependencies,
+    )
+    const preflightAuthorization = parseJsonArtifact(
+      preflightAuthorizationArtifact.contents,
+      'The preflight authorization file',
+    )
+    if (isProduction) {
+      const checkoutVerifier = dependencies.verifyCheckout ??
+        verifyReviewedCheckout
+      await checkoutVerifier({
+        expectedCommitSha: preflightAuthorization.commitSha,
+        runGit: dependencies.runGit,
+      })
+    }
+
+    // Do not open the credential or any write-stage artifact until the same
+    // clean reviewed checkout that produced preflight has been proven again.
+    const writeAuthorizationArtifact = await readHashedArtifact(
+      parsed.writeAuthorizationFile, dependencies,
     )
     const initializationExpectationsArtifact = await readHashedArtifact(
       parsed.initializationExpectationsFile, dependencies,
@@ -650,10 +672,6 @@ export async function runReverifyMain(argv = process.argv.slice(2), dependencies
 
     const writeAuthorization = parseJsonArtifact(
       writeAuthorizationArtifact.contents, 'The write authorization file',
-    )
-    const preflightAuthorization = parseJsonArtifact(
-      preflightAuthorizationArtifact.contents,
-      'The preflight authorization file',
     )
     const copyExpectations = parseJsonArtifact(
       copyExpectationsArtifact.contents, 'The copy expectations file',
@@ -908,6 +926,10 @@ export async function runReverifyMain(argv = process.argv.slice(2), dependencies
     }
     if (error instanceof ProductionEnvironmentError) {
       const redacted = redactEnvironmentError(error)
+      if (CHECKOUT_ERROR_CATEGORIES.has(error.category)) {
+        logger.error(`Reverify rejected the checkout [${redacted.category}].`)
+        return { exitCode: REVERIFY_EXIT_CODES.AUTHORIZATION_REJECTED, error }
+      }
       if (ARTIFACT_ERROR_CATEGORIES.has(error.category)) {
         logger.error(`Reverify rejected an artifact [${redacted.category}].`)
         return { exitCode: REVERIFY_EXIT_CODES.AUTHORIZATION_REJECTED, error }

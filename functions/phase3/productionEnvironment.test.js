@@ -1264,7 +1264,7 @@ describe('Phase 3 production environment guards', () => {
   })
 
   describe('scope boundary', () => {
-    it('exposes no discovery, manifest, projection, or write capability', async () => {
+    it('exposes no remote discovery, manifest, projection, or write capability', async () => {
       const module = await import('./productionEnvironment.js')
       const exported = Object.keys(module).sort()
       assert.deepEqual(exported, [
@@ -1294,6 +1294,7 @@ describe('Phase 3 production environment guards', () => {
         'validateExplicitCredential',
         'validateRehearsalWriteAuthorization',
         'validateWriteAuthorization',
+        'verifyReviewedCheckout',
       ], 'Commit 2/5 must expose guards only — no runner, manifest, or writer')
     })
 

@@ -228,6 +228,38 @@ describe('Phase 3 production inventory entrypoint', () => {
     ])
   })
 
+  it('the shared checkout verifier rejects a wrong commit and every dirty status',
+    async () => {
+      const responses = ({ head = COMMIT_SHA, status = '' } = {}) =>
+        async argumentsValue => {
+          if (argumentsValue.includes('--show-toplevel')) {
+            return '/Users/andrewmorgan/Documents/GitHub/Class-Banking-Software\n'
+          }
+          if (argumentsValue.includes('--verify')) return `${head}\n`
+          return status
+        }
+
+      await assert.rejects(
+        verifyReviewedCheckout({
+          expectedCommitSha: COMMIT_SHA,
+          runGit: responses({ head: 'a'.repeat(40) }),
+        }),
+        error => error.category === 'checkout-mismatch',
+      )
+      for (const status of [
+        ' M functions/phase3/preflight.js\n',
+        '?? untracked-review-input.txt\n',
+      ]) {
+        await assert.rejects(
+          verifyReviewedCheckout({
+            expectedCommitSha: COMMIT_SHA,
+            runGit: responses({ status }),
+          }),
+          error => error.category === 'checkout-dirty',
+        )
+      }
+    })
+
   it('rejects a mismatched or dirty checkout before opening either artifact', async () => {
     for (const category of ['checkout-mismatch', 'checkout-dirty']) {
       let fileReads = 0

@@ -814,3 +814,50 @@ test('module remains local and exposes no reader, writer, or manifest surface', 
   )
   assert.doesNotMatch(source, /node:fs|\.state|persistProductionManifest/)
 })
+
+test('reverify rejects a mismatched reviewed checkout before opening the credential or write artifacts',
+  async () => {
+    const { runReverifyMain, REVERIFY_EXIT_CODES } = await import('./reverify.js')
+    const {
+      PRODUCTION_ENVIRONMENT_CATEGORIES,
+      ProductionEnvironmentError,
+    } = await import('./productionEnvironment.js')
+    const commitSha = 'bdfd551b925dc24168b24bfc6d6dee7f73918c65'
+    const pathsRead = []
+    let handleFactoryCalls = 0
+
+    const { exitCode, error } = await runReverifyMain([
+      '--write-authorization-file', '/artifacts/write.json',
+      '--preflight-authorization-file', '/artifacts/preflight.json',
+      '--initialization-expectations-file', '/artifacts/init.json',
+      '--copy-expectations-file', '/artifacts/copy.json',
+      '--credential-file', '/artifacts/credential.json',
+    ], {
+      environment: { GCLOUD_PROJECT: 'morgan-bank' },
+      readFile: async filePath => {
+        pathsRead.push(filePath)
+        if (filePath === '/artifacts/preflight.json') {
+          return JSON.stringify({ commitSha })
+        }
+        throw new Error('no later artifact may be opened')
+      },
+      verifyCheckout: async ({ expectedCommitSha }) => {
+        assert.equal(expectedCommitSha, commitSha)
+        throw new ProductionEnvironmentError(
+          PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_MISMATCH,
+          'blocked test checkout',
+        )
+      },
+      createHandles: async () => {
+        handleFactoryCalls += 1
+        throw new Error('no handle may be constructed')
+      },
+      logger: { log() {}, error() {} },
+    })
+
+    assert.equal(exitCode, REVERIFY_EXIT_CODES.AUTHORIZATION_REJECTED)
+    assert.equal(error.category,
+      PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_MISMATCH)
+    assert.deepEqual(pathsRead, ['/artifacts/preflight.json'])
+    assert.equal(handleFactoryCalls, 0)
+  })

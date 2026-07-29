@@ -121,6 +121,12 @@ function isPlainObject(value) {
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
 const CANONICAL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+const COMMIT_SHA = /^[0-9a-f]{40}$/
+
+export const PRODUCTION_PREFLIGHT_AUTHORIZATION_KIND =
+  'phase3-production-read-preflight-authorization'
+export const PRODUCTION_PREFLIGHT_MAX_AUTHORIZATION_MS =
+  2 * 60 * 60 * 1000
 
 /** Hashes an artifact's raw bytes for authorization binding. */
 export function hashArtifactBytes(contents) {
@@ -142,7 +148,9 @@ export function hashArtifactBytes(contents) {
  * that the operator supplied a self-consistent, unexpired, checksum-bound record.
  */
 const AUTHORIZATION_FIELDS = Object.freeze([
+  'kind',
   'projectId',
+  'commitSha',
   'teacherUid',
   'releaseId',
   'changeId',
@@ -251,6 +259,21 @@ export function validateReadAuthorization({
     )
   }
 
+  if (authorization.kind !== PRODUCTION_PREFLIGHT_AUTHORIZATION_KIND) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+      'The authorization is not for a Phase 3 production read preflight.',
+      { field: 'kind' },
+    )
+  }
+  if (!COMMIT_SHA.test(authorization.commitSha)) {
+    abort(
+      PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
+      'The authorized commit is not a full lowercase Git SHA.',
+      { field: 'commitSha' },
+    )
+  }
+
   for (const field of [
     'teacherUid', 'releaseId', 'changeId', 'authorizationId',
     'credentialProvenance',
@@ -314,10 +337,11 @@ export function validateReadAuthorization({
 
   const notBefore = parseInstant(authorization.notBefore, 'notBefore')
   const notAfter = parseInstant(authorization.notAfter, 'notAfter')
-  if (!(notBefore < notAfter)) {
+  if (!(notBefore < notAfter) ||
+      notAfter - notBefore > PRODUCTION_PREFLIGHT_MAX_AUTHORIZATION_MS) {
     abort(
       PREFLIGHT_ABORT_CATEGORIES.MALFORMED_AUTHORIZATION,
-      'The read-authorization validity interval is empty or inverted.',
+      'The read-authorization validity interval is invalid or exceeds two hours.',
     )
   }
   if (!Number.isFinite(nowMillis)) {

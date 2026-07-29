@@ -12,6 +12,7 @@ import {
   redactEnvironmentError,
   validateExecutionEnvironment,
   validateExplicitCredential,
+  verifyReviewedCheckout,
 } from './productionEnvironment.js'
 import {
   PreflightAbortError,
@@ -100,6 +101,12 @@ export const ARTIFACT_ERROR_CATEGORIES = Object.freeze(new Set([
   PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_ARTIFACT,
   PRODUCTION_ENVIRONMENT_CATEGORIES.MALFORMED_CREDENTIAL,
   PRODUCTION_ENVIRONMENT_CATEGORIES.WRONG_PROJECT_CREDENTIAL,
+]))
+
+const CHECKOUT_ERROR_CATEGORIES = Object.freeze(new Set([
+  PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_DIRTY,
+  PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_MISMATCH,
+  PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_UNVERIFIABLE,
 ]))
 
 export class PreflightArgumentError extends Error {
@@ -257,6 +264,23 @@ export async function runPreflightMain(argv = process.argv.slice(2), dependencie
       parsed.authorizationFile,
       dependencies,
     )
+    const authorization = parseJsonArtifact(
+      authorizationArtifact.contents,
+      'The authorization file',
+    )
+
+    // The authorization names the reviewed source commit. Prove that exact
+    // checkout is running and clean before opening either the expectations or
+    // credential artifact, and before constructing any SDK/API handle.
+    if (validatedEnvironment.context === EXECUTION_CONTEXT.PRODUCTION) {
+      const checkoutVerifier = dependencies.verifyCheckout ??
+        verifyReviewedCheckout
+      await checkoutVerifier({
+        expectedCommitSha: authorization.commitSha,
+        runGit: dependencies.runGit,
+      })
+    }
+
     const expectationsArtifact = await readHashedArtifact(
       parsed.expectationsFile,
       dependencies,
@@ -267,30 +291,12 @@ export async function runPreflightMain(argv = process.argv.slice(2), dependencie
     // accept unauthenticated Admin access. Production may never omit it.
     let credentialSha256
     let credential = null
-    if (validatedEnvironment.context === EXECUTION_CONTEXT.PRODUCTION) {
-      const credentialArtifact = await readHashedArtifact(
-        parsed.credentialFile,
-        dependencies,
-      )
-      credentialSha256 = credentialArtifact.sha256
-      credential = validateExplicitCredential(
-        parseJsonArtifact(credentialArtifact.contents, 'The credential file'),
-        dependencies.credentialFactory ?? cert,
-      )
-    } else {
-      // Still hashed and bound, so the emulator path exercises the same binding
-      // logic rather than a weaker variant.
-      const credentialArtifact = await readHashedArtifact(
-        parsed.credentialFile,
-        dependencies,
-      )
-      credentialSha256 = credentialArtifact.sha256
-    }
-
-    const authorization = parseJsonArtifact(
-      authorizationArtifact.contents,
-      'The authorization file',
+    const credentialArtifact = await readHashedArtifact(
+      parsed.credentialFile,
+      dependencies,
     )
+    credentialSha256 = credentialArtifact.sha256
+
     const expectations = parseJsonArtifact(
       expectationsArtifact.contents,
       'The expectations file',
@@ -309,6 +315,16 @@ export async function runPreflightMain(argv = process.argv.slice(2), dependencie
       projectId: validatedEnvironment.projectId,
       nowMillis,
     })
+
+    // Only a fully bound authorization may parse private-key material or
+    // construct the explicit credential wrapper. The emulator path deliberately
+    // never parses or constructs a credential.
+    if (validatedEnvironment.context === EXECUTION_CONTEXT.PRODUCTION) {
+      credential = validateExplicitCredential(
+        parseJsonArtifact(credentialArtifact.contents, 'The credential file'),
+        dependencies.credentialFactory ?? cert,
+      )
+    }
 
     // Readers are constructed only now — after arguments, environment, and
     // artifacts (including authorization binding) have all been accepted.
@@ -362,6 +378,10 @@ export async function runPreflightMain(argv = process.argv.slice(2), dependencie
     }
     if (error instanceof ProductionEnvironmentError) {
       const redacted = redactEnvironmentError(error)
+      if (CHECKOUT_ERROR_CATEGORIES.has(error.category)) {
+        logger.error(`Preflight rejected the checkout [${redacted.category}].`)
+        return { exitCode: PREFLIGHT_EXIT_CODES.AUTHORIZATION_REJECTED, error }
+      }
       // The shared artifact/credential helpers live in productionEnvironment.js
       // and therefore raise its error type. An artifact or credential rejection
       // is an ARTIFACT failure, not an environment one, and must keep reporting
