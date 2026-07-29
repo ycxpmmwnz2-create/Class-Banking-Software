@@ -9,6 +9,10 @@ import {
   runInventoryMain,
   verifyReviewedCheckout,
 } from './inventory.js'
+import {
+  PREFLIGHT_ABORT_CATEGORIES,
+  PreflightAbortError,
+} from './productionPreflight.js'
 
 const COMMIT_SHA = 'c39b40c50abd5e31e56d68eb9d80ae3ba5761215'
 const NOW = Date.parse('2026-07-28T18:00:00.000Z')
@@ -311,5 +315,69 @@ describe('Phase 3 production inventory entrypoint', () => {
     assert.equal(output.includes(secret), false)
     assert.equal(output.includes('provider diagnostic'), false)
     assert.match(output, /unexpected/)
+  })
+
+  it('reports only allowlisted diagnostics for known control-plane aborts', async () => {
+    const testLogger = logger()
+    const secret = 'provider-secret-response-body-and-token'
+    const knownError = new PreflightAbortError(
+      PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE,
+      `provider diagnostic included ${secret}`,
+      {
+        service: 'hosting',
+        status: 403,
+        responseBody: secret,
+        token: secret,
+      },
+    )
+    let persistenceCalls = 0
+    const result = await runInventoryMain(ARGV, dependencies({
+      testLogger,
+      createReaders: async () => ({
+        readDeploymentInventory: async () => { throw knownError },
+        readActiveWriters: async () => ({ complete: true, writers: [] }),
+      }),
+      persistInventory: async () => {
+        persistenceCalls += 1
+        throw new Error('must not persist')
+      },
+    }))
+
+    assert.equal(result.exitCode, INVENTORY_EXIT_CODES.INVENTORY_ABORTED)
+    assert.equal(result.error, knownError)
+    assert.equal(persistenceCalls, 0)
+    assert.deepEqual(testLogger.messages, [
+      'Inventory aborted [inspection-unavailable] (service=hosting, status=403).',
+    ])
+    const output = testLogger.messages.join('\n')
+    assert.equal(output.includes(secret), false)
+    assert.equal(output.includes('responseBody'), false)
+    assert.equal(output.includes('token'), false)
+  })
+
+  it('redacts unrecognized categories, services, statuses, and messages', async () => {
+    const testLogger = logger()
+    const secret = 'untrusted-provider-diagnostic'
+    const unrecognizedError = new PreflightAbortError(
+      `secret-category-${secret}`,
+      `secret-message-${secret}`,
+      {
+        service: `secret-service-${secret}`,
+        status: 999,
+        arbitrary: secret,
+      },
+    )
+    const result = await runInventoryMain(ARGV, dependencies({
+      testLogger,
+      createReaders: async () => ({
+        readDeploymentInventory: async () => { throw unrecognizedError },
+        readActiveWriters: async () => ({ complete: true, writers: [] }),
+      }),
+    }))
+
+    assert.equal(result.exitCode, INVENTORY_EXIT_CODES.INVENTORY_ABORTED)
+    assert.equal(result.error, unrecognizedError)
+    assert.deepEqual(testLogger.messages, ['Inventory aborted [unknown].'])
+    assert.equal(testLogger.messages.join('\n').includes(secret), false)
   })
 })

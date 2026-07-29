@@ -20,7 +20,12 @@ import {
   captureProductionControlPlaneInventory,
   validateInventoryAuthorization,
 } from './productionInventory.js'
-import { createProductionControlPlaneReaders } from './productionPreflight.js'
+import {
+  PREFLIGHT_ABORT_CATEGORIES,
+  PRODUCTION_GOOGLE_API_ORIGINS,
+  PreflightAbortError,
+  createProductionControlPlaneReaders,
+} from './productionPreflight.js'
 
 /**
  * Separately authorized control-plane-only inventory entrypoint.
@@ -60,6 +65,12 @@ const GIT_ROUTING_VARIABLES = Object.freeze(new Set([
   'GIT_CONFIG_NOSYSTEM',
   'GIT_CONFIG_COUNT',
 ]))
+const SAFE_PREFLIGHT_ABORT_CATEGORIES = Object.freeze(
+  Object.values(PREFLIGHT_ABORT_CATEGORIES),
+)
+const SAFE_CONTROL_PLANE_SERVICES = Object.freeze(
+  Object.keys(PRODUCTION_GOOGLE_API_ORIGINS),
+)
 
 const VALUE_FLAGS = new Map([
   ['--commit-sha', 'commitSha'],
@@ -88,6 +99,25 @@ const FORBIDDEN_FLAGS = Object.freeze(new Set([
   '--deploy',
   '--bypass',
 ]))
+
+function formatPreflightAbortDiagnostic(error) {
+  const category = SAFE_PREFLIGHT_ABORT_CATEGORIES.includes(error.category)
+    ? error.category
+    : 'unknown'
+  const safeDetails = []
+  const service = error.details?.service
+  if (SAFE_CONTROL_PLANE_SERVICES.includes(service)) {
+    safeDetails.push(`service=${service}`)
+    if (Number.isInteger(error.details?.status) &&
+        error.details.status >= 100 && error.details.status <= 599) {
+      safeDetails.push(`status=${error.details.status}`)
+    }
+  }
+  const suffix = safeDetails.length > 0
+    ? ` (${safeDetails.join(', ')})`
+    : ''
+  return `Inventory aborted [${category}]${suffix}.`
+}
 
 const FORBIDDEN_SUBCOMMANDS = Object.freeze(new Set([
   'inventory', 'preflight', 'write', 'reverify', 'migrate', 'deploy',
@@ -392,6 +422,14 @@ export async function runInventoryMain(argv = process.argv.slice(2), dependencie
           : INVENTORY_EXIT_CODES.INVENTORY_ABORTED,
         error,
       }
+    }
+    if (error instanceof PreflightAbortError) {
+      // The control-plane readers deliberately use the shared fail-closed
+      // preflight error type. Its provider-facing message and arbitrary details
+      // remain hidden; only fixed categories, fixed service keys, and an HTTP
+      // status in the valid wire range are safe for operator diagnosis.
+      logger.error(formatPreflightAbortDiagnostic(error))
+      return { exitCode: INVENTORY_EXIT_CODES.INVENTORY_ABORTED, error }
     }
     // Unknown dependency errors can originate in credential or HTTP libraries.
     // Their messages are not part of this contract and may contain provider
