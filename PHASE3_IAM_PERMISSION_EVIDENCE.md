@@ -188,13 +188,40 @@ Tested:
 - The document-read boundary, empirically denied with 403.
 - The inventory's exact `filter` and `pageSize` parameters, which exposed the page-size defect.
 
+- The corrected `pageSize=0` requests, confirmed against production (below).
+
 Not tested:
-- The corrected `pageSize=0` request has not been issued against production. The correction is taken
-  directly from the API's own error text — "Only 0 is supported" — and `gcloud firestore indexes
-  fields list`, which omits `pageSize` entirely, returned 200 against this project. Confirmation will
-  come on the first inventory run.
 - The `inventory.js` entrypoint itself has not been run. That remains a gated operation requiring its
   own authorization under runbook step 3.
+
+## Page-size fix confirmed against production
+
+Both requests issued against `morgan-bank`, old parameter and corrected parameter side by side:
+
+| Request | `pageSize` | Result |
+|---|---|---|
+| `collectionGroups/-/indexes` | 1000 | 400 `Invalid page size. Only 0 is supported.` |
+| `collectionGroups/-/fields?filter=…` | 1000 | 400 `Invalid page size. Only 0 is supported.` |
+| `collectionGroups/-/indexes` | **0** | **200** |
+| `collectionGroups/-/fields?filter=…` | **0** | **200** |
+
+The defect and its fix are both reproduced against the live API. No open items remain in the
+control-plane read path.
+
+## Observed production index state
+
+Recorded for step 5, when the preflight expectations are authored from the reviewed inventory:
+
+- **Composite indexes: none.** `collectionGroups/-/indexes` returns `{}`. The inventory will record
+  `composite: 'none'`.
+- **Field overrides: one entry**, the database-wide default
+  `projects/morgan-bank/databases/(default)/collectionGroups/__default__/fields/*`, carrying the
+  three standard automatic index configurations (ascending, descending, array-contains), all `READY`.
+  The inventory will record a single `field:__default__/fields/*` key, **not** `fieldOverrides: 'none'`.
+
+That second point is worth care: the `-` wildcard returns the default field configuration even when no
+field has been explicitly overridden. Expectations authored on the assumption of an empty field set
+would abort the preflight.
 
 ## Remaining risk
 
