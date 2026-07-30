@@ -2026,7 +2026,31 @@ function normalizedFunctionRevision(functionResource) {
   // hand-selected subset: ingress, service account, secret bindings, scaling,
   // memory, timeout or a future field are all deployment state and must not drift
   // while a retained manifest still compares equal.
-  return canonicalDigest(functionResource)
+  //
+  // Cloud Functions v2 represents Eventarc criteria as a repeated EventFilter
+  // collection. Production verification observed the list endpoint returning
+  // the same three filters in different orders across consecutive reads, even
+  // though the sorted filter-set digest remained byte-identical. Array order is
+  // not deployment state for this one collection, so normalize it before the
+  // otherwise complete resource is hashed. Every filter and every field remains
+  // in the digest; no other array is reordered.
+  const eventFilters = functionResource.eventTrigger?.eventFilters
+  if (!Array.isArray(eventFilters)) return canonicalDigest(functionResource)
+
+  const sortedEventFilters = [...eventFilters].sort((left, right) => {
+    const canonicalLeft = serializeCanonicalState(left)
+    const canonicalRight = serializeCanonicalState(right)
+    if (canonicalLeft < canonicalRight) return -1
+    if (canonicalLeft > canonicalRight) return 1
+    return 0
+  })
+  return canonicalDigest({
+    ...functionResource,
+    eventTrigger: {
+      ...functionResource.eventTrigger,
+      eventFilters: sortedEventFilters,
+    },
+  })
 }
 
 async function readFunctionsInventory(client, projectId) {

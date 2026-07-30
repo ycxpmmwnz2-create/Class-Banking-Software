@@ -2192,6 +2192,125 @@ describe('Phase 3 production preflight', () => {
       }
     }
 
+    const EVENT_FILTERS = Object.freeze([
+      Object.freeze({ attribute: 'database', value: '(default)' }),
+      Object.freeze({ attribute: 'document', value: 'morganBank/{documentId}' }),
+      Object.freeze({ attribute: 'namespace', value: 'morgan-bank' }),
+    ])
+
+    function triggerFunctionResource(overrides = {}) {
+      return {
+        name: 'projects/morgan-bank/locations/us-central1/functions/trigger',
+        state: 'ACTIVE',
+        updateTime: '2026-07-26T18:00:00.000Z',
+        buildConfig: { runtime: 'nodejs20', entryPoint: 'trigger' },
+        serviceConfig: {
+          revision: 'trigger-00001',
+          environmentVariables: {
+            MULTI_TEACHER_V2_ENABLED: 'false',
+            MULTI_TEACHER_V2_RELEASE_ID: 'phase3-release-1',
+          },
+        },
+        eventTrigger: {
+          eventType: 'google.cloud.firestore.document.v1.written',
+          eventFilters: EVENT_FILTERS,
+        },
+        stateMessages: [
+          { severity: 'INFO', type: 'First', message: 'first' },
+          { severity: 'WARNING', type: 'Second', message: 'second' },
+        ],
+        ...overrides,
+      }
+    }
+
+    async function readFunctionRevision(functionResource) {
+      const readers = createProductionControlPlaneReaders({
+        projectId: 'morgan-bank',
+        credential,
+        fetchImpl: async url => {
+          const pathname = new globalThis.URL(url).pathname
+          if (pathname.endsWith('/releases/cloud.firestore')) {
+            return jsonResponse({
+              name: 'projects/morgan-bank/releases/cloud.firestore',
+              rulesetName: 'projects/morgan-bank/rulesets/ruleset-1',
+            })
+          }
+          if (pathname.endsWith('/rulesets/ruleset-1')) {
+            return jsonResponse({
+              name: 'projects/morgan-bank/rulesets/ruleset-1',
+              source: { files: [{ name: 'firestore.rules', content: 'rules' }] },
+            })
+          }
+          if (pathname.endsWith('/locations/-/functions')) {
+            return jsonResponse({ functions: [functionResource] })
+          }
+          if (pathname.endsWith('/projects/morgan-bank/sites')) {
+            return jsonResponse({ sites: [] })
+          }
+          if (pathname.endsWith('/indexes')) {
+            return jsonResponse({ indexes: [] })
+          }
+          if (pathname.endsWith('/fields')) {
+            return jsonResponse({ fields: [] })
+          }
+          throw new Error(`unhandled fake URL: ${pathname}`)
+        },
+      })
+      const deployment = await readers.readDeploymentInventory()
+      return deployment.functions['us-central1/functions/trigger']
+    }
+
+    it('normalizes EventTrigger filter permutations before hashing', async () => {
+      const originalOrder = EVENT_FILTERS.map(filter => ({ ...filter }))
+      const permutedOrder = [EVENT_FILTERS[2], EVENT_FILTERS[0], EVENT_FILTERS[1]]
+
+      const originalRevision = await readFunctionRevision(
+        triggerFunctionResource(),
+      )
+      const permutedRevision = await readFunctionRevision(
+        triggerFunctionResource({
+          eventTrigger: {
+            eventType: 'google.cloud.firestore.document.v1.written',
+            eventFilters: permutedOrder,
+          },
+        }),
+      )
+
+      assert.equal(permutedRevision, originalRevision)
+      assert.deepEqual(EVENT_FILTERS, originalOrder,
+        'normalization must not mutate the provider response')
+    })
+
+    it('keeps EventTrigger filter content in the function revision', async () => {
+      const originalRevision = await readFunctionRevision(
+        triggerFunctionResource(),
+      )
+      const changedRevision = await readFunctionRevision(
+        triggerFunctionResource({
+          eventTrigger: {
+            eventType: 'google.cloud.firestore.document.v1.written',
+            eventFilters: EVENT_FILTERS.map((filter, index) => index === 1
+              ? { ...filter, value: 'classrooms/{classroomId}' }
+              : filter),
+          },
+        }),
+      )
+
+      assert.notEqual(changedRevision, originalRevision)
+    })
+
+    it('does not normalize unrelated arrays in the function resource', async () => {
+      const resource = triggerFunctionResource()
+      const originalRevision = await readFunctionRevision(resource)
+      const reorderedRevision = await readFunctionRevision(
+        triggerFunctionResource({
+          stateMessages: [...resource.stateMessages].reverse(),
+        }),
+      )
+
+      assert.notEqual(reorderedRevision, originalRevision)
+    })
+
     it('locks control-plane requests to fixed GET-only origins and exhausts pages', async () => {
       const calls = []
       const pages = [
