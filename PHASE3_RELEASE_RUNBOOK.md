@@ -109,15 +109,29 @@ coincidentally equal the corrected value if its source response was already in
 canonical filter order.
 
 The normal N9/N10 sequence repeats exactly two observations at the final clean
-reviewed commit. Each observation is itself a production `inventory.js` run and
-requires its own separately approved, time-bounded, checksum-bound inventory
-authorization and explicit credential. There is no unauthorized preliminary
-diagnostic. If the required comparisons pass, final-read-set observation D is
-the fresh inventory that receives Claude and Grok review. Its deployment and
-active-writer values are the sole inventory source for those fields in the new
+reviewed commit with the one read-set transition placed between them. The
+**base-role observation** runs while the candidate identity still holds only
+the existing `phase3ControlPlaneInventoryReader` custom role and
+`roles/firebasehosting.viewer`, before the stable Firestore/Auth read layer is
+bound. Under its own separate IAM mutation authorization, the reviewed stable
+Firestore/Auth reader (Role A) is then bound and its exact definition and
+binding are verified. Role B remains unbound. The **final-read-set
+observation** runs only after that verification, with the base roles plus Role A
+forming the frozen read set.
+
+Each observation is itself a production `inventory.js` run and requires its
+own separately approved, time-bounded, checksum-bound inventory authorization
+and explicit credential. There is no unauthorized preliminary diagnostic. If
+the required comparison passes, the final-read-set observation is the fresh
+inventory that receives Claude and Grok review. Its deployment and active-
+writer values are the sole inventory source for those fields in the new
 preflight-expectations artifact; every other required field retains its own
 separately reviewed source. No third inventory run is required solely for
 expectations authoring.
+
+The two observations must agree exactly on all five deployment surfaces and
+active-writer classification; any mismatch aborts unless a separately
+authorized triangulation procedure proves its cause and receives review.
 
 The normal result is exactly four preserved files in
 `functions/phase3/.state/`: the superseded historical inventory and preflight
@@ -156,45 +170,52 @@ and Rules evidence does not close N11.
 1. Complete local implementation, required independent review, and every local
    gate above. Record the reviewed commit and artifact hashes.
 2. Make a separate human decision about a least-privilege explicit credential
-   and its IAM bindings. For each of the two N9/N10 control-plane-only inventory
-   observations, obtain its own time-bounded, checksum-bound inventory
-   authorization tied to `morgan-bank`, the reviewed commit,
-   change/authorization identifiers, credential provenance, and the exact
-   credential SHA-256. Each interval must be no more than two hours, and the
-   actual anchored checkout must have that exact HEAD with a clean worktree.
-   Credential creation or IAM changes are not part of an inventory operation
-   and require their own authority.
-3. Run only the separate `functions/phase3/inventory.js` entrypoint once per
-   authorized observation, each time with its three required inputs: full
-   reviewed commit SHA, that observation's inventory-authorization file, and
-   the explicit credential file. It may read only Rules, Functions, Hosting,
-   Firestore indexes, gate parameters, and active-writer names through fixed
-   Google API origins. Retain both immutable local `inventory-<sha256>.json`
-   artifacts. Each is not an expectation, preflight manifest, or write
-   authorization.
-4. Independently corroborate in Firebase or Google Cloud Console the named
+   and its IAM bindings. While the candidate still holds only the base
+   control-plane role and Hosting Viewer, obtain one time-bounded,
+   checksum-bound authorization for the base-role control-plane-only inventory
+   observation. The authorization is tied to `morgan-bank`, the reviewed
+   commit, change/authorization identifiers, credential provenance, and the
+   exact credential SHA-256. Its interval must be no more than two hours, and
+   the actual anchored checkout must have that exact HEAD with a clean worktree.
+3. Run only `functions/phase3/inventory.js` for the authorized base-role
+   observation, with its three required inputs: full reviewed commit SHA, that
+   observation's inventory-authorization file, and the explicit credential
+   file. Retain its immutable local `inventory-<sha256>.json` artifact.
+4. Only under a separate approved IAM mutation, bind the reviewed stable
+   Firestore/Auth reader (Role A). Verify its exact definition and binding,
+   verify that the base role and Hosting Viewer remain unchanged, keep Role B
+   unbound, and freeze that final read set. Credential creation or IAM changes
+   are not part of an inventory operation and require their own authority.
+5. Obtain a new, separate time-bounded, checksum-bound inventory authorization
+   for the final-read-set observation. Then run
+   `functions/phase3/inventory.js` with that authorization, the same final clean
+   reviewed commit, and the explicit credential. Retain its distinct immutable
+   `inventory-<sha256>.json` artifact. Each artifact is not an expectation,
+   preflight manifest, or write authorization.
+6. Independently corroborate in Firebase or Google Cloud Console the named
    deployment surfaces, counts, current release/version identities, gate
    parameters, index presence, and active writers. Console evidence is not
    claimed to reproduce canonical resource digests. Any disagreement or
-   unexplained surface aborts. Claude performs detailed read-only review of both
-   retained inventories, their comparison, final-read-set observation D, and
-   the corroboration record; Grok then performs the independent 5,000-foot
-   review. Andrew transports complete verdicts and is not expected to judge
-   technical correctness.
-5. Only after both reviews close, an N11 route is separately reviewed and
-   selected, final-read-set observation D remains current under that route, and
+   unexplained surface aborts; exact equality of all five deployment surfaces
+   and active-writer classification is required. Claude performs detailed
+   read-only review of both retained inventories, their comparison, the final-
+   read-set observation, and the corroboration record; Grok then performs the
+   independent 5,000-foot review. Andrew transports complete verdicts and is
+   not expected to judge technical correctness.
+7. Only after both reviews close, an N11 route is separately reviewed and
+   selected, the final-read-set observation remains current under that route, and
    Andrew approves the next boundary, author and
-   checksum the exact preflight expectations, using observation D for every
-   inventory-derived deployment and active-writer value and separately reviewed
-   sources for all other required fields. Retain that artifact as the fifth
-   normal state file. Obtain a new,
+   checksum the exact preflight expectations, using the final-read-set
+   observation for every inventory-derived deployment and active-writer value
+   and separately reviewed sources for all other required fields. Retain that
+   artifact as the fifth normal state file. Obtain a new,
    separate read-only preflight authorization bound to those exact bytes, the
    explicit credential, and the full lowercase reviewed commit SHA. The
    authorization must carry the exact production-preflight kind and a validity
    interval no longer than two hours. Do not use a failing preflight as
    discovery: its retained/error evidence intentionally does not disclose the
    opaque deployed values needed to author expectations.
-6. Run only the separate `functions/phase3/preflight.js` entrypoint with its
+8. Run only the separate `functions/phase3/preflight.js` entrypoint with its
    four required reviewed inputs: teacher UID, read-authorization file,
    expectations file, and explicit credential file. The entrypoint
    machine-verifies the authorization's exact reviewed commit and a clean
@@ -202,23 +223,23 @@ and Rules evidence does not close N11.
    manifest. Abort on any
    unexpected path, shape, count, ID, duplicate, UID mapping, credential/log,
    Auth compatibility, index, active writer, or recovery prerequisite.
-7. Obtain separate production write/deploy authorization. Enter and verify the
+9. Obtain separate production write/deploy authorization. Enter and verify the
    maintenance/write freeze. Capture the approved export/snapshot and final
    checksums; writes remain frozen through acceptance.
-8. Administratively create or validate the existing reciprocal
+10. Administratively create or validate the existing reciprocal
    teacher/classroom foundation. Do not create an invitation.
-9. Invoke `functions/phase3/write.js` with only the reviewed write
+11. Invoke `functions/phase3/write.js` with only the reviewed write
    authorization, preflight authorization, initialization expectations, copy
    expectations, and explicit credential artifacts. The first invocation must
    stop with `ACTION_REQUIRED/AWAITING_DEPLOYMENT` (exit 10) after reserving the
    login code and initializing the counter. Any other result blocks progress.
-10. Deploy and verify the exact bridge-rules hash. Then deploy the reviewed V2
+12. Deploy and verify the exact bridge-rules hash. Then deploy the reviewed V2
    Functions with the V2 gate off. Confirm the deployed surfaces and gate-off
    state independently before continuing.
-11. Invoke the same `write.js` entrypoint with the same immutable artifact set a
+13. Invoke the same `write.js` entrypoint with the same immutable artifact set a
    second time. Its journal—not an operator stage flag—selects copy. Require a
    completed copy result.
-12. Run the separate remote/local read-only `functions/phase3/reverify.js`
+14. Run the separate remote/local read-only `functions/phase3/reverify.js`
    entrypoint with the same five artifacts. Reconcile every path, count,
    checksum, UID mapping, source-immutability assertion, Auth compatibility
    fact, active-writer fact, and sensitive-path denial. Any mismatch aborts
@@ -234,15 +255,15 @@ the key or service account immediately after preflight. Credential privilege
 changes and final teardown are separate approval boundaries whose order must
 preserve those byte bindings.
 
-13. Deploy and verify the exact final-rules hash. Only after that, set the exact
+15. Deploy and verify the exact final-rules hash. Only after that, set the exact
    reviewed `MULTI_TEACHER_V2_RELEASE_ID` and enable the server gate. Then deploy
    the reviewed gate-on Hosting artifact.
-14. Perform existing-teacher and existing-student acceptance, including tenant
+16. Perform existing-teacher and existing-student acceptance, including tenant
     isolation and the V2 cleanup-control policy: Reset All Balances and Clear
     Login History remain available; Clear Transaction History and Reset
     Everything are absent and direct invocation is inert because deletion
     requires a separately reviewed server workflow.
-15. End the write freeze only after acceptance passes. Observe through the
+17. End the write freeze only after acceptance passes. Observe through the
     recorded rollback window and do not onboard a second real teacher.
 
 ## Abort criteria
@@ -256,7 +277,7 @@ resume writes when any of these occurs:
   correction, or any required N9/N10 observation was not repeated at the final
   clean reviewed commit, regardless of whether an old digest compares equal;
 - N11 remains open without a separately reviewed route selection, a selected
-  route makes final-read-set observation D stale, or any blocked preflight,
+  route makes the final-read-set observation stale, or any blocked preflight,
   expectations, authorization, deployment-preparation, or writer action is
   attempted early;
 - the deployed Rules checksum remains unexplained at the Rules/release boundary

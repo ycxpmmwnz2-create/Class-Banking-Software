@@ -344,16 +344,30 @@ either mismatch and abort or coincidentally equal the corrected digest when the
 older API response already returned the filters in canonical order. Equality
 cannot rehabilitate a superseded artifact.
 
-The normal N9/N10 sequence performs exactly two new observations, and each
-observation is itself a production `inventory.js` run. Each run requires its
-own separately approved, time-bounded, checksum-bound inventory authorization,
-the final clean reviewed commit, and the explicit credential; there is no
-unauthorized preliminary diagnostic. If the required comparisons pass,
-final-read-set observation D is the fresh inventory that proceeds through
-Claude and Grok review. Its deployment and active-writer values are the sole
-inventory source for those fields in the new preflight expectations; every
-other required expectations field retains its own separately reviewed source.
-No third inventory run exists solely for expectations authoring.
+The normal N9/N10 sequence performs exactly two new observations with the one
+read-set transition placed between them. The **base-role observation** runs
+while the candidate identity still holds only the existing
+`phase3ControlPlaneInventoryReader` custom role and
+`roles/firebasehosting.viewer`, before the stable Firestore/Auth read layer is
+bound. Under its own separate IAM mutation authorization, the reviewed stable
+Firestore/Auth reader (Role A) is then bound and its exact definition and
+binding are verified. Role B remains unbound. The **final-read-set
+observation** runs only after that verification, with the base roles plus Role A
+forming the frozen read set.
+
+Each observation is itself a production `inventory.js` run. Each run requires
+its own separately approved, time-bounded, checksum-bound inventory
+authorization, the final clean reviewed commit, and the explicit credential;
+there is no unauthorized preliminary diagnostic. If the required comparison
+passes, the final-read-set observation is the fresh inventory that proceeds
+through Claude and Grok review. Its deployment and active-writer values are the
+sole inventory source for those fields in the new preflight expectations;
+every other required expectations field retains its own separately reviewed
+source. No third inventory run exists solely for expectations authoring.
+
+The two observations must agree exactly on all five deployment surfaces and
+active-writer classification; any mismatch aborts unless a separately
+authorized triangulation procedure proves its cause and receives review.
 
 The normal retained-state result is exactly four preserved files: the
 superseded historical inventory, the superseded historical preflight
@@ -456,44 +470,50 @@ can invalidate retained Phase 3 manifest checksums.
 1. Complete and independently review local Phase 3 implementation.
 2. Run credential-isolated unit, rules, migration, browser, release, and
    rollback rehearsals.
-3. Make the separate least-privilege credential/IAM decision.
-   Obtain separate, checksum-bound authorization for each of the two N9/N10
-   control-plane-only production observations.
-4. Run only `functions/phase3/inventory.js`, once per approved observation, and
-   retain both immutable, non-authorizing artifacts.
-5. Independently corroborate and compare the deployment surface names, counts,
+3. Make the separate least-privilege credential/IAM decision. While the
+   candidate still holds only the base control-plane role and Hosting Viewer:
+   Obtain separate, checksum-bound authorization for the base-role observation.
+4. Run only `functions/phase3/inventory.js` for the approved base-role
+   observation and retain its immutable, non-authorizing artifact.
+5. Under a separate approved IAM mutation, bind only the reviewed stable
+   Firestore/Auth reader (Role A), verify its exact definition and binding, and
+   keep Role B unbound. Then obtain a separate checksum-bound inventory
+   authorization, run `functions/phase3/inventory.js` for the final-read-set
+   observation, retain its immutable artifact, and freeze the verified read set.
+6. Independently corroborate and compare the deployment surface names, counts,
    current releases/versions, parameters, indexes, and active writers. Complete
    Claude detailed review and Grok independent review of both inventories, the
-   comparison, and final-read-set observation D. Abort on any disagreement or
-   unexplained surface.
-6. Only after an N11 route is separately reviewed and selected may expectations
+   comparison, and the final-read-set observation. Abort on any disagreement or
+   unexplained surface; exact equality of all five deployment surfaces and
+   active-writer classification is required.
+7. Only after an N11 route is separately reviewed and selected may expectations
    be finalized. Author and checksum the exact preflight expectations, using
-   the still-current reviewed final-read-set observation D for every inventory-
+   the still-current reviewed final-read-set observation for every inventory-
    derived deployment and active-writer value. Then obtain separate
    authorization for the full read-only production preflight.
-7. Record deployed rules, Functions, Hosting, parameters, foundation, paths,
+8. Record deployed rules, Functions, Hosting, parameters, foundation, paths,
    counts, shapes, IDs, credentials/logs, Auth compatibility, indexes, and
    active writers.
-8. Abort on any unexplained state, malformed ID, duplicate, divergence,
+9. Abort on any unexplained state, malformed ID, duplicate, divergence,
    missing recovery prerequisite, or unreviewed production assumption.
-9. Obtain separate production write/deploy authorization.
-10. Enter maintenance/write freeze and capture the production export/snapshot
+10. Obtain separate production write/deploy authorization.
+11. Enter maintenance/write freeze and capture the production export/snapshot
    plus final immutable checksums.
-11. Create or validate the existing teacher/classroom foundation
+12. Create or validate the existing teacher/classroom foundation
    administratively. No invitation is created.
-12. Initialize/reserve classroom login code and student counter under the
+13. Initialize/reserve classroom login code and student counter under the
    reviewed manifest.
-13. Deploy and verify bridge rules.
-14. Deploy V2 Functions with the V2 gate off.
-15. Run classroom migration and scoped credential/log copy.
-16. Reconcile all paths, counts, checksums, UID mappings, source immutability,
+14. Deploy and verify bridge rules.
+15. Deploy V2 Functions with the V2 gate off.
+16. Run classroom migration and scoped credential/log copy.
+17. Reconcile all paths, counts, checksums, UID mappings, source immutability,
     and sensitive-path denials. Any mismatch aborts before activation.
-17. Deploy final ownership rules.
-18. Set the reviewed release identifier and enable the server gate.
-19. Deploy the gate-on Hosting artifact.
-20. Run existing-teacher and existing-student acceptance.
-21. End write freeze only after acceptance succeeds.
-22. Observe through the rollback window; do not onboard a second real teacher.
+18. Deploy final ownership rules.
+19. Set the reviewed release identifier and enable the server gate.
+20. Deploy the gate-on Hosting artifact.
+21. Run existing-teacher and existing-student acceptance.
+22. End write freeze only after acceptance succeeds.
+23. Observe through the rollback window; do not onboard a second real teacher.
 
 Rollback after scoped credentials exist:
 
