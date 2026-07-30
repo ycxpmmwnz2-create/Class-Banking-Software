@@ -1264,7 +1264,7 @@ describe('Phase 3 production environment guards', () => {
   })
 
   describe('scope boundary', () => {
-    it('exposes no remote discovery, manifest, projection, or write capability', async () => {
+    it('exposes no discovery, manifest, projection, or write capability', async () => {
       const module = await import('./productionEnvironment.js')
       const exported = Object.keys(module).sort()
       assert.deepEqual(exported, [
@@ -1294,7 +1294,6 @@ describe('Phase 3 production environment guards', () => {
         'validateExplicitCredential',
         'validateRehearsalWriteAuthorization',
         'validateWriteAuthorization',
-        'verifyReviewedCheckout',
       ], 'Commit 2/5 must expose guards only — no runner, manifest, or writer')
     })
 
@@ -1317,6 +1316,59 @@ describe('Phase 3 production environment guards', () => {
         assert.ok(!source.includes(forbidden), `must not contain ${forbidden}`)
       }
     })
+
+    /**
+     * `functions/index.js` imports this module for the V2 gate, so it ships
+     * inside the deployed Functions artifact. Subprocess capability therefore
+     * may not live here: the reviewed-checkout proof is operator-only and lives
+     * in `reviewedCheckout.js`, which nothing deployed imports. Both halves are
+     * pinned — the absent spawn import AND the absent edge to the operator
+     * module — because either one alone would let the boundary drift back.
+     */
+    it('the deployed guard module spawns no process and cannot reach the operator checkout',
+      async () => {
+        const source = await import('node:fs/promises')
+          .then(fs => fs.readFile(
+            new URL('./productionEnvironment.js', import.meta.url), 'utf8',
+          ))
+        // Quoted module specifiers, so a static import, a dynamic import, and a
+        // require all trip the assertion while ordinary prose does not.
+        for (const specifier of ['node:child_process', './reviewedCheckout.js']) {
+          for (const quoted of [`'${specifier}'`, `"${specifier}"`]) {
+            assert.ok(
+              !source.includes(quoted),
+              `productionEnvironment.js ships in the deployed Functions ` +
+                `artifact and must not import ${specifier}`,
+            )
+          }
+        }
+        // And no subprocess or checkout-proof identifier, so the capability
+        // cannot reappear through a re-export or an aliased import.
+        for (const forbidden of [
+          'execFile', 'execSync', 'spawnSync', 'spawn(',
+          'verifyReviewedCheckout',
+        ]) {
+          assert.ok(
+            !source.includes(forbidden),
+            `productionEnvironment.js must not reference ${forbidden}`,
+          )
+        }
+
+        // The three shared categories stay here so every entrypoint keeps one
+        // error type and one redaction path for a rejected checkout.
+        const { PRODUCTION_ENVIRONMENT_CATEGORIES: categories } = await import(
+          './productionEnvironment.js'
+        )
+        assert.deepEqual({
+          dirty: categories.CHECKOUT_DIRTY,
+          mismatch: categories.CHECKOUT_MISMATCH,
+          unverifiable: categories.CHECKOUT_UNVERIFIABLE,
+        }, {
+          dirty: 'checkout-dirty',
+          mismatch: 'checkout-mismatch',
+          unverifiable: 'checkout-unverifiable',
+        })
+      })
   })
 
   describe('rehearsal write authorization (correction H)', () => {

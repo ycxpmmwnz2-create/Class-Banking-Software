@@ -1,11 +1,8 @@
 import { Buffer } from 'node:buffer'
-import { execFile as nodeExecFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFile as defaultReadFile } from 'node:fs/promises'
-import path from 'node:path'
 import process from 'node:process'
-import { promisify, TextDecoder } from 'node:util'
-import { fileURLToPath, URL } from 'node:url'
+import { TextDecoder } from 'node:util'
 
 /**
  * Phase 3 Commit 2 — production environment, project, and authorization guards.
@@ -98,34 +95,6 @@ const AUTHORIZATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 /** A lowercase SHA-256 hex digest. Uppercase is rejected, not normalized. */
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/
 
-/** A full lowercase Git commit SHA. */
-const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/
-
-/**
- * Git inspection is anchored to this repository and stripped of caller routing.
- * These checks are local and read-only; they never open a credential or remote
- * client.
- */
-const REPOSITORY_ROOT = path.resolve(
-  fileURLToPath(new URL('../../', import.meta.url)),
-)
-const execFile = promisify(nodeExecFile)
-const GIT_ROUTING_VARIABLES = Object.freeze(new Set([
-  'GIT_DIR',
-  'GIT_WORK_TREE',
-  'GIT_COMMON_DIR',
-  'GIT_INDEX_FILE',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_CEILING_DIRECTORIES',
-  'GIT_DISCOVERY_ACROSS_FILESYSTEM',
-  'GIT_CONFIG',
-  'GIT_CONFIG_SYSTEM',
-  'GIT_CONFIG_GLOBAL',
-  'GIT_CONFIG_NOSYSTEM',
-  'GIT_CONFIG_COUNT',
-]))
-
 export class ProductionEnvironmentError extends Error {
   constructor(category, message, details = {}) {
     super(message)
@@ -141,103 +110,15 @@ function fail(category, message, details) {
   throw new ProductionEnvironmentError(category, message, details)
 }
 
-async function defaultRunGit(argumentsValue) {
-  const gitEnvironment = {
-    ...Object.fromEntries(
-      Object.entries(process.env).filter(([name]) =>
-        !GIT_ROUTING_VARIABLES.has(name) &&
-        !name.startsWith('GIT_CONFIG_KEY_') &&
-        !name.startsWith('GIT_CONFIG_VALUE_')),
-    ),
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: '/dev/null',
-    GIT_OPTIONAL_LOCKS: '0',
-  }
-  const safeArguments = [
-    '-c', 'core.fsmonitor=false',
-    '-c', 'core.hooksPath=/dev/null',
-    '-c', 'core.untrackedCache=false',
-    ...argumentsValue,
-  ]
-  const { stdout } = await execFile('git', safeArguments, {
-    cwd: REPOSITORY_ROOT,
-    env: gitEnvironment,
-    encoding: 'utf8',
-    timeout: 10_000,
-    windowsHide: true,
-  })
-  return stdout
-}
-
-function oneCanonicalGitLine(value, label) {
-  if (typeof value !== 'string' || !value.endsWith('\n') ||
-      value.slice(0, -1).includes('\n') || value.includes('\r')) {
-    fail(
-      PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_UNVERIFIABLE,
-      `Git returned a non-canonical ${label}.`,
-    )
-  }
-  return value.slice(0, -1)
-}
-
-/**
- * Proves an operational entrypoint is running from the exact clean reviewed
- * checkout named by its authorization artifact.
- *
- * The caller invokes this before opening a credential or constructing any SDK
- * or API handle. `runGit` is injectable so every entrypoint can prove ordering
- * without consulting the real worktree in emulator tests.
+/*
+ * The reviewed-checkout proof deliberately does NOT live here. `functions/index.js`
+ * imports this module for the V2 gate, so it ships inside the deployed Functions
+ * artifact and must stay free of subprocess capability. The three CHECKOUT_*
+ * categories above remain here so every entrypoint keeps one shared error type
+ * and one redaction path for a rejected checkout; the local Git inspection that
+ * raises them lives in the operator-only sibling `reviewedCheckout.js`, which
+ * only the four operator entrypoints import and nothing deployed can reach.
  */
-export async function verifyReviewedCheckout({
-  expectedCommitSha,
-  runGit = defaultRunGit,
-}) {
-  if (typeof expectedCommitSha !== 'string' ||
-      !COMMIT_SHA_PATTERN.test(expectedCommitSha) ||
-      typeof runGit !== 'function') {
-    fail(
-      PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_UNVERIFIABLE,
-      'The reviewed checkout cannot be verified.',
-    )
-  }
-  let topLevelOutput
-  let headOutput
-  let statusOutput
-  try {
-    [topLevelOutput, headOutput, statusOutput] = await Promise.all([
-      runGit(['rev-parse', '--show-toplevel']),
-      runGit(['rev-parse', '--verify', 'HEAD']),
-      runGit(['status', '--porcelain=v1', '--untracked-files=all']),
-    ])
-  } catch (error) {
-    if (error instanceof ProductionEnvironmentError) throw error
-    fail(
-      PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_UNVERIFIABLE,
-      'The reviewed checkout cannot be verified.',
-    )
-  }
-  const topLevel = oneCanonicalGitLine(topLevelOutput, 'repository root')
-  const head = oneCanonicalGitLine(headOutput, 'commit identity')
-  if (topLevel !== REPOSITORY_ROOT || !COMMIT_SHA_PATTERN.test(head)) {
-    fail(
-      PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_UNVERIFIABLE,
-      'The entrypoint is not running from its expected repository.',
-    )
-  }
-  if (head !== expectedCommitSha) {
-    fail(
-      PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_MISMATCH,
-      'The running checkout is not the reviewed commit.',
-    )
-  }
-  if (statusOutput !== '') {
-    fail(
-      PRODUCTION_ENVIRONMENT_CATEGORIES.CHECKOUT_DIRTY,
-      'The reviewed checkout contains local or untracked changes.',
-    )
-  }
-  return Object.freeze({ repositoryRoot: topLevel, commitSha: head })
-}
 
 /**
  * Validates a reviewed release identifier supplied by a caller.

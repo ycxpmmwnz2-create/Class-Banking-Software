@@ -207,57 +207,16 @@ describe('Phase 3 production inventory entrypoint', () => {
     ])
   })
 
-  it('verifies exact HEAD and a clean worktree using local read-only Git calls', async () => {
-    const calls = []
-    const result = await verifyReviewedCheckout({
-      expectedCommitSha: COMMIT_SHA,
-      runGit: async argumentsValue => {
-        calls.push(argumentsValue)
-        if (argumentsValue.includes('--show-toplevel')) {
-          return '/Users/andrewmorgan/Documents/GitHub/Class-Banking-Software\n'
-        }
-        if (argumentsValue.includes('--verify')) return `${COMMIT_SHA}\n`
-        return ''
-      },
-    })
-    assert.equal(result.commitSha, COMMIT_SHA)
-    assert.deepEqual(calls, [
-      ['rev-parse', '--show-toplevel'],
-      ['rev-parse', '--verify', 'HEAD'],
-      ['status', '--porcelain=v1', '--untracked-files=all'],
-    ])
-  })
-
-  it('the shared checkout verifier rejects a wrong commit and every dirty status',
+  // The verifier's own behavior — including its real-Git execution — is covered
+  // by reviewedCheckout.test.js. Inventory keeps the re-export so an operator
+  // command built against `inventory.js` still resolves the same function, and
+  // pins that it is the SAME function rather than a divergent copy.
+  it('re-exports the operator-only checkout verifier without forking it',
     async () => {
-      const responses = ({ head = COMMIT_SHA, status = '' } = {}) =>
-        async argumentsValue => {
-          if (argumentsValue.includes('--show-toplevel')) {
-            return '/Users/andrewmorgan/Documents/GitHub/Class-Banking-Software\n'
-          }
-          if (argumentsValue.includes('--verify')) return `${head}\n`
-          return status
-        }
-
-      await assert.rejects(
-        verifyReviewedCheckout({
-          expectedCommitSha: COMMIT_SHA,
-          runGit: responses({ head: 'a'.repeat(40) }),
-        }),
-        error => error.category === 'checkout-mismatch',
+      const { verifyReviewedCheckout: shared } = await import(
+        './reviewedCheckout.js'
       )
-      for (const status of [
-        ' M functions/phase3/preflight.js\n',
-        '?? untracked-review-input.txt\n',
-      ]) {
-        await assert.rejects(
-          verifyReviewedCheckout({
-            expectedCommitSha: COMMIT_SHA,
-            runGit: responses({ status }),
-          }),
-          error => error.category === 'checkout-dirty',
-        )
-      }
+      assert.equal(verifyReviewedCheckout, shared)
     })
 
   it('rejects a mismatched or dirty checkout before opening either artifact', async () => {

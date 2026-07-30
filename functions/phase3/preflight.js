@@ -12,7 +12,6 @@ import {
   redactEnvironmentError,
   validateExecutionEnvironment,
   validateExplicitCredential,
-  verifyReviewedCheckout,
 } from './productionEnvironment.js'
 import {
   PreflightAbortError,
@@ -24,6 +23,7 @@ import {
   ProductionManifestError,
   persistProductionManifest,
 } from './productionManifest.js'
+import { verifyReviewedCheckout } from './reviewedCheckout.js'
 
 /**
  * Phase 3 Commit 3 — the preflight entrypoint.
@@ -286,9 +286,10 @@ export async function runPreflightMain(argv = process.argv.slice(2), dependencie
       dependencies,
     )
 
-    // The emulator branch may omit a credential file: the hardened command
-    // supplies the exact demo project and loopback hosts, and the emulators
-    // accept unauthenticated Admin access. Production may never omit it.
+    // `--credential-file` is required in BOTH contexts and its raw bytes are
+    // hashed here either way. Still hashed and bound, so the emulator path
+    // exercises the same binding logic rather than a weaker variant. Only the
+    // production branch below parses those bytes or constructs a credential.
     let credentialSha256
     let credential = null
     const credentialArtifact = await readHashedArtifact(

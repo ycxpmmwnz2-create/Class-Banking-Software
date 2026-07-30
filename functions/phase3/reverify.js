@@ -19,7 +19,6 @@ import {
   validateExplicitCredential,
   validateRehearsalWriteAuthorization,
   validateWriteAuthorization,
-  verifyReviewedCheckout,
 } from './productionEnvironment.js'
 import {
   PreflightAbortError,
@@ -45,6 +44,7 @@ import {
   ProductionReconciliationError,
   readAndReconcileWriteRun,
 } from './productionReconciliation.js'
+import { verifyReviewedCheckout } from './reviewedCheckout.js'
 
 /**
  * Phase 3 Commit 5 — the read-only re-verification entrypoint.

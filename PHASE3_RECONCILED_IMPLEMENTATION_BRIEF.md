@@ -337,6 +337,21 @@ authorization and same-SHA credential must be retained outside Git through both
 writer invocations and re-verification; credential teardown cannot occur
 immediately after preflight.
 
+That checkout proof is operator-only. It lives in `reviewedCheckout.js`, the one
+Phase 3 module permitted to run a local read-only Git command, and its only
+importers are the four operator entrypoints — `inventory.js`, `preflight.js`,
+`write.js`, and `reverify.js` — which run from an operator workstation. It is
+deliberately NOT part of `productionEnvironment.js`: `functions/index.js` imports
+that module for the V2 gate, so it ships inside the deployed Functions artifact
+and must carry no subprocess capability. The shared `ProductionEnvironmentError`
+and the three `checkout-*` categories stay in the guard module so every
+entrypoint keeps one error type and one redacted failure path. The reviewed
+boundary is therefore a proven graph property: no module reachable from
+`functions/index.js` may import `reviewedCheckout.js` or `node:child_process`,
+and `reviewedCheckout.test.js` exercises the real Git execution path — anchored
+root, independently observed HEAD, dirty worktree, fabricated commit, and
+routing-variable scrubbing — rather than only an injected substitute.
+
 There is no shared write subcommand, `--force`, production override,
 manifest-path override, state-directory override, or implicit credential
 discovery. Write mode requires the retained successful preflight manifest,
@@ -463,6 +478,8 @@ New files:
 functions/phase3/
   productionEnvironment.js
   productionEnvironment.test.js
+  reviewedCheckout.js
+  reviewedCheckout.test.js
   productionPreflight.js
   productionPreflight.test.js
   productionProjection.js

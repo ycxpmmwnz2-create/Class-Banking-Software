@@ -11,7 +11,6 @@ import {
   redactEnvironmentError,
   validateExecutionEnvironment,
   validateExplicitCredential,
-  verifyReviewedCheckout,
 } from './productionEnvironment.js'
 import {
   ProductionInventoryError,
@@ -24,8 +23,9 @@ import {
   PreflightAbortError,
   createProductionControlPlaneReaders,
 } from './productionPreflight.js'
+import { verifyReviewedCheckout } from './reviewedCheckout.js'
 
-export { verifyReviewedCheckout } from './productionEnvironment.js'
+export { verifyReviewedCheckout } from './reviewedCheckout.js'
 
 /**
  * Separately authorized control-plane-only inventory entrypoint.

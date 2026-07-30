@@ -90,6 +90,68 @@ changed.
 | `npm run test:phase3:rollback-rehearsal` | 3/3 |
 | root and Functions ESLint | passed |
 
+### 2026-07-29 operator/deployed checkout-module separation
+
+A follow-up correction to the entry above. The reviewed-checkout proof was
+initially placed in `functions/phase3/productionEnvironment.js`, but
+`functions/index.js` imports that module for the V2 gate, so it ships inside the
+deployed Cloud Functions artifact — `functions/package.json` sets
+`main: index.js` and firebase.json's functions `ignore` list does not exclude
+`phase3/`. That put `node:child_process` and a `git`-spawning helper in the
+module graph loaded on every function cold start. Two facts made this worth
+correcting rather than accepting: before the correction, no non-test file
+reachable from `index.js` imported `node:child_process` at all, and no gate
+would have caught the drift.
+
+The proof now lives in `functions/phase3/reviewedCheckout.js`, imported only by
+the four operator entrypoints — `inventory.js`, `preflight.js`, `write.js`, and
+`reverify.js` — which run from an operator workstation. `ProductionEnvironmentError`
+and the three `checkout-*` categories stay in the guard module, so every
+entrypoint keeps one shared error type and one redacted failure path; no
+authorization, ordering, binding, or exit-code behavior changed. The separation
+is enforced as a graph property, not a naming convention:
+`release-order.contract.test.js` walks the real import graph from
+`functions/index.js` and requires that it reach neither `reviewedCheckout.js`
+nor `node:child_process`, while also requiring that all four operator
+entrypoints do import the proof — so the boundary cannot be satisfied by
+deleting the proof outright.
+
+`reviewedCheckout.test.js` keeps the injected wrong-commit and dirty-worktree
+coverage and adds the real Git execution path, which previously had none: every
+earlier checkout test injected `runGit` or `verifyCheckout`, so the code that
+actually runs during a release was proven only by mocks written to agree with
+it. The new suite observes HEAD, the repository root, and the worktree status
+with independent test-side Git calls, then requires the verifier to resolve to
+that exact root and HEAD on a clean tracked worktree, or to reject with exactly
+`checkout-dirty` when the worktree is dirty — never `checkout-unverifiable` or
+`checkout-mismatch`. It also requires `checkout-mismatch` for a fabricated SHA
+against real Git, and installs hostile values for every routing variable the
+module claims to scrub (plus the indexed `GIT_CONFIG_KEY_0`/`VALUE_0` pair it
+filters by prefix), restoring the environment in `finally`, to prove an
+inherited environment cannot redirect the proof at another checkout.
+
+Both new boundary assertions were negative-controlled: leaving `GIT_DIR`
+unscrubbed makes the scrubbing test fail with `checkout-unverifiable`, and
+adding either a `node:child_process` or a `reviewedCheckout.js` import to
+`productionEnvironment.js` fails the deployed-graph and guard-module boundary
+tests. Both probes were reverted.
+
+Verified locally with the complete gate below. Emulator and source/unit evidence
+only; no production service, credential, IAM binding, deployment, or remote
+repository state was accessed or changed, and the emulator gates used their
+existing credential-isolated `demo-` project wrappers unmodified.
+
+| Gate | Result |
+| --- | --- |
+| `npm run test:phase3:contracts` | 68/68 (was 67; +1 deployed-graph boundary) |
+| `npm run test:phase3:unit` | 478/478 (was 469; +9 checkout suite, +1 re-export pin, +1 guard boundary, −2 moved) |
+| `npm run test:phase3:migration` | 48 passed + 1 expected non-release skip |
+| `npm run test:phase3:rules` | 15/15 bridge + 17/17 final + 7/7 rollback |
+| `npm run test:phase3:release-rehearsal` | 49/49 runner + 24/24 browser |
+| `npm run test:phase3:rollback-rehearsal` | 3/3 |
+| root and Functions ESLint | passed |
+| `git diff --check` | clean |
+
 Commit 5 adds the bounded production writer, its append-only durable journal,
 and the read-only re-verifier. The writer owns exactly two remote mutations: one
 atomic initialization transaction that reserves the classroom login code and

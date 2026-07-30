@@ -371,6 +371,10 @@ describe('Phase 3 release-order source contract', () => {
       'inventory.js', 'inventory.test.js',
       'preflight.js', 'write.js', 'reverify.js',
       'studentLifecycle.js', 'studentLifecycle.test.js',
+      // The production-read safety correction: the operator-only reviewed
+      // checkout proof, split out of productionEnvironment.js so the deployed
+      // Functions graph carries no subprocess capability.
+      'reviewedCheckout.js', 'reviewedCheckout.test.js',
     ])
 
     /**
@@ -432,6 +436,7 @@ describe('Phase 3 release-order source contract', () => {
       'studentLifecycle.js', 'studentLifecycle.test.js',
       'productionInventory.js', 'productionInventory.test.js',
       'inventory.js', 'inventory.test.js',
+      'reviewedCheckout.js', 'reviewedCheckout.test.js',
     ]) {
       assert.ok(
         actual.includes(name),
@@ -483,6 +488,138 @@ describe('Phase 3 release-order source contract', () => {
       assert.ok(
         actual.includes(implementation),
         `${name} must not exist without ${implementation}`,
+      )
+    }
+  })
+
+  /**
+   * The deployed Functions artifact and the operator tooling share this
+   * directory, so "operator-only" has to be a proven graph property rather than
+   * a naming convention. `functions/package.json` sets `main: index.js` and
+   * firebase.json's functions `ignore` list does not exclude `phase3/`, so every
+   * module transitively imported by `index.js` is loaded in a Cloud Functions
+   * runtime on every cold start.
+   *
+   * This walks that real graph from `index.js` and requires that it never
+   * reaches the reviewed-checkout module or any subprocess capability. The
+   * checkout proof is an operator-workstation concern; nothing that runs inside
+   * a deployed function may be able to spawn a process.
+   */
+  it('boundary: the deployed Functions graph reaches no subprocess or checkout module', () => {
+    const functionsRoot = new URL('../../functions/', import.meta.url)
+    const OPERATOR_ONLY = 'phase3/reviewedCheckout.js'
+
+    const resolveSpecifier = (fromEntry, specifier) => {
+      const segments = fromEntry.split('/').slice(0, -1)
+      for (const segment of specifier.split('/')) {
+        if (segment === '.' || segment === '') continue
+        if (segment === '..') segments.pop()
+        else segments.push(segment)
+      }
+      return segments.join('/')
+    }
+
+    /**
+     * Extracts every relative module specifier an ES module actually imports.
+     *
+     * Both quote styles are recognized, and the closing quote must match the
+     * opening one. The repository's ESLint configuration sets no `quotes` rule,
+     * so a double-quoted edge lints clean; a single-quote-only pattern here
+     * would let `import "./phase3/reviewedCheckout.js"` reach the deployed graph
+     * while this contract still passed. A specifier never spans a line, so
+     * newlines are excluded from both bodies — that is what keeps an unclosed
+     * quote from swallowing the following lines and inventing a match.
+     */
+    const extractLocalSpecifiers = source =>
+      [...source.matchAll(
+        /(?:from|import)\s*\(?\s*(?:'(\.\.?\/[^'\n]+)'|"(\.\.?\/[^"\n]+)")/g,
+      )].map(([, single, double]) => single ?? double)
+
+    // Negative control for the extractor the walk below depends on. If it ever
+    // regresses to one quote style, or starts accepting a mismatched pair, the
+    // graph assertions would silently pass on an under-collected graph.
+    const quotedImportFixture = [
+      "import './a-side-effect.js'",
+      'import "./b-side-effect.js"',
+      "import value from './c-from.js'",
+      'import other from "./d-from.js"',
+      "export { thing } from './e-reexport.js'",
+      'export { alias } from "./f-reexport.js"',
+      "const g = await import('./g-dynamic.js')",
+      'const h = await import("./h-dynamic.js")',
+      // A quote that does not close with its own kind is not a specifier.
+      "import './i-mismatched.js\"",
+      'import "./j-mismatched.js\'',
+    ].join('\n')
+
+    assert.deepEqual(
+      extractLocalSpecifiers(quotedImportFixture),
+      [
+        './a-side-effect.js', './b-side-effect.js',
+        './c-from.js', './d-from.js',
+        './e-reexport.js', './f-reexport.js',
+        './g-dynamic.js', './h-dynamic.js',
+      ],
+      'the walker must see both quote styles for side-effect, from, and ' +
+        'dynamic imports, and must reject a mismatched quote pair',
+    )
+
+    const visited = new Set()
+    const queue = ['index.js']
+    while (queue.length > 0) {
+      const entry = queue.shift()
+      if (visited.has(entry)) continue
+      visited.add(entry)
+
+      const location = new URL(entry, functionsRoot)
+      // A specifier that escapes functions/ or names a package is out of this
+      // boundary's scope; only real local files are walked.
+      if (!existsSync(location)) continue
+      const source = readFileSync(location, 'utf8')
+
+      for (const quoted of ['\'node:child_process\'', '"node:child_process"']) {
+        assert.ok(
+          !source.includes(quoted),
+          `functions/${entry} is reachable from the deployed index.js and ` +
+            'must not import node:child_process',
+        )
+      }
+
+      // Static `from`, side-effect `import`, re-export, and dynamic
+      // `import()` forms of a relative specifier, in either quote style.
+      for (const specifier of extractLocalSpecifiers(source)) {
+        queue.push(resolveSpecifier(entry, specifier))
+      }
+    }
+
+    // Sanity: the walk must actually be reaching Phase 3, otherwise the
+    // assertions above would pass on an empty graph.
+    assert.ok(
+      visited.has('phase3/productionEnvironment.js'),
+      'the walk must reach the guard module index.js imports for the V2 gate',
+    )
+    assert.ok(
+      visited.has('phase3/studentLifecycle.js'),
+      'the walk must reach the deployed Phase 3 callables',
+    )
+    assert.ok(
+      !visited.has(OPERATOR_ONLY),
+      `${OPERATOR_ONLY} is operator-only and must stay out of the deployed graph`,
+    )
+
+    // The converse: the operator entrypoints must actually use it, so the
+    // separation cannot be satisfied by deleting the proof outright.
+    for (const entrypoint of [
+      'inventory.js', 'preflight.js', 'write.js', 'reverify.js',
+    ]) {
+      const source = readFileSync(
+        new URL(`phase3/${entrypoint}`, functionsRoot), 'utf8',
+      )
+      assert.match(
+        source,
+        /from '\.\/reviewedCheckout\.js'/,
+        `phase3/${entrypoint} must obtain its checkout proof from the ` +
+          'operator-only module',
       )
     }
   })

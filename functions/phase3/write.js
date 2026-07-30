@@ -17,7 +17,6 @@ import {
   validateExplicitCredential,
   validateRehearsalWriteAuthorization,
   validateWriteAuthorization,
-  verifyReviewedCheckout,
 } from './productionEnvironment.js'
 import {
   PreflightAbortError,
@@ -43,6 +42,7 @@ import {
   runProductionWrite,
 } from './productionWriter.js'
 import { buildProductionProjection } from './productionProjection.js'
+import { verifyReviewedCheckout } from './reviewedCheckout.js'
 
 /**
  * Phase 3 Commit 5 — the production write entrypoint.
