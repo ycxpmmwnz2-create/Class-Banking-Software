@@ -92,6 +92,25 @@ evidence is an abort, not something to sanitize after continuing.
 
 The following is an operator checklist, not permission to execute it.
 
+### Superseded retained-artifact gate
+
+Commit `773ac6c70eebac2db89b1394052e20a39ff7b831` changed the Functions surface
+digest algorithm by canonicalizing only `eventTrigger.eventFilters` order. All
+control-plane inventory and preflight-expectations artifacts retained before
+that commit are historical evidence only. Preserve them unchanged, but never
+reuse them, copy their Functions digests into a new artifact, or accept digest
+equality as proof that they are current.
+
+This gate is process-enforced because the current artifact schemas do not carry
+a digest-algorithm identifier. A historical value may either mismatch or
+coincidentally equal the corrected value if its source response was already in
+canonical filter order. Regardless of comparison results, repeat the required
+N9/N10 read-only IAM observations—including unchanged-surface digest
+stability—at the final clean reviewed commit. Then create a fresh separately
+authorized inventory, complete its Claude and Grok review, and author fresh
+expectations only from that reviewed inventory. Never delete, overwrite, or
+repurpose the superseded files in `functions/phase3/.state/`.
+
 1. Complete local implementation, required independent review, and every local
    gate above. Record the reviewed commit and artifact hashes.
 2. Make a separate human decision about a least-privilege explicit credential
@@ -183,6 +202,9 @@ resume writes when any of these occurs:
 
 - an approval, reviewed artifact, checksum, project, release ID, deployment
   surface, snapshot, or recovery prerequisite is missing or mismatched;
+- an inventory or expectations artifact predates the Functions digest
+  correction, or any required N9/N10 observation was not repeated at the final
+  clean reviewed commit, regardless of whether an old digest compares equal;
 - the inventory authorization, credential checksum, validity interval, fixed
   endpoint boundary, completeness declaration, independent corroboration, or
   inventory review is missing or mismatched;

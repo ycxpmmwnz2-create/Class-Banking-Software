@@ -324,6 +324,32 @@ deliberately failing preflight is prohibited: preflight error telemetry does not
 retain the opaque observed values and cannot bootstrap trustworthy
 expectations.
 
+### Retained-artifact supersession after the Functions digest correction
+
+Commit `773ac6c70eebac2db89b1394052e20a39ff7b831` corrected the Functions
+surface digest by canonicalizing only the order of
+`eventTrigger.eventFilters` before hashing the otherwise complete function
+resource. Every control-plane inventory and preflight-expectations artifact
+that existed before that commit is superseded. Preserve those files unchanged
+as historical evidence, but do not present an old expectations artifact,
+transcribe an old Functions digest into a new artifact, or treat an equal
+comparison as proof that the artifact is current.
+
+This rejection is an unconditional process gate, not a behavior the current
+artifact schemas can enforce. The inventory schema records its producing
+commit but has no digest-algorithm discriminator. A pre-correction digest may
+either mismatch and abort or coincidentally equal the corrected digest when the
+older API response already returned the filters in canonical order. Equality
+therefore cannot rehabilitate a superseded artifact.
+
+Before any later inventory, expectations-authoring, or preflight step, repeat
+the required N9/N10 read-only IAM observations, including unchanged-surface
+digest stability, from the final clean reviewed commit. Then obtain separate
+authorization for a fresh inventory, complete its required Claude and Grok
+review, and author new expectations only from that reviewed artifact. Do not
+delete, overwrite, or repurpose the superseded files in
+`functions/phase3/.state/`.
+
 The strict preflight authorization self-identifies as the production read-
 preflight kind and binds the full lowercase reviewed commit SHA in addition to
 the project, teacher, release/change/authorization identifiers, credential
