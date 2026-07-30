@@ -223,38 +223,10 @@ That second point is worth care: the `-` wildcard returns the default field conf
 field has been explicitly overridden. Expectations authored on the assumption of an empty field set
 would abort the preflight.
 
-## Digest-canonicalization supersession record
-
-Commit `773ac6c70eebac2db89b1394052e20a39ff7b831` corrected nondeterministic
-Cloud Functions surface digests by canonicalizing the repeated
-`eventTrigger.eventFilters` collection before hashing the otherwise complete
-function resource. The retained control-plane inventory and
-preflight-expectations artifacts that existed before that commit are now
-historical evidence only. Their contents were not changed, and the files must
-remain preserved; neither artifact may be reused, transcribed into a new
-expectations artifact, or treated as current authorization evidence.
-
-The current inventory schema has no digest-algorithm discriminator. An older
-Functions digest may fail closed by mismatching, but it may also happen to equal
-the corrected digest if the original API response already returned its filters
-in canonical order. Digest equality is therefore not evidence that a
-pre-correction artifact is reusable. Supersession is unconditional and
-process-enforced.
-
-Before any IAM transition is interpreted or any new inventory is authorized,
-repeat the required N9/N10 read-only IAM observations, including the
-unchanged-surface digest-stability check, against the final clean reviewed
-commit. Create a fresh inventory only under separate authorization, complete
-its required Claude and Grok review, and author new preflight expectations only
-from that reviewed artifact. Do not delete, overwrite, or repurpose the
-superseded files in `functions/phase3/.state/`.
-
 ## Remaining risk
 
-No unresolved permission-mapping or control-plane read-path defect is identified. Every surface
-authorizes correctly, the page-size defect is fixed and covered by tests, and the data boundary holds.
-The retained-artifact reuse hazard above is controlled procedurally rather than by an algorithm-version
-field; failure to regenerate the observations, inventory, and expectations is an abort.
+None identified in the control-plane read path. Every surface authorizes correctly, the one defect
+found is fixed and covered by tests, and the data boundary holds.
 
 ## Method for any future "which permission does this API need?" question
 

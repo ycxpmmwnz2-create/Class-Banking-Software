@@ -101,47 +101,97 @@ that commit are historical evidence only. Preserve them unchanged, but never
 reuse them, copy their Functions digests into a new artifact, or accept digest
 equality as proof that they are current.
 
-This gate is process-enforced because the current artifact schemas do not carry
-a digest-algorithm identifier. A historical value may either mismatch or
+This gate is process-enforced. The inventory artifact records its producing
+commit, but neither it nor the preflight-expectations artifact carries a digest-
+algorithm identifier, and the expectations artifact carries no producing-
+commit field. A historical value may therefore either mismatch or
 coincidentally equal the corrected value if its source response was already in
-canonical filter order. Regardless of comparison results, repeat the required
-N9/N10 read-only IAM observations—including unchanged-surface digest
-stability—at the final clean reviewed commit. Then create a fresh separately
-authorized inventory, complete its Claude and Grok review, and author fresh
-expectations only from that reviewed inventory. Never delete, overwrite, or
-repurpose the superseded files in `functions/phase3/.state/`.
+canonical filter order.
+
+The normal N9/N10 sequence repeats exactly two observations at the final clean
+reviewed commit. Each observation is itself a production `inventory.js` run and
+requires its own separately approved, time-bounded, checksum-bound inventory
+authorization and explicit credential. There is no unauthorized preliminary
+diagnostic. If the required comparisons pass, final-read-set observation D is
+the fresh inventory that receives Claude and Grok review. Its deployment and
+active-writer values are the sole inventory source for those fields in the new
+preflight-expectations artifact; every other required field retains its own
+separately reviewed source. No third inventory run is required solely for
+expectations authoring.
+
+The normal result is exactly four preserved files in
+`functions/phase3/.state/`: the superseded historical inventory and preflight
+expectations plus two new immutable N9/N10 inventory artifacts. A triangulation
+fallback or a selected N11 route that changes the deployed surface adds another
+separately authorized observation and requires updated file accounting and
+review. After a new preflight-expectations artifact is separately approved,
+authored, and retained, the normal count becomes five before preflight. A
+successful preflight then adds its immutable manifest as the sixth file; later
+writer artifacts follow their separately verified state accounting. Never
+delete, overwrite, or repurpose a superseded file.
+
+### Open blocker: Functions copy-expectations predictability
+
+`PHASE3_FUNCTIONS_COPY_EXPECTATIONS_PREDICTABILITY` (N11) remains open and
+High. Complete post-deploy Gen2 function resources contain server-assigned
+fields, while the copy expectations that describe them are bound before writer
+invocation 1. Routes A, B, and C remain unselected and unauthorized. Route B
+may use an already deployed and observed gate-off surface for both
+initialization and copy expectations, but selecting any route requires a
+separate bounded review.
+
+Until one route is selected, do not author a preflight authorization, run
+preflight, finalize expectations, author write authorization, prepare a
+deployment, or invoke writer invocation 1. The two separately authorized
+N9/N10 inventory observations may proceed while N11 is open, but they do not
+resolve it. Neither the unchanged-read stability correction, IAM verification,
+emulator fixtures, local canonicalization tests, parameter defaults, nor an
+approximated or hand-authored digest can close N11.
+
+The deployed-Rules checksum limitation remains separately open at the later
+Rules/release boundary because the observed deployed checksum does not match a
+checksum-pinned repository Rules artifact. N11 does not close that limitation,
+and Rules evidence does not close N11.
 
 1. Complete local implementation, required independent review, and every local
    gate above. Record the reviewed commit and artifact hashes.
 2. Make a separate human decision about a least-privilege explicit credential
-   and its IAM bindings. Obtain one time-bounded, checksum-bound authorization
-   for the control-plane-only inventory, tied to `morgan-bank`, the reviewed
-   commit, change/authorization identifiers, credential provenance, and the
-   exact credential SHA-256. The interval must be no more than two hours, and
-   the actual anchored checkout must have that exact HEAD with a clean worktree.
-   Credential creation or IAM changes are not part of the inventory operation
+   and its IAM bindings. For each of the two N9/N10 control-plane-only inventory
+   observations, obtain its own time-bounded, checksum-bound inventory
+   authorization tied to `morgan-bank`, the reviewed commit,
+   change/authorization identifiers, credential provenance, and the exact
+   credential SHA-256. Each interval must be no more than two hours, and the
+   actual anchored checkout must have that exact HEAD with a clean worktree.
+   Credential creation or IAM changes are not part of an inventory operation
    and require their own authority.
-3. Run only the separate `functions/phase3/inventory.js` entrypoint with its
-   three required inputs: full reviewed commit SHA, inventory-authorization
-   file, and explicit credential file. It may read only Rules, Functions,
-   Hosting, Firestore indexes, gate parameters, and active-writer names through
-   fixed Google API origins. Retain the one immutable local
-   `inventory-<sha256>.json` artifact. It is not an expectations file, a
-   preflight manifest, or write authorization.
+3. Run only the separate `functions/phase3/inventory.js` entrypoint once per
+   authorized observation, each time with its three required inputs: full
+   reviewed commit SHA, that observation's inventory-authorization file, and
+   the explicit credential file. It may read only Rules, Functions, Hosting,
+   Firestore indexes, gate parameters, and active-writer names through fixed
+   Google API origins. Retain both immutable local `inventory-<sha256>.json`
+   artifacts. Each is not an expectation, preflight manifest, or write
+   authorization.
 4. Independently corroborate in Firebase or Google Cloud Console the named
    deployment surfaces, counts, current release/version identities, gate
    parameters, index presence, and active writers. Console evidence is not
    claimed to reproduce canonical resource digests. Any disagreement or
-   unexplained surface aborts. Claude performs detailed read-only review of the
-   exact retained inventory and corroboration record; Grok then performs the
-   independent 5,000-foot review. Andrew transports complete verdicts and is
-   not expected to judge technical correctness.
-5. Only after both reviews close and Andrew approves the next boundary, author
-   and checksum the exact preflight expectations from the reviewed inventory.
-   Obtain a new, separate read-only preflight authorization bound to those
-   exact bytes, the explicit credential, and the full lowercase reviewed commit
-   SHA. The authorization must carry the exact production-preflight kind and a
-   validity interval no longer than two hours. Do not use a failing preflight as
+   unexplained surface aborts. Claude performs detailed read-only review of both
+   retained inventories, their comparison, final-read-set observation D, and
+   the corroboration record; Grok then performs the independent 5,000-foot
+   review. Andrew transports complete verdicts and is not expected to judge
+   technical correctness.
+5. Only after both reviews close, an N11 route is separately reviewed and
+   selected, final-read-set observation D remains current under that route, and
+   Andrew approves the next boundary, author and
+   checksum the exact preflight expectations, using observation D for every
+   inventory-derived deployment and active-writer value and separately reviewed
+   sources for all other required fields. Retain that artifact as the fifth
+   normal state file. Obtain a new,
+   separate read-only preflight authorization bound to those exact bytes, the
+   explicit credential, and the full lowercase reviewed commit SHA. The
+   authorization must carry the exact production-preflight kind and a validity
+   interval no longer than two hours. Do not use a failing preflight as
    discovery: its retained/error evidence intentionally does not disclose the
    opaque deployed values needed to author expectations.
 6. Run only the separate `functions/phase3/preflight.js` entrypoint with its
@@ -205,6 +255,13 @@ resume writes when any of these occurs:
 - an inventory or expectations artifact predates the Functions digest
   correction, or any required N9/N10 observation was not repeated at the final
   clean reviewed commit, regardless of whether an old digest compares equal;
+- N11 remains open without a separately reviewed route selection, a selected
+  route makes final-read-set observation D stale, or any blocked preflight,
+  expectations, authorization, deployment-preparation, or writer action is
+  attempted early;
+- the deployed Rules checksum remains unexplained at the Rules/release boundary
+  or differs from the separately reviewed checksum-pinned artifact for that
+  stage;
 - the inventory authorization, credential checksum, validity interval, fixed
   endpoint boundary, completeness declaration, independent corroboration, or
   inventory review is missing or mismatched;

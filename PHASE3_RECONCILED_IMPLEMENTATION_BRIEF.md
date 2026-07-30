@@ -336,19 +336,60 @@ transcribe an old Functions digest into a new artifact, or treat an equal
 comparison as proof that the artifact is current.
 
 This rejection is an unconditional process gate, not a behavior the current
-artifact schemas can enforce. The inventory schema records its producing
-commit but has no digest-algorithm discriminator. A pre-correction digest may
+artifact schemas can enforce. The inventory artifact records its producing
+commit but no digest-algorithm discriminator. The preflight-expectations
+artifact that supplies the compared values records neither a producing commit
+nor a digest-algorithm discriminator. A pre-correction digest may therefore
 either mismatch and abort or coincidentally equal the corrected digest when the
 older API response already returned the filters in canonical order. Equality
-therefore cannot rehabilitate a superseded artifact.
+cannot rehabilitate a superseded artifact.
 
-Before any later inventory, expectations-authoring, or preflight step, repeat
-the required N9/N10 read-only IAM observations, including unchanged-surface
-digest stability, from the final clean reviewed commit. Then obtain separate
-authorization for a fresh inventory, complete its required Claude and Grok
-review, and author new expectations only from that reviewed artifact. Do not
-delete, overwrite, or repurpose the superseded files in
+The normal N9/N10 sequence performs exactly two new observations, and each
+observation is itself a production `inventory.js` run. Each run requires its
+own separately approved, time-bounded, checksum-bound inventory authorization,
+the final clean reviewed commit, and the explicit credential; there is no
+unauthorized preliminary diagnostic. If the required comparisons pass,
+final-read-set observation D is the fresh inventory that proceeds through
+Claude and Grok review. Its deployment and active-writer values are the sole
+inventory source for those fields in the new preflight expectations; every
+other required expectations field retains its own separately reviewed source.
+No third inventory run exists solely for expectations authoring.
+
+The normal retained-state result is exactly four preserved files: the
+superseded historical inventory, the superseded historical preflight
+expectations, and the two new immutable N9/N10 inventory artifacts. A
+separately approved new preflight-expectations artifact later becomes the fifth
+retained file before preflight. A successful preflight then adds its immutable
+manifest as the sixth retained file under the existing manifest contract. A
+triangulation fallback or a selected N11 route that changes the deployed
+surface requires another separately authorized observation, updated retained-
+file accounting, and review before proceeding; it is not an implicit third
+run. Never delete, overwrite, or repurpose any superseded file in
 `functions/phase3/.state/`.
+
+### Open control-plane evidence blockers
+
+`PHASE3_FUNCTIONS_COPY_EXPECTATIONS_PREDICTABILITY` (N11) remains an open High
+release blocker. Copy expectations are bound before the release sequence can
+produce complete post-deploy Gen2 function resources whose server-assigned
+fields are included in the digest. Routes A, B, and C remain unselected and
+unauthorized. Route B may use an already deployed and observed gate-off surface
+for both initialization and copy expectations, but selecting any route requires
+its own bounded review.
+
+Until one route is selected, N11 blocks preflight-authorization authoring,
+preflight execution, expectations finalization, write-authorization authoring,
+deployment preparation, and writer invocation 1. It does not block the two
+separately authorized N9/N10 inventory observations themselves. N11 cannot be
+closed by the unchanged-read stability correction, IAM verification, emulator
+fixtures, local canonicalization tests, parameter defaults, or approximated or
+hand-authored expected digests.
+
+The separate deployed-Rules checksum limitation also remains open at the later
+Rules/release boundary: the observed deployed checksum does not match a
+checksum-pinned repository Rules artifact. Neither limitation closes the other,
+and both require separately reviewed evidence before their affected release
+step may proceed.
 
 The strict preflight authorization self-identifies as the production read-
 preflight kind and binds the full lowercase reviewed commit SHA in addition to
@@ -415,18 +456,21 @@ can invalidate retained Phase 3 manifest checksums.
 1. Complete and independently review local Phase 3 implementation.
 2. Run credential-isolated unit, rules, migration, browser, release, and
    rollback rehearsals.
-3. Obtain separate, checksum-bound authorization for one control-plane-only
-   production inventory and make the separate least-privilege credential/IAM
-   decision.
-4. Run only `functions/phase3/inventory.js`; retain its immutable,
-   non-authorizing artifact.
-5. Independently corroborate the deployment surface names, counts, current
-   releases/versions, parameters, indexes, and active writers. Complete Claude
-   detailed review and Grok independent review of the retained inventory. Abort
-   on any disagreement or unexplained surface.
-6. Author and checksum the exact preflight expectations from the reviewed
-   inventory, then obtain separate authorization for the full read-only
-   production preflight.
+3. Make the separate least-privilege credential/IAM decision.
+   Obtain separate, checksum-bound authorization for each of the two N9/N10
+   control-plane-only production observations.
+4. Run only `functions/phase3/inventory.js`, once per approved observation, and
+   retain both immutable, non-authorizing artifacts.
+5. Independently corroborate and compare the deployment surface names, counts,
+   current releases/versions, parameters, indexes, and active writers. Complete
+   Claude detailed review and Grok independent review of both inventories, the
+   comparison, and final-read-set observation D. Abort on any disagreement or
+   unexplained surface.
+6. Only after an N11 route is separately reviewed and selected may expectations
+   be finalized. Author and checksum the exact preflight expectations, using
+   the still-current reviewed final-read-set observation D for every inventory-
+   derived deployment and active-writer value. Then obtain separate
+   authorization for the full read-only production preflight.
 7. Record deployed rules, Functions, Hosting, parameters, foundation, paths,
    counts, shapes, IDs, credentials/logs, Auth compatibility, indexes, and
    active writers.
