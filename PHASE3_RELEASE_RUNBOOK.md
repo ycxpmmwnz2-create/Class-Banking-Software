@@ -203,6 +203,9 @@ Abort without improvising when any of these occurs:
 - a stale legacy student token can read a phantom-parent mirror, any legacy blob
   or credential becomes client-readable, or a fresh student lacks exact self-
   read;
+- the founding invitation lacks an `expiresAt` field containing a future
+  Firestore Timestamp when step 9 is verified, or the invitation is not
+  `consumed` after step 10;
 - onboarding creates anything other than one invitation/teacher/classroom/code
   foundation with `nextStudentNumber: 1`;
 - the fresh lifecycle, login, money-write, removal, or bidirectional isolation

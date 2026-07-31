@@ -109,6 +109,14 @@ function runbookReleaseSteps() {
   return steps
 }
 
+function runbookAbortCriteria() {
+  const section = runbook.split('## Abort criteria')[1]
+  assert.ok(section, 'the runbook abort criteria must exist')
+  return section.split(
+    '\n## Clean-start rollback before real-student rollout',
+  )[0]
+}
+
 function runbookRollbackSteps() {
   const section = runbook.split(
     '## Clean-start rollback before real-student rollout',
@@ -352,6 +360,18 @@ describe('Phase 3 release-order source contract', () => {
     assert.match(runbook, /Never deploy the\s+recursive baseline, bridge, or rollback-safe rules/i)
     assert.match(runbook, /Never record credential contents, private keys,\s+access\/refresh tokens, PINs/i)
     assert.match(runbook, /Disabling the Functions gate does not revoke an already authenticated teacher's\s+direct Firestore permission/i)
+  })
+
+  it('boundary: the founding invitation must remain time-bounded and end consumed', () => {
+    const abortCriteria = runbookAbortCriteria()
+    assert.match(
+      abortCriteria,
+      /founding invitation lacks an `expiresAt` field containing a future\s+Firestore Timestamp when step 9 is verified/i,
+    )
+    assert.match(
+      abortCriteria,
+      /invitation is not\s+`consumed` after step 10/i,
+    )
   })
 
   it('boundary: the release rehearsal executes real runner and candidate-rules evidence', () => {
