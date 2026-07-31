@@ -1,0 +1,7 @@
+title: "Phase 3 Migration Writer"
+description: "Project-wide Firestore transaction and create/update access for the separately authorized Phase 3 migration writer. No delete, Auth mutation, IAM, secret, log, deployment, or schema permission."
+stage: "GA"
+includedPermissions:
+  - "datastore.databases.get"
+  - "datastore.entities.create"
+  - "datastore.entities.update"

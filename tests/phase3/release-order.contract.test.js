@@ -22,6 +22,10 @@ const runbook = readFileSync(
   new URL('../../PHASE3_RELEASE_RUNBOOK.md', import.meta.url),
   'utf8',
 )
+const iamEvidence = readFileSync(
+  new URL('../../PHASE3_IAM_PERMISSION_EVIDENCE.md', import.meta.url),
+  'utf8',
+)
 const releaseRehearsal = readFileSync(
   new URL('./production-runner.emulator.test.js', import.meta.url),
   'utf8',
@@ -40,6 +44,10 @@ const EXPECTED_FINAL_RULES_SHA256 =
   '414ab5cad328b4b254fe4397ec891f0b7639548c324d2ae0ee74c8db0a9639f3'
 const EXPECTED_ROLLBACK_RULES_SHA256 =
   'c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d'
+const EXPECTED_PHASE3_DATA_PLANE_READER_SHA256 =
+  '4c4259c12d3d1f0188e997baac0a7fed000510357cb4b5c453de342123fad8d5'
+const EXPECTED_PHASE3_MIGRATION_WRITER_SHA256 =
+  'a97924dbbdbf025cca740a6c952791a3ec5a774b0c2277f0228d029fd272d1bf'
 
 /**
  * Parses a markdown numbered list into whole steps.
@@ -231,6 +239,28 @@ describe('Phase 3 release-order source contract', () => {
         expectedHash,
         `${file} must match its reviewed checksum`,
       )
+    }
+  })
+
+  it('boundary: IAM role definitions and all governing references are checksum-pinned', () => {
+    const governingDocuments = [brief, runbook, iamEvidence]
+    for (const [file, expectedHash] of [
+      ['iam/phase3/phase3DataPlaneReader.yaml', EXPECTED_PHASE3_DATA_PLANE_READER_SHA256],
+      ['iam/phase3/phase3MigrationWriter.yaml', EXPECTED_PHASE3_MIGRATION_WRITER_SHA256],
+    ]) {
+      const artifact = readFileSync(new URL(`../../${file}`, import.meta.url))
+      assert.equal(
+        createHash('sha256').update(artifact).digest('hex'),
+        expectedHash,
+        `${file} must match its reviewed checksum`,
+      )
+      for (const document of governingDocuments) {
+        assert.equal(
+          document.match(new RegExp(expectedHash, 'g'))?.length,
+          1,
+          `each governing document must state ${file}'s checksum exactly once`,
+        )
+      }
     }
   })
 

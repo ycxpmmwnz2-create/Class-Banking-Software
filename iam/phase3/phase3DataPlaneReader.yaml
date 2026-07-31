@@ -1,0 +1,7 @@
+title: "Phase 3 Firestore/Auth Read-Only Reader"
+description: "Project-wide read-only Firestore document and Firebase Auth user access for the Phase 3 production preflight and re-verification entrypoints. No write, IAM, secret, log, deployment, or schema permission."
+stage: "GA"
+includedPermissions:
+  - "datastore.entities.get"
+  - "datastore.entities.list"
+  - "firebaseauth.users.get"

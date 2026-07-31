@@ -3,7 +3,24 @@
 **Date:** 2026-07-29
 **Project:** `morgan-bank` (project number 242031426628)
 **Anchor commit:** 72af2bddd213757ad1a101a7e13a6b3e5b32ea09
-**Status:** RESOLVED. The external blocker was not external.
+**Status:** RESOLVED for the dated control-plane question. This is historical
+evidence, not a statement of the later Role A data-read boundary.
+
+## Scope and later supersession
+
+The observations through "Page-size fix confirmed against production" record
+the live state on 2026-07-29, when the inventory service account held only the
+base control-plane role and Hosting Viewer. The expected 403 document read
+proves that base-role boundary only. It must not be cited after Role A is bound:
+Role A deliberately adds project-wide Firestore document and Firebase Auth user
+read access.
+
+A separately authorized N9 control-plane observation was later retained at
+commit `fa33d0250cb06a5c933494eb27aabef2612c610c` as inventory
+`4459cd2fa4ab8399726ef47de6eda4ca1e24d463a6baec23b4a03a4e43194764`.
+The tracked Role A/Role B correction creates a successor commit, so that
+artifact remains immutable evidence but is superseded for the corrected N9/N10
+pair. No application data was read by N9.
 
 ## The question
 
@@ -81,7 +98,7 @@ project. It is stronger evidence than a support-desk paraphrase.
 | 4 | If neither, what is required? | Not applicable |
 | 5 | Includable in a project-level custom role? | Yes — GA, no support-level restriction, and already in use |
 
-## Control-plane boundary
+## Control-plane boundary on 2026-07-29
 
 `projects/morgan-bank/roles/phase3ControlPlaneInventoryReader` contains exactly:
 
@@ -94,9 +111,12 @@ firebaserules.rulesets.get
 
 Plus `roles/firebasehosting.viewer` bound separately.
 
-No `datastore.entities.*` permission is present. IAM is deny-by-default, so this identity cannot read
-Firestore documents, student or teacher records, balances, transactions, or Authentication users. The
-`datastore.entities.*` concern raised in the handoff does not apply to this role.
+At this dated base-role boundary no `datastore.entities.*` permission was
+present. IAM is deny-by-default, so the identity could not then read Firestore
+documents, student or teacher records, balances, transactions, or
+Authentication users. The concern did not apply to the base role; it does apply
+after the separately reviewed Role A transition and is accepted there as a
+temporary project-wide read exposure.
 
 This is now proven empirically, not merely inferred. A document read attempted as the service account:
 
@@ -190,9 +210,10 @@ Tested:
 
 - The corrected `pageSize=0` requests, confirmed against production (below).
 
-Not tested:
-- The `inventory.js` entrypoint itself has not been run. That remains a gated operation requiring its
-  own authorization under runbook step 3.
+Not tested in this 2026-07-29 evidence pass:
+- The `inventory.js` entrypoint had not yet been run. The later separately
+  authorized N9 observation is recorded in the scope-and-supersession section
+  above.
 
 ## Page-size fix confirmed against production
 
@@ -223,10 +244,91 @@ That second point is worth care: the `-` wildcard returns the default field conf
 field has been explicitly overridden. Expectations authored on the assumption of an empty field set
 would abort the preflight.
 
+## Tracked future data-read and write-set definitions
+
+These files are local review inputs and are not evidence that either live role
+exists or is bound:
+
+| Alias | Live resource if later created | Tracked file | Raw-byte SHA-256 | Exact permissions |
+|---|---|---|---|---|
+| Role A | `projects/morgan-bank/roles/phase3DataPlaneReader` | `iam/phase3/phase3DataPlaneReader.yaml` | `4c4259c12d3d1f0188e997baac0a7fed000510357cb4b5c453de342123fad8d5` | `datastore.entities.get`, `datastore.entities.list`, `firebaseauth.users.get` |
+| Role B | `projects/morgan-bank/roles/phase3MigrationWriter` | `iam/phase3/phase3MigrationWriter.yaml` | `a97924dbbdbf025cca740a6c952791a3ec5a774b0c2277f0228d029fd272d1bf` | `datastore.databases.get`, `datastore.entities.create`, `datastore.entities.update` |
+
+Google's live testable-permissions metadata was checked on 2026-07-30. All six
+permissions are GA, supported in a project custom role, and have no primary-
+permission substitution. No IAM mutation was performed by that check.
+
+The exact read-only command used the numeric project resource required by the
+installed Cloud SDK:
+
+```text
+gcloud iam list-testable-permissions //cloudresourcemanager.googleapis.com/projects/242031426628 \
+  --filter='name=(datastore.databases.get datastore.entities.create datastore.entities.get datastore.entities.list datastore.entities.update firebaseauth.users.get)' \
+  --format='json(name,stage,customRolesSupportLevel,primaryPermission)'
+```
+
+Its verbatim response, with absent optional fields preserved as absence, was:
+
+```json
+[
+  {
+    "name": "datastore.databases.get",
+    "stage": "GA"
+  },
+  {
+    "name": "datastore.entities.create",
+    "stage": "GA"
+  },
+  {
+    "name": "datastore.entities.get",
+    "stage": "GA"
+  },
+  {
+    "name": "datastore.entities.list",
+    "stage": "GA"
+  },
+  {
+    "name": "datastore.entities.update",
+    "stage": "GA"
+  },
+  {
+    "name": "firebaseauth.users.get",
+    "stage": "GA"
+  }
+]
+```
+
+`customRolesSupportLevel` and `primaryPermission` are absent on all six rows;
+under the IAM response contract that means custom-role support is unrestricted
+and no alias substitution applies.
+
+Role A is the closed preflight/re-verification data-read set. Firestore
+`BatchGetDocuments` requires `datastore.entities.get`; `RunQuery` and
+`ListDocuments` require both entity permissions; Auth user pagination requires
+`firebaseauth.users.get`. `firebaseauth.configs.getHashConfig` is intentionally
+absent, so password hashes and salts are not returned. The same Role A read set
+must remain bound through preflight, both writer invocations, and
+re-verification so Auth digests have a stable observable preimage.
+
+The Role A binding is project-wide and cannot be limited by document path. It
+therefore authorizes reads of the entire default database, including student
+PII and credential documents, plus Auth user records without password hashes.
+The production reader remains code-limited to its enumerated paths, but IAM
+does not enforce that narrower path boundary. This is the accepted residual
+risk of the separately authorized inspection window.
+
+Role B is defined for review but must not be created or bound during the Role A
+transition. `datastore.databases.get` is required for Firestore transaction
+begin/rollback; create/update are the writer's only entity mutations. Delete
+and Auth mutation remain excluded. Role B is created and bound only at the
+later separately approved write boundary.
+
 ## Remaining risk
 
-None identified in the control-plane read path. Every surface authorizes correctly, the one defect
-found is fixed and covered by tests, and the data boundary holds.
+None remains in the dated control-plane read path. The future Role A transition
+has the explicit project-wide sensitive-read exposure above and requires exact
+tracked-file review, checksum-bound approval, live definition/binding
+verification, and proof that Role B remains absent.
 
 ## Method for any future "which permission does this API need?" question
 
@@ -259,8 +361,12 @@ Storage is correct:
 
 No remediation is required for how the key is stored.
 
-The remaining recommendation is lifecycle, not exposure: delete the key once the inventory run is
-complete and prefer impersonation for future one-off control-plane reads. Impersonation was sufficient
-for every verification in this document, which demonstrates the key is not needed for this class of
-operation. A long-lived key on disk is a standing liability only because it persists; while it exists,
-it is stored correctly.
+The earlier recommendation to delete the key immediately after inventory is
+superseded by the release contract. If this credential remains the approved
+Phase 3 credential, its exact raw bytes and SHA-256 must be retained securely
+through the corrected N9/N10 pair, preflight, both writer invocations, and
+re-verification. Impersonation cannot substitute inside those checksum-bound
+entrypoints. Key deletion, service-account teardown, or any privilege change is
+a later separate approval boundary. A persistent key remains a standing
+liability; while retained for this bounded sequence, its audited storage
+controls remain required.

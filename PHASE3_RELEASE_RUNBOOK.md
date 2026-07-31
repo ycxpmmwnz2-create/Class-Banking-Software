@@ -48,6 +48,38 @@ Never copy a candidate over `firestore.rules` for testing. The rehearsals load
 the checksum-pinned candidate bytes directly. Never deploy the recursive
 baseline rules while scoped credentials exist.
 
+## Immutable IAM role definitions
+
+The IAM role inputs that must be reviewed before use are tracked outside
+runtime state:
+
+| Alias and resource | Tracked definition | Raw-byte SHA-256 | Exact permissions |
+| --- | --- | --- | --- |
+| Role A — `projects/morgan-bank/roles/phase3DataPlaneReader` | `iam/phase3/phase3DataPlaneReader.yaml` | `4c4259c12d3d1f0188e997baac0a7fed000510357cb4b5c453de342123fad8d5` | `datastore.entities.get`, `datastore.entities.list`, `firebaseauth.users.get` |
+| Role B — `projects/morgan-bank/roles/phase3MigrationWriter` | `iam/phase3/phase3MigrationWriter.yaml` | `a97924dbbdbf025cca740a6c952791a3ec5a774b0c2277f0228d029fd272d1bf` | `datastore.databases.get`, `datastore.entities.create`, `datastore.entities.update` |
+
+Role A supplies the production data-read set. `BatchGetDocuments` requires
+`datastore.entities.get`; `RunQuery` and `ListDocuments` require both entity
+permissions; Auth user pagination requires `firebaseauth.users.get`. The role
+deliberately omits `firebaseauth.configs.getHashConfig`, so password hashes and
+salts remain unavailable. Because project IAM cannot restrict Firestore entity
+permissions to document paths, Role A can read the entire default database,
+including student PII and credential documents. That sensitive project-wide
+exposure is accepted only for the separately authorized inspection window.
+
+Role B is the later migration write-set transition.
+`datastore.databases.get` authorizes Firestore transaction begin/rollback, and
+the entity permissions authorize only create/update. Role B never includes
+delete or Auth mutation. Its transactional document reads still depend on
+Role A's `datastore.entities.get`, and write/re-verification reconstruct the
+full Firestore/Auth reader set. Role A must therefore remain bound, with every
+tracked field unchanged, through preflight, both writer invocations, and
+re-verification. Role B's tracked definition is review evidence only: do not
+create or bind it during the Role A step. These tracked, non-secret files do not
+belong in `functions/phase3/.state/` and do not count as retained runtime
+artifacts. A byte change invalidates the listed hash and all dependent review or
+authorization.
+
 ## Required local gate
 
 Run from a clean reviewed checkout, with no Google Application Default
@@ -108,16 +140,22 @@ commit field. A historical value may therefore either mismatch or
 coincidentally equal the corrected value if its source response was already in
 canonical filter order.
 
+The control-plane-only N9 observation retained at `fa33d025` preceded the
+tracked Role A/Role B correction. Once that correction has a reviewed successor
+commit, preserve the observation but classify it as superseded: the corrected
+N9 and N10 observations must both name the final clean reviewed successor.
+
 The normal N9/N10 sequence repeats exactly two observations at the final clean
 reviewed commit with the one read-set transition placed between them. The
 **base-role observation** runs while the candidate identity still holds only
 the existing `phase3ControlPlaneInventoryReader` custom role and
 `roles/firebasehosting.viewer`, before the stable Firestore/Auth read layer is
-bound. Under its own separate IAM mutation authorization, the reviewed stable
-Firestore/Auth reader (Role A) is then bound and its exact definition and
-binding are verified. Role B remains unbound. The **final-read-set
-observation** runs only after that verification, with the base roles plus Role A
-forming the frozen read set.
+bound. Under its own separate IAM mutation authorization naming the exact Role
+A resource, tracked-file SHA-256, service account, and project, create and bind
+only `phase3DataPlaneReader`; then verify its exact definition and binding.
+`phase3MigrationWriter` must remain both uncreated and unbound. The
+**final-read-set observation** runs only after that verification, with the base
+roles plus Role A forming the frozen read set.
 
 Each observation is itself a production `inventory.js` run and requires its
 own separately approved, time-bounded, checksum-bound inventory authorization
@@ -133,16 +171,17 @@ The two observations must agree exactly on all five deployment surfaces and
 active-writer classification; any mismatch aborts unless a separately
 authorized triangulation procedure proves its cause and receives review.
 
-The normal result is exactly four preserved files in
-`functions/phase3/.state/`: the superseded historical inventory and preflight
-expectations plus two new immutable N9/N10 inventory artifacts. A triangulation
-fallback or a selected N11 route that changes the deployed surface adds another
-separately authorized observation and requires updated file accounting and
-review. After a new preflight-expectations artifact is separately approved,
-authored, and retained, the normal count becomes five before preflight. A
-successful preflight then adds its immutable manifest as the sixth file; later
-writer artifacts follow their separately verified state accounting. Never
-delete, overwrite, or repurpose a superseded file.
+The current correction starts with exactly three preserved files in
+`functions/phase3/.state/`: the pre-`773ac6c` inventory and expectations plus
+the `fa33d025` N9 inventory. Once this correction has a reviewed successor, all
+three are immutable and superseded for the corrected N9/N10 pair. The repeated
+N9 at that successor becomes the fourth file; N10 becomes the fifth. A new
+preflight-expectations artifact later becomes the sixth before preflight, and a
+successful preflight adds its immutable manifest as the seventh. A
+triangulation fallback or a selected N11 route that changes the deployed
+surface adds another separately authorized observation and requires updated
+file accounting and review. Never delete, overwrite, or repurpose a superseded
+file.
 
 ### Open blocker: Functions copy-expectations predictability
 
@@ -180,12 +219,35 @@ and Rules evidence does not close N11.
 3. Run only `functions/phase3/inventory.js` for the authorized base-role
    observation, with its three required inputs: full reviewed commit SHA, that
    observation's inventory-authorization file, and the explicit credential
-   file. Retain its immutable local `inventory-<sha256>.json` artifact.
-4. Only under a separate approved IAM mutation, bind the reviewed stable
-   Firestore/Auth reader (Role A). Verify its exact definition and binding,
-   verify that the base role and Hosting Viewer remain unchanged, keep Role B
-   unbound, and freeze that final read set. Credential creation or IAM changes
-   are not part of an inventory operation and require their own authority.
+   file. Retain its immutable local `inventory-<sha256>.json` artifact. For the
+   current correction, repeat this observation at the reviewed successor; the
+   retained `fa33d025` observation cannot satisfy this step.
+4. Only under a separate approved IAM mutation bound to the reviewed
+   `phase3DataPlaneReader.yaml` SHA-256, create Role A and bind it to
+   `phase3-inventory-reader@morgan-bank.iam.gserviceaccount.com`. Verify that
+   its live resource name is exactly
+   `projects/morgan-bank/roles/phase3DataPlaneReader` and its title,
+   description, GA stage, and three-permission set exactly match the tracked
+   file; the service account has exactly the base custom role, Hosting Viewer,
+   and Role A; the base role is unchanged; the service account's own IAM policy
+   remains empty; inherited and resource-level searches reveal no additional
+   grant; and Role B is neither present in the custom-role catalog nor bound in
+   project IAM. Any other policy delta aborts. Credential creation and IAM
+   changes are not part of an inventory operation and require their own
+   authority.
+
+   A live Role A sufficiency probe is a separate production-read boundary, not
+   implicit permission to run preflight. If separately authorized, authenticate
+   directly with the existing explicit service-account credential and prove
+   `BatchGetDocuments` against a high-entropy absent document, zero-result
+   `RunQuery`, `ListDocuments` beneath a high-entropy absent parent, and the
+   actual Auth pagination method (`accounts:batchGet`). The probe must consume
+   and discard response bodies without logging or persistence and emit only
+   fixed status/category evidence; it must not print or retain document or user
+   contents. Never add
+   `roles/iam.serviceAccountTokenCreator` for this probe. A 403, unexpected
+   response shape, disclosed record, or any need to widen Role A aborts back to
+   review.
 5. Obtain a new, separate time-bounded, checksum-bound inventory authorization
    for the final-read-set observation. Then run
    `functions/phase3/inventory.js` with that authorization, the same final clean
@@ -208,8 +270,8 @@ and Rules evidence does not close N11.
    checksum the exact preflight expectations, using the final-read-set
    observation for every inventory-derived deployment and active-writer value
    and separately reviewed sources for all other required fields. Retain that
-   artifact as the fifth normal state file. Obtain a new,
-   separate read-only preflight authorization bound to those exact bytes, the
+   artifact as the sixth retained state file for the current correction. Obtain
+   a new, separate read-only preflight authorization bound to those exact bytes, the
    explicit credential, and the full lowercase reviewed commit SHA. The
    authorization must carry the exact production-preflight kind and a validity
    interval no longer than two hours. Do not use a failing preflight as
@@ -223,8 +285,16 @@ and Rules evidence does not close N11.
    manifest. Abort on any
    unexpected path, shape, count, ID, duplicate, UID mapping, credential/log,
    Auth compatibility, index, active writer, or recovery prerequisite.
-9. Obtain separate production write/deploy authorization. Enter and verify the
-   maintenance/write freeze. Capture the approved export/snapshot and final
+9. Obtain separate production write/deploy authorization and a separate IAM
+   mutation authorization bound to the reviewed
+   `phase3MigrationWriter.yaml` SHA-256. Only at this writer boundary, create
+   Role B and bind it to the same service account while leaving Role A bound and
+   unchanged. Verify Role B's resource name is exactly
+   `projects/morgan-bank/roles/phase3MigrationWriter` and its title,
+   description, GA stage, and three-permission set match the tracked file;
+   verify the service account now has exactly the base custom role, Hosting
+   Viewer, Role A, and Role B; and abort on any other IAM delta. Enter and verify
+   the maintenance/write freeze. Capture the approved export/snapshot and final
    checksums; writes remain frozen through acceptance.
 10. Administratively create or validate the existing reciprocal
    teacher/classroom foundation. Do not create an invitation.
@@ -251,9 +321,11 @@ their raw-byte SHA-256 values without recording their contents or login code,
 and keep a secure recoverable copy of the authorization. The manifest binds the
 authorization's raw-byte digest, and write/reverify require the same credential
 raw-byte SHA-256 while repeating the clean-reviewed-checkout proof. Do not delete
-the key or service account immediately after preflight. Credential privilege
-changes and final teardown are separate approval boundaries whose order must
-preserve those byte bindings.
+the key or service account immediately after preflight. Keep Role A bound and
+unchanged after Role B is added, through both writer invocations and
+re-verification; removing or changing either role before re-verification is an
+abort. Credential privilege changes and final teardown are separate approval
+boundaries whose order must preserve those byte bindings.
 
 15. Deploy and verify the exact final-rules hash. Only after that, set the exact
    reviewed `MULTI_TEACHER_V2_RELEASE_ID` and enable the server gate. Then deploy
@@ -276,6 +348,20 @@ resume writes when any of these occurs:
 - an inventory or expectations artifact predates the Functions digest
   correction, or any required N9/N10 observation was not repeated at the final
   clean reviewed commit, regardless of whether an old digest compares equal;
+- a live Role A resource name is not exactly
+  `projects/morgan-bank/roles/phase3DataPlaneReader`, or its title, description,
+  stage, or permission set differs from the reviewed tracked definition; the
+  base roles change; the service account holds any fourth project role; or Role
+  B exists or is bound before the separately authorized writer boundary;
+- a Role A sufficiency probe is attempted without separate production-read
+  approval, uses impersonation or a temporary token-creator grant despite the
+  explicit credential, returns data to operator output, omits any of
+  `BatchGetDocuments`, `RunQuery`, `ListDocuments`, or `accounts:batchGet`, or
+  fails to prove the required read methods without widening the role;
+- Role A is removed or changed at the writer boundary; Role B's live resource
+  name is not exactly `projects/morgan-bank/roles/phase3MigrationWriter`; or its
+  title, description, stage, or permission set differs from its reviewed
+  tracked definition;
 - N11 remains open without a separately reviewed route selection, a selected
   route makes the final-read-set observation stale, or any blocked preflight,
   expectations, authorization, deployment-preparation, or writer action is

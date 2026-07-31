@@ -3,16 +3,20 @@
 Status: **planning and review only** as a production-authorization document.
 Items 1–12 are implemented from local repository, unit, source-contract,
 emulator, rules, browser, release-rehearsal, and rollback-rehearsal evidence.
-The subsequent production-readiness correction pass is local and awaits the
-required focused Claude re-review and final Grok checkpoint. Production state
-remains unknown. This document does not authorize production inspection,
+The production-readiness correction through `fa33d025` completed review, and a
+separately authorized control-plane-only N9 observation was retained at that
+commit. The IAM-contract correction below will create a successor commit, so
+that N9 artifact remains immutable evidence but becomes ineligible for the
+corrected N9/N10 pair; N9 must be repeated at the final clean reviewed
+successor before Role A is bound. Production application data remains
+uninspected. This document does not authorize production inspection,
 migration, deployment, a rules change, feature-gate activation, real-account
 onboarding, cleanup, commit, or push.
 
 Reviewed baseline for the production-readiness correction:
 
 - Branch: `feature/multi-teacher`
-- HEAD and expected remote:
+- Historical reviewed baseline HEAD at that correction:
   `c39b40c50abd5e31e56d68eb9d80ae3ba5761215`
 - Checked-in `firestore.rules` SHA-256:
   `0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50`
@@ -350,10 +354,56 @@ while the candidate identity still holds only the existing
 `phase3ControlPlaneInventoryReader` custom role and
 `roles/firebasehosting.viewer`, before the stable Firestore/Auth read layer is
 bound. Under its own separate IAM mutation authorization, the reviewed stable
-Firestore/Auth reader (Role A) is then bound and its exact definition and
-binding are verified. Role B remains unbound. The **final-read-set
+Firestore/Auth reader (Role A) is then created and bound, and its exact
+definition and binding are verified. Role B remains both uncreated and
+unbound. The **final-read-set
 observation** runs only after that verification, with the base roles plus Role A
 forming the frozen read set.
+
+### Tracked IAM role definitions
+
+The names "Role A" and "Role B" are aliases for these exact tracked role
+definitions; neither label may be interpreted or expanded from prose:
+
+- **Role A — `projects/morgan-bank/roles/phase3DataPlaneReader`:**
+  `iam/phase3/phase3DataPlaneReader.yaml`, raw-byte SHA-256
+  `4c4259c12d3d1f0188e997baac0a7fed000510357cb4b5c453de342123fad8d5`.
+  It contains exactly `datastore.entities.get`,
+  `datastore.entities.list`, and `firebaseauth.users.get`.
+- **Role B — `projects/morgan-bank/roles/phase3MigrationWriter`:**
+  `iam/phase3/phase3MigrationWriter.yaml`, raw-byte SHA-256
+  `a97924dbbdbf025cca740a6c952791a3ec5a774b0c2277f0228d029fd272d1bf`.
+  It contains exactly `datastore.databases.get`,
+  `datastore.entities.create`, and `datastore.entities.update`.
+
+The Role A permissions are the closed data-read set. Firestore document gets
+use `BatchGetDocuments` and require `datastore.entities.get`; Firestore
+`RunQuery` and `ListDocuments` operations require both
+`datastore.entities.get` and `datastore.entities.list`; Auth user pagination
+requires `firebaseauth.users.get`. Role A deliberately excludes
+`firebaseauth.configs.getHashConfig`, so Auth password hashes and salts are not
+part of the observable `UserRecord` preimage. Preflight, both writer
+invocations, and re-verification must therefore use the same frozen Role A read
+set so the Auth digest remains reproducible.
+
+Role A is read-only but sensitive: a project IAM binding cannot restrict these
+Firestore entity permissions to the paths the preflight enumerates. It grants
+the service account read access across the default database, including student
+PII and credential documents, plus Auth user records without password hashes.
+That temporary project-wide exposure is an explicit accepted prerequisite for
+the bounded production inspection, not a tenant- or path-scoped control.
+
+Role B is the later write-set transition. `datastore.databases.get` is required
+by Firestore `BeginTransaction`/`Rollback`; the two entity permissions cover
+the writer's create/update operations. Delete and every Auth mutation remain
+excluded. Role B is defined now for review but must not be created or bound in
+the Role A step. It is created and bound only under the later, separately
+approved write-privilege boundary while Role A remains bound.
+
+Both files are non-secret, tracked review inputs. They do not belong in the
+ignored runtime `.state` directory and do not change retained-state file
+counts. Any byte change invalidates the recorded digest and requires renewed
+review and authorization before the corresponding live role operation.
 
 Each observation is itself a production `inventory.js` run. Each run requires
 its own separately approved, time-bounded, checksum-bound inventory
@@ -369,17 +419,18 @@ The two observations must agree exactly on all five deployment surfaces and
 active-writer classification; any mismatch aborts unless a separately
 authorized triangulation procedure proves its cause and receives review.
 
-The normal retained-state result is exactly four preserved files: the
-superseded historical inventory, the superseded historical preflight
-expectations, and the two new immutable N9/N10 inventory artifacts. A
-separately approved new preflight-expectations artifact later becomes the fifth
-retained file before preflight. A successful preflight then adds its immutable
-manifest as the sixth retained file under the existing manifest contract. A
-triangulation fallback or a selected N11 route that changes the deployed
-surface requires another separately authorized observation, updated retained-
-file accounting, and review before proceeding; it is not an implicit third
-run. Never delete, overwrite, or repurpose any superseded file in
-`functions/phase3/.state/`.
+The current correction has an exceptional retained-state baseline. Three files
+already exist: the pre-`773ac6c` inventory and expectations artifacts plus the
+N9 inventory captured at `fa33d025`. The first two were already superseded;
+the third becomes superseded when this IAM-contract correction produces a
+reviewed successor commit. Preserve all three. Repeating N9 at that successor
+creates the fourth file, and the matching N10 creates the fifth. A separately
+approved new preflight-expectations artifact later becomes the sixth file
+before preflight, and a successful preflight adds its immutable manifest as the
+seventh. A triangulation fallback or a selected N11 route that changes the
+deployed surface adds another separately authorized observation and requires
+updated accounting and review. Never delete, overwrite, or repurpose any
+superseded file in `functions/phase3/.state/`.
 
 ### Open control-plane evidence blockers
 
@@ -474,12 +525,19 @@ can invalidate retained Phase 3 manifest checksums.
    candidate still holds only the base control-plane role and Hosting Viewer:
    Obtain separate, checksum-bound authorization for the base-role observation.
 4. Run only `functions/phase3/inventory.js` for the approved base-role
-   observation and retain its immutable, non-authorizing artifact.
+   observation at the final clean reviewed successor commit and retain its
+   immutable, non-authorizing artifact. The `fa33d025` observation is preserved
+   but cannot satisfy this corrected step.
 5. Under a separate approved IAM mutation, bind only the reviewed stable
-   Firestore/Auth reader (Role A), verify its exact definition and binding, and
-   keep Role B unbound. Then obtain a separate checksum-bound inventory
-   authorization, run `functions/phase3/inventory.js` for the final-read-set
-   observation, retain its immutable artifact, and freeze the verified read set.
+   Firestore/Auth reader (Role A) from its exact tracked, checksum-bound file.
+   Verify its definition and binding, prove the base role and Hosting Viewer are
+   unchanged, and prove Role B is neither created nor bound. A Role A
+   sufficiency probe, if used, is a separate explicitly authorized production
+   read performed with the existing explicit credential; it must not add
+   `roles/iam.serviceAccountTokenCreator` or use preflight as discovery. Then
+   obtain a separate checksum-bound inventory authorization, run
+   `functions/phase3/inventory.js` for the final-read-set observation, retain
+   its immutable artifact, and freeze the verified read set.
 6. Independently corroborate and compare the deployment surface names, counts,
    current releases/versions, parameters, indexes, and active writers. Complete
    Claude detailed review and Grok independent review of both inventories, the
@@ -496,7 +554,10 @@ can invalidate retained Phase 3 manifest checksums.
    active writers.
 9. Abort on any unexplained state, malformed ID, duplicate, divergence,
    missing recovery prerequisite, or unreviewed production assumption.
-10. Obtain separate production write/deploy authorization.
+10. Obtain separate production write/deploy authorization and a separate IAM
+    authorization bound to the reviewed Role B file. Create and bind Role B
+    only at that writer boundary while Role A remains bound and unchanged
+    through both writer invocations and re-verification.
 11. Enter maintenance/write freeze and capture the production export/snapshot
    plus final immutable checksums.
 12. Create or validate the existing teacher/classroom foundation
@@ -565,6 +626,10 @@ Existing files:
 New files:
 
 ```
+iam/phase3/
+  phase3DataPlaneReader.yaml
+  phase3MigrationWriter.yaml
+
 functions/phase3/
   productionEnvironment.js
   productionEnvironment.test.js
