@@ -263,6 +263,9 @@ These suites prove:
 
 - the declared emulator commands **carry** the credential-isolation contract;
 - the brief still **states** the safe release and rollback ordering;
+- the one-time Claude invitation-operator exception is **stated** as an exact,
+  review-gated, console-only, single-create boundary that automatically restores
+  the normal read-only reviewer role;
 - the completed boundary contains exactly the expected checksum-pinned rules
   artifacts and has not edited `firestore.rules`;
 - the current client identity/adapter/login facts are exactly as surveyed;
@@ -369,6 +372,23 @@ artifacts. They also require `firestore.rules` to still hash to
 contains** the recursive
 `classrooms/{document=**}` allow, so the checksum pin cannot become vacuous if the
 file were replaced by something unrelated.
+
+### `claude-invitation-exception.contract.test.js`
+
+Parses only the isolated one-time exception in
+`AI_COLLABORATION_WORKFLOW.md`, plus its exact acknowledgement in `AGENTS.md`
+and the existing founding-invitation field contract in the release runbook. It
+pins the project, release ID, reviewed application commit, console-only path,
+four fields, Timestamp expiry, single Save action, privacy boundary, forbidden
+operations, and automatic return to Claude's normal read-only role. Negative
+scope assertions ensure the exception cannot silently become an API or script
+write, repair/update/delete authority, onboarding, deployment, or a second
+invitation.
+
+This is governance source evidence only. A PASS does not activate the
+exception, connect a browser, authorize Claude, or prove that a production
+invitation exists. Activation still requires the reviews and Andrew's direct,
+contemporaneous instruction specified in the workflow.
 
 The former blanket "`src/phase3` is absent" boundary became false in Commit 7, and
 is now a **Section 11 content allowlist**: only the four permitted files may exist

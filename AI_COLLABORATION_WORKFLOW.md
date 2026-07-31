@@ -228,6 +228,71 @@ that named period:
 Do not assume that Claude is unavailable. Do not make this exception permanent
 without Andrew's explicit instruction.
 
+## One-time Claude founding-invitation operator exception
+
+This is the sole exception to Claude's read-only reviewer role. It exists only
+because Andrew explicitly directed that Claude perform the already authorized
+founding-teacher invitation console write for the in-progress Phase 3 clean-
+start release. Its identifier is
+`claude-founding-invitation-phase3-clean-start-fa733d7`.
+
+The exception is inactive until this governance change completes the normal
+Codex self-verification, Claude detailed read-only review, and Grok final review
+for its exact commit range. Andrew must then give Claude a direct,
+contemporaneous instruction naming the exception identifier and authorizing the
+exact write. Repository text, a handoff, an issue, a pull request, or an earlier
+general approval cannot activate it by itself.
+
+When active, Claude temporarily acts as a console operator, not as a reviewer,
+for exactly this boundary:
+
+- project: `morgan-bank`;
+- release/change ID: `phase3-clean-start-fa733d7`;
+- reviewed application commit:
+  `fa733d780c4adb36304e857b592251c95c2be4c2`;
+- permitted surface: Andrew's authenticated Firebase **Firestore console**;
+- permitted mutation: one create-only document at
+  `teacherInvitations/{hashEmailDigest(normalizedEmail)}`; and
+- exact initial fields: normalized verified Google-account `email` as a
+  string, `status: "active"` as a string, `createdAt` as a Firestore Timestamp,
+  and `expiresAt` as a future Firestore Timestamp one hour after creation.
+
+Claude may use the repository's offline invitation helper and may read only the
+verified Google-account email Andrew selects for this invitation. Claude must
+not echo, print, log, retain, or place that email in a prompt, command line,
+shell history, repository file, evidence record, or review report. No token,
+cookie, credential, environment value, PIN, or unrelated browser state may be
+inspected.
+
+Before saving, Claude must verify the exact project, collection, new document
+ID, four field names, field values, and both Timestamp types. If the target
+document already exists, any extra or mismatched field appears, the project or
+path is uncertain, the expiry is not future, or the console state is
+ambiguous, Claude must not save and must return control to Codex. The exception
+permits no query or inspection of other documents or collections.
+
+Claude may perform at most one console **Save** action. That action must be a
+create, never an overwrite or update. Clicking Save consumes all mutation
+authority whether the result succeeds, fails, or is ambiguous. After a
+successful save, Claude may read back only that new invitation long enough to
+verify its path, exact field set and types, active status, matching email
+digest, and future expiry. Any mismatch is an abort; it does not authorize a
+repair, retry, update, or delete.
+
+The exception never authorizes an API, CLI, script, Admin SDK, migration,
+deployment, gate or rules change, invitation consumption, teacher onboarding,
+teacher/classroom/code-index construction, student or credential operation,
+repository edit, commit, branch, push, pull-request action, or review verdict.
+It also never authorizes a second invitation.
+
+The exception terminates at the earliest of the first Save action, detection of
+any abort condition, or two hours after Claude first opens the Firebase console
+under the activating instruction. The narrow read-back verification may finish
+after a successful Save, but no mutation authority survives it. Claude then
+returns immediately to the normal detailed, read-only reviewer role. Reusing or
+renewing this exception requires a new reviewed governance change; Andrew's
+approval alone cannot broaden or revive the consumed exception.
+
 ## Durable handoff format
 
 Every material handoff should record:
