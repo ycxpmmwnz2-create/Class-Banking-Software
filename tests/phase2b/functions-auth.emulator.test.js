@@ -18,6 +18,7 @@ import process from 'node:process'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 
@@ -32,10 +33,18 @@ import {
   getIdTokenResult,
 } from 'firebase/auth'
 import {
+  connectFirestoreEmulator,
+  doc,
+  getDoc,
+  getFirestore,
+  writeBatch,
+} from 'firebase/firestore'
+import {
   getFunctions,
   connectFunctionsEmulator,
   httpsCallable,
 } from 'firebase/functions'
+import { initializeTestEnvironment } from '@firebase/rules-unit-testing'
 
 // ---------------------------------------------------------------------------
 // Environment refusal. Nothing below this block may run — and in particular no
@@ -50,6 +59,7 @@ const GATE_OFF_PROJECT_ID = 'demo-morgan-bank-phase2b-server-off-test'
 const GATE_ON_PROJECT_ID = 'demo-morgan-bank-phase2b-server-test'
 const FUNCTIONS_EMULATOR_HOST = '127.0.0.1'
 const FUNCTIONS_EMULATOR_PORT = 5001
+const FINAL_RULES_PATH = path.join(REPO_ROOT, 'firestore.phase3.final.rules')
 
 /** The hardcoded UID the untouched legacy handlers still authorize. */
 const LEGACY_TEACHER_UID = 'YkYUzIzy0aW7roolM1VaLcIJPuN2'
@@ -116,6 +126,7 @@ const adminAuth = admin.auth()
 
 let clientApps = []
 let clientAppSeq = 0
+let gateOnRulesEnvironment = null
 
 function createTestClientApp() {
   clientAppSeq += 1
@@ -130,8 +141,16 @@ function createTestClientApp() {
   const functions = getFunctions(app, 'us-central1')
   connectFunctionsEmulator(functions, FUNCTIONS_EMULATOR_HOST, FUNCTIONS_EMULATOR_PORT)
 
+  const firestore = getFirestore(app)
+  const [firestoreEmulatorHost, firestoreEmulatorPort] = firestoreHost.split(':')
+  connectFirestoreEmulator(
+    firestore,
+    firestoreEmulatorHost,
+    Number(firestoreEmulatorPort),
+  )
+
   clientApps.push(app)
-  return { app, auth, functions }
+  return { app, auth, firestore, functions }
 }
 
 async function cleanupClientApps() {
@@ -311,11 +330,13 @@ async function assertGoogleIdentity(tokenResult, email) {
 }
 
 async function seedInvitation(email, overrides = {}) {
-  const digest = sha256Hex(email.trim().toLowerCase())
+  const normalizedEmail = email.trim().toLowerCase()
+  const digest = sha256Hex(normalizedEmail)
   await db.collection('teacherInvitations').doc(digest).set({
-    email,
+    email: normalizedEmail,
     status: 'active',
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 60 * 60 * 1000),
     ...overrides,
   })
   return digest
@@ -363,6 +384,7 @@ async function activateStudentPin(teacherFunctions, studentId, newPin) {
 
 after(async () => {
   await cleanupClientApps()
+  await gateOnRulesEnvironment?.cleanup()
   await Promise.all(admin.apps.map(app => app.delete()))
 })
 
@@ -652,8 +674,17 @@ if (testMode === 'gate-on') {
   }
 
   describe('Gate-on: real-emulator V2 acceptance', () => {
-    before(() => {
+    before(async () => {
       assert.equal(INDEX_URL.startsWith('file://'), true)
+      const [host, port] = firestoreHost.split(':')
+      gateOnRulesEnvironment = await initializeTestEnvironment({
+        projectId: expectedProject,
+        firestore: {
+          rules: readFileSync(FINAL_RULES_PATH, 'utf8'),
+          host,
+          port: Number(port),
+        },
+      })
     })
 
     beforeEach(async () => {
@@ -1174,6 +1205,175 @@ if (testMode === 'gate-on') {
         const res = await httpsCallable(pending.functions, 'resolveTeacherTenantV2')({})
         assert.equal(res.data.state, 'onboarding-required')
         assert.equal(res.data.eligibility, 'invited')
+      })
+    })
+
+    // -----------------------------------------------------------------------
+    describe('C2. Fresh-classroom lifecycle seam', () => {
+      it('onboards, creates, authenticates, persists money data, isolates, and removes without legacy seeding', async () => {
+        const teacherA = await onboardGoogleTeacher(
+          'fresh.a@school.org',
+          'Fresh Classroom A',
+        )
+        const teacherB = await onboardGoogleTeacher(
+          'fresh.b@school.org',
+          'Fresh Classroom B',
+        )
+
+        assert.equal((await db.collection('morganBank').get()).empty, true)
+        assert.equal(
+          (await db.collection('classrooms').doc('morgan').get()).exists,
+          false,
+          'the seam must not depend on a legacy classroom root',
+        )
+
+        const classroomBefore = await db
+          .collection('classrooms')
+          .doc(teacherA.classroomId)
+          .get()
+        assert.equal(
+          classroomBefore.data().nextStudentNumber,
+          1,
+          'normal onboarding must initialize the first lifecycle identity',
+        )
+
+        const created = await httpsCallable(
+          teacherA.functions,
+          'createStudentV2',
+        )({
+          name: 'Fresh Student',
+          startingBalance: 25,
+          pin: '2468',
+        })
+        assert.deepEqual(created.data.student, {
+          id: 1,
+          name: 'Fresh Student',
+          balance: 25,
+          frozen: false,
+        })
+        assert.equal(created.data.loginId, 'fresh-student')
+
+        const studentPath = `classrooms/${teacherA.classroomId}/students/1`
+        const transactionPath =
+          `classrooms/${teacherA.classroomId}/transactions/1001`
+        const createdStudent = await db.doc(studentPath).get()
+        assert.deepEqual(Object.keys(createdStudent.data()).sort(), [
+          'balance',
+          'frozen',
+          'id',
+          'name',
+          'transactions',
+        ])
+        assert.equal(
+          (await db.collection('classrooms').doc(teacherA.classroomId).get())
+            .data().nextStudentNumber,
+          2,
+        )
+
+        const anonymousStudent = createTestClientApp()
+        const login = await httpsCallable(
+          anonymousStudent.functions,
+          'studentPinLoginV2',
+        )({
+          classroomCode: teacherA.studentLoginCode,
+          loginId: created.data.loginId,
+          pin: '2468',
+        })
+        assert.deepEqual(Object.keys(login.data), ['token'])
+        const signedInStudent = await signInWithCustomToken(
+          anonymousStudent.auth,
+          login.data.token,
+        )
+        const claims = await getIdTokenResult(signedInStudent.user, true)
+        assert.equal(claims.claims.classroomId, teacherA.classroomId)
+        assert.equal(claims.claims.studentId, '1')
+
+        const transaction = {
+          id: 1001,
+          date: '2026-07-31T12:00:00.000Z',
+          studentId: 1,
+          studentName: 'Fresh Student',
+          type: 'Add',
+          amount: 10,
+          reason: 'Fresh-classroom acceptance',
+          memo: '',
+          category: 'Class',
+          status: 'Approved',
+          source: 'Teacher',
+        }
+        const teacherBatch = writeBatch(teacherA.firestore)
+        teacherBatch.set(doc(teacherA.firestore, studentPath), {
+          ...createdStudent.data(),
+          balance: 35,
+          transactions: [transaction],
+        })
+        teacherBatch.set(doc(teacherA.firestore, transactionPath), transaction)
+        await teacherBatch.commit()
+
+        const teacherRead = await getDoc(doc(teacherA.firestore, transactionPath))
+        assert.deepEqual(teacherRead.data(), transaction)
+        const studentRead = await getDoc(
+          doc(anonymousStudent.firestore, studentPath),
+        )
+        assert.equal(studentRead.data().balance, 35)
+        assert.deepEqual(studentRead.data().transactions, [transaction])
+
+        await assert.rejects(
+          () => getDoc(doc(teacherB.firestore, studentPath)),
+          error => error?.code === 'permission-denied',
+          'the other reciprocal owner must not read this fresh classroom',
+        )
+        await assert.rejects(
+          () => getDoc(doc(
+            teacherA.firestore,
+            `classrooms/${teacherB.classroomId}`,
+          )),
+          error => error?.code === 'permission-denied',
+          'teacher isolation must also deny A from the existing B root',
+        )
+        await assert.rejects(
+          () => getDoc(doc(
+            anonymousStudent.firestore,
+            `classrooms/${teacherB.classroomId}`,
+          )),
+          error => error?.code === 'permission-denied',
+          'student claims must not cross into the existing B root',
+        )
+
+        const removed = await httpsCallable(
+          teacherA.functions,
+          'removeStudentV2',
+        )({ studentId: '1' })
+        assert.deepEqual(removed.data, { success: true })
+        assert.equal((await db.doc(studentPath).get()).exists, false)
+        assert.equal(
+          (await db.doc(transactionPath).get()).exists,
+          true,
+          'student removal must preserve the transaction audit record',
+        )
+        const retainedCredential = await credentialsRef(teacherA.classroomId)
+          .doc(created.data.loginId)
+          .get()
+        assert.equal(retainedCredential.exists, true)
+        assert.equal(retainedCredential.data().active, false)
+        assert.equal(
+          (await db.collection('classrooms').doc(teacherA.classroomId).get())
+            .data().nextStudentNumber,
+          2,
+          'student removal must never rewind the allocator',
+        )
+        await expectCallableError(
+          () => httpsCallable(
+            anonymousStudent.functions,
+            'studentPinLoginV2',
+          )({
+            classroomCode: teacherA.studentLoginCode,
+            loginId: created.data.loginId,
+            pin: '2468',
+          }),
+          'unauthenticated',
+          'Invalid student credentials.',
+        )
       })
     })
 

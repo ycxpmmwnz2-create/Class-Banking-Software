@@ -166,35 +166,47 @@ describe('Phase 3 control-plane inventory source contract', () => {
     assert.doesNotMatch(inventoryModule, /productionWriter|runTransaction/)
   })
 
-  it('governing documents put reviewed inventory before expectations and preflight', () => {
+  it('governing documents retain inventory code but exclude it from clean start', () => {
     const releaseOrder = brief.split(
       '## 9. Release ordering and abort criteria',
     )[1].split('\n## ')[0]
-    assertOrdered(releaseOrder, [
-      'Obtain separate, checksum-bound authorization',
+    const retainedRunner = brief.split(
+      '## 8. Retained migration runner contract',
+    )[1].split('\n## ')[0]
+    const runbookRelease = runbook.split(
+      '## Production release sequence',
+    )[1].split('\n## Abort criteria')[0]
+
+    assertOrdered(retainedRunner, [
       'functions/phase3/inventory.js',
-      'Independently corroborate',
-      'Author and checksum the exact preflight expectations',
-      'production preflight.',
-      'production write/deploy authorization',
+      'functions/phase3/preflight.js',
+      'functions/phase3/write.js',
+      'functions/phase3/reverify.js',
     ], 'brief')
-    assertOrdered(runbook, [
-      'control-plane-only inventory',
-      'inventory.js',
-      'Independently corroborate',
-      'checksum the exact preflight expectations',
-      'preflight.js',
-      'production write/deploy authorization',
-    ], 'runbook')
-    for (const source of [brief, runbook]) {
-      assert.match(source, /not an? (?:authorization or )?expectation/i)
-      assert.match(
+    assert.match(
+      retainedRunner,
+      /clean-start release does not run\s+any of them/i,
+    )
+    assert.match(
+      retainedRunner,
+      /does not author or consume inventory, expectations, preflight/i,
+    )
+    assert.match(
+      runbook,
+      /Do not run `functions\/phase3\/inventory\.js`, `preflight\.js`, `write\.js`, or\s+`reverify\.js`/,
+    )
+    assert.match(
+      runbook,
+      /Do not author an inventory authorization, expectations file, preflight or\s+write authorization, manifest, journal, snapshot, freeze proof, or copy\s+expectation/,
+    )
+    for (const [label, source] of [
+      ['brief release order', releaseOrder],
+      ['runbook release order', runbookRelease],
+    ]) {
+      assert.doesNotMatch(
         source,
-        /not[^\n]*(?:\n[^\n]*)?preflight manifest|does not create a preflight manifest/i,
-      )
-      assert.match(
-        source,
-        /does not authorize production inspection|not production authorization|not permission/i,
+        /(?:inventory|preflight|write|reverify)\.js/,
+        `${label} must not invoke a retained migration entrypoint`,
       )
     }
   })

@@ -16,7 +16,7 @@ import {
 
 const FINAL_RULES_PATH = 'firestore.phase3.final.rules'
 const FINAL_RULES_SHA256 =
-  '414ab5cad328b4b254fe4397ec891f0b7639548c324d2ae0ee74c8db0a9639f3'
+  '1a5994098bd3041c578bb5578cd299fe24b12263ce390e65c4f21fb274849c71'
 const PRODUCTION_RULES_SHA256 =
   '0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50'
 
@@ -144,6 +144,16 @@ async function seed() {
     }
 
     await db.doc('morganBank/classroomData').set({ marker: 'legacy' })
+    // A legacy student mirror may remain beneath a phantom classroom parent.
+    // Final rules must not let a stale matching custom token read it merely
+    // because its path claims still say classroomId=morgan.
+    await db.doc('classrooms/morgan/students/legacy-student').set({
+      id: 'legacy-student',
+      name: 'Legacy orphan',
+      balance: 10,
+      frozen: false,
+      transactions: [],
+    })
     await db.doc('studentAuthLogs/flat-log').set({ marker: 'legacy-flat' })
     await db.doc(`studentCredentials/${SHARED_LOGIN_ID}`).set({ pinHash: 'flat-secret' })
 
@@ -443,6 +453,17 @@ describe('Phase 3 Item 10 final rules', () => {
     }
   })
 
+  test('orphaned legacy student mirrors deny even a stale token with matching path claims', async () => {
+    const staleLegacyStudent = student(
+      'legacy-student-auth',
+      'morgan',
+      'legacy-student',
+    )
+    await assertFails(
+      staleLegacyStudent.doc('classrooms/morgan/students/legacy-student').get(),
+    )
+  })
+
   test('disabled, missing, mismatched, and invalid foundations fail closed independently', async () => {
     await assertFails(teacher(DISABLED_UID).doc(`classrooms/${A_ROOM}`).get())
     await assertFails(teacher(DISABLED_UID).doc(`teachers/${DISABLED_UID}`).get())
@@ -452,6 +473,26 @@ describe('Phase 3 Item 10 final rules', () => {
     await assertFails(teacher(UID_MISMATCH_UID).doc(`classrooms/${A_ROOM}`).get())
     await assertFails(teacher(OWNER_MISMATCH_UID).doc('classrooms/owner-mismatch-room').get())
     await assertFails(teacher(INVALID_STATUS_UID).doc(`classrooms/${A_ROOM}`).get())
+  })
+
+  test('an existing student token loses access when its reciprocal foundation is disabled or broken', async () => {
+    const existingStudent = student('student-a-auth', A_ROOM, A_STUDENT)
+
+    await testEnv.withSecurityRulesDisabled(async context => {
+      await context.firestore().doc(`teachers/${A_UID}`).update({ status: 'disabled' })
+    })
+    await assertFails(
+      existingStudent.doc(`classrooms/${A_ROOM}/students/${A_STUDENT}`).get(),
+    )
+
+    await testEnv.withSecurityRulesDisabled(async context => {
+      const adminDb = context.firestore()
+      await adminDb.doc(`teachers/${A_UID}`).update({ status: 'active' })
+      await adminDb.doc(`classrooms/${A_ROOM}`).update({ ownerUid: 'not-the-owner' })
+    })
+    await assertFails(
+      existingStudent.doc(`classrooms/${A_ROOM}/students/${A_STUDENT}`).get(),
+    )
   })
 
   test('scoped logs are owner-read-only while flat logs and the legacy blob are final-denied', async () => {

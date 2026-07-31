@@ -2,10 +2,10 @@ rules_version = '2';
 
 // PHASE 3 FINAL RULES — CANDIDATE DEPLOYMENT ARTIFACT, NOT CURRENT RULES.
 //
-// Installed only after the bridge-protected migration has reconciled. This
-// artifact is intentionally separate from firestore.rules and from the
-// rollback-safe artifact so each release state can be checksum-pinned and
-// reviewed independently.
+// The clean-start route deploys this artifact directly while V2 Functions are
+// gate-off; it does not deploy bridge or rollback-safe rules. This artifact is
+// intentionally separate from firestore.rules and from the retained migration
+// artifacts so each reviewed release state can be checksum-pinned independently.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -21,9 +21,9 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/classrooms/$(classroomId));
     }
 
-    // At most two distinct lookups: the caller's teacher record and the
-    // requested classroom root. Repeated references to either path are cached
-    // by the rules engine.
+    // At most two distinct lookups: the relevant teacher record and the
+    // requested classroom root. For a student read, the teacher is the
+    // classroom owner. Repeated references to either path are cached.
     function isActiveTeacher(uid) {
       return isSignedIn()
         && request.auth.uid == uid
@@ -37,11 +37,22 @@ service cloud.firestore {
         && classroomDoc(classroomId).data.ownerUid == request.auth.uid;
     }
 
+    function hasActiveReciprocalFoundation(classroomId) {
+      return classroomDoc(classroomId).data.ownerUid is string
+        && teacherDoc(classroomDoc(classroomId).data.ownerUid).data.uid
+          == classroomDoc(classroomId).data.ownerUid
+        && teacherDoc(classroomDoc(classroomId).data.ownerUid).data.status
+          == "active"
+        && teacherDoc(classroomDoc(classroomId).data.ownerUid).data.classroomId
+          == classroomId;
+    }
+
     function isStudentOf(classroomId, studentId) {
       return isSignedIn()
         && request.auth.token.role == "student"
         && request.auth.token.classroomId == classroomId
-        && request.auth.token.studentId == studentId;
+        && request.auth.token.studentId == studentId
+        && hasActiveReciprocalFoundation(classroomId);
     }
 
     function hasExactKeys(value, keys) {

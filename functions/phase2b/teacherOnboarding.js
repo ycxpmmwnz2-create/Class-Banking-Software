@@ -504,12 +504,20 @@ export async function onboardTeacherClassroomService({
     const generatedClassroomId = generatedClassroomRef.id
     const timestamp = serverTimestamp()
 
-    const classroomDocument = buildClassroomDocument({
-      ownerUid: uid,
-      name: normalizedClassroomName,
-      timestamp,
-      studentLoginCode: formattedCode,
-    })
+    // This is the complete V2 classroom-identity boundary. The shared Phase 1
+    // model deliberately remains unchanged because its hardcoded bootstrap
+    // creates no classroom login code and cannot support V2 student login.
+    // Invitation-controlled onboarding creates both the locator and the
+    // monotonic allocator atomically, so its first lifecycle student is "1".
+    const classroomDocument = {
+      ...buildClassroomDocument({
+        ownerUid: uid,
+        name: normalizedClassroomName,
+        timestamp,
+        studentLoginCode: formattedCode,
+      }),
+      nextStudentNumber: 1,
+    }
 
     const teacherDocument = buildTeacherDocument({
       uid,

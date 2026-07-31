@@ -1,17 +1,24 @@
 # Phase 3 Reconciled Implementation and Release Brief
 
-Status: **planning and review only** as a production-authorization document.
-Items 1–12 are implemented from local repository, unit, source-contract,
-emulator, rules, browser, release-rehearsal, and rollback-rehearsal evidence.
-The production-readiness correction through `fa33d025` completed review, and a
-separately authorized control-plane-only N9 observation was retained at that
-commit. The IAM-contract correction below will create a successor commit, so
-that N9 artifact remains immutable evidence but becomes ineligible for the
-corrected N9/N10 pair; N9 must be repeated at the final clean reviewed
-successor before Role A is bound. Production application data remains
-uninspected. This document does not authorize production inspection,
-migration, deployment, a rules change, feature-gate activation, real-account
-onboarding, cleanup, commit, or push.
+Status: **clean-start release planning and review only; not production
+authorization**.
+
+On 2026-07-31 Andrew selected a clean V2 start. The existing production records
+are development-only V1 test data and are not copied, reconciled, accepted, or
+deleted. They remain untouched indefinitely. The implemented migration runner,
+its immutable state artifacts, bridge rules, rollback-safe rules, IAM role
+definitions, and rehearsals remain in the repository as dormant historical and
+regression evidence; they are not steps in the clean-start release.
+
+Items 1–13 remain implemented from local repository, unit, source-contract,
+emulator, rules, browser, migration-rehearsal, release-rehearsal, and rollback-
+rehearsal evidence. The corrected N9/N10 observations remain immutable evidence
+and agreed on all five deployment surfaces and active-writer classification.
+The clean-start route does not consume them and requires no replacement
+inventory. Production application data remains uninspected. This document does
+not authorize production inspection, data deletion, migration, deployment, a
+rules change, feature-gate activation, invitation creation, real-account
+onboarding, cleanup, IAM mutation, commit, or push.
 
 Reviewed baseline for the production-readiness correction:
 
@@ -22,10 +29,10 @@ Reviewed baseline for the production-readiness correction:
   `0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50`
 - Production state remains unknown by design.
 
-This brief reconciles Claude's independent Phase 3 challenge report with the
-repository evidence and the authoritative Phase 2B completion gate. It does
-not replace `MULTI_TEACHER_ARCHITECTURE_PLAN.md`; it resolves the Phase 3
-implementation decisions that document intentionally left open.
+This brief reconciles Claude's earlier Phase 3 migration challenge report, the
+clean-start pivot, repository evidence, and the authoritative Phase 2B
+completion gate. It does not replace `MULTI_TEACHER_ARCHITECTURE_PLAN.md`; it
+supersedes that plan's migration-only release ordering for this launch.
 
 ## 1. Historical challenge-finding disposition
 
@@ -34,6 +41,10 @@ contracts. Statements about missing client, Function, rules, or runner behavior
 describe the baseline at reconciliation commit `5db34e5`; they are not a
 current inventory. Current local implementation and evidence are recorded in
 `tests/phase3/README.md`. Production state remains unknown.
+
+The migration-specific findings below remain historical rationale only. The
+clean-start release neither satisfies nor works around them; it has no legacy
+copy operation to which they could apply.
 
 - **Accepted:** the client data layer is substantially under-scoped. One
   injected adapter file cannot safely translate the legacy aggregate blob into
@@ -66,10 +77,10 @@ current inventory. Current local implementation and evidence are recorded in
 - **No Phase 3 action:** existing `firestore-debug.log` files are already
   ignored by `*.log`, are not served because Hosting publishes `dist`, and are
   not cleanup authorization.
-- **Resolved:** V2 mode must not invoke the hardcoded
-  `ensureTeacherClassroom` bootstrap. The production runner establishes the
-  existing teacher's foundation administratively; it does not create an
-  invitation or run new-teacher onboarding.
+- **Resolved for the retired migration route:** V2 mode must not invoke the
+  hardcoded `ensureTeacherClassroom` bootstrap. That runner established the
+  existing teacher's foundation administratively. Clean start instead creates
+  a time-bounded invitation and uses normal new-teacher onboarding.
 
 ## 2. Non-negotiable decisions
 
@@ -82,25 +93,30 @@ current inventory. Current local implementation and evidence are recorded in
    handlers.
 7. When V2 is active, legacy login and mutation handlers fail closed for stale
    clients rather than changing rollback sources.
-8. The existing foundation precedes ownership-dependent bridge rules.
-9. Bridge, final, and rollback-safe rules are separate checksum-pinned and
-   independently tested artifacts.
-10. Production preflight, write, and reverification use separate entrypoints;
-    no argument or subcommand typo can turn preflight into a write.
+8. The clean-start release deploys final rules before the V2 server gate and
+   before gate-on Hosting.
+9. Bridge, final, and rollback-safe rules remain separate checksum-pinned and
+   independently tested artifacts, but only final rules are deployed by the
+   clean-start sequence.
+10. `inventory.js`, `preflight.js`, `write.js`, and `reverify.js` remain
+    separate retained entrypoints and are not run for the clean-start release.
 
 ## 3. Objectives and non-goals
 
-Phase 3 is one coordinated cutover that builds and rehearses a separately
-reviewed production runner, revalidates actual production state under separate
-read-only authorization, preserves legacy sources, copies scoped credentials,
-deploys credential-safe ownership rules in the required order, activates V2
-Functions and Hosting, and retains a tested rollback path.
+Phase 3 now launches the reviewed V2 system without importing V1 application
+records or Auth users. It deploys V2 Functions gate-off, deploys the final
+ownership rules, activates the exact reviewed Functions release and gate,
+deploys gate-on Hosting, creates a time-bounded administrative invitation, and
+uses the normal invitation-controlled onboarding path to create a fresh
+teacher/classroom foundation. Acceptance creates and authenticates fresh test
+students and proves money writes, removal, and tenant isolation.
 
-It does not authorize or include a second real teacher, cleanup, deletion of
-legacy data or Auth users, co-teachers, multiple classrooms, districts,
-ownership transfer, or running the emulator-only Phase 2A CLI against
-production. Phase 4 owns real existing-classroom verification and Phase 5 owns
-the second real teacher.
+It does not authorize or include production-data inspection, migration,
+reconciliation against V1, deletion of legacy data or Auth users, Role B,
+maintenance freeze, snapshot/export, a second real teacher, real students,
+co-teachers, multiple classrooms, districts, ownership transfer, or any Phase
+2A/Phase 3 production runner entrypoint. No real students may be added until a
+later separately reviewed school-start readiness decision.
 
 ## 4. Client data contract
 
@@ -175,13 +191,23 @@ It resolves the tenant, verifies the exact student and unique credential,
 deletes the student and marks the credential inactive atomically, never deletes
 the credential, and never decrements the counter.
 
-The classroom root gains a server-managed `nextStudentNumber`. Production
-preflight derives its initial value from the maximum accepted historical
-numeric student ID across the legacy roster, active/inactive/orphaned
-credentials, transactions, login history, auth logs, destination students, and
-any existing scoped credentials. Numeric/string equivalents are normalized.
-Malformed values, collisions, unsafe integers, or unexplained historical
-references block. The initial value is maximum plus one and is never reduced.
+The classroom root has a server-managed `nextStudentNumber`. The normal V2
+invitation-controlled onboarding transaction creates a fresh classroom with
+`nextStudentNumber: 1` alongside its teacher document, active classroom-code
+index, and consumed invitation. The first `createStudentV2` call therefore
+allocates document ID `"1"`; removal never decrements the counter.
+
+This initialization belongs in `functions/phase2b/teacherOnboarding.js`, not
+the shared Phase 1 classroom model. The Phase 1 hardcoded bootstrap supplies no
+student login code and cannot produce a usable V2 student-login foundation.
+Keeping the change at the V2 onboarding boundary avoids changing that retained
+legacy path while making every future invitation-created classroom complete.
+
+The dormant migration writer retains its historical maximum-plus-one
+derivation and its fail-closed assumption that its initialization delta is
+absent. A classroom already carrying `nextStudentNumber` is rejected on a
+fresh writer initialization rather than overwritten or renumbered. The clean-
+start release never invokes that writer.
 
 The V2 sync handler treats an exactly matching credential atomically created by
 the trusted lifecycle callable as an idempotent verified state. Divergent or
@@ -211,9 +237,10 @@ Legacy handlers remain deployed for rollback:
   authoritative.
 
 Final rules also deny legacy blob writes, preventing a stale old teacher client
-from mutating rollback data after activation. Rollback disables the gate,
-deploys the recorded default-off Hosting artifact, and installs rollback-safe
-rules before legacy writes resume.
+from mutating retained V1 test data after activation. Clean-start withdrawal
+disables the gate, deploys the recorded default-off Hosting artifact, retains
+final rules, and never resumes legacy writes. The rollback-safe artifact and
+legacy-write resumption remain migration-route history only.
 
 Module loading must never throw merely because the V2 parameter is enabled.
 Per-invocation validation recognizes only:
@@ -230,9 +257,12 @@ exports. Gate-off trigger execution is a clean no-op.
 
 ## 7. Rules contracts
 
-All three artifacts delete the recursive `classrooms/{document=**}` client
-allow and deny both flat and scoped credentials to every client, including the
-active owner.
+All three retained artifacts delete the recursive
+`classrooms/{document=**}` client allow and deny both flat and scoped
+credentials to every client, including the active owner. The clean-start
+release deploys only the checksum-pinned final artifact. Bridge and rollback-
+safe rules remain tested migration-era recovery evidence and are not clean-
+start deployment stages.
 
 ### Bridge
 
@@ -249,6 +279,9 @@ active owner.
 ### Final
 
 - exact active reciprocal ownership;
+- student self-read requires both exact token claims and an existing active
+  reciprocal teacher/classroom foundation, so phantom-parent legacy mirrors
+  remain denied even to stale matching student tokens;
 - no legacy blob client writes;
 - student self-read only for exact claims;
 - teacher student `create` and `delete` denied;
@@ -262,6 +295,8 @@ active owner.
 
 ### Rollback-safe
 
+- retained for regression evidence and not deployed by the clean-start
+  rollback;
 - re-enables only the narrow hardcoded legacy behavior needed by the recorded
   default-off artifact;
 - retains explicit scoped-credential denial even though scoped documents stay
@@ -275,9 +310,9 @@ credential lookup by `studentId == value` uses an automatic single-field index;
 `firestore.indexes.json` changes only if a new compound or exempted index is
 actually proven necessary.
 
-## 8. Production runner contract
+## 8. Retained migration runner contract
 
-Phase 3 has four separate entrypoints:
+Phase 3 retains four separate migration entrypoints:
 
 ```
 node functions/phase3/inventory.js ...
@@ -285,6 +320,13 @@ node functions/phase3/preflight.js ...
 node functions/phase3/write.js ...
 node functions/phase3/reverify.js ...
 ```
+
+They remain tested and fail closed, but the clean-start release does not run
+any of them and does not author or consume inventory, expectations, preflight,
+write, re-verification, snapshot, freeze, or copy artifacts. The detailed
+runner material below is a retained historical contract, not the current
+operator sequence. Nothing in this section may be used to infer clean-start
+authorization.
 
 The inventory entrypoint closes the expectations-bootstrap gap without widening
 preflight. It is a separately authorized, production-only, control-plane-only
@@ -405,6 +447,11 @@ ignored runtime `.state` directory and do not change retained-state file
 counts. Any byte change invalidates the recorded digest and requires renewed
 review and authorization before the corresponding live role operation.
 
+Neither Role A nor Role B is required by the clean-start sequence. In
+particular, Role B must remain uncreated and unbound. Any later cleanup of an
+already existing Role A binding is a separate IAM decision and is not
+authorized by this brief.
+
 Each observation is itself a production `inventory.js` run. Each run requires
 its own separately approved, time-bounded, checksum-bound inventory
 authorization, the final clean reviewed commit, and the explicit credential;
@@ -419,42 +466,24 @@ The two observations must agree exactly on all five deployment surfaces and
 active-writer classification; any mismatch aborts unless a separately
 authorized triangulation procedure proves its cause and receives review.
 
-The current correction has an exceptional retained-state baseline. Three files
-already exist: the pre-`773ac6c` inventory and expectations artifacts plus the
-N9 inventory captured at `fa33d025`. The first two were already superseded;
-the third becomes superseded when this IAM-contract correction produces a
-reviewed successor commit. Preserve all three. Repeating N9 at that successor
-creates the fourth file, and the matching N10 creates the fifth. A separately
-approved new preflight-expectations artifact later becomes the sixth file
-before preflight, and a successful preflight adds its immutable manifest as the
-seventh. A triangulation fallback or a selected N11 route that changes the
-deployed surface adds another separately authorized observation and requires
-updated accounting and review. Never delete, overwrite, or repurpose any
-superseded file in `functions/phase3/.state/`.
+Every file retained under `functions/phase3/.state/` at the pivot remains
+immutable historical evidence, including superseded inventory/expectations
+artifacts and the corrected N9/N10 observations. Clean start creates no new
+inventory, expectations, preflight manifest, journal, or triangulation file.
+Never delete, overwrite, repurpose, or change the 0400 mode of a retained file.
 
-### Open control-plane evidence blockers
+### Retired migration-only control-plane blocker
 
-`PHASE3_FUNCTIONS_COPY_EXPECTATIONS_PREDICTABILITY` (N11) remains an open High
-release blocker. Copy expectations are bound before the release sequence can
-produce complete post-deploy Gen2 function resources whose server-assigned
-fields are included in the digest. Routes A, B, and C remain unselected and
-unauthorized. Route B may use an already deployed and observed gate-off surface
-for both initialization and copy expectations, but selecting any route requires
-its own bounded review.
+`PHASE3_FUNCTIONS_COPY_EXPECTATIONS_PREDICTABILITY` (N11) applied only to
+pre-binding expectations for post-deploy Gen2 resources used by the legacy-copy
+writer. The clean-start route has no copy expectations, preflight manifest,
+writer invocation, or copied Functions surface. N11 therefore has no surviving
+release requirement: it is dissolved, not renamed or deferred. Routes A, B,
+and C remain unselected because no route is needed.
 
-Until one route is selected, N11 blocks preflight-authorization authoring,
-preflight execution, expectations finalization, write-authorization authoring,
-deployment preparation, and writer invocation 1. It does not block the two
-separately authorized N9/N10 inventory observations themselves. N11 cannot be
-closed by the unchanged-read stability correction, IAM verification, emulator
-fixtures, local canonicalization tests, parameter defaults, or approximated or
-hand-authored expected digests.
-
-The separate deployed-Rules checksum limitation also remains open at the later
-Rules/release boundary: the observed deployed checksum does not match a
-checksum-pinned repository Rules artifact. Neither limitation closes the other,
-and both require separately reviewed evidence before their affected release
-step may proceed.
+This conclusion does not weaken the independent final-Rules checksum gate. The
+clean-start release must still verify the deployed final rules against the
+reviewed repository artifact before gate activation.
 
 The strict preflight authorization self-identifies as the production read-
 preflight kind and binds the full lowercase reviewed commit SHA in addition to
@@ -518,75 +547,72 @@ can invalidate retained Phase 3 manifest checksums.
 
 ## 9. Release ordering and abort criteria
 
-1. Complete and independently review local Phase 3 implementation.
-2. Run credential-isolated unit, rules, migration, browser, release, and
-   rollback rehearsals.
-3. Make the separate least-privilege credential/IAM decision. While the
-   candidate still holds only the base control-plane role and Hosting Viewer:
-   Obtain separate, checksum-bound authorization for the base-role observation.
-4. Run only `functions/phase3/inventory.js` for the approved base-role
-   observation at the final clean reviewed successor commit and retain its
-   immutable, non-authorizing artifact. The `fa33d025` observation is preserved
-   but cannot satisfy this corrected step.
-5. Under a separate approved IAM mutation, bind only the reviewed stable
-   Firestore/Auth reader (Role A) from its exact tracked, checksum-bound file.
-   Verify its definition and binding, prove the base role and Hosting Viewer are
-   unchanged, and prove Role B is neither created nor bound. A Role A
-   sufficiency probe, if used, is a separate explicitly authorized production
-   read performed with the existing explicit credential; it must not add
-   `roles/iam.serviceAccountTokenCreator` or use preflight as discovery. Then
-   obtain a separate checksum-bound inventory authorization, run
-   `functions/phase3/inventory.js` for the final-read-set observation, retain
-   its immutable artifact, and freeze the verified read set.
-6. Independently corroborate and compare the deployment surface names, counts,
-   current releases/versions, parameters, indexes, and active writers. Complete
-   Claude detailed review and Grok independent review of both inventories, the
-   comparison, and the final-read-set observation. Abort on any disagreement or
-   unexplained surface; exact equality of all five deployment surfaces and
-   active-writer classification is required.
-7. Only after an N11 route is separately reviewed and selected may expectations
-   be finalized. Author and checksum the exact preflight expectations, using
-   the still-current reviewed final-read-set observation for every inventory-
-   derived deployment and active-writer value. Then obtain separate
-   authorization for the full read-only production preflight.
-8. Record deployed rules, Functions, Hosting, parameters, foundation, paths,
-   counts, shapes, IDs, credentials/logs, Auth compatibility, indexes, and
-   active writers.
-9. Abort on any unexplained state, malformed ID, duplicate, divergence,
-   missing recovery prerequisite, or unreviewed production assumption.
-10. Obtain separate production write/deploy authorization and a separate IAM
-    authorization bound to the reviewed Role B file. Create and bind Role B
-    only at that writer boundary while Role A remains bound and unchanged
-    through both writer invocations and re-verification.
-11. Enter maintenance/write freeze and capture the production export/snapshot
-   plus final immutable checksums.
-12. Create or validate the existing teacher/classroom foundation
-   administratively. No invitation is created.
-13. Initialize/reserve classroom login code and student counter under the
-   reviewed manifest.
-14. Deploy and verify bridge rules.
-15. Deploy V2 Functions with the V2 gate off.
-16. Run classroom migration and scoped credential/log copy.
-17. Reconcile all paths, counts, checksums, UID mappings, source immutability,
-    and sensitive-path denials. Any mismatch aborts before activation.
-18. Deploy final ownership rules.
-19. Set the reviewed release identifier and enable the server gate.
-20. Deploy the gate-on Hosting artifact.
-21. Run existing-teacher and existing-student acceptance.
-22. End write freeze only after acceptance succeeds.
-23. Observe through the rollback window; do not onboard a second real teacher.
+N11, preflight, migration writes, reconciliation, Role B, the maintenance
+freeze, snapshot, bridge rules, and legacy acceptance have no step in this
+sequence. The absence is deliberate: nothing is copied from V1. The old test
+documents remain untouched and client-denied under final rules.
 
-Rollback after scoped credentials exist:
+1. Complete Codex implementation and local verification, close Claude's
+   detailed review, then close the bounded Grok 5,000-foot review.
+2. Run the complete credential-isolated local gate, including the gate-on
+   fresh-classroom Auth/Functions/Firestore seam and final-rules orphan denial.
+3. Record the exact reviewed commit, V2 Functions artifact, gate-on Hosting
+   artifact, final-rules hash, and the code-pinned Functions release ID
+   `phase3-commit8-functions-v1`. Verify Role B remains uncreated and unbound.
+4. Under separate deployment authorization, deploy the reviewed V2 Functions
+   with `MULTI_TEACHER_V2_ENABLED=false`. No V2 callable may succeed yet.
+5. Deploy and independently verify the checksum-pinned final rules. Do not
+   deploy bridge, rollback-safe, or recursive baseline rules.
+6. Prove final rules permit a fresh reciprocal owner to read/write only its
+   classroom, permit exact student self-read only with an active reciprocal
+   foundation, and deny legacy blobs, phantom-parent legacy mirrors,
+   credentials, control documents, and cross-tenant access.
+7. Configure `MULTI_TEACHER_V2_RELEASE_ID` to exactly
+   `phase3-commit8-functions-v1`, set `MULTI_TEACHER_V2_ENABLED=true`, and apply
+   the parameter change to the same reviewed Functions artifact. Independently
+   verify both deployed values and one generic fail-closed negative probe before
+   continuing.
+8. Deploy and verify the reviewed gate-on Hosting artifact. Hosting must not
+   turn on before final rules and the server gate.
+9. Under a separate administrative-data-write authorization, create Andrew's
+   time-bounded invitation in the Firebase console. Its document ID is
+   `hashEmailDigest(normalizedEmail)` and its exact fields are normalized
+   `email`, `status: "active"`, `createdAt`, and a future Firestore Timestamp
+   `expiresAt`. No client can create or read this document.
+10. Sign in with the invited, verified Google account and invoke the normal
+    `onboardTeacherClassroomV2` path. Verify one consumed invitation, one active
+    teacher, one reciprocal classroom, one active classroom-code index, and
+    `nextStudentNumber: 1`; do not hand-build the foundation.
+11. Run fresh-account acceptance: `createStudentV2` allocates student `"1"`;
+    the returned login ID and submitted PIN authenticate through
+    `studentPinLoginV2`; a teacher balance/transaction batch is readable by the
+    teacher and reflected in exact student self-read; cross-tenant reads fail;
+    `removeStudentV2` deletes the student, retains and deactivates the
+    credential, preserves the transaction, and leaves the counter at `2`.
+12. Abort on any mismatch, revoke/disable the affected fresh test identity as a
+    separately authorized containment action if needed, and do not add real
+    students or a second real teacher.
+13. Observe through the recorded pre-school rollback window. Preserve all
+    fresh and legacy records and every immutable historical artifact.
 
-1. retain or re-enter write freeze;
+Clean-start rollback before real-student rollout:
+
+1. stop onboarding and acceptance activity, and obtain explicit rollback
+   authorization;
 2. roll Hosting back to the recorded default-off artifact;
-3. disable the V2 server gate;
-4. deploy the checksum-pinned rollback-safe rules;
-5. reconcile untouched flat credentials and legacy data; and
-6. resume only after legacy acceptance passes.
+3. disable the V2 server gate and independently verify V2 callables fail
+   closed;
+4. retain the final rules so scoped credentials, legacy blobs, and orphaned
+   legacy mirrors remain client-denied — deploy neither rollback-safe rules nor
+   the recursive baseline;
+5. preserve all fresh and legacy documents without migration, reconciliation,
+   cleanup, or legacy write resumption; and
+6. diagnose and return through the full forward clean-start sequence after a
+   reviewed correction.
 
-Never redeploy the current recursive baseline rules while scoped credentials
-exist.
+This rollback is a pre-real-user service withdrawal, not a return to V1. It is
+not sufficient after real students are admitted; that later authority boundary
+requires a newly reviewed continuity and containment plan.
 
 ## 10. Cache, invalidation, and rollback residue
 
@@ -607,10 +633,19 @@ Existing files:
 
 - `index.html`
 - `functions/index.js`
+- `functions/phase2b/teacherOnboarding.js` and directly affected test, only to
+  initialize the V2 classroom counter at the invitation-controlled boundary
 - `functions/phase2b/syncStudentProfiles.js` and directly affected test
 - `src/phase2b/tenantSession.js`, `tenantCache.js`, `tenantClient.js`, and
   directly affected tests
 - `firestore.rules`
+- `firestore.phase3.final.rules` and
+  `tests/firestore/rules.phase3.final.test.js`, only to require an active
+  reciprocal foundation for student self-read and deny orphaned legacy mirrors
+- `tests/phase2b/functions-auth.emulator.test.js`, only for the complete fresh-
+  classroom seam
+- `tests/phase3/release-order.contract.test.js`, only to replace migration
+  ordering assertions with non-vacuous clean-start and rollback invariants
 - `package.json`, `functions/package.json`, and lockfiles only as required
 - `.gitignore`, only to add the exact `functions/phase3/.state/` runtime-state
   entry required by the production manifest contract
@@ -620,7 +655,7 @@ Existing files:
   actually exist in the same commit
 - `MULTI_TEACHER_ARCHITECTURE_PLAN.md`, this brief, and
   `PHASE3_RELEASE_RUNBOOK.md`, only to record the separately reviewed
-  production-readiness correction boundary
+  production-readiness correction or clean-start pivot boundary
 - final evidence-only documentation updates
 
 New files:
@@ -707,16 +742,24 @@ Before Phase 3 implementation proceeds beyond acceptance tests,
 - never resolve or authenticate to a real project.
 
 Every Phase 3 emulator/browser/release command inherits those protections.
-The local gates were added only when their corresponding behavior existed and
-are all present after Item 11:
+The local gates were added only when their corresponding behavior existed. The
+clean-start release gate is:
 
 ```
+npm run test:phase3:contracts
 npm run test:phase3:unit
+npm run test:phase2b:client
+npm run test:phase2b:server
+npm run test:phase2b:rules
 npm run test:phase3:rules
 npm run test:phase3:migration
 npm run test:phase3:release-rehearsal
 npm run test:phase3:rollback-rehearsal
 ```
+
+The migration and release/rollback rehearsals in this list are retained
+regression gates. They prove the dormant code remains safe and do not turn that
+code into a clean-start operator step.
 
 `test:phase3:unit` is the emulator-free Node unit gate for the colocated Phase 3
 unit suites. It requires no Firebase CLI isolation wrapper because it must not
@@ -761,6 +804,11 @@ under the narrower `npm run test:phase3:contracts` name.
     local item performs no production read and requires focused Claude review,
     Grok independent review, and Andrew's approval before any operational
     inventory authorization is prepared or used.
+14. Clean-start pivot: initialize the counter in V2 onboarding, prove the full
+    fresh-classroom seam through real emulators and final rules, deny orphaned
+    legacy mirrors to stale student tokens, retire migration operations from the
+    release order without deleting their code, and replace the source contract
+    with clean-start activation and service-withdrawal rollback invariants.
 
 Claude and Codex retain the detailed plan-build-review-correct loop. After a
 material item reaches review-quality, Grok performs the bounded read-only

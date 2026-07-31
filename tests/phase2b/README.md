@@ -24,7 +24,7 @@ A Java runtime is required for the Firestore/Auth emulators and is installed
 | `npm run test:phase2b:build-contract` | 6/6 |
 | `npm run test:phase2b:rules` | 29/29 |
 | `npm run test:rules` (hardened) | 36/36 |
-| `npm run test:phase2b:server` | 9/9 gate-off + 56/56 gate-on |
+| `npm run test:phase2b:server` | 9/9 gate-off + 61/61 gate-on |
 | `npm run test:phase2b:browser` | 21/21 |
 | `npm run lint` | clean |
 | `npm run build` | clean, default-off 450.95 kB; gate-on 467.56 kB |
@@ -32,6 +32,15 @@ A Java runtime is required for the Firestore/Auth emulators and is installed
 The proposed-rules contract has teeth: reintroducing the recursive
 `classrooms/{document=**}` allow into the fixture fails **16 of 29** tests,
 including the scoped-credential lockout assertions the plan calls out.
+
+The gate-on server suite also loads the checksum-pinned Phase 3 final rules and
+executes the complete clean-start seam without legacy seeding: a time-bounded
+invitation drives normal onboarding, the classroom begins at
+`nextStudentNumber: 1`, student creation returns a working login ID, PIN login
+mints the expected scoped token, a teacher balance/transaction batch survives
+teacher and student reads, both tenant-isolation directions deny, and removal
+deletes only the student while deactivating its credential and preserving the
+transaction and monotonic counter.
 
 ### `npm run test:phase2b:browser` — GREEN
 
@@ -157,7 +166,7 @@ file was changed for this verification.
 | `npm run test:functions` | 357/357 |
 | `npm run test:rules` | 36/36 |
 | `npm run test:migration` | 38/38 |
-| `npm run test:phase2b:server` | 9/9 gate-off + 56/56 gate-on |
+| `npm run test:phase2b:server` | 9/9 gate-off + 61/61 gate-on |
 | `npm run test:phase2b:client` | 84/84 |
 | `npm run test:phase2b:rules` | 29/29 |
 | `npm run test:phase2b:browser` | 21/21 |

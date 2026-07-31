@@ -60,9 +60,11 @@ import {
  * Everything else is deliberately absent. There is no delete API anywhere in
  * this file, no Auth mutation, no control-plane mutation, and no path that can
  * write a flat credential, a flat auth log, the legacy source, or the teacher
- * document. The foundation is validated, never created: Phase 1 foundation
- * creation does not establish `studentLoginCode` or `nextStudentNumber`, so an
+ * document. The foundation is validated, never created: the Phase 1 hardcoded
+ * bootstrap does not establish `studentLoginCode` or `nextStudentNumber`, so an
  * identity cannot be safely invented from a manifest that recorded its absence.
+ * Invitation-controlled V2 onboarding now establishes both fields atomically;
+ * that clean-start path never invokes this retired migration writer.
  *
  * STAGE DERIVATION. The two mutations happen in two SEPARATE INVOCATIONS,
  * because Release Order steps 10-11 (deploy bridge rules, deploy V2 Functions

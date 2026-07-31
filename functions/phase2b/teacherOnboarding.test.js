@@ -211,6 +211,10 @@ test('onboardTeacherClassroomService: successful atomic creation', async () => {
 
   assert.ok(db.store.has(`teachers/teacher-uid-1`))
   assert.ok(db.store.has(`classrooms/${result.classroom.id}`))
+  assert.equal(
+    db.store.get(`classrooms/${result.classroom.id}`).nextStudentNumber,
+    1,
+  )
   assert.ok(db.store.has(`classroomLoginCodes/23456789`))
   assert.equal(db.store.get(`teacherInvitations/${emailDigest}`).status, 'consumed')
 })

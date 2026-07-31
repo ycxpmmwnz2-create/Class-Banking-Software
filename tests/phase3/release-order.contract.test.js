@@ -7,7 +7,7 @@
 // production ordering.
 // See tests/phase3/README.md.
 //
-// Authority: PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md Sections 2, 9, 11, 14.
+// Authority: PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md Sections 2, 8, 9, 11.
 
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
@@ -41,7 +41,7 @@ const EXPECTED_RULES_SHA256 =
 const EXPECTED_BRIDGE_RULES_SHA256 =
   '4bf76a85e576a1d5b30573c3c3d5eba0d3561fb9d9a19ac14ac6382dced8d7f0'
 const EXPECTED_FINAL_RULES_SHA256 =
-  '414ab5cad328b4b254fe4397ec891f0b7639548c324d2ae0ee74c8db0a9639f3'
+  '1a5994098bd3041c578bb5578cd299fe24b12263ce390e65c4f21fb274849c71'
 const EXPECTED_ROLLBACK_RULES_SHA256 =
   'c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d'
 const EXPECTED_PHASE3_DATA_PLANE_READER_SHA256 =
@@ -83,17 +83,39 @@ function parseNumberedSteps(markdown) {
 function releaseOrderingSteps() {
   const section = brief.split('## 9. Release ordering and abort criteria')[1]
   assert.ok(section, 'Section 9 must exist in the brief')
-  const beforeRollback = section.split('Rollback after scoped credentials exist')[0]
+  const beforeRollback = section.split(
+    'Clean-start rollback before real-student rollout:',
+  )[0]
   const steps = parseNumberedSteps(beforeRollback)
-  assert.ok(steps.length >= 19, `expected the full ordering list, got ${steps.length}`)
+  assert.ok(steps.length >= 13, `expected the full ordering list, got ${steps.length}`)
   return steps
 }
 
 function rollbackSteps() {
-  const section = brief.split('Rollback after scoped credentials exist')[1]
+  const section = brief.split(
+    'Clean-start rollback before real-student rollout:',
+  )[1]
   assert.ok(section, 'the rollback sequence must exist in the brief')
   const steps = parseNumberedSteps(section.split('\n## ')[0])
   assert.ok(steps.length >= 6, `expected the rollback list, got ${steps.length}`)
+  return steps
+}
+
+function runbookReleaseSteps() {
+  const section = runbook.split('## Production release sequence')[1]
+  assert.ok(section, 'the runbook production release sequence must exist')
+  const steps = parseNumberedSteps(section.split('\n## Abort criteria')[0])
+  assert.equal(steps.length, 12, 'the runbook must retain all 12 clean-start steps')
+  return steps
+}
+
+function runbookRollbackSteps() {
+  const section = runbook.split(
+    '## Clean-start rollback before real-student rollout',
+  )[1]
+  assert.ok(section, 'the runbook clean-start rollback sequence must exist')
+  const steps = parseNumberedSteps(section.split('\n## Evidence record')[0])
+  assert.equal(steps.length, 6, 'the runbook must retain all 6 rollback steps')
   return steps
 }
 
@@ -120,73 +142,106 @@ function assertOrderedMarkers(source, markers, description) {
 }
 
 describe('Phase 3 release-order source contract', () => {
-  it('source contract: the existing foundation precedes bridge-rules deploy', () => {
+  it('source contract: gate-off Functions precede final rules, then gate enable, then gate-on Hosting', () => {
     const steps = releaseOrderingSteps()
-    const foundation = stepIndex(steps, /foundation/i, /validate|create/i)
-    const bridge = stepIndex(steps, /bridge rules/i, /deploy/i)
-    assert.ok(
-      foundation < bridge,
-      `foundation (step ${steps[foundation].number}) must precede bridge rules (step ${steps[bridge].number})`,
+    const functionsGateOff = stepIndex(
+      steps,
+      /deploy/i,
+      /V2 Functions/i,
+      /MULTI_TEACHER_V2_ENABLED=false/i,
     )
-  })
-
-  it('source contract: bridge rules precede the first scoped credential write', () => {
-    const steps = releaseOrderingSteps()
-    const bridge = stepIndex(steps, /bridge rules/i, /deploy/i)
-    // Anchored on "Run classroom migration and scoped credential/log copy".
-    // A looser /copy|migration/ also matches the step-2 rehearsal line, which
-    // would make this assertion pass for the wrong reason.
-    const credentialCopy = stepIndex(steps, /scoped credential\/log copy/i)
-    assert.ok(
-      bridge < credentialCopy,
-      'no scoped credential may be written while a recursive classrooms/** allow could be deployed',
-    )
-  })
-
-  it('source contract: final rules precede gate enable, which precedes gate-on Hosting', () => {
-    const steps = releaseOrderingSteps()
     const finalRules = stepIndex(steps, /final/i, /rules/i, /deploy/i)
-    const gateEnable = stepIndex(steps, /enable/i, /gate/i)
-    const hosting = stepIndex(steps, /hosting/i, /gate-on/i)
+    const gateEnable = stepIndex(
+      steps,
+      /MULTI_TEACHER_V2_ENABLED=true/i,
+      /MULTI_TEACHER_V2_RELEASE_ID/i,
+    )
+    const hosting = stepIndex(steps, /deploy/i, /hosting/i, /gate-on/i)
+    assert.ok(functionsGateOff < finalRules, 'gate-off Functions must precede final rules')
     assert.ok(finalRules < gateEnable, 'final rules must precede gate enable')
     assert.ok(gateEnable < hosting, 'gate enable must precede gate-on Hosting')
   })
 
-  it('source contract: reconciliation precedes activation and any mismatch aborts', () => {
+  it('source contract: final-rules verification aborts before activation on any mismatch', () => {
     const steps = releaseOrderingSteps()
-    const reconcile = stepIndex(steps, /reconcile/i)
-    const finalRules = stepIndex(steps, /final/i, /rules/i, /deploy/i)
-    assert.ok(reconcile < finalRules, 'reconciliation must precede final rules')
+    const verification = stepIndex(
+      steps,
+      /final rules/i,
+      /phantom-parent legacy mirrors/i,
+    )
+    const gateEnable = stepIndex(
+      steps,
+      /MULTI_TEACHER_V2_ENABLED=true/i,
+      /MULTI_TEACHER_V2_RELEASE_ID/i,
+    )
+    assert.ok(verification < gateEnable, 'rules verification must precede gate enable')
     assert.match(
-      steps[reconcile].text,
-      /abort/i,
-      'the reconciliation step must state that a mismatch aborts',
+      steps[verification].text,
+      /deny/i,
+      'the rules verification must require explicit legacy and isolation denials',
     )
   })
 
-  it('source contract: rollback rolls Hosting back, disables the gate, then installs rollback-safe rules', () => {
+  it('source contract: invitation precedes normal onboarding, which precedes fresh-account acceptance', () => {
+    const steps = releaseOrderingSteps()
+    const invitation = stepIndex(steps, /invitation/i, /Firebase console/i)
+    const onboarding = stepIndex(steps, /onboardTeacherClassroomV2/i)
+    const acceptance = stepIndex(steps, /fresh-account acceptance/i)
+    assert.ok(invitation < onboarding, 'the time-bounded invitation must precede onboarding')
+    assert.ok(onboarding < acceptance, 'normal onboarding must precede fresh acceptance')
+    assert.match(steps[onboarding].text, /nextStudentNumber: 1/)
+    for (const marker of [
+      /createStudentV2/,
+      /studentPinLoginV2/,
+      /balance\/transaction batch/,
+      /cross-tenant reads fail/,
+      /removeStudentV2/,
+      /counter at `2`/,
+    ]) {
+      assert.match(steps[acceptance].text, marker)
+    }
+  })
+
+  it('source contract: migration operations are retired rather than silently reordered', () => {
+    const steps = releaseOrderingSteps()
+    const sequence = steps.map(step => step.text).join('\n')
+    for (const forbidden of [
+      /functions\/phase3\/inventory\.js/,
+      /functions\/phase3\/preflight\.js/,
+      /functions\/phase3\/write\.js/,
+      /functions\/phase3\/reverify\.js/,
+      /deploy (?:and verify )?bridge rules/i,
+      /create and bind Role B/i,
+      /maintenance\/write freeze/i,
+      /existing-student acceptance/i,
+    ]) {
+      assert.doesNotMatch(sequence, forbidden)
+    }
+    assert.match(brief, /N11 therefore has no surviving\s+release requirement: it is dissolved/)
+    assert.match(brief, /Role B must remain uncreated and unbound/)
+  })
+
+  it('source contract: rollback withdraws Hosting and the gate while retaining final rules and no legacy writes', () => {
     const steps = rollbackSteps()
     const hosting = stepIndex(steps, /hosting/i, /roll/i)
     const gateDisable = stepIndex(steps, /disable/i, /gate/i)
-    const rollbackRules = stepIndex(steps, /rollback-safe rules/i)
-    const resume = stepIndex(steps, /resume/i)
+    const finalRules = stepIndex(steps, /retain/i, /final rules/i)
+    const preserve = stepIndex(steps, /preserve/i, /legacy write resumption/i)
     assert.ok(hosting < gateDisable, 'Hosting default-off precedes gate disable')
-    assert.ok(gateDisable < rollbackRules, 'gate disable precedes rollback-safe rules')
-    assert.ok(
-      rollbackRules < resume,
-      'rollback-safe rules must be installed before legacy writes resume',
-    )
+    assert.ok(gateDisable < finalRules, 'gate disable precedes final-rules retention proof')
+    assert.ok(finalRules < preserve, 'final rules stay active before preservation is claimed')
+    assert.match(steps[finalRules].text, /neither rollback-safe rules nor\s+the recursive baseline/i)
   })
 
   it('source contract: the recursive classrooms/** baseline is never redeployed', () => {
     assert.match(
       brief,
-      /Never redeploy the current recursive baseline rules while scoped credentials\s+exist\./,
+      /deploy neither rollback-safe rules nor\s+the recursive baseline/,
       'the brief must retain the absolute prohibition on the recursive baseline rule',
     )
     assert.match(
       brief,
-      /All three artifacts delete the recursive `classrooms\/\{document=\*\*\}` client/,
+      /All three retained artifacts delete the recursive\s+`classrooms\/\{document=\*\*\}` client/,
       'all three rules artifacts must delete the recursive client allow',
     )
   })
@@ -201,20 +256,22 @@ describe('Phase 3 release-order source contract', () => {
       /calls versioned V2 Function names/i,
       /not silently mapped to incompatible V2/i,
       /fail closed for stale\s+clients/i,
-      /foundation precedes ownership-dependent bridge rules/i,
-      /separate checksum-pinned and\s+independently tested artifacts/i,
-      /separate entrypoints/i,
+      /final rules before the V2 server gate/i,
+      /only final rules are deployed/i,
+      /not run for the clean-start release/i,
     ]) {
       assert.match(section, pattern)
     }
   })
 
-  it('source contract: inventory, preflight, write, and reverify are separate entrypoints', () => {
-    const section = brief.split('## 8. Production runner contract')[1].split('\n## ')[0]
+  it('source contract: retained migration entrypoints stay separate and dormant', () => {
+    const section = brief.split('## 8. Retained migration runner contract')[1]
+      .split('\n## ')[0]
     assert.match(section, /functions\/phase3\/inventory\.js/)
     assert.match(section, /functions\/phase3\/preflight\.js/)
     assert.match(section, /functions\/phase3\/write\.js/)
     assert.match(section, /functions\/phase3\/reverify\.js/)
+    assert.match(section, /clean-start release does not run\s+any of them/)
     assert.match(
       section,
       /no shared write subcommand, `--force`, production override/,
@@ -264,39 +321,37 @@ describe('Phase 3 release-order source contract', () => {
     }
   })
 
-  it('boundary: Boundary 11 runbook binds release and rollback to the reviewed order', () => {
+  it('boundary: the runbook binds the clean-start release and withdrawal rollback to the reviewed order', () => {
     assert.match(runbook, /local rehearsal evidence only; not production authorization/i)
-    assertOrderedMarkers(runbook, [
-      'control-plane-only inventory',
-      'inventory.js',
-      'Independently corroborate',
-      'preflight expectations',
-      'preflight.js',
-      'maintenance/write freeze',
-      'teacher/classroom foundation',
-      'first invocation',
-      'bridge-rules hash',
-      'Functions with the V2 gate off',
-      'second time',
-      'reverify.js',
-      'final-rules hash',
-      'MULTI_TEACHER_V2_RELEASE_ID',
-      'gate-on Hosting artifact',
-      'existing-teacher and existing-student acceptance',
-      'End the write freeze',
-      'rollback window',
-    ], 'production release checklist')
-    assertOrderedMarkers(runbook, [
-      'Retain or re-enter and verify the write freeze',
-      'Roll Hosting back',
-      'Disable the V2 server gate',
-      'rollback-safe rules',
-      'Reconcile the untouched legacy aggregate',
-      'legacy existing-teacher and existing-student acceptance',
-      'Resume writes',
-    ], 'production rollback checklist')
-    assert.match(runbook, /Never\s+deploy the recursive `firestore\.rules` baseline/i)
-    assert.match(runbook, /Never record credential contents, private keys, access\/refresh tokens, PINs/i)
+    const release = runbookReleaseSteps()
+    const functionsGateOff = stepIndex(release, /deploy/i, /V2 Functions/i, /false/i)
+    const finalRules = stepIndex(release, /Deploy/i, /final-rules hash/i)
+    const gate = stepIndex(release, /MULTI_TEACHER_V2_RELEASE_ID/i, /true/i)
+    const hosting = stepIndex(release, /Deploy/i, /gate-on Hosting/i)
+    const invitation = stepIndex(release, /invitation/i, /administrative-data-write/i)
+    const onboarding = stepIndex(release, /onboardTeacherClassroomV2/i)
+    const acceptance = stepIndex(release, /fresh-account acceptance/i)
+    const window = stepIndex(release, /rollback window/i)
+    assert.ok(functionsGateOff < finalRules)
+    assert.ok(finalRules < gate)
+    assert.ok(gate < hosting)
+    assert.ok(hosting < invitation)
+    assert.ok(invitation < onboarding)
+    assert.ok(onboarding < acceptance)
+    assert.ok(acceptance < window)
+
+    const rollback = runbookRollbackSteps()
+    const hostingOff = stepIndex(rollback, /Hosting/i, /default-off/i)
+    const gateOff = stepIndex(rollback, /disable/i, /V2 server gate/i)
+    const keepFinal = stepIndex(rollback, /Keep/i, /final rules/i)
+    const noLegacy = stepIndex(rollback, /no legacy writes resume/i)
+    assert.ok(hostingOff < gateOff)
+    assert.ok(gateOff < keepFinal)
+    assert.ok(keepFinal <= noLegacy)
+
+    assert.match(runbook, /Never deploy the\s+recursive baseline, bridge, or rollback-safe rules/i)
+    assert.match(runbook, /Never record credential contents, private keys,\s+access\/refresh tokens, PINs/i)
+    assert.match(runbook, /Disabling the Functions gate does not revoke an already authenticated teacher's\s+direct Firestore permission/i)
   })
 
   it('boundary: the release rehearsal executes real runner and candidate-rules evidence', () => {
@@ -1003,7 +1058,7 @@ describe('Phase 3 release-order source contract', () => {
   it('boundary: the brief still declares itself planning-only', () => {
     assert.match(
       brief,
-      /Status: \*\*planning and review only\*\*/,
+      /Status: \*\*clean-start release planning and review only; not production\s+authorization\*\*/,
       'the brief must not silently become an authorization document',
     )
   })

@@ -1,407 +1,250 @@
-# Phase 3 release and rollback runbook
+# Phase 3 clean-start release and rollback runbook
 
 Status: **local rehearsal evidence only; not production authorization**
 
-This runbook binds the reviewed Phase 3 release order to executable local
-rehearsals. It does not authorize a production read, write, deployment, gate
-change, Hosting change, or rollback. Each production phase requires the
-separate approvals required by `AI_COLLABORATION_WORKFLOW.md` and
-`PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md`.
+Andrew selected a clean V2 start on 2026-07-31. No V1 application record or
+Auth user is migrated, copied, reconciled, accepted, or deleted. Existing V1
+test records remain untouched indefinitely. This runbook does not authorize a
+production read, data write, deployment, parameter or gate change, invitation,
+onboarding, IAM mutation, rollback, commit, or push. Every external transition
+requires the separate approval required by `AI_COLLABORATION_WORKFLOW.md`.
 
-## What the local rehearsals prove
+## What the local evidence proves
 
-`npm run test:phase3:release-rehearsal` uses only explicit `demo-` projects and
-fresh, credential-isolated Firebase CLI configuration. Its runner half uses
-real local Auth and Firestore emulators, the real production preflight/write/
-reverify modules, two real writer invocations, and the checksum-pinned bridge
-and final rules. Its browser half starts a fresh Auth/Functions/Firestore
-emulator lifecycle and runs Chromium under the final rules.
+`npm run test:phase2b:server` runs the gate-off and gate-on Functions suites
+against fresh credential-isolated Auth, Functions, and Firestore emulators. In
+gate-on mode, the suite loads the reviewed final rules and proves the complete
+fresh path: invitation-controlled onboarding, first lifecycle student,
+classroom-code/PIN login, custom-token Auth, teacher balance and transaction
+writes, exact student self-read, cross-tenant denial, and lifecycle removal.
+It seeds no legacy classroom or aggregate for that case.
 
-The release ledger also models control-plane transitions that a local emulator
-cannot perform: maintenance freeze, Functions deployment, server parameter
-change, Hosting deployment, acceptance sign-off, and rollback-window
-observation. Those ledger entries prove ordering and fail-closed transitions;
-they are not evidence that any production control plane changed.
+`npm run test:phase3:rules` proves the bridge, final, and rollback-safe
+artifacts independently. Final-rules evidence includes a phantom-parent legacy
+student mirror and a stale token with matching path claims; the read is denied
+because student self-read now requires an active reciprocal foundation.
 
-`npm run test:phase3:rollback-rehearsal` uses a real local Firestore emulator
-and the checksum-pinned final and rollback-safe rules. It proves legacy data
-and flat credentials remain unchanged, scoped credentials remain stored but
-client-denied, legacy teacher/student acceptance works, and writes cannot
-resume before acceptance. Hosting rollback, gate disable, freeze, and
-acceptance sign-off are modeled ordering controls only.
+`npm run test:phase3:migration`, `test:phase3:release-rehearsal`, and
+`test:phase3:rollback-rehearsal` continue to execute the retained migration
+runner and its historical two-write release ledger. They are regression
+evidence only. Passing them does not place `inventory.js`, `preflight.js`,
+`write.js`, `reverify.js`, bridge rules, rollback-safe rules, Role A, Role B, a
+freeze, snapshot, or legacy acceptance into the clean-start operator sequence.
 
-Neither rehearsal reads production, deploys anything, changes `firestore.rules`,
-uses ambient credentials, or proves current production state.
+No local gate reads production, deploys anything, changes `firestore.rules`,
+uses ambient credentials, creates an invitation, or proves current production
+state.
 
 ## Immutable rules artifacts
 
-Record and independently compare all four hashes before any authorized release:
+Record and independently compare these hashes before any separately authorized
+release:
 
-| Artifact | SHA-256 | Purpose |
+| Artifact | SHA-256 | Clean-start status |
 | --- | --- | --- |
-| `firestore.rules` | `0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50` | unchanged legacy baseline; never redeploy after scoped credentials exist |
-| `firestore.phase3.bridge.rules` | `4bf76a85e576a1d5b30573c3c3d5eba0d3561fb9d9a19ac14ac6382dced8d7f0` | gate-off migration bridge |
-| `firestore.phase3.final.rules` | `414ab5cad328b4b254fe4397ec891f0b7639548c324d2ae0ee74c8db0a9639f3` | gate-on V2 policy |
-| `firestore.phase3.rollback.rules` | `c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d` | default-off recovery policy |
+| `firestore.rules` | `0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50` | recursive V1 baseline; never deploy |
+| `firestore.phase3.bridge.rules` | `4bf76a85e576a1d5b30573c3c3d5eba0d3561fb9d9a19ac14ac6382dced8d7f0` | retained migration-only artifact; do not deploy |
+| `firestore.phase3.final.rules` | `1a5994098bd3041c578bb5578cd299fe24b12263ce390e65c4f21fb274849c71` | the only clean-start rules deployment |
+| `firestore.phase3.rollback.rules` | `c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d` | retained V1-recovery artifact; do not deploy |
 
-Never copy a candidate over `firestore.rules` for testing. The rehearsals load
-the checksum-pinned candidate bytes directly. Never deploy the recursive
-baseline rules while scoped credentials exist.
+Never copy a candidate over `firestore.rules` for testing. Never deploy the
+recursive baseline, bridge, or rollback-safe rules in the clean-start route.
 
-## Immutable IAM role definitions
+## Retained IAM definitions
 
-The IAM role inputs that must be reviewed before use are tracked outside
-runtime state:
+The migration roles remain checksum-pinned review inputs, not clean-start
+requirements:
 
-| Alias and resource | Tracked definition | Raw-byte SHA-256 | Exact permissions |
+| Alias and resource | Tracked definition | Raw-byte SHA-256 | Clean-start status |
 | --- | --- | --- | --- |
-| Role A — `projects/morgan-bank/roles/phase3DataPlaneReader` | `iam/phase3/phase3DataPlaneReader.yaml` | `4c4259c12d3d1f0188e997baac0a7fed000510357cb4b5c453de342123fad8d5` | `datastore.entities.get`, `datastore.entities.list`, `firebaseauth.users.get` |
-| Role B — `projects/morgan-bank/roles/phase3MigrationWriter` | `iam/phase3/phase3MigrationWriter.yaml` | `a97924dbbdbf025cca740a6c952791a3ec5a774b0c2277f0228d029fd272d1bf` | `datastore.databases.get`, `datastore.entities.create`, `datastore.entities.update` |
+| Role A — `projects/morgan-bank/roles/phase3DataPlaneReader` | `iam/phase3/phase3DataPlaneReader.yaml` | `4c4259c12d3d1f0188e997baac0a7fed000510357cb4b5c453de342123fad8d5` | unused; any teardown is a separate IAM decision |
+| Role B — `projects/morgan-bank/roles/phase3MigrationWriter` | `iam/phase3/phase3MigrationWriter.yaml` | `a97924dbbdbf025cca740a6c952791a3ec5a774b0c2277f0228d029fd272d1bf` | must remain uncreated and unbound |
 
-Role A supplies the production data-read set. `BatchGetDocuments` requires
-`datastore.entities.get`; `RunQuery` and `ListDocuments` require both entity
-permissions; Auth user pagination requires `firebaseauth.users.get`. The role
-deliberately omits `firebaseauth.configs.getHashConfig`, so password hashes and
-salts remain unavailable. Because project IAM cannot restrict Firestore entity
-permissions to document paths, Role A can read the entire default database,
-including student PII and credential documents. That sensitive project-wide
-exposure is accepted only for the separately authorized inspection window.
-
-Role B is the later migration write-set transition.
-`datastore.databases.get` authorizes Firestore transaction begin/rollback, and
-the entity permissions authorize only create/update. Role B never includes
-delete or Auth mutation. Its transactional document reads still depend on
-Role A's `datastore.entities.get`, and write/re-verification reconstruct the
-full Firestore/Auth reader set. Role A must therefore remain bound, with every
-tracked field unchanged, through preflight, both writer invocations, and
-re-verification. Role B's tracked definition is review evidence only: do not
-create or bind it during the Role A step. These tracked, non-secret files do not
-belong in `functions/phase3/.state/` and do not count as retained runtime
-artifacts. A byte change invalidates the listed hash and all dependent review or
-authorization.
+Do not create, bind, or widen either role for this release. Preserve the
+tracked files and every 0400 artifact under `functions/phase3/.state/` exactly
+as historical evidence. Do not use a role or retained artifact as a substitute
+for deployment authorization.
 
 ## Required local gate
 
-Run from a clean reviewed checkout, with no Google Application Default
+Run from a clean reviewed checkout with no Google Application Default
 Credentials present:
 
 ```text
 npm run test:phase3:contracts
 npm run test:phase3:unit
-npm run test:phase3:migration
+npm run test:phase2b:client
+npm run test:phase2b:server
+npm run test:phase2b:rules
 npm run test:phase3:rules
+npm run test:phase3:migration
 npm run test:phase3:release-rehearsal
 npm run test:phase3:rollback-rehearsal
 ```
 
-Any failure blocks release preparation. Preserve the command, commit SHA,
+Any failure blocks release preparation. Preserve the command, reviewed commit,
 artifact hashes, pass/fail counts, and redacted failure category. Do not rerun
-with a force, production override, alternate project, or relaxed rules.
+with a force, production override, alternate project, relaxed rules, ambient
+credential, or skipped suite.
 
-## Evidence record
+## Clean-start decisions
 
-Use an append-only record with one row per transition:
+- N11 (`PHASE3_FUNCTIONS_COPY_EXPECTATIONS_PREDICTABILITY`) is dissolved. It
+  protected copy expectations for a writer that this route never invokes; it
+  is not renamed, deferred, or replaced by a new expectation artifact.
+- Do not run `functions/phase3/inventory.js`, `preflight.js`, `write.js`, or
+  `reverify.js`.
+- Do not author an inventory authorization, expectations file, preflight or
+  write authorization, manifest, journal, snapshot, freeze proof, or copy
+  expectation.
+- Do not migrate or reconcile V1 records, flat credentials, Auth users, logs,
+  balances, transactions, IDs, or counts.
+- Do not delete production records. Old test documents are neither a release
+  blocker nor cleanup scope.
+- Do not create or bind Role B. No clean-start operation needs its write set.
+- Deploy final rules directly; bridge rules have no scoped-copy window to
+  protect.
+- Acceptance uses only fresh accounts created through the normal V2 paths.
 
-| Field | Required content |
-| --- | --- |
-| `sequence` | monotonically increasing integer |
-| `event` | exact approved transition name |
-| `timestampUtc` | UTC timestamp from the operator record |
-| `actor` | approved human/operator identity, not a token |
-| `changeId` / `releaseId` | reviewed non-secret identifiers |
-| `projectId` | exact expected project |
-| `commitSha` | reviewed source commit |
-| `artifactSha256` | applicable immutable artifact hash |
-| `evidenceSha256` | hash of the separately retained redacted evidence file |
-| `result` | `passed`, `blocked`, or `rolled-back` |
-| `notes` | redacted counts/categories only |
+## Founding-teacher invitation
 
-Never record credential contents, private keys, access/refresh tokens, PINs,
-PIN hashes, cookies, `.env` contents, or unredacted student data. A secret in
-evidence is an abort, not something to sanitize after continuing.
+The repository has no reviewed administrative invitation-creation endpoint.
+For the one founding teacher, use a separately authorized Firestore console
+write. Do not hand-build `teachers`, `classrooms`, `classroomLoginCodes`,
+students, or credentials.
+
+The invitation path is:
+
+```text
+teacherInvitations/{hashEmailDigest(normalizedEmail)}
+```
+
+The exact initial body is:
+
+```text
+email: normalized verified Google-account email
+status: "active"
+createdAt: Firestore Timestamp
+expiresAt: future Firestore Timestamp within the approved onboarding window
+```
+
+The digest may be derived offline with the reviewed
+`hashEmailDigest(normalizedEmail)` helper. Do not put the email in a command
+line, shell history, repository file, review prompt, or evidence log. Confirm
+the path and field types in the console, but never record invitation contents
+in release evidence. The callable atomically changes the invitation to
+`consumed` and adds `consumedAt` and `consumedByUid` when onboarding succeeds.
+
+Future teachers continue to require the same separately authorized console
+write until a reviewed admin path is implemented. This runbook does not create
+that future path.
 
 ## Production release sequence
 
 The following is an operator checklist, not permission to execute it.
 
-### Superseded retained-artifact gate
-
-Commit `773ac6c70eebac2db89b1394052e20a39ff7b831` changed the Functions surface
-digest algorithm by canonicalizing only `eventTrigger.eventFilters` order. All
-control-plane inventory and preflight-expectations artifacts retained before
-that commit are historical evidence only. Preserve them unchanged, but never
-reuse them, copy their Functions digests into a new artifact, or accept digest
-equality as proof that they are current.
-
-This gate is process-enforced. The inventory artifact records its producing
-commit, but neither it nor the preflight-expectations artifact carries a digest-
-algorithm identifier, and the expectations artifact carries no producing-
-commit field. A historical value may therefore either mismatch or
-coincidentally equal the corrected value if its source response was already in
-canonical filter order.
-
-The control-plane-only N9 observation retained at `fa33d025` preceded the
-tracked Role A/Role B correction. Once that correction has a reviewed successor
-commit, preserve the observation but classify it as superseded: the corrected
-N9 and N10 observations must both name the final clean reviewed successor.
-
-The normal N9/N10 sequence repeats exactly two observations at the final clean
-reviewed commit with the one read-set transition placed between them. The
-**base-role observation** runs while the candidate identity still holds only
-the existing `phase3ControlPlaneInventoryReader` custom role and
-`roles/firebasehosting.viewer`, before the stable Firestore/Auth read layer is
-bound. Under its own separate IAM mutation authorization naming the exact Role
-A resource, tracked-file SHA-256, service account, and project, create and bind
-only `phase3DataPlaneReader`; then verify its exact definition and binding.
-`phase3MigrationWriter` must remain both uncreated and unbound. The
-**final-read-set observation** runs only after that verification, with the base
-roles plus Role A forming the frozen read set.
-
-Each observation is itself a production `inventory.js` run and requires its
-own separately approved, time-bounded, checksum-bound inventory authorization
-and explicit credential. There is no unauthorized preliminary diagnostic. If
-the required comparison passes, the final-read-set observation is the fresh
-inventory that receives Claude and Grok review. Its deployment and active-
-writer values are the sole inventory source for those fields in the new
-preflight-expectations artifact; every other required field retains its own
-separately reviewed source. No third inventory run is required solely for
-expectations authoring.
-
-The two observations must agree exactly on all five deployment surfaces and
-active-writer classification; any mismatch aborts unless a separately
-authorized triangulation procedure proves its cause and receives review.
-
-The current correction starts with exactly three preserved files in
-`functions/phase3/.state/`: the pre-`773ac6c` inventory and expectations plus
-the `fa33d025` N9 inventory. Once this correction has a reviewed successor, all
-three are immutable and superseded for the corrected N9/N10 pair. The repeated
-N9 at that successor becomes the fourth file; N10 becomes the fifth. A new
-preflight-expectations artifact later becomes the sixth before preflight, and a
-successful preflight adds its immutable manifest as the seventh. A
-triangulation fallback or a selected N11 route that changes the deployed
-surface adds another separately authorized observation and requires updated
-file accounting and review. Never delete, overwrite, or repurpose a superseded
-file.
-
-### Open blocker: Functions copy-expectations predictability
-
-`PHASE3_FUNCTIONS_COPY_EXPECTATIONS_PREDICTABILITY` (N11) remains open and
-High. Complete post-deploy Gen2 function resources contain server-assigned
-fields, while the copy expectations that describe them are bound before writer
-invocation 1. Routes A, B, and C remain unselected and unauthorized. Route B
-may use an already deployed and observed gate-off surface for both
-initialization and copy expectations, but selecting any route requires a
-separate bounded review.
-
-Until one route is selected, do not author a preflight authorization, run
-preflight, finalize expectations, author write authorization, prepare a
-deployment, or invoke writer invocation 1. The two separately authorized
-N9/N10 inventory observations may proceed while N11 is open, but they do not
-resolve it. Neither the unchanged-read stability correction, IAM verification,
-emulator fixtures, local canonicalization tests, parameter defaults, nor an
-approximated or hand-authored digest can close N11.
-
-The deployed-Rules checksum limitation remains separately open at the later
-Rules/release boundary because the observed deployed checksum does not match a
-checksum-pinned repository Rules artifact. N11 does not close that limitation,
-and Rules evidence does not close N11.
-
-1. Complete local implementation, required independent review, and every local
-   gate above. Record the reviewed commit and artifact hashes.
-2. Make a separate human decision about a least-privilege explicit credential
-   and its IAM bindings. While the candidate still holds only the base
-   control-plane role and Hosting Viewer, obtain one time-bounded,
-   checksum-bound authorization for the base-role control-plane-only inventory
-   observation. The authorization is tied to `morgan-bank`, the reviewed
-   commit, change/authorization identifiers, credential provenance, and the
-   exact credential SHA-256. Its interval must be no more than two hours, and
-   the actual anchored checkout must have that exact HEAD with a clean worktree.
-3. Run only `functions/phase3/inventory.js` for the authorized base-role
-   observation, with its three required inputs: full reviewed commit SHA, that
-   observation's inventory-authorization file, and the explicit credential
-   file. Retain its immutable local `inventory-<sha256>.json` artifact. For the
-   current correction, repeat this observation at the reviewed successor; the
-   retained `fa33d025` observation cannot satisfy this step.
-4. Only under a separate approved IAM mutation bound to the reviewed
-   `phase3DataPlaneReader.yaml` SHA-256, create Role A and bind it to
-   `phase3-inventory-reader@morgan-bank.iam.gserviceaccount.com`. Verify that
-   its live resource name is exactly
-   `projects/morgan-bank/roles/phase3DataPlaneReader` and its title,
-   description, GA stage, and three-permission set exactly match the tracked
-   file; the service account has exactly the base custom role, Hosting Viewer,
-   and Role A; the base role is unchanged; the service account's own IAM policy
-   remains empty; inherited and resource-level searches reveal no additional
-   grant; and Role B is neither present in the custom-role catalog nor bound in
-   project IAM. Any other policy delta aborts. Credential creation and IAM
-   changes are not part of an inventory operation and require their own
-   authority.
-
-   A live Role A sufficiency probe is a separate production-read boundary, not
-   implicit permission to run preflight. If separately authorized, authenticate
-   directly with the existing explicit service-account credential and prove
-   `BatchGetDocuments` against a high-entropy absent document, zero-result
-   `RunQuery`, `ListDocuments` beneath a high-entropy absent parent, and the
-   actual Auth pagination method (`accounts:batchGet`). The probe must consume
-   and discard response bodies without logging or persistence and emit only
-   fixed status/category evidence; it must not print or retain document or user
-   contents. Never add
-   `roles/iam.serviceAccountTokenCreator` for this probe. A 403, unexpected
-   response shape, disclosed record, or any need to widen Role A aborts back to
-   review.
-5. Obtain a new, separate time-bounded, checksum-bound inventory authorization
-   for the final-read-set observation. Then run
-   `functions/phase3/inventory.js` with that authorization, the same final clean
-   reviewed commit, and the explicit credential. Retain its distinct immutable
-   `inventory-<sha256>.json` artifact. Each artifact is not an expectation,
-   preflight manifest, or write authorization.
-6. Independently corroborate in Firebase or Google Cloud Console the named
-   deployment surfaces, counts, current release/version identities, gate
-   parameters, index presence, and active writers. Console evidence is not
-   claimed to reproduce canonical resource digests. Any disagreement or
-   unexplained surface aborts; exact equality of all five deployment surfaces
-   and active-writer classification is required. Claude performs detailed
-   read-only review of both retained inventories, their comparison, the final-
-   read-set observation, and the corroboration record; Grok then performs the
-   independent 5,000-foot review. Andrew transports complete verdicts and is
-   not expected to judge technical correctness.
-7. Only after both reviews close, an N11 route is separately reviewed and
-   selected, the final-read-set observation remains current under that route, and
-   Andrew approves the next boundary, author and
-   checksum the exact preflight expectations, using the final-read-set
-   observation for every inventory-derived deployment and active-writer value
-   and separately reviewed sources for all other required fields. Retain that
-   artifact as the sixth retained state file for the current correction. Obtain
-   a new, separate read-only preflight authorization bound to those exact bytes, the
-   explicit credential, and the full lowercase reviewed commit SHA. The
-   authorization must carry the exact production-preflight kind and a validity
-   interval no longer than two hours. Do not use a failing preflight as
-   discovery: its retained/error evidence intentionally does not disclose the
-   opaque deployed values needed to author expectations.
-8. Run only the separate `functions/phase3/preflight.js` entrypoint with its
-   four required reviewed inputs: teacher UID, read-authorization file,
-   expectations file, and explicit credential file. The entrypoint
-   machine-verifies the authorization's exact reviewed commit and a clean
-   anchored worktree before opening the credential. Record its immutable
-   manifest. Abort on any
-   unexpected path, shape, count, ID, duplicate, UID mapping, credential/log,
-   Auth compatibility, index, active writer, or recovery prerequisite.
-9. Obtain separate production write/deploy authorization and a separate IAM
-   mutation authorization bound to the reviewed
-   `phase3MigrationWriter.yaml` SHA-256. Only at this writer boundary, create
-   Role B and bind it to the same service account while leaving Role A bound and
-   unchanged. Verify Role B's resource name is exactly
-   `projects/morgan-bank/roles/phase3MigrationWriter` and its title,
-   description, GA stage, and three-permission set match the tracked file;
-   verify the service account now has exactly the base custom role, Hosting
-   Viewer, Role A, and Role B; and abort on any other IAM delta. Enter and verify
-   the maintenance/write freeze. Capture the approved export/snapshot and final
-   checksums; writes remain frozen through acceptance.
-10. Administratively create or validate the existing reciprocal
-   teacher/classroom foundation. Do not create an invitation.
-11. Invoke `functions/phase3/write.js` with only the reviewed write
-   authorization, preflight authorization, initialization expectations, copy
-   expectations, and explicit credential artifacts. The first invocation must
-   stop with `ACTION_REQUIRED/AWAITING_DEPLOYMENT` (exit 10) after reserving the
-   login code and initializing the counter. Any other result blocks progress.
-12. Deploy and verify the exact bridge-rules hash. Then deploy the reviewed V2
-   Functions with the V2 gate off. Confirm the deployed surfaces and gate-off
-   state independently before continuing.
-13. Invoke the same `write.js` entrypoint with the same immutable artifact set a
-   second time. Its journal—not an operator stage flag—selects copy. Require a
-   completed copy result.
-14. Run the separate remote/local read-only `functions/phase3/reverify.js`
-   entrypoint with the same five artifacts. Reconcile every path, count,
-   checksum, UID mapping, source-immutability assertion, Auth compatibility
-   fact, active-writer fact, and sensitive-path denial. Any mismatch aborts
-   before activation.
-
-The exact preflight authorization and explicit credential are retained outside
-Git with mode `0600` through both writer invocations and re-verification. Record
-their raw-byte SHA-256 values without recording their contents or login code,
-and keep a secure recoverable copy of the authorization. The manifest binds the
-authorization's raw-byte digest, and write/reverify require the same credential
-raw-byte SHA-256 while repeating the clean-reviewed-checkout proof. Do not delete
-the key or service account immediately after preflight. Keep Role A bound and
-unchanged after Role B is added, through both writer invocations and
-re-verification; removing or changing either role before re-verification is an
-abort. Credential privilege changes and final teardown are separate approval
-boundaries whose order must preserve those byte bindings.
-
-15. Deploy and verify the exact final-rules hash. Only after that, set the exact
-   reviewed `MULTI_TEACHER_V2_RELEASE_ID` and enable the server gate. Then deploy
-   the reviewed gate-on Hosting artifact.
-16. Perform existing-teacher and existing-student acceptance, including tenant
-    isolation and the V2 cleanup-control policy: Reset All Balances and Clear
-    Login History remain available; Clear Transaction History and Reset
-    Everything are absent and direct invocation is inert because deletion
-    requires a separately reviewed server workflow.
-17. End the write freeze only after acceptance passes. Observe through the
-    recorded rollback window and do not onboard a second real teacher.
+1. Complete Codex implementation and self-verification. Obtain Claude's
+   detailed read-only PASS, then Grok's independent 5,000-foot PASS for the
+   exact reviewed range.
+2. Run the required local gate above from the final clean reviewed commit.
+   Record only non-secret checksums, counts, and verdicts.
+3. Bind the release record to that exact commit, the reviewed Functions
+   artifact, the reviewed gate-on Hosting artifact, final-rules hash, and
+   `REVIEWED_V2_FUNCTIONS_RELEASE_ID = "phase3-commit8-functions-v1"`. Verify
+   Role B remains uncreated and unbound.
+4. Under separate deployment authorization, deploy the reviewed V2 Functions
+   with `MULTI_TEACHER_V2_ENABLED=false`. Verify every V2 callable fails closed
+   and legacy exports remain discoverable; do not invoke migration entrypoints.
+5. Deploy and verify the exact final-rules hash. Independently prove the active
+   release is the reviewed final artifact. Deploy neither bridge rules,
+   rollback-safe rules, nor the recursive baseline.
+6. Before activation, prove the deployed final rules permit only a fresh
+   reciprocal owner's scoped reads and exact client writes, permit student
+   self-read only with exact claims plus an active reciprocal foundation, and
+   deny cross-tenant access, both credential shapes, invitations, code indexes,
+   throttles, unresolved logs, V1 blobs, flat logs, and phantom-parent legacy
+   mirrors. Any mismatch aborts before activation.
+7. Configure `MULTI_TEACHER_V2_RELEASE_ID` to exactly
+   `phase3-commit8-functions-v1` and set `MULTI_TEACHER_V2_ENABLED=true`. Apply
+   those deploy-time parameters to the same reviewed Functions source and
+   independently verify both values. A wrong or blank release ID must keep
+   every V2 invocation closed.
+8. Deploy and verify the reviewed gate-on Hosting artifact. Final rules must
+   precede the server gate, and the server gate must precede gate-on Hosting.
+9. Obtain separate administrative-data-write authorization and create the one
+   time-bounded founding-teacher invitation exactly as specified above.
+10. Sign in with the invited verified Google account and complete
+    `onboardTeacherClassroomV2`. Verify exactly one consumed invitation, active
+    teacher, reciprocal classroom, active classroom-code index, and classroom
+    `nextStudentNumber: 1`. Do not create the foundation administratively.
+11. Perform fresh-account acceptance: create student `"1"` through
+    `createStudentV2`; authenticate the returned login ID and submitted PIN
+    through `studentPinLoginV2`; commit and read back an exact balance plus
+    transaction write; prove exact student self-read and cross-tenant denial;
+    then remove the student through `removeStudentV2` and verify the student is
+    absent, the credential is retained/inactive, the transaction remains, and
+    `nextStudentNumber` remains `2`.
+12. Observe through the recorded pre-school rollback window. Do not onboard a
+    second real teacher or add any real student. Preserve all fresh and legacy
+    documents and retained historical artifacts.
 
 ## Abort criteria
 
-Stop, retain/re-enter the write freeze as applicable, and do not activate or
-resume writes when any of these occurs:
+Abort without improvising when any of these occurs:
 
-- an approval, reviewed artifact, checksum, project, release ID, deployment
-  surface, snapshot, or recovery prerequisite is missing or mismatched;
-- an inventory or expectations artifact predates the Functions digest
-  correction, or any required N9/N10 observation was not repeated at the final
-  clean reviewed commit, regardless of whether an old digest compares equal;
-- a live Role A resource name is not exactly
-  `projects/morgan-bank/roles/phase3DataPlaneReader`, or its title, description,
-  stage, or permission set differs from the reviewed tracked definition; the
-  base roles change; the service account holds any fourth project role; or Role
-  B exists or is bound before the separately authorized writer boundary;
-- a Role A sufficiency probe is attempted without separate production-read
-  approval, uses impersonation or a temporary token-creator grant despite the
-  explicit credential, returns data to operator output, omits any of
-  `BatchGetDocuments`, `RunQuery`, `ListDocuments`, or `accounts:batchGet`, or
-  fails to prove the required read methods without widening the role;
-- Role A is removed or changed at the writer boundary; Role B's live resource
-  name is not exactly `projects/morgan-bank/roles/phase3MigrationWriter`; or its
-  title, description, stage, or permission set differs from its reviewed
-  tracked definition;
-- N11 remains open without a separately reviewed route selection, a selected
-  route makes the final-read-set observation stale, or any blocked preflight,
-  expectations, authorization, deployment-preparation, or writer action is
-  attempted early;
-- the deployed Rules checksum remains unexplained at the Rules/release boundary
-  or differs from the separately reviewed checksum-pinned artifact for that
-  stage;
-- the inventory authorization, credential checksum, validity interval, fixed
-  endpoint boundary, completeness declaration, independent corroboration, or
-  inventory review is missing or mismatched;
-- the first writer invocation does not stop at the deployment boundary, or the
-  journal is indeterminate;
-- any unexplained path, malformed/missing ID, duplicate, count/shape drift,
-  source mutation, UID/Auth incompatibility, unacknowledged active writer, or
-  sensitive-path access appears;
-- bridge/final/rollback rules behavior differs from its reviewed suite;
-- the gate turns on before final rules, Hosting turns on before the gate, or a
-  control-plane state cannot be independently observed;
-- existing-teacher or existing-student acceptance fails; or
-- evidence contains secrets or cannot be tied to the reviewed commit/change.
+- a required approval, review verdict, commit, artifact, checksum, release ID,
+  parameter value, deployment identity, or local gate is missing or mismatched;
+- Role B exists, is bound, or is proposed as part of the clean-start sequence;
+- any operator attempts to run inventory, preflight, write, reverify, migration,
+  reconciliation, deletion, snapshot, freeze, bridge, rollback-safe, or baseline
+  operations as a clean-start prerequisite;
+- final rules are not active before gate enable, or the server gate is not
+  active before gate-on Hosting;
+- a stale legacy student token can read a phantom-parent mirror, any legacy blob
+  or credential becomes client-readable, or a fresh student lacks exact self-
+  read;
+- onboarding creates anything other than one invitation/teacher/classroom/code
+  foundation with `nextStudentNumber: 1`;
+- the fresh lifecycle, login, money-write, removal, or bidirectional isolation
+  acceptance fails; or
+- evidence contains a secret, PIN, token, credential, invitation email, or
+  unredacted student data.
 
-Do not improvise repairs during the release. Preserve evidence, return to
-review, issue new immutable artifacts where required, and rehearse again.
+Preserve evidence, keep the gate closed or withdraw the release, return to
+review, and repeat the complete gate after the smallest reviewed correction.
 
-## Rollback after scoped credentials exist
+## Clean-start rollback before real-student rollout
 
-Rollback also requires explicit authorization. Preserve scoped credentials;
-do not expose, delete, or move them through a client path.
+Rollback requires explicit authorization. It is a fail-closed service
+withdrawal, not a return to V1.
 
-1. Retain or re-enter and verify the write freeze.
+1. Stop invitation and acceptance activity. Close and sign out every
+   operator-controlled acceptance client.
 2. Roll Hosting back to the recorded default-off artifact.
-3. Disable the V2 server gate and independently verify the disabled state.
-4. Deploy and verify the exact checksum-pinned rollback-safe rules. Never
-   deploy the recursive `firestore.rules` baseline.
-5. Reconcile the untouched legacy aggregate, flat credentials, Auth mappings,
-   and legacy logs. Verify scoped credentials still exist but are denied to all
-   clients under rollback-safe rules.
-6. Run legacy existing-teacher and existing-student acceptance. Resume writes
-   only after both pass; otherwise keep the freeze and escalate for review.
+3. Disable the V2 server gate and independently verify V2 callables fail closed.
+4. Keep the checksum-pinned final rules deployed. Do not deploy rollback-safe,
+   bridge, or recursive baseline rules; no legacy writes resume.
+5. Verify scoped credentials, fresh classroom records, V1 blobs, flat
+   credentials/logs, and phantom-parent legacy mirrors remain stored as
+   applicable but client-denied. Preserve them; do not migrate, reconcile, or
+   delete them.
+6. Diagnose and correct forward. Re-enter the full clean-start release sequence
+   only after the correction completes Codex, Claude, and Grok review and the
+   complete local gate passes again.
 
-The rollback rehearsal deliberately proves that modeled write authorization is
-rejected before acceptance and permits a disposable write only after the ordered
-acceptance transition.
+Disabling the Functions gate does not revoke an already authenticated teacher's
+direct Firestore permission under final rules. This rollback is therefore
+valid only while every user is an operator-controlled pre-school test identity.
+If closing those clients cannot be proven, separately authorize disabling the
+fresh teacher foundation before claiming containment. Once real students or
+independent teachers exist, this rollback is insufficient and a newly reviewed
+continuity and containment plan is required before rollout.
+
+## Evidence record
+
+Use an append-only operator record with monotonically increasing sequence,
+exact event name, UTC time, approved human actor, change/release ID, project,
+reviewed commit, applicable artifact SHA-256, retained evidence SHA-256, result,
+and redacted notes. Never record credential contents, private keys,
+access/refresh tokens, PINs, PIN hashes, cookies, invitation emails, `.env`
+contents, or unredacted student data. A secret in evidence is an abort.

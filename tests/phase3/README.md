@@ -17,6 +17,16 @@
 | 11 | Full release and rollback rehearsal | complete |
 | 12 | Evidence-only documentation corrections | complete |
 | 13 | Expectations-bootstrap control-plane inventory correction | focused review |
+| 14 | Clean-start pivot, fresh-classroom seam, and orphan denial | local verification |
+
+Item 14 retires migration operations from the production release order without
+deleting their implementation or tests. The V2 onboarding transaction now
+initializes `nextStudentNumber: 1`; the gate-on Phase 2B emulator suite proves
+the real onboarding → lifecycle create → PIN login → money write/read → tenant
+denial → removal path under final rules. Final rules additionally require an
+active reciprocal foundation for student self-read, which denies orphaned
+legacy mirrors to stale matching tokens. The retained migration, release, and
+rollback rehearsals remain regression gates only.
 
 Item 13 adds `inventory.js` as a fourth, separately authorized entrypoint. It
 is production-only but control-plane-only: after exact project, commit,
@@ -333,12 +343,21 @@ matchers reject everything indiscriminately.
 
 ### `release-order.contract.test.js`
 
-Parses Section 9 of the brief into its numbered steps and asserts foundation
-before bridge rules, bridge rules before the first scoped credential, final rules
-before gate enable before gate-on Hosting, and reconciliation before activation
-with an abort on mismatch. It parses the rollback sequence separately and asserts
-Hosting default-off before gate disable before rollback-safe rules before legacy
-writes resume.
+Parses Section 9 of the brief into its numbered clean-start steps and asserts
+gate-off Functions before final rules before gate enable before gate-on Hosting;
+explicit final-rules legacy/isolation denial before activation; administrative
+invitation before normal onboarding before fresh-account acceptance; and the
+absence of migration entrypoints, Role B creation, bridge deployment, freeze,
+or legacy acceptance from the operator sequence. It parses rollback separately
+and requires Hosting default-off, gate disable, final-rules retention, record
+preservation, and no legacy write resumption.
+
+The runbook is parsed independently into its 12 release and 6 rollback steps,
+so repeated prose elsewhere cannot satisfy ordering assertions. The contract
+also requires the runbook to state that disabling the Functions gate does not
+revoke an already authenticated teacher's direct Firestore permission; clean-
+start rollback is therefore explicitly limited to operator-controlled test
+identities before real-student rollout.
 
 Parsing the section into steps matters: a raw `indexOf` over the whole document
 would also match the identical wording in Sections 2 and 7 and could pass for
@@ -402,7 +421,8 @@ deployment state, authorize bridge deployment, or prove production data shape.
 ## Item 10 — final and rollback-safe rules evidence
 
 `firestore.phase3.final.rules` is the gate-on client policy. It requires active
-reciprocal teacher/classroom ownership, enumerates each allowed classroom
+reciprocal teacher/classroom ownership, requires the same active reciprocal
+foundation for exact student self-read, enumerates each allowed classroom
 surface, and permits only the exact client mutations used by the V2 data layer.
 Student creation and deletion remain server-only. Student, transaction, and
 login-history documents are shape-checked; immutable identity fields and
@@ -418,15 +438,16 @@ credentials if legacy writes resume after rollback.
 
 `tests/firestore/rules.phase3.final.test.js` exercises two teachers and two
 classrooms bidirectionally, exact root/student/transaction/log mutations,
-student self-read, broken foundations, credential isolation, sensitive paths,
-and anonymous denial. `tests/firestore/rules.phase3.rollback.test.js` covers the
+student self-read, disabled and broken foundations, a phantom-parent legacy
+student mirror with matching stale claims, credential isolation, sensitive
+paths, and anonymous denial. `tests/firestore/rules.phase3.rollback.test.js` covers the
 hardcoded exception, foreign teachers, legacy students, scoped shutdown, both
 credential shapes, sensitive collections, and fail-closed fallthrough. Together
 with the unchanged bridge suite, `test:phase3:rules` provides 39 behavioral
 emulator tests across the three deployment states.
 
 The final SHA-256 is
-`414ab5cad328b4b254fe4397ec891f0b7639548c324d2ae0ee74c8db0a9639f3`.
+`1a5994098bd3041c578bb5578cd299fe24b12263ce390e65c4f21fb274849c71`.
 The rollback-safe SHA-256 is
 `c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d`.
 The bridge and unchanged production pins remain as recorded above. These are
@@ -544,7 +565,7 @@ gate-off client performs a collection query on `studentAuthLogs`, so denying
 That disposition changes no bridge or rollback rule bytes.
 
 The final-rules SHA-256 for this correction is
-`414ab5cad328b4b254fe4397ec891f0b7639548c324d2ae0ee74c8db0a9639f3`.
+`1a5994098bd3041c578bb5578cd299fe24b12263ce390e65c4f21fb274849c71`.
 The bridge, rollback, and checked-in production-rule hashes are unchanged.
 
 Correction verification on 2026-07-28:

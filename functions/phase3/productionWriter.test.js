@@ -1466,23 +1466,29 @@ describe('Phase 3 production writer', () => {
       assert.equal(calls.writes.length, 0)
     })
 
-    it('refuses to renumber an already-initialized classroom', async () => {
-      const { firestore, calls } = createFakeFirestore(seedFoundation({
-        studentLoginCode: 'WXYZ-WXYZ', nextStudentNumber: 40,
-      }))
-      await assert.rejects(
-        runInitializationTransaction({
-          firestore,
-          foundation: foundationFixture({
-            studentLoginCode: 'WXYZ-WXYZ', nextStudentNumber: 40,
+    it('refuses any pre-seeded counter, including the clean-start value', async () => {
+      for (const nextStudentNumber of [1, 40]) {
+        const { firestore, calls } = createFakeFirestore(seedFoundation({
+          studentLoginCode: 'WXYZ-WXYZ', nextStudentNumber,
+        }))
+        await assert.rejects(
+          runInitializationTransaction({
+            firestore,
+            foundation: foundationFixture({
+              studentLoginCode: 'WXYZ-WXYZ', nextStudentNumber,
+            }),
+            initialization: INITIALIZATION,
+            initializedAt: INITIALIZED_AT,
+            manifest: eligibleManifest(),
           }),
-          initialization: INITIALIZATION,
-          initializedAt: INITIALIZED_AT,
-          manifest: eligibleManifest(),
-        }),
-        assertWriterError(PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED),
-      )
-      assert.equal(calls.writes.length, 0, 'the counter must never be reduced')
+          assertWriterError(PRODUCTION_WRITER_CATEGORIES.STATE_DIVERGED),
+        )
+        assert.equal(
+          calls.writes.length,
+          0,
+          `pre-seeded counter ${nextStudentNumber} must remain untouched`,
+        )
+      }
     })
   })
 
