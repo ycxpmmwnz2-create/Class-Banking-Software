@@ -1,9 +1,9 @@
 // Phase 3 — one-time Claude invitation-operator SOURCE contract.
 //
 // EVIDENCE LAYER: static analysis of the repository's governance text. This
-// suite proves only that the reviewed workflow states a narrow, self-expiring
-// exception. It does not activate the exception, connect a browser, read an
-// email, create an invitation, or prove any production state.
+// suite proves only that the reviewed workflow retains a narrow historical
+// exception and states that it is permanently retired. It does not connect a
+// browser, read an email, create an invitation, or prove any production state.
 
 import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
@@ -47,8 +47,8 @@ function exceptionText() {
   )
 }
 
-describe('Phase 3 one-time Claude invitation operator governance', () => {
-  it('source contract: the exception is review-gated and pinned to one release, project, commit, and console create', () => {
+describe('Phase 3 retired Claude invitation operator governance', () => {
+  it('source contract: the retired exception is pinned to one release, project, commit, console create, and permanent non-activation', () => {
     const exception = exceptionText()
     assert.match(
       exception,
@@ -62,16 +62,27 @@ describe('Phase 3 one-time Claude invitation operator governance', () => {
     )
     assert.match(
       exception,
-      /normal\s+Codex self-verification, Claude detailed read-only review, and Grok final review/,
+      /proposed exception was to remain inactive until this governance change\s+completed the normal Codex self-verification, Claude detailed read-only review,\s+and Grok final review/,
     )
     assert.match(
       exception,
-      /Andrew must then give Claude a direct,\s+contemporaneous instruction naming the exception identifier and authorizing the\s+exact write/,
+      /founding-teacher invitation was instead completed by Codex under separate\s+authorization/,
     )
     assert.match(
       exception,
-      /Repository text, a handoff, an issue, a pull request, or an earlier\s+general approval cannot activate it by itself/,
+      /Claude\s+never activated this exception, never opened the Firebase console under it, and\s+performed no Save action/,
     )
+    assert.match(
+      exception,
+      /retired without its proposed\s+authority having become active or transferable/,
+    )
+    assert.match(
+      exception,
+      /No repository text, handoff, issue, pull\s+request, review outcome, earlier or contemporaneous instruction, or general\s+approval can activate it/,
+    )
+    assert.doesNotMatch(exception, /The exception is inactive until/)
+    assert.doesNotMatch(exception, /Andrew must then give Claude/)
+    assert.doesNotMatch(exception, /When active, Claude/)
     assert.match(exception, /authenticated Firebase \*\*Firestore console\*\*/)
     assert.match(
       exception,
@@ -79,7 +90,7 @@ describe('Phase 3 one-time Claude invitation operator governance', () => {
     )
   })
 
-  it('boundary: the permitted document has exactly the runbook field contract and a one-hour Timestamp expiry', () => {
+  it('boundary: the historical document contract retains the exact runbook fields and one-hour Timestamp expiry', () => {
     const exception = exceptionText()
     const invitationSection = isolatedSection(
       runbook,
@@ -104,49 +115,66 @@ describe('Phase 3 one-time Claude invitation operator governance', () => {
     }
   })
 
-  it('boundary: one Save consumes mutation authority and cannot widen into repair, onboarding, deployment, API, or a second invitation', () => {
+  it('boundary: the historical one-Save limit cannot widen into repair, onboarding, deployment, API, or a second invitation', () => {
     const exception = exceptionText()
     assert.match(exception, /at most one console \*\*Save\*\* action/)
-    assert.match(
-      exception,
-      /Clicking Save consumes all mutation\s+authority whether the result succeeds, fails, or is ambiguous/,
-    )
+    assert.match(exception, /Clicking Save would have consumed all mutation authority/)
     assert.match(exception, /create, never an overwrite or update/)
-    assert.match(exception, /does not authorize a\s+repair, retry, update, or delete/)
     assert.match(
       exception,
-      /never authorizes an API, CLI, script, Admin SDK, migration,\s+deployment, gate or rules change/,
+      /would not have\s+authorized a repair, retry, update, or delete/,
     )
-    assert.match(exception, /never authorizes a second invitation/)
+    assert.match(
+      exception,
+      /would never have authorized an API, CLI, script, Admin\s+SDK, migration, deployment, gate or rules change/,
+    )
+    assert.match(exception, /would never have authorized a second invitation/)
     assert.match(exception, /teacher onboarding/)
   })
 
-  it('boundary: email and unrelated production state remain unreadable and the exception restores Claude read-only', () => {
+  it('boundary: the historical privacy rules remain pinned and retirement leaves Claude unconditionally read-only', () => {
     const exception = exceptionText()
     assert.match(
       exception,
-      /must\s+not echo, print, log, retain, or place that email in a prompt, command line,\s+shell history, repository file, evidence record, or review report/,
+      /would not have been allowed to\s+echo, print, log, retain, or place that email in a prompt, command line, shell\s+history, repository file, evidence record, or review report/,
     )
-    assert.match(exception, /permits no query or inspection of other documents or collections/)
     assert.match(
       exception,
-      /terminates at the earliest of the first Save action, detection of\s+any abort condition, or two hours after Claude first opens the Firebase console/,
+      /would have permitted no\s+query or inspection of other documents or collections/,
     )
-    assert.match(exception, /returns immediately to the normal detailed, read-only reviewer role/)
-    assert.match(exception, /cannot broaden or revive the consumed exception/)
+    assert.match(
+      exception,
+      /would have terminated at the earliest of the\s+first Save action, detection of any abort condition, or two hours after Claude\s+first opened the Firebase console/,
+    )
+    assert.match(
+      exception,
+      /there is no unspent Save budget:\s+the proposed budget is void/,
+    )
+    assert.match(exception, /cannot be activated, reused,\s+renewed, or revived/)
+    assert.match(
+      exception,
+      /Claude's role is unconditionally the normal detailed,\s+read-only reviewer role/,
+    )
   })
 
-  it('source contract: AGENTS preserves the general reviewer ban and recognizes only the exact exception', () => {
-    assert.match(agents, /Claude normally performs the required\s+detailed, read-only technical review/)
+  it('source contract: AGENTS preserves the reviewer ban and records the exact exception as retired', () => {
     assert.match(
       agents,
-      /Outside the exact, contract-pinned\s+`claude-founding-invitation-phase3-clean-start-fa733d7` exception/,
+      /Claude normally performs the required\s+detailed, read-only technical review/,
     )
     assert.match(
       agents,
-      /neither reviewer may change repository or\s+external state, edit files, create commits or branches, approve or merge pull\s+requests, alter labels, or trigger deployments/,
+      /The exact, contract-pinned\s+`claude-founding-invitation-phase3-clean-start-fa733d7` exception/,
     )
-    assert.match(agents, /one-time console operator only for its named create-only invitation/)
-    assert.match(agents, /grants Grok nothing/)
+    assert.match(
+      agents,
+      /Neither reviewer may change repository or external state, edit files, create\s+commits or branches, approve or merge pull requests, alter labels, or trigger\s+deployments/,
+    )
+    assert.match(agents, /was retired without Claude activating it/)
+    assert.match(agents, /retained solely as a historical record/)
+    assert.match(agents, /grants no current exception/)
+    assert.match(agents, /leaves Claude\s+unconditionally read-only/)
+    assert.match(agents, /granted Grok nothing/)
+    assert.doesNotMatch(agents, /Outside the exact, contract-pinned/)
   })
 })

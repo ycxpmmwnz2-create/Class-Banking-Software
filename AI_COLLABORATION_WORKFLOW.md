@@ -230,21 +230,30 @@ without Andrew's explicit instruction.
 
 ## One-time Claude founding-invitation operator exception
 
-This is the sole exception to Claude's read-only reviewer role. It exists only
-because Andrew explicitly directed that Claude perform the already authorized
-founding-teacher invitation console write for the in-progress Phase 3 clean-
-start release. Its identifier is
+**Retired — historical record only.** This was the sole proposed exception to
+Claude's read-only reviewer role. It was created only because Andrew had
+directed that Claude perform the already authorized founding-teacher invitation
+console write for the in-progress Phase 3 clean-start release. Its identifier
+was
 `claude-founding-invitation-phase3-clean-start-fa733d7`.
 
-The exception is inactive until this governance change completes the normal
-Codex self-verification, Claude detailed read-only review, and Grok final review
-for its exact commit range. Andrew must then give Claude a direct,
-contemporaneous instruction naming the exception identifier and authorizing the
-exact write. Repository text, a handoff, an issue, a pull request, or an earlier
-general approval cannot activate it by itself.
+The founding-teacher invitation was instead completed by Codex under separate
+authorization against the reviewed application commit identified below. Claude
+never activated this exception, never opened the Firebase console under it, and
+performed no Save action. The exception is retired without its proposed
+authority having become active or transferable.
 
-When active, Claude temporarily acts as a console operator, not as a reviewer,
-for exactly this boundary:
+The proposed exception was to remain inactive until this governance change
+completed the normal Codex self-verification, Claude detailed read-only review,
+and Grok final review for its exact commit range. Andrew would then have needed
+to give Claude a direct, contemporaneous instruction naming the exception
+identifier and authorizing the exact write. Those activation conditions are
+historical and no longer actionable. No repository text, handoff, issue, pull
+request, review outcome, earlier or contemporaneous instruction, or general
+approval can activate it.
+
+Had it activated, Claude would have temporarily acted as a console operator,
+not as a reviewer, for exactly this boundary:
 
 - project: `morgan-bank`;
 - release/change ID: `phase3-clean-start-fa733d7`;
@@ -257,41 +266,51 @@ for exactly this boundary:
   string, `status: "active"` as a string, `createdAt` as a Firestore Timestamp,
   and `expiresAt` as a future Firestore Timestamp one hour after creation.
 
-Claude may use the repository's offline invitation helper and may read only the
-verified Google-account email Andrew selects for this invitation. Claude must
-not echo, print, log, retain, or place that email in a prompt, command line,
-shell history, repository file, evidence record, or review report. No token,
-cookie, credential, environment value, PIN, or unrelated browser state may be
-inspected.
+The historical boundary would have allowed Claude to use the repository's
+offline invitation helper and read only the verified Google-account email
+Andrew selected for this invitation. Claude would not have been allowed to
+echo, print, log, retain, or place that email in a prompt, command line, shell
+history, repository file, evidence record, or review report. No token, cookie,
+credential, environment value, PIN, or unrelated browser state would have been
+inspectable.
 
-Before saving, Claude must verify the exact project, collection, new document
-ID, four field names, field values, and both Timestamp types. If the target
-document already exists, any extra or mismatched field appears, the project or
-path is uncertain, the expiry is not future, or the console state is
-ambiguous, Claude must not save and must return control to Codex. The exception
-permits no query or inspection of other documents or collections.
+Before any Save, Claude would have had to verify the exact project, collection,
+new document ID, four field names, field values, and both Timestamp types. If
+the target document already existed, any extra or mismatched field appeared,
+the project or path was uncertain, the expiry was not future, or the console
+state was ambiguous, Claude would not have been allowed to save and would have
+had to return control to Codex. The historical boundary would have permitted no
+query or inspection of other documents or collections.
 
-Claude may perform at most one console **Save** action. That action must be a
-create, never an overwrite or update. Clicking Save consumes all mutation
-authority whether the result succeeds, fails, or is ambiguous. After a
-successful save, Claude may read back only that new invitation long enough to
-verify its path, exact field set and types, active status, matching email
-digest, and future expiry. Any mismatch is an abort; it does not authorize a
-repair, retry, update, or delete.
+Claude would have been allowed to perform at most one console **Save** action.
+That action would have had to be a create, never an overwrite or update.
+Clicking Save would have consumed all mutation authority whether the result
+succeeded, failed, or was ambiguous. After a successful Save, Claude would have
+been allowed to read back only that new invitation long enough to verify its
+path, exact field set and types, active status, matching email digest, and
+future expiry. Any mismatch would have been an abort and would not have
+authorized a repair, retry, update, or delete.
 
-The exception never authorizes an API, CLI, script, Admin SDK, migration,
-deployment, gate or rules change, invitation consumption, teacher onboarding,
-teacher/classroom/code-index construction, student or credential operation,
-repository edit, commit, branch, push, pull-request action, or review verdict.
-It also never authorizes a second invitation.
+The proposed exception would never have authorized an API, CLI, script, Admin
+SDK, migration, deployment, gate or rules change, invitation consumption,
+teacher onboarding, teacher/classroom/code-index construction, student or
+credential operation, repository edit, commit, branch, push, pull-request
+action, or review verdict. It would never have authorized a second invitation.
 
-The exception terminates at the earliest of the first Save action, detection of
-any abort condition, or two hours after Claude first opens the Firebase console
-under the activating instruction. The narrow read-back verification may finish
-after a successful Save, but no mutation authority survives it. Claude then
-returns immediately to the normal detailed, read-only reviewer role. Reusing or
-renewing this exception requires a new reviewed governance change; Andrew's
-approval alone cannot broaden or revive the consumed exception.
+Had the exception activated, it would have terminated at the earliest of the
+first Save action, detection of any abort condition, or two hours after Claude
+first opened the Firebase console under the activating instruction. The narrow
+read-back verification could have finished after a successful Save, but no
+mutation authority would have survived it. Claude would then have returned
+immediately to the normal detailed, read-only reviewer role.
+
+Because Claude never activated the exception and the separately authorized
+Codex operation completed the named invitation, there is no unspent Save budget:
+the proposed budget is void. This exception cannot be activated, reused,
+renewed, or revived. Claude's role is unconditionally the normal detailed,
+read-only reviewer role. Any future exception to Claude's read-only role would
+require its own newly reviewed governance change and separate authorization;
+this historical section grants none.
 
 ## Durable handoff format
 
