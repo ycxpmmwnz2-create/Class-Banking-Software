@@ -568,10 +568,9 @@ precondition, one-Save/no-retry rule, privacy boundary, and termination rule in
 `PHASE3_RELEASE_RUNBOOK.md` is normative. The recovery is not a numbered
 release step, cannot activate itself, and does not authorize onboarding.
 
-1. Codex implementation and local verification for Item 15 are complete in
-   the uncommitted working tree. Under separate commit approval, establish the
-   exact review range, close Claude's detailed review, then close the bounded
-   Grok 5,000-foot review.
+1. Complete Codex implementation and self-verification. Obtain Claude's
+   detailed read-only PASS, then Grok's independent 5,000-foot PASS for the
+   exact reviewed range.
 2. Run the complete credential-isolated local gate, including the gate-on
    fresh-classroom Auth/Functions/Firestore seam and final-rules orphan denial.
 3. Record the exact reviewed commit, V2 Functions artifact, gate-on Hosting

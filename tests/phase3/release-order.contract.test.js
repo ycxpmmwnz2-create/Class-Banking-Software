@@ -196,8 +196,12 @@ function assertInvitationRecoveryContract(markdown = runbook) {
   assert.match(preconditions, /exactly the four keys `email`, `status`,\s+`createdAt`, and `expiresAt`/)
   assert.match(preconditions, /hashes to the\s+existing document ID/)
   assert.match(preconditions, /`status` is exactly the string `"active"`/)
+  assert.match(preconditions, /`createdAt` and `expiresAt` are Firestore Timestamps/)
   assert.match(preconditions, /`expiresAt` is no\s+longer in the future/)
-  assert.match(preconditions, /No `consumedAt`, `consumedByUid`, unexpected field/)
+  assert.match(
+    preconditions,
+    /No `consumedAt`, `consumedByUid`, unexpected field, pending console edit, or\s+ambiguous state exists/,
+  )
 
   assert.match(
     section,
@@ -491,10 +495,20 @@ describe('Phase 3 release-order source contract', () => {
     assert.match(abortCriteria, /refreshed invitation expires before onboarding/i)
   })
 
-  it('source contract: recovery assertions reject widened mutation, retry, or onboarding authority', () => {
+  it('source contract: recovery assertions reject weakened preconditions or widened authority', () => {
     assertInvitationRecoveryContract(runbook)
 
     for (const [label, before, after] of [
+      [
+        'weakened Timestamp types',
+        '`createdAt` and `expiresAt` are Firestore Timestamps, and',
+        '`createdAt` and `expiresAt` are any date-like values, and',
+      ],
+      [
+        'removed pending-edit and ambiguity guard',
+        ', unexpected field, pending console edit, or\n   ambiguous state exists.',
+        ', unexpected field exists.',
+      ],
       [
         'widened field mutation',
         'permitted mutation: change only `expiresAt`',
