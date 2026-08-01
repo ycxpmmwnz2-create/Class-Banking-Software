@@ -30,6 +30,10 @@ const phase3Readme = readFileSync(
   new URL('./README.md', import.meta.url),
   'utf8',
 )
+const releaseOrderContractSource = readFileSync(
+  new URL('./release-order.contract.test.js', import.meta.url),
+  'utf8',
+)
 const iamEvidence = readFileSync(
   new URL('../../PHASE3_IAM_PERMISSION_EVIDENCE.md', import.meta.url),
   'utf8',
@@ -56,8 +60,10 @@ const EXPECTED_PHASE3_DATA_PLANE_READER_SHA256 =
   '4c4259c12d3d1f0188e997baac0a7fed000510357cb4b5c453de342123fad8d5'
 const EXPECTED_PHASE3_MIGRATION_WRITER_SHA256 =
   'a97924dbbdbf025cca740a6c952791a3ec5a774b0c2277f0228d029fd272d1bf'
-const EXPIRED_INVITATION_RECOVERY_ID =
+const TERMINATED_INVITATION_RECOVERY_V1_ID =
   'phase3-expired-founding-invitation-recovery-fa733d7-v1'
+const PRIVACY_SAFE_INVITATION_RECOVERY_V2_ID =
+  'phase3-expired-founding-invitation-recovery-fa733d7-v2'
 const REVIEWED_CLEAN_START_COMMIT =
   'fa733d780c4adb36304e857b592251c95c2be4c2'
 const RELEASE_SEQUENCE_009_SHA256 =
@@ -154,47 +160,196 @@ function invitationRecoverySection(markdown = runbook) {
   return section
 }
 
-/**
- * Pins the one-time recovery as static governance evidence. This validates the
- * isolated section rather than searching the whole runbook, where the original
- * create authority and later onboarding step deliberately use overlapping
- * invitation vocabulary.
- */
-function assertInvitationRecoveryContract(markdown = runbook) {
+function terminatedRecoveryV1Section(markdown = runbook) {
   const section = invitationRecoverySection(markdown)
+  const heading = '### Terminated v1 attempt — historical record only'
+  assert.equal(
+    section.split(heading).length,
+    2,
+    'the recovery section must contain one terminated-v1 subsection',
+  )
+  return section.split(heading)[1].split(
+    '### Privacy-preserving v2 proposal',
+  )[0]
+}
+
+function privacyRecoveryV2Section(markdown = runbook) {
+  const section = invitationRecoverySection(markdown)
+  const heading = '### Privacy-preserving v2 proposal'
+  assert.equal(
+    section.split(heading).length,
+    2,
+    'the recovery section must contain one privacy-preserving-v2 subsection',
+  )
+  return section.split(heading)[1]
+}
+
+const EXPECTED_PRIVACY_BOOLEAN_SCHEMAS = [
+  [
+    'projectIsMorganBank',
+    'databaseIsDefault',
+    'documentExists',
+    'documentIdMatchesEmailDigest',
+    'emailMatchesSelectedVerifiedGoogleAccount',
+    'hasExactFourFieldShape',
+    'statusIsActiveString',
+    'createdAtIsTimestamp',
+    'expiresAtIsTimestamp',
+    'expiresAtIsNotFuture',
+    'hasNoConsumedFields',
+    'hasNoUnexpectedFields',
+    'hasNoPendingEdit',
+    'hasNoAmbiguity',
+    'privacyBoundaryIntact',
+  ],
+  [
+    'onlyExpiresAtIsPending',
+    'targetTypeIsTimestamp',
+    'targetIsExactlyOneHourAfterConfirmedTime',
+    'emailStatusAndCreatedAtAreUnchanged',
+    'noFieldIsAddedOrRemoved',
+    'saveControlIsUnique',
+    'privacyBoundaryIntact',
+  ],
+  [
+    'saveClearlySucceeded',
+    'sameDocument',
+    'hasExactFourFieldShape',
+    'emailStatusAndCreatedAtAreUnchanged',
+    'expiresAtIsTimestamp',
+    'expiresAtMatchesTarget',
+    'privacyBoundaryIntact',
+  ],
+]
+
+function assertExactPrivacyBooleanSchemas(section) {
+  const blocks = [...section.matchAll(/^[ \t]*```text\n([\s\S]*?)\n[ \t]*```$/gm)]
+    .map(match => match[1])
+  assert.equal(
+    blocks.length,
+    EXPECTED_PRIVACY_BOOLEAN_SCHEMAS.length,
+    'v2 must define exactly the pre-edit, pre-Save, and post-Save boolean objects',
+  )
+
+  blocks.forEach((block, index) => {
+    const keys = block.split('\n')
+      .map(line => line.trim())
+      .filter(line => line !== '' && line !== '{' && line !== '}')
+      .map(line => {
+        const match = /^([A-Za-z][A-Za-z0-9]*),?$/.exec(line)
+        assert.ok(match, `boolean schema ${index + 1} contains only bare keys`)
+        return match[1]
+      })
+    assert.deepEqual(
+      keys,
+      EXPECTED_PRIVACY_BOOLEAN_SCHEMAS[index],
+      `boolean schema ${index + 1} must retain its exact ordered key set`,
+    )
+    assert.equal(
+      new Set(keys).size,
+      keys.length,
+      `boolean schema ${index + 1} must not repeat a key`,
+    )
+  })
+}
+
+function assertTerminatedRecoveryV1Contract(markdown = runbook) {
+  const section = terminatedRecoveryV1Section(markdown)
+  assert.equal(
+    section.match(new RegExp(TERMINATED_INVITATION_RECOVERY_V1_ID, 'g'))?.length,
+    1,
+    'the terminated v1 identifier must appear exactly once in its subsection',
+  )
+  assert.match(section, /privacy and evidence boundary/i)
+  assert.match(
+    section,
+    /No field was edited, no Save was clicked, no Firestore mutation occurred, and\s+onboarding did not begin/i,
+  )
+  assert.match(section, /v1 identifier terminated before any Save/i)
+  assert.match(section, /unused Save budget is void/i)
+  assert.match(section, /cannot be activated, reused, retried, renewed/i)
+  assert.match(section, /Deleting, hiding, or losing the conversation\s+cannot undo the violation or restore v1 authority/i)
+  assert.match(section, /historical subsection\s+grants no production or review exception/i)
+}
+
+/**
+ * Pins v2 as static governance evidence. It deliberately validates the isolated
+ * subsection because v1 is a terminated historical record and the original
+ * create authority uses overlapping invitation vocabulary.
+ */
+function assertPrivacyRecoveryV2Contract(markdown = runbook) {
+  const section = privacyRecoveryV2Section(markdown)
 
   assert.equal(
-    section.match(new RegExp(EXPIRED_INVITATION_RECOVERY_ID, 'g'))?.length,
+    section.match(new RegExp(PRIVACY_SAFE_INVITATION_RECOVERY_V2_ID, 'g'))?.length,
     1,
-    'the unique recovery identifier must appear exactly once in its section',
+    'the unique v2 identifier must appear exactly once in its subsection',
   )
-  assert.match(section, /repository-defined recovery proposal, not present mutation authority/i)
+  assert.match(section, /new repository-defined recovery proposal, not present mutation\s+authority/i)
   assert.match(
     section,
-    /Codex self-verification,\s+Claude detailed read-only review, Grok final read-only review, and Andrew's\s+separate contemporaneous production instruction naming the identifier/i,
+    /Codex self-verification,\s+Claude detailed read-only review, Grok final read-only review, and Andrew's new\s+separate contemporaneous production instruction naming the v2 identifier/i,
   )
   assert.match(
     section,
-    /no repository text, handoff, review verdict, earlier\s+approval, or general request can activate it/i,
+    /no repository text, handoff, review verdict, v1\s+authorization, earlier approval, or general request can activate v2/i,
   )
 
   const consoleBoundary = section.split(
-    'The recovery permits only this console boundary:',
-  )[1]?.split('Before any Save')[0]
-  assert.ok(consoleBoundary, 'the exact console boundary must be isolated')
+    'The v2 recovery permits only this console boundary:',
+  )[1]?.split('Before any invitation document can render')[0]
+  assert.ok(consoleBoundary, 'the exact v2 console boundary must be isolated')
   assert.match(consoleBoundary, /project: `morgan-bank`/)
   assert.match(consoleBoundary, /release\/change ID: `phase3-clean-start-fa733d7`/)
   assert.match(consoleBoundary, new RegExp(REVIEWED_CLEAN_START_COMMIT))
+  assert.match(consoleBoundary, /Codex controlling Andrew's user-connected Chrome\s+session in Andrew's authenticated Firebase Firestore console/)
   assert.match(consoleBoundary, /existing exact\s+`teacherInvitations\/\{hashEmailDigest\(normalizedEmail\)\}`/)
   assert.match(consoleBoundary, /permitted mutation: change only `expiresAt`/)
   assert.match(consoleBoundary, /Firestore Timestamp exactly\s+one hour after the operator-confirmed current time/i)
 
+  assert.match(
+    section,
+    /selected Chrome\s+runtime's required control documentation[\s\S]*every planned\s+read and action can suppress automatic screenshots, snapshots, page text,\s+content-bearing notifications, and action diagnostics while returning only\s+caller-selected booleans/i,
+  )
+  assert.match(
+    section,
+    /If that capability is absent, undocumented, or\s+ambiguous, v2 terminates before any invitation read/i,
+  )
+  assert.match(
+    section,
+    /No raw screenshot, DOM or accessibility snapshot, page text, clipboard,\s+console log, network record, account label, document ID, email, timestamp,\s+status value, raw field name\/value pair, or invitation content may be emitted/i,
+  )
+  assert.match(
+    section,
+    /Once the\s+`teacherInvitations` collection is selected, no page snapshot, screenshot,\s+page text, or content excerpt may be emitted at all/i,
+  )
+  assert.match(section, /inspection occurs only in transient browser-control memory/i)
+  assert.match(
+    section,
+    /Raw values must never be returned or logged[\s\S]*only as\s+the minimum non-output baseline needed to compare the same document and\s+target through pre-Save and post-Save verification, and must be cleared on\s+any abort or immediately after the final comparison/i,
+  )
+  assert.match(
+    section,
+    /Apart from the exact\s+Boolean comparisons and one-hour target addition required below, the only\s+computation on an identity value permitted there is the reviewed pure\s+`hashEmailDigest\(normalizedEmail\)` helper/i,
+  )
+  assert.match(section, /no API,\s+CLI, Admin SDK, shell\s+command, repository write, standalone script, or\s+clipboard transfer is\s+permitted/i)
+  assertExactPrivacyBooleanSchemas(section)
+  assert.match(section, /Every key must exist exactly once, every value must be the boolean `true`, and\s+no extra key or diagnostic text may appear/i)
+  assert.match(
+    section,
+    /A raw or extra output, a missing or\s+false key, a non-boolean value, an automatic browser notification containing\s+page content, or any uncertainty aborts without a Save, terminates v2/i,
+  )
+
   const preconditions = section.split(
-    'Before any Save',
-  )[1]?.split('Any failed or ambiguous precondition')[0]
-  assert.ok(preconditions, 'the pre-Save conditions must be isolated')
+    'Those booleans represent all of these preconditions, which remain normative:',
+  )[1]?.split('The operator may read only')[0]
+  assert.ok(preconditions, 'the v2 pre-Save conditions must be isolated')
   assert.match(preconditions, /exactly the four keys `email`, `status`,\s+`createdAt`, and `expiresAt`/)
-  assert.match(preconditions, /hashes to the\s+existing document ID/)
+  assert.match(
+    preconditions,
+    /normalized email of the already selected verified Google\s+account intended for step 10 and currently authenticating the console\s+session/i,
+  )
+  assert.match(preconditions, /hashes\s+to the existing document ID/)
   assert.match(preconditions, /`status` is exactly the string `"active"`/)
   assert.match(preconditions, /`createdAt` and `expiresAt` are Firestore Timestamps/)
   assert.match(preconditions, /`expiresAt` is no\s+longer in the future/)
@@ -203,28 +358,27 @@ function assertInvitationRecoveryContract(markdown = runbook) {
     /No `consumedAt`, `consumedByUid`, unexpected field, pending console edit, or\s+ambiguous state exists/,
   )
 
-  assert.match(
-    section,
-    /Any failed or ambiguous precondition aborts without a Save, terminates this\s+identifier, and permits no later recheck or correction under it/i,
-  )
-  assert.match(section, /read only that exact invitation document/i)
-  assert.match(section, /must not inspect a\s+teacher, classroom, code index, student, credential, log,\s+Auth user/i)
+  assert.match(section, /operator may read only that exact invitation document/i)
+  assert.match(section, /must not inspect\s+a teacher, classroom, code index, student, credential, log, Auth user/i)
+  assert.match(section, /invoke the unique `Edit expiresAt field` control/i)
+  assert.match(section, /Any mismatch closes the tab without Save and\s+terminates v2; there is no repair, second edit, or retry/i)
   assert.match(section, /At most one Firestore console \*\*Save\*\* is permitted/)
+  assert.match(section, /Clicking Save consumes all\s+v2 recovery mutation authority whether the result succeeds, fails, or is\s+ambiguous/i)
   assert.match(
     section,
-    /leave\s+`email`, `status`, and `createdAt` unchanged, add or remove no field, and change\s+only `expiresAt`/i,
+    /authorizes no create, delete, delete-and-recreate,\s+duplicate document, API, CLI, standalone script, Admin SDK, deployment,\s+parameter change, rules change, migration, reconciliation, onboarding, student\s+operation, or credential operation/i,
   )
-  assert.match(section, /Clicking Save consumes all recovery mutation authority\s+whether the result succeeds, fails, or is ambiguous/i)
-  assert.match(section, /There is no repair or\s+retry/i)
-  assert.match(
-    section,
-    /authorizes no create, delete, delete-and-recreate,\s+duplicate document, API, CLI, script, Admin SDK, deployment, parameter change,\s+rules change, migration, reconciliation, onboarding, student operation, or\s+credential operation/i,
-  )
-  assert.match(section, /read back only the same\s+document/i)
-  assert.match(section, /Never\s+record the email, document ID, or invitation contents/i)
-  assert.match(section, /Step 10 onboarding still requires a separate contemporaneous\s+authorization/i)
-  assert.match(section, /this identifier is spent and\s+cannot authorize another Save or extension/i)
-  assert.match(section, /Any further recovery requires a\s+newly reviewed procedure and new authorization/i)
+  assert.match(section, /inspect only the same document in\s+transient browser-control memory/i)
+  assert.match(section, /Raw invitation content must never be recorded/i)
+  assert.match(section, /Step 10 onboarding still requires a\s+separate contemporaneous authorization/i)
+  assert.match(section, /separately\s+worded clause conditional on a clearly successful v2 recovery/i)
+  assert.match(section, /v2 is spent and cannot authorize\s+another Save or extension/i)
+  assert.match(section, /Any further recovery requires a newly reviewed\s+procedure and new authorization/i)
+}
+
+function assertInvitationRecoveryContract(markdown = runbook) {
+  assertTerminatedRecoveryV1Contract(markdown)
+  assertPrivacyRecoveryV2Contract(markdown)
 }
 
 /** Index of the first step whose text matches every supplied pattern. */
@@ -477,7 +631,7 @@ describe('Phase 3 release-order source contract', () => {
     )
   })
 
-  it('source contract: expired founding-invitation recovery is one-field, one-Save, and separately authorized', () => {
+  it('source contract: v1 is terminated and privacy-preserving v2 is one-field, one-Save, and separately authorized', () => {
     assertInvitationRecoveryContract()
 
     const release = runbookReleaseSteps()
@@ -490,15 +644,50 @@ describe('Phase 3 release-order source contract', () => {
 
     const abortCriteria = runbookAbortCriteria()
     assert.match(abortCriteria, /one-time recovery lacks its exact reviews/i)
+    assert.match(abortCriteria, /v1 is reused/i)
+    assert.match(abortCriteria, /Chrome runtime cannot establish\s+content-silent control/i)
+    assert.match(abortCriteria, /fixed-key boolean\s+fails/i)
+    assert.match(abortCriteria, /browser output contains raw or extra page content/i)
+    assert.match(abortCriteria, /expected control\s+is\s+non-unique/i)
     assert.match(abortCriteria, /any field other than\s+`expiresAt` would change/i)
-    assert.match(abortCriteria, /single Save is failed or ambiguous/i)
-    assert.match(abortCriteria, /refreshed invitation expires before onboarding/i)
+    assert.match(abortCriteria, /single Save\s+is\s+failed or ambiguous/i)
+    assert.match(abortCriteria, /refreshed invitation expires before\s+onboarding/i)
   })
 
-  it('source contract: recovery assertions reject weakened preconditions or widened authority', () => {
+  it('source contract: recovery assertions reject restored v1, unsafe output, weakened preconditions, or widened authority', () => {
     assertInvitationRecoveryContract(runbook)
 
     for (const [label, before, after] of [
+      [
+        'restored v1 authority',
+        'it cannot be activated, reused, retried, renewed,\nor treated as authority for v2',
+        'it may be reused after new authorization',
+      ],
+      [
+        'raw invitation snapshots',
+        'no page snapshot, screenshot,\n   page text, or content excerpt may be emitted at all',
+        'raw page snapshots may be emitted',
+      ],
+      [
+        'missing runtime suppression prerequisite',
+        'If that capability is absent, undocumented, or\n   ambiguous, v2 terminates before any invitation read.',
+        'If that capability is absent, continue anyway.',
+      ],
+      [
+        'missing privacy key',
+        '     privacyBoundaryIntact\n   }',
+        '   }',
+      ],
+      [
+        'diagnostic output widening',
+        'no extra key or diagnostic text may appear',
+        'diagnostic text may appear',
+      ],
+      [
+        'unbound selected account',
+        'normalized email of the already selected verified Google\n   account intended for step 10 and currently authenticating the console\n   session.',
+        'normalized email of any Google account.',
+      ],
       [
         'weakened Timestamp types',
         '`createdAt` and `expiresAt` are Firestore Timestamps, and',
@@ -521,13 +710,13 @@ describe('Phase 3 release-order source contract', () => {
       ],
       [
         'retry authority',
-        'There is no repair or\nretry.',
-        'One repair or retry is permitted.',
+        'terminates v2; there is no repair, second edit, or retry.',
+        'terminates v2; one repair or retry is permitted.',
       ],
       [
         'implicit onboarding',
-        'Step 10 onboarding still requires a separate contemporaneous\nauthorization.',
-        'Step 10 onboarding is authorized by this recovery.',
+        'Step 10 onboarding still requires a\nseparate contemporaneous authorization',
+        'Step 10 onboarding is authorized by v2',
       ],
     ]) {
       assert.ok(runbook.includes(before), `${label} negative control must mutate real text`)
@@ -550,11 +739,31 @@ describe('Phase 3 release-order source contract', () => {
     assert.match(phase3Readme, new RegExp(RELEASE_SEQUENCE_009_SHA256))
     assert.match(brief, /release record now closes steps 1–9 only/i)
     assert.match(architecture, /external\s+release record.*production steps\s+1–9/is)
-    assert.match(architecture, /Item 15 locally verified with required\s+review pending/i)
+    assert.match(architecture, /Item 16 locally verified with required review pending/i)
     assert.match(phase3Readme, /\| 13 \|[^\n]+\| reviewed; dormant under clean start \|/)
     assert.match(phase3Readme, /\| 14 \|[^\n]+\| reviewed; release recorded through step 9 \|/)
-    assert.match(phase3Readme, /\| 15 \|[^\n]+\| locally verified; review pending \|/)
+    assert.match(phase3Readme, /\| 15 \|[^\n]+\| reviewed; v1 terminated without Save or mutation \|/)
+    assert.match(phase3Readme, /\| 16 \|[^\n]+\| locally verified; review pending \|/)
     assert.match(brief, /15\. Expired founding-invitation recovery and status reconciliation/)
+    assert.match(brief, /16\. Privacy-preserving expired-invitation recovery/)
+
+    const statusSources = [
+      brief,
+      runbook,
+      architecture,
+      phase3Readme,
+      releaseOrderContractSource,
+    ]
+    for (const identifier of [
+      TERMINATED_INVITATION_RECOVERY_V1_ID,
+      PRIVACY_SAFE_INVITATION_RECOVERY_V2_ID,
+    ]) {
+      const occurrences = statusSources.reduce(
+        (count, document) => count + (document.match(new RegExp(identifier, 'g'))?.length ?? 0),
+        0,
+      )
+      assert.equal(occurrences, 3, `${identifier} must appear once in runbook, brief, and contract`)
+    }
   })
 
   it('boundary: the release rehearsal executes real runner and candidate-rules evidence', () => {
@@ -1265,6 +1474,6 @@ describe('Phase 3 release-order source contract', () => {
       'the brief must not silently become an authorization document',
     )
     assert.match(brief, /This document does not authorize production inspection/)
-    assert.match(brief, /invitation recovery, real-account onboarding/)
+    assert.match(brief, /invitation\s+recovery,\s+real-account onboarding/)
   })
 })

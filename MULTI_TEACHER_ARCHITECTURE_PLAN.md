@@ -7,14 +7,17 @@ Its design-time descriptions remain as rationale, while Part 3 records later
 implementation status. Phase 2A, Phase 2B, and Phase 3 Items 1–12 are now
 implemented from local repository, unit, source-contract, emulator, rules,
 browser, release-rehearsal, and rollback-rehearsal evidence. Later Items 13–14
-closed the production-readiness correction and clean-start pivot. The external
+closed the production-readiness correction and clean-start pivot. Item 15's
+reviewed recovery v1 terminated without a Save or mutation after its browser
+output violated the privacy boundary. Item 16 defines a distinct repository-
+only privacy-preserving v2 proposal. The external
 release record bound to application commit
 `fa733d780c4adb36304e857b592251c95c2be4c2` records production steps 1–9
 through founding-invitation creation, but no onboarding or fresh-student
-acceptance. Item 15 defines a repository-only proposal for one expired-
-invitation recovery and remains subject to Claude and Grok review plus separate
-production authorization. **Live production state is never inferred from local
-evidence; only the exact recorded external events are carried forward.**
+acceptance. Item 16 remains subject to Claude and Grok review plus separate
+named v2 production authorization. **Live production state is never inferred
+from local evidence; only the exact recorded external events are carried
+forward.**
 
 This document builds directly on `GOOGLE_AUTH_MIGRATION_PLAN.md` (Phase B),
 `SECURITY_PLAN.md` ("Version 2.0 Items"), and `GOOGLE_AUTH_PHASE1_CHECKLIST.md`
@@ -3347,9 +3350,9 @@ emulator evidence)**
   later Phase 3 release record below supersedes that historical deployment and
   gate status; no migration or real second-teacher onboarding is recorded.
 
-**Phase 3 — Items 1–14 implemented and reviewed; clean-start release recorded
-through founding-invitation creation; Item 15 locally verified with required
-review pending**
+**Phase 3 — Items 1–15 implemented and reviewed; clean-start release recorded
+through founding-invitation creation; v1 recovery terminated without mutation;
+Item 16 locally verified with required review pending**
 - Items 1–14 in `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` provide the
   production environment guards, read-only preflight and immutable manifest,
   bounded two-stage writer and journal, reconciliation/reverification,
@@ -3371,10 +3374,14 @@ review pending**
   historical evidence rather than clean-start operator steps. Role B remains
   forbidden for the clean-start route.
 - The recorded founding invitation's one-hour validity window elapsed before
-  any recorded onboarding. Item 15 proposes one uniquely identified console
-  recovery that may change only the existing invitation's `expiresAt` through
-  one Save after its own reviews and Andrew's separate authorization. It
-  authorizes no production action merely by existing in the repository.
+  any recorded onboarding. Item 15's reviewed v1 recovery reached an authorized
+  pre-Save read, but browser output violated its privacy boundary. No edit, Save,
+  mutation, or onboarding occurred; v1 is permanently terminated.
+- Item 16 proposes the distinct v2 identifier. It confines raw values to
+  transient browser-control memory, emits only fixed-key booleans, and may
+  change only the existing invitation's `expiresAt` through one Save after its
+  own reviews and Andrew's separate named authorization. It authorizes no
+  production action merely by existing in the repository.
 - Founding-teacher onboarding, fresh-account lifecycle/login/money/isolation
   acceptance, and the observation window remain incomplete. Each requires the
   ordered procedure and separate authorization in
@@ -3406,11 +3413,11 @@ authorization:
 - **Repository source is not a live-state oracle.** The external release record
   supplies bounded evidence through founding-invitation creation; this plan
   does not independently re-read or extrapolate current production state.
-- **The founding invitation is recorded expired and unconsumed.** The Item 15
-  recovery proposal has completed Codex local verification but still requires
-  Claude review, Grok review, and separate named production authorization
-  before its single `expiresAt` Save can occur. It cannot authorize itself or
-  be reused.
+- **The founding invitation is recorded expired and unconsumed.** V1 terminated
+  without a Save or mutation and cannot be reused. The Item 16 v2 proposal has
+  completed Codex local verification but still requires Claude review, Grok
+  review, and separate named v2 production authorization before its single
+  `expiresAt` Save can occur. It cannot authorize itself.
 - **Onboarding and production acceptance are absent.** No founding teacher,
   reciprocal fresh classroom, lifecycle test student, money-flow acceptance,
   or observation-window completion is established by the retained evidence.

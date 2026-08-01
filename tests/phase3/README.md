@@ -18,7 +18,8 @@
 | 12 | Evidence-only documentation corrections | complete |
 | 13 | Expectations-bootstrap control-plane inventory correction | reviewed; dormant under clean start |
 | 14 | Clean-start pivot, fresh-classroom seam, and orphan denial | reviewed; release recorded through step 9 |
-| 15 | One-time expired-invitation recovery and status reconciliation | locally verified; review pending |
+| 15 | One-time expired-invitation recovery and status reconciliation | reviewed; v1 terminated without Save or mutation |
+| 16 | Privacy-preserving expired-invitation recovery v2 | locally verified; review pending |
 
 The external release record bound to reviewed application commit
 `fa733d780c4adb36304e857b592251c95c2be4c2` records production steps 1–9
@@ -30,17 +31,29 @@ invitation's one-hour validity window elapsed before any recorded onboarding.
 This README reports that bounded external evidence without claiming a fresh
 production read by a test or repository document.
 
-Item 15 adds no runtime behavior. It defines one inactive-until-reviewed
-Firestore-console recovery identifier in the runbook. After separate review
-and authorization, the boundary may update only the existing invitation's
-`expiresAt` through at most one Save, then terminates before separately
-authorized onboarding. The release-order source contract pins exact-document
-preconditions, the four-field shape, path/email digest agreement, privacy,
-one-field mutation, one-Save/no-retry termination, forbidden operations, and
-the absence of any automatic onboarding authority. Source-contract PASS is not
-permission to access Firebase or evidence that recovery occurred.
+Item 15 added no runtime behavior. It defined the v1 Firestore-console recovery
+and completed Codex, Claude, and Grok review. During its later authorized
+pre-Save read, browser-control output violated the privacy/evidence boundary.
+No edit, Save, mutation, or onboarding occurred; v1 is permanently terminated
+and grants no authority to retry.
 
-### Item 15 local verification before required review
+Item 16 also adds no runtime behavior. It defines a distinct inactive v2
+identifier whose Chrome-controlled workflow may keep raw invitation values only
+in transient browser-control memory. The runbook permits only three exact
+fixed-key boolean objects to leave the invitation page: pre-Save conditions,
+pending-edit conditions, and post-Save verification. A raw, missing, false,
+non-boolean, extra, or automatic content-bearing output terminates v2. The
+release-order source contract pins v1 termination, v2 activation gates,
+exact-document preconditions, the boolean schemas, privacy, one-field mutation,
+one-Save/no-retry termination, forbidden operations, and the absence of
+automatic onboarding authority. Source-contract PASS is not permission to
+access Chrome or Firebase and is not evidence that v2 recovery occurred.
+It also cannot prove that the selected Chrome runtime can suppress its own
+snapshots, page text, or content-bearing notifications. The runbook therefore
+requires that capability to be established from the runtime's required control
+documentation before any invitation read; otherwise v2 terminates unused.
+
+### Item 16 local verification before required review
 
 | Gate | Result |
 | --- | --- |
@@ -49,10 +62,11 @@ permission to access Firebase or evidence that recovery occurred.
 | `npm run lint` | passed |
 | `git diff --check` | passed |
 
-These gates were source-only and network-free. They did not access Firebase,
-read or write production data, deploy, commit, or push. A PASS establishes only
-the repository procedure and its source contract; Claude review, Grok review,
-and separate named production authorization remain open.
+These Item 16 gates are source-only and network-free. They do not access Chrome
+or Firebase, read or write production data, deploy, commit, or push. A PASS
+establishes only the repository procedure and its source contract; Claude
+review, Grok review, and separate named v2 production authorization remain
+open.
 
 Item 14 retires migration operations from the production release order without
 deleting their implementation or tests. The V2 onboarding transaction now

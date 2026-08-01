@@ -26,9 +26,10 @@ or observation-window completion. The invitation was recorded with a one-hour
 validity window that elapsed before any recorded onboarding. Treat it as
 expired and unusable unless a separately authorized read proves otherwise; an
 unrecorded onboarding or invitation mutation is itself a blocking evidence
-discrepancy. The one-time recovery below is the only repository-defined route
-proposed to continue from that state, and it remains inactive until its own
-review and authorization gates close.
+discrepancy. The terminated v1 record and the new v2 proposal below do not
+establish current invitation state. V2 is the only unspent repository-defined
+route proposed to continue, and it remains inactive until its own review and
+authorization gates close.
 
 ## What the local evidence proves
 
@@ -162,74 +163,188 @@ that future path.
 
 ## One-time expired founding-invitation recovery
 
-This is a repository-defined recovery proposal, not present mutation authority.
-Its unique identifier is
-`phase3-expired-founding-invitation-recovery-fa733d7-v1`. It exists only for the
-expired, unconsumed founding invitation recorded above. It cannot be used for a
-future teacher, a second invitation, or any other release.
+### Terminated v1 attempt — historical record only
 
-The recovery remains inactive until all of the following have completed for
+The first recovery identifier was
+`phase3-expired-founding-invitation-recovery-fa733d7-v1`. Its Codex, Claude, and
+Grok review gates closed, and Andrew gave the required named recovery and
+conditional-onboarding authorizations. During the pre-Save console read,
+browser-control output recorded a console account label and non-email
+invitation field contents in the conversation. That violated the reviewed
+privacy and evidence boundary.
+
+No field was edited, no Save was clicked, no Firestore mutation occurred, and
+onboarding did not begin. The v1 identifier terminated before any Save. Its
+unused Save budget is void: it cannot be activated, reused, retried, renewed,
+or treated as authority for v2. Deleting, hiding, or losing the conversation
+cannot undo the violation or restore v1 authority. This historical subsection
+grants no production or review exception.
+
+### Privacy-preserving v2 proposal
+
+This is a new repository-defined recovery proposal, not present mutation
+authority. Its unique identifier is
+`phase3-expired-founding-invitation-recovery-fa733d7-v2`. It exists only for the
+same expired, unconsumed founding invitation recorded above. It cannot be used
+for a future teacher, a second invitation, or any other release.
+
+The v2 recovery remains inactive until all of the following have completed for
 the exact repository correction that introduces it: Codex self-verification,
-Claude detailed read-only review, Grok final read-only review, and Andrew's
-separate contemporaneous production instruction naming the identifier. Before
-that instruction, no repository text, handoff, review verdict, earlier
-approval, or general request can activate it. Andrew and the operator must also
-be ready to begin separately authorized onboarding immediately after a
-successful recovery so another validity window is not wasted.
+Claude detailed read-only review, Grok final read-only review, and Andrew's new
+separate contemporaneous production instruction naming the v2 identifier.
+Before that instruction, no repository text, handoff, review verdict, v1
+authorization, earlier approval, or general request can activate v2. Andrew
+and Codex must also be ready to begin separately authorized onboarding
+immediately after a successful recovery so another validity window is not
+wasted.
 
-The recovery permits only this console boundary:
+The v2 recovery permits only this console boundary:
 
 - project: `morgan-bank`;
 - release/change ID: `phase3-clean-start-fa733d7`;
 - reviewed application commit:
   `fa733d780c4adb36304e857b592251c95c2be4c2`;
-- surface: Andrew's authenticated Firebase Firestore console;
+- operator and surface: Codex controlling Andrew's user-connected Chrome
+  session in Andrew's authenticated Firebase Firestore console;
 - document: the existing exact
   `teacherInvitations/{hashEmailDigest(normalizedEmail)}` founding-invitation
   document; and
 - permitted mutation: change only `expiresAt` to a Firestore Timestamp exactly
   one hour after the operator-confirmed current time.
 
-Before any Save, the operator may read only that exact invitation document and
-must verify all of these preconditions:
+Before any invitation document can render, Codex must establish this output
+privacy contract:
+
+1. While no invitation page is open, Codex must read the selected Chrome
+   runtime's required control documentation and establish that every planned
+   read and action can suppress automatic screenshots, snapshots, page text,
+   content-bearing notifications, and action diagnostics while returning only
+   caller-selected booleans. If that capability is absent, undocumented, or
+   ambiguous, v2 terminates before any invitation read. An ordinary browser
+   snapshot, screenshot, text-extraction, or content-emitting action is not a
+   permitted substitute.
+2. No raw screenshot, DOM or accessibility snapshot, page text, clipboard,
+   console log, network record, account label, document ID, email, timestamp,
+   status value, raw field name/value pair, or invitation content may be emitted
+   to chat, tool output, a command, a file, review text, or evidence.
+3. Navigation observations before the invitation document can render may be
+   emitted only after redacting email-like strings, account labels, 64-character
+   hexadecimal identifiers, timestamps, and field values. Once the
+   `teacherInvitations` collection is selected, no page snapshot, screenshot,
+   page text, or content excerpt may be emitted at all.
+4. Exact-document inspection occurs only in transient browser-control memory.
+   Raw values must never be returned or logged. They may remain there only as
+   the minimum non-output baseline needed to compare the same document and
+   target through pre-Save and post-Save verification, and must be cleared on
+   any abort or immediately after the final comparison. Apart from the exact
+   Boolean comparisons and one-hour target addition required below, the only
+   computation on an identity value permitted there is the reviewed pure
+   `hashEmailDigest(normalizedEmail)` helper; no API, CLI, Admin SDK, shell
+   command, repository write, standalone script, or clipboard transfer is
+   permitted.
+5. Only this exact fixed-key boolean object may cross from the invitation page
+   into tool output before an edit:
+
+   ```text
+   {
+     projectIsMorganBank,
+     databaseIsDefault,
+     documentExists,
+     documentIdMatchesEmailDigest,
+     emailMatchesSelectedVerifiedGoogleAccount,
+     hasExactFourFieldShape,
+     statusIsActiveString,
+     createdAtIsTimestamp,
+     expiresAtIsTimestamp,
+     expiresAtIsNotFuture,
+     hasNoConsumedFields,
+     hasNoUnexpectedFields,
+     hasNoPendingEdit,
+     hasNoAmbiguity,
+     privacyBoundaryIntact
+   }
+   ```
+
+Every key must exist exactly once, every value must be the boolean `true`, and
+no extra key or diagnostic text may appear. A raw or extra output, a missing or
+false key, a non-boolean value, an automatic browser notification containing
+page content, or any uncertainty aborts without a Save, terminates v2, and
+permits no recheck or correction under it.
+
+Those booleans represent all of these preconditions, which remain normative:
 
 1. The document already exists and has exactly the four keys `email`, `status`,
    `createdAt`, and `expiresAt`.
-2. `email` is the normalized verified Google-account email and hashes to the
-   existing document ID without being copied into chat, commands, repository
-   files, review text, or evidence.
+2. `email` is the normalized email of the already selected verified Google
+   account intended for step 10 and currently authenticating the console
+   session. It hashes to the existing document ID without either value leaving
+   transient memory.
 3. `status` is exactly the string `"active"`.
 4. `createdAt` and `expiresAt` are Firestore Timestamps, and `expiresAt` is no
    longer in the future.
 5. No `consumedAt`, `consumedByUid`, unexpected field, pending console edit, or
    ambiguous state exists.
 
-Any failed or ambiguous precondition aborts without a Save, terminates this
-identifier, and permits no later recheck or correction under it. The operator
-must not inspect a teacher, classroom, code index, student, credential, log,
-Auth user, or any other Firestore document or collection to make this decision.
-The invitation transaction is atomic; an exact active four-field invitation is
-the permitted evidence that consumption did not commit.
+The operator may read only that exact invitation document and must not inspect
+a teacher, classroom, code index, student, credential, log, Auth user, or any
+other Firestore document or collection. The invitation transaction is atomic;
+an exact active four-field invitation is the permitted evidence that
+consumption did not commit.
 
-At most one Firestore console **Save** is permitted. The edit must leave
-`email`, `status`, and `createdAt` unchanged, add or remove no field, and change
-only `expiresAt`. Clicking Save consumes all recovery mutation authority
-whether the result succeeds, fails, or is ambiguous. There is no repair or
-retry. The recovery authorizes no create, delete, delete-and-recreate,
-duplicate document, API, CLI, script, Admin SDK, deployment, parameter change,
-rules change, migration, reconciliation, onboarding, student operation, or
-credential operation.
+Only after the complete pre-Save object is exactly valid may Codex retain an
+operator-confirmed current time in transient memory, compute the target exactly
+one hour later, and invoke the unique `Edit expiresAt field` control. No exact
+time may be emitted. Before Save, only this second exact fixed-key boolean
+object may be emitted:
 
-After one clearly successful Save, the operator may read back only the same
-document long enough to verify its exact four-field shape; unchanged `email`,
-`status`, and `createdAt`; path/digest agreement; and a Firestore Timestamp
-`expiresAt` exactly one hour after the operator-confirmed recovery time. Never
-record the email, document ID, or invitation contents. The recovery authority
-then terminates. Step 10 onboarding still requires a separate contemporaneous
-authorization. If the Save is failed or ambiguous, or if the refreshed
-invitation expires before onboarding, stop: this identifier is spent and
-cannot authorize another Save or extension. Any further recovery requires a
-newly reviewed procedure and new authorization.
+```text
+{
+  onlyExpiresAtIsPending,
+  targetTypeIsTimestamp,
+  targetIsExactlyOneHourAfterConfirmedTime,
+  emailStatusAndCreatedAtAreUnchanged,
+  noFieldIsAddedOrRemoved,
+  saveControlIsUnique,
+  privacyBoundaryIntact
+}
+```
+
+Again every key must exist exactly once, every value must be the boolean `true`,
+and no extra output is allowed. Any mismatch closes the tab without Save and
+terminates v2; there is no repair, second edit, or retry.
+
+At most one Firestore console **Save** is permitted. Clicking Save consumes all
+v2 recovery mutation authority whether the result succeeds, fails, or is
+ambiguous. The recovery authorizes no create, delete, delete-and-recreate,
+duplicate document, API, CLI, standalone script, Admin SDK, deployment,
+parameter change, rules change, migration, reconciliation, onboarding, student
+operation, or credential operation.
+
+After one clearly successful Save, Codex may inspect only the same document in
+transient browser-control memory. Only this final exact fixed-key boolean object
+may be emitted:
+
+```text
+{
+  saveClearlySucceeded,
+  sameDocument,
+  hasExactFourFieldShape,
+  emailStatusAndCreatedAtAreUnchanged,
+  expiresAtIsTimestamp,
+  expiresAtMatchesTarget,
+  privacyBoundaryIntact
+}
+```
+
+Every key must again exist exactly once, every value must be the boolean `true`,
+and no extra output is allowed. Raw invitation content must never be recorded.
+The v2 recovery authority then terminates. Step 10 onboarding still requires a
+separate contemporaneous authorization; Andrew may provide it as a separately
+worded clause conditional on a clearly successful v2 recovery. If Save is
+failed or ambiguous, privacy output fails at any time, or the refreshed
+invitation expires before onboarding, stop: v2 is spent and cannot authorize
+another Save or extension. Any further recovery requires a newly reviewed
+procedure and new authorization.
 
 ## Production release sequence
 
@@ -302,15 +417,18 @@ Abort without improvising when any of these occurs:
   Firestore Timestamp when step 9 is verified, or the invitation is not
   `consumed` after step 10;
 - the one-time recovery lacks its exact reviews or contemporaneous named
-  authorization, any recovery precondition fails, any field other than
-  `expiresAt` would change, the single Save is failed or ambiguous, or the
-  refreshed invitation expires before onboarding;
+  authorization, v1 is reused, the selected Chrome runtime cannot establish
+  content-silent control, any recovery precondition or fixed-key boolean fails,
+  browser output contains raw or extra page content, any expected control is
+  non-unique, any field other than `expiresAt` would change, the single Save is
+  failed or ambiguous, or the refreshed invitation expires before onboarding;
 - onboarding creates anything other than one invitation/teacher/classroom/code
   foundation with `nextStudentNumber: 1`;
 - the fresh lifecycle, login, money-write, removal, or bidirectional isolation
   acceptance fails; or
-- evidence contains a secret, PIN, token, credential, invitation email, or
-  unredacted student data.
+- evidence contains a secret, PIN, token, credential, console account label,
+  invitation email, invitation document ID or contents, or unredacted student
+  data.
 
 Preserve evidence, keep the gate closed or withdraw the release, return to
 review, and repeat the complete gate after the smallest reviewed correction.
