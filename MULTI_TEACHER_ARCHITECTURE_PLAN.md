@@ -1,14 +1,20 @@
 # Multi-Teacher Architecture Plan (Version 2.0)
 
-Status: **Historical design plus current local implementation record.** This
+Status: **Historical design plus local implementation and bounded release
+record.** This
 document began as a read-only architecture proposal on `feature/multi-teacher`.
 Its design-time descriptions remain as rationale, while Part 3 records later
 implementation status. Phase 2A, Phase 2B, and Phase 3 Items 1–12 are now
 implemented from local repository, unit, source-contract, emulator, rules,
-browser, release-rehearsal, and rollback-rehearsal evidence. The later
-production-readiness correction pass remains subject to focused Claude
-re-review and the final Grok checkpoint. **Production deployment state remains
-unknown and is not inferred from local evidence.**
+browser, release-rehearsal, and rollback-rehearsal evidence. Later Items 13–14
+closed the production-readiness correction and clean-start pivot. The external
+release record bound to application commit
+`fa733d780c4adb36304e857b592251c95c2be4c2` records production steps 1–9
+through founding-invitation creation, but no onboarding or fresh-student
+acceptance. Item 15 defines a repository-only proposal for one expired-
+invitation recovery and remains subject to Claude and Grok review plus separate
+production authorization. **Live production state is never inferred from local
+evidence; only the exact recorded external events are carried forward.**
 
 This document builds directly on `GOOGLE_AUTH_MIGRATION_PLAN.md` (Phase B),
 `SECURITY_PLAN.md` ("Version 2.0 Items"), and `GOOGLE_AUTH_PHASE1_CHECKLIST.md`
@@ -3336,46 +3342,47 @@ emulator evidence)**
   credentials and logs, classroom-code login, V2 PIN reset and sync, browser
   epoch/cache isolation, proposed ownership rules, and two-tenant emulator and
   browser evidence now exist behind the default-off compatibility boundary.
-- No production migration, deployment, gate activation, or real second-teacher
-  onboarding occurred.
+- At the Phase 2B completion boundary, no production migration, deployment,
+  gate activation, or real second-teacher onboarding had occurred. The bounded
+  later Phase 3 release record below supersedes that historical deployment and
+  gate status; no migration or real second-teacher onboarding is recorded.
 
-**Phase 3 — Local implementation and rehearsal complete through Item 12;
-production-readiness Item 13 in focused review; production cutover not run**
-- Items 1–12 in `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` now provide the
+**Phase 3 — Items 1–14 implemented and reviewed; clean-start release recorded
+through founding-invitation creation; Item 15 locally verified with required
+review pending**
+- Items 1–14 in `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` provide the
   production environment guards, read-only preflight and immutable manifest,
   bounded two-stage writer and journal, reconciliation/reverification,
   student lifecycle, V2 tenant data layer and classroom-code login, three
   checksum-pinned rules artifacts, release runbook, and credential-isolated
-  release/rollback rehearsals.
+  release/rollback rehearsals, followed by the clean-start pivot.
 - The checked-in legacy `firestore.rules` remains unchanged. The bridge, final,
-  and rollback-safe rules are separate candidate artifacts; no rule, Function,
-  Hosting artifact, parameter, gate, or data migration was deployed.
+  and rollback-safe rules remain separate candidate artifacts. The external
+  release record for reviewed application commit
+  `fa733d780c4adb36304e857b592251c95c2be4c2` records deployment and verification
+  of final rules only, gate-on Functions, gate-on Hosting, and the founding
+  invitation. It records no bridge/rollback-safe/baseline rules deployment and
+  no data migration.
 - The distinct `functions/phase3/` runner is implemented and independently
   reviewed. Its project allowlist, immutable authorization artifacts,
   snapshot/write-freeze inputs, manifest/journal controls, abort criteria, and
-  rollback ordering are locally tested. This is implementation evidence, not
-  evidence that production state satisfies any assumption.
-- Item 13 adds a separate production-only, control-plane-only inventory
-  boundary to obtain the opaque Rules, Functions, Hosting, parameter, index,
-  and active-writer values needed to author reviewed preflight expectations.
-  It uses an exact commit/credential/time-bound authorization, fixed GET-only
-  Google API origins, complete pagination, and one immutable secret-scanned
-  local observation. It creates no Admin app, reads no Firestore application
-  data or Auth users, carries no preflight/write eligibility, and performs no
-  production operation as part of local implementation or review.
-- Any production validation or release still requires the separate approvals
-  and ordered procedure in `PHASE3_RELEASE_RUNBOOK.md`: separately authorized
-  control-plane inventory, independent corroboration and review, expectations
-  authoring, separately authorized full read-only production preflight, then
-  separate write/deploy authorization, verified
-  freeze and snapshot, bridge-before-copy, reconciliation-before-activation,
-  final rules before gate and Hosting, acceptance before write resumption, and
-  rollback-safe rules after a default-off Hosting rollback. The completed Item
-  12 documentation boundary authorizes none of those operations.
+  rollback ordering are locally tested but dormant under clean start.
+- Item 13's inventory boundary and all migration expectations remain retained
+  historical evidence rather than clean-start operator steps. Role B remains
+  forbidden for the clean-start route.
+- The recorded founding invitation's one-hour validity window elapsed before
+  any recorded onboarding. Item 15 proposes one uniquely identified console
+  recovery that may change only the existing invitation's `expiresAt` through
+  one Save after its own reviews and Andrew's separate authorization. It
+  authorizes no production action merely by existing in the repository.
+- Founding-teacher onboarding, fresh-account lifecycle/login/money/isolation
+  acceptance, and the observation window remain incomplete. Each requires the
+  ordered procedure and separate authorization in
+  `PHASE3_RELEASE_RUNBOOK.md`.
 
 **Phase 4 — Production verification**
 - Full manual + automated acceptance pass (Part 2, "Testing strategy" §4)
-  against the real, migrated production classroom.
+  against the fresh clean-start production classroom.
 - Old `morganBank/classroomData` retained, untouched, as rollback safety net.
 
 **Phase 5 — Second-teacher onboarding**
@@ -3396,18 +3403,20 @@ production-readiness Item 13 in focused review; production cutover not run**
 
 These remaining gates must not be mistaken for implementation or production
 authorization:
-- **Production deployment and data state remain unknown by design.** Local
-  source, emulator, browser, and rehearsal evidence cannot establish which
-  rules, Functions, Hosting artifact, parameters, indexes, writers, or data
-  shapes currently exist in the live project.
-- **The production runner has not inspected or changed production.** Its
-  checked-in implementation and local review do not satisfy the separately
-  authorized control-plane inventory, inventory review, read-only production
-  preflight, snapshot/write-freeze proof, or operator evidence required by the
-  runbook.
-- **No production cutover approval exists.** Migration, rules and Functions
-  deployment, gate/release-parameter activation, Hosting deployment, write
-  resumption, and rollback each remain explicit future authority boundaries.
+- **Repository source is not a live-state oracle.** The external release record
+  supplies bounded evidence through founding-invitation creation; this plan
+  does not independently re-read or extrapolate current production state.
+- **The founding invitation is recorded expired and unconsumed.** The Item 15
+  recovery proposal has completed Codex local verification but still requires
+  Claude review, Grok review, and separate named production authorization
+  before its single `expiresAt` Save can occur. It cannot authorize itself or
+  be reused.
+- **Onboarding and production acceptance are absent.** No founding teacher,
+  reciprocal fresh classroom, lifecycle test student, money-flow acceptance,
+  or observation-window completion is established by the retained evidence.
+- **No current production authorization exists.** Invitation recovery,
+  onboarding, acceptance, service withdrawal, rollback, and every later
+  external transition remain separate authority boundaries.
 - **Phase 4 and Phase 5 evidence is still absent.** The existing real classroom
   has not completed post-cutover production acceptance, and no second real
   teacher has been invited or onboarded by this work.

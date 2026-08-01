@@ -1,7 +1,7 @@
 # Phase 3 Reconciled Implementation and Release Brief
 
-Status: **clean-start release planning and review only; not production
-authorization**.
+Status: **clean-start application released through founding-invitation
+creation; onboarding and acceptance incomplete; not production authorization**.
 
 On 2026-07-31 Andrew selected a clean V2 start. The existing production records
 are development-only V1 test data and are not copied, reconciled, accepted, or
@@ -10,15 +10,20 @@ its immutable state artifacts, bridge rules, rollback-safe rules, IAM role
 definitions, and rehearsals remain in the repository as dormant historical and
 regression evidence; they are not steps in the clean-start release.
 
-Items 1–13 remain implemented from local repository, unit, source-contract,
+Items 1–14 remain implemented from local repository, unit, source-contract,
 emulator, rules, browser, migration-rehearsal, release-rehearsal, and rollback-
-rehearsal evidence. The corrected N9/N10 observations remain immutable evidence
-and agreed on all five deployment surfaces and active-writer classification.
-The clean-start route does not consume them and requires no replacement
-inventory. Production application data remains uninspected. This document does
-not authorize production inspection, data deletion, migration, deployment, a
-rules change, feature-gate activation, invitation creation, real-account
-onboarding, cleanup, IAM mutation, commit, or push.
+rehearsal evidence. The release record bound to reviewed application commit
+`fa733d780c4adb36304e857b592251c95c2be4c2` records review/local-gate closure,
+Role B absence, gate-off and gate-on Functions, final rules, gate-on Hosting,
+and founding-invitation creation. The corrected N9/N10 observations remain
+immutable evidence and agreed on all five deployment surfaces and active-writer
+classification. The clean-start route does not consume them and requires no
+replacement inventory. Production application data remains uninspected. No
+recorded onboarding, fresh-student acceptance, or observation-window
+completion exists. This document does not authorize production inspection,
+data deletion, migration, deployment, a rules change, feature-gate activation,
+invitation recovery, real-account onboarding, cleanup, IAM mutation, commit,
+or push.
 
 Reviewed baseline for the production-readiness correction:
 
@@ -27,7 +32,8 @@ Reviewed baseline for the production-readiness correction:
   `c39b40c50abd5e31e56d68eb9d80ae3ba5761215`
 - Checked-in `firestore.rules` SHA-256:
   `0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50`
-- Production state remains unknown by design.
+- Live state is not inferred from repository source; the external release
+  record described above is the bounded evidence for completed steps 1–9.
 
 This brief reconciles Claude's earlier Phase 3 migration challenge report, the
 clean-start pivot, repository evidence, and the authoritative Phase 2B
@@ -552,8 +558,20 @@ freeze, snapshot, bridge rules, and legacy acceptance have no step in this
 sequence. The absence is deliberate: nothing is copied from V1. The old test
 documents remain untouched and client-denied under final rules.
 
-1. Complete Codex implementation and local verification, close Claude's
-   detailed review, then close the bounded Grok 5,000-foot review.
+The release record now closes steps 1–9 only. It records a one-hour founding
+invitation that elapsed before any recorded onboarding. The repository-only
+Item 15 correction defines one proposed recovery identifier,
+`phase3-expired-founding-invitation-recovery-fa733d7-v1`: after its exact Codex,
+Claude, and Grok review gates close and Andrew separately activates it, one
+console Save may change only the existing invitation's `expiresAt`. Every
+precondition, one-Save/no-retry rule, privacy boundary, and termination rule in
+`PHASE3_RELEASE_RUNBOOK.md` is normative. The recovery is not a numbered
+release step, cannot activate itself, and does not authorize onboarding.
+
+1. Codex implementation and local verification for Item 15 are complete in
+   the uncommitted working tree. Under separate commit approval, establish the
+   exact review range, close Claude's detailed review, then close the bounded
+   Grok 5,000-foot review.
 2. Run the complete credential-isolated local gate, including the gate-on
    fresh-classroom Auth/Functions/Firestore seam and final-rules orphan denial.
 3. Record the exact reviewed commit, V2 Functions artifact, gate-on Hosting
@@ -578,7 +596,10 @@ documents remain untouched and client-denied under final rules.
    time-bounded invitation in the Firebase console. Its document ID is
    `hashEmailDigest(normalizedEmail)` and its exact fields are normalized
    `email`, `status: "active"`, `createdAt`, and a future Firestore Timestamp
-   `expiresAt`. No client can create or read this document.
+   `expiresAt`. No client can create or read this document. If that invitation
+   expires before step 10, stop and use only the separately reviewed and
+   authorized one-time recovery in the runbook; never improvise an update,
+   retry, deletion, or recreation.
 10. Sign in with the invited, verified Google account and invoke the normal
     `onboardTeacherClassroomV2` path. Verify one consumed invitation, one active
     teacher, one reciprocal classroom, one active classroom-code index, and
@@ -809,6 +830,14 @@ under the narrower `npm run test:phase3:contracts` name.
     legacy mirrors to stale student tokens, retire migration operations from the
     release order without deleting their code, and replace the source contract
     with clean-start activation and service-withdrawal rollback invariants.
+15. Expired founding-invitation recovery and status reconciliation: document a
+    unique, inactive-until-reviewed console boundary that may change only the
+    existing invitation's `expiresAt` through at most one Save; pin its
+    preconditions, privacy, no-retry, and separate-onboarding authority in the
+    release-order source contract; and reconcile source status with the external
+    release record through step 9. This item changes no runtime code or
+    production state and requires Claude and Grok review before Andrew may
+    separately activate its identifier.
 
 Claude and Codex retain the detailed plan-build-review-correct loop. After a
 material item reaches review-quality, Grok performs the bounded read-only

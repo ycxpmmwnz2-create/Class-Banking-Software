@@ -1,6 +1,6 @@
 # Phase 3 test suites
 
-## Progress against Section 13
+## Progress against the commit and review boundaries
 
 | Commit | Scope | State |
 | --- | --- | --- |
@@ -16,8 +16,43 @@
 | 10 | Final and rollback-safe rules and tests | complete |
 | 11 | Full release and rollback rehearsal | complete |
 | 12 | Evidence-only documentation corrections | complete |
-| 13 | Expectations-bootstrap control-plane inventory correction | focused review |
-| 14 | Clean-start pivot, fresh-classroom seam, and orphan denial | local verification |
+| 13 | Expectations-bootstrap control-plane inventory correction | reviewed; dormant under clean start |
+| 14 | Clean-start pivot, fresh-classroom seam, and orphan denial | reviewed; release recorded through step 9 |
+| 15 | One-time expired-invitation recovery and status reconciliation | locally verified; review pending |
+
+The external release record bound to reviewed application commit
+`fa733d780c4adb36304e857b592251c95c2be4c2` records production steps 1–9
+through one founding-invitation creation. Its latest retained archive is
+`Morgan-Bank-Phase3-Release-fa733d7-seq009.tar.gz`, SHA-256
+`d503f6e423998f438d04af7b6978006e6db7d6804c0f904aea142f6f67b37c3d`.
+That record contains no onboarding or fresh-account acceptance, and the
+invitation's one-hour validity window elapsed before any recorded onboarding.
+This README reports that bounded external evidence without claiming a fresh
+production read by a test or repository document.
+
+Item 15 adds no runtime behavior. It defines one inactive-until-reviewed
+Firestore-console recovery identifier in the runbook. After separate review
+and authorization, the boundary may update only the existing invitation's
+`expiresAt` through at most one Save, then terminates before separately
+authorized onboarding. The release-order source contract pins exact-document
+preconditions, the four-field shape, path/email digest agreement, privacy,
+one-field mutation, one-Save/no-retry termination, forbidden operations, and
+the absence of any automatic onboarding authority. Source-contract PASS is not
+permission to access Firebase or evidence that recovery occurred.
+
+### Item 15 local verification before required review
+
+| Gate | Result |
+| --- | --- |
+| `node --test tests/phase3/release-order.contract.test.js` | 31/31 |
+| `npm run test:phase3:contracts` | 78/78 |
+| `npm run lint` | passed |
+| `git diff --check` | passed |
+
+These gates were source-only and network-free. They did not access Firebase,
+read or write production data, deploy, commit, or push. A PASS establishes only
+the repository procedure and its source contract; Claude review, Grok review,
+and separate named production authorization remain open.
 
 Item 14 retires migration operations from the production release order without
 deleting their implementation or tests. The V2 onboarding transaction now
@@ -279,7 +314,9 @@ The source-contract suites do **not** prove:
 - that a production release or rollback executes correctly in the stated order;
 - runtime behavior of the Phase 3 runner or rules artifacts (that evidence lives
   in the separately invoked emulator suites);
-- anything about deployed production state, which remains unknown by design.
+- current deployed production state by themselves. The bounded external
+  release record stated above is separate historical evidence; these tests do
+  not contact production or revalidate it.
 
 Per `AI_COLLABORATION_WORKFLOW.md` rule 7, do not present these results as
 emulator, browser, or production acceptance evidence.

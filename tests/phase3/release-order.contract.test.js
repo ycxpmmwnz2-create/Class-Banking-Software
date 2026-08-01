@@ -22,6 +22,14 @@ const runbook = readFileSync(
   new URL('../../PHASE3_RELEASE_RUNBOOK.md', import.meta.url),
   'utf8',
 )
+const architecture = readFileSync(
+  new URL('../../MULTI_TEACHER_ARCHITECTURE_PLAN.md', import.meta.url),
+  'utf8',
+)
+const phase3Readme = readFileSync(
+  new URL('./README.md', import.meta.url),
+  'utf8',
+)
 const iamEvidence = readFileSync(
   new URL('../../PHASE3_IAM_PERMISSION_EVIDENCE.md', import.meta.url),
   'utf8',
@@ -48,6 +56,12 @@ const EXPECTED_PHASE3_DATA_PLANE_READER_SHA256 =
   '4c4259c12d3d1f0188e997baac0a7fed000510357cb4b5c453de342123fad8d5'
 const EXPECTED_PHASE3_MIGRATION_WRITER_SHA256 =
   'a97924dbbdbf025cca740a6c952791a3ec5a774b0c2277f0228d029fd272d1bf'
+const EXPIRED_INVITATION_RECOVERY_ID =
+  'phase3-expired-founding-invitation-recovery-fa733d7-v1'
+const REVIEWED_CLEAN_START_COMMIT =
+  'fa733d780c4adb36304e857b592251c95c2be4c2'
+const RELEASE_SEQUENCE_009_SHA256 =
+  'd503f6e423998f438d04af7b6978006e6db7d6804c0f904aea142f6f67b37c3d'
 
 /**
  * Parses a markdown numbered list into whole steps.
@@ -125,6 +139,88 @@ function runbookRollbackSteps() {
   const steps = parseNumberedSteps(section.split('\n## Evidence record')[0])
   assert.equal(steps.length, 6, 'the runbook must retain all 6 rollback steps')
   return steps
+}
+
+function invitationRecoverySection(markdown = runbook) {
+  const heading = '## One-time expired founding-invitation recovery'
+  assert.equal(
+    markdown.split(heading).length,
+    2,
+    'the runbook must contain exactly one isolated invitation-recovery section',
+  )
+  const afterHeading = markdown.split(heading)[1]
+  const section = afterHeading.split('\n## Production release sequence')[0]
+  assert.ok(section, 'the invitation-recovery section must precede the release sequence')
+  return section
+}
+
+/**
+ * Pins the one-time recovery as static governance evidence. This validates the
+ * isolated section rather than searching the whole runbook, where the original
+ * create authority and later onboarding step deliberately use overlapping
+ * invitation vocabulary.
+ */
+function assertInvitationRecoveryContract(markdown = runbook) {
+  const section = invitationRecoverySection(markdown)
+
+  assert.equal(
+    section.match(new RegExp(EXPIRED_INVITATION_RECOVERY_ID, 'g'))?.length,
+    1,
+    'the unique recovery identifier must appear exactly once in its section',
+  )
+  assert.match(section, /repository-defined recovery proposal, not present mutation authority/i)
+  assert.match(
+    section,
+    /Codex self-verification,\s+Claude detailed read-only review, Grok final read-only review, and Andrew's\s+separate contemporaneous production instruction naming the identifier/i,
+  )
+  assert.match(
+    section,
+    /no repository text, handoff, review verdict, earlier\s+approval, or general request can activate it/i,
+  )
+
+  const consoleBoundary = section.split(
+    'The recovery permits only this console boundary:',
+  )[1]?.split('Before any Save')[0]
+  assert.ok(consoleBoundary, 'the exact console boundary must be isolated')
+  assert.match(consoleBoundary, /project: `morgan-bank`/)
+  assert.match(consoleBoundary, /release\/change ID: `phase3-clean-start-fa733d7`/)
+  assert.match(consoleBoundary, new RegExp(REVIEWED_CLEAN_START_COMMIT))
+  assert.match(consoleBoundary, /existing exact\s+`teacherInvitations\/\{hashEmailDigest\(normalizedEmail\)\}`/)
+  assert.match(consoleBoundary, /permitted mutation: change only `expiresAt`/)
+  assert.match(consoleBoundary, /Firestore Timestamp exactly\s+one hour after the operator-confirmed current time/i)
+
+  const preconditions = section.split(
+    'Before any Save',
+  )[1]?.split('Any failed or ambiguous precondition')[0]
+  assert.ok(preconditions, 'the pre-Save conditions must be isolated')
+  assert.match(preconditions, /exactly the four keys `email`, `status`,\s+`createdAt`, and `expiresAt`/)
+  assert.match(preconditions, /hashes to the\s+existing document ID/)
+  assert.match(preconditions, /`status` is exactly the string `"active"`/)
+  assert.match(preconditions, /`expiresAt` is no\s+longer in the future/)
+  assert.match(preconditions, /No `consumedAt`, `consumedByUid`, unexpected field/)
+
+  assert.match(
+    section,
+    /Any failed or ambiguous precondition aborts without a Save, terminates this\s+identifier, and permits no later recheck or correction under it/i,
+  )
+  assert.match(section, /read only that exact invitation document/i)
+  assert.match(section, /must not inspect a\s+teacher, classroom, code index, student, credential, log,\s+Auth user/i)
+  assert.match(section, /At most one Firestore console \*\*Save\*\* is permitted/)
+  assert.match(
+    section,
+    /leave\s+`email`, `status`, and `createdAt` unchanged, add or remove no field, and change\s+only `expiresAt`/i,
+  )
+  assert.match(section, /Clicking Save consumes all recovery mutation authority\s+whether the result succeeds, fails, or is ambiguous/i)
+  assert.match(section, /There is no repair or\s+retry/i)
+  assert.match(
+    section,
+    /authorizes no create, delete, delete-and-recreate,\s+duplicate document, API, CLI, script, Admin SDK, deployment, parameter change,\s+rules change, migration, reconciliation, onboarding, student operation, or\s+credential operation/i,
+  )
+  assert.match(section, /read back only the same\s+document/i)
+  assert.match(section, /Never\s+record the email, document ID, or invitation contents/i)
+  assert.match(section, /Step 10 onboarding still requires a separate contemporaneous\s+authorization/i)
+  assert.match(section, /this identifier is spent and\s+cannot authorize another Save or extension/i)
+  assert.match(section, /Any further recovery requires a\s+newly reviewed procedure and new authorization/i)
 }
 
 /** Index of the first step whose text matches every supplied pattern. */
@@ -330,7 +426,10 @@ describe('Phase 3 release-order source contract', () => {
   })
 
   it('boundary: the runbook binds the clean-start release and withdrawal rollback to the reviewed order', () => {
-    assert.match(runbook, /local rehearsal evidence only; not production authorization/i)
+    assert.match(
+      runbook,
+      /release evidence recorded through founding-invitation creation;\s+onboarding and acceptance incomplete; not production authorization/i,
+    )
     const release = runbookReleaseSteps()
     const functionsGateOff = stepIndex(release, /deploy/i, /V2 Functions/i, /false/i)
     const finalRules = stepIndex(release, /Deploy/i, /final-rules hash/i)
@@ -372,6 +471,76 @@ describe('Phase 3 release-order source contract', () => {
       abortCriteria,
       /invitation is not\s+`consumed` after step 10/i,
     )
+  })
+
+  it('source contract: expired founding-invitation recovery is one-field, one-Save, and separately authorized', () => {
+    assertInvitationRecoveryContract()
+
+    const release = runbookReleaseSteps()
+    const invitation = stepIndex(release, /invitation/i, /administrative-data-write/i)
+    const onboarding = stepIndex(release, /onboardTeacherClassroomV2/i)
+    assert.ok(invitation < onboarding, 'conditional recovery must remain before onboarding')
+    assert.match(release[invitation].text, /expires before step 10, stop/i)
+    assert.match(release[invitation].text, /separately reviewed and authorized one-time recovery/i)
+    assert.match(release[invitation].text, /never by improvising an update, retry, delete, or recreation/i)
+
+    const abortCriteria = runbookAbortCriteria()
+    assert.match(abortCriteria, /one-time recovery lacks its exact reviews/i)
+    assert.match(abortCriteria, /any field other than\s+`expiresAt` would change/i)
+    assert.match(abortCriteria, /single Save is failed or ambiguous/i)
+    assert.match(abortCriteria, /refreshed invitation expires before onboarding/i)
+  })
+
+  it('source contract: recovery assertions reject widened mutation, retry, or onboarding authority', () => {
+    assertInvitationRecoveryContract(runbook)
+
+    for (const [label, before, after] of [
+      [
+        'widened field mutation',
+        'permitted mutation: change only `expiresAt`',
+        'permitted mutation: change `expiresAt` and `status`',
+      ],
+      [
+        'second Save',
+        'At most one Firestore console **Save** is permitted.',
+        'At most two Firestore console **Save** actions are permitted.',
+      ],
+      [
+        'retry authority',
+        'There is no repair or\nretry.',
+        'One repair or retry is permitted.',
+      ],
+      [
+        'implicit onboarding',
+        'Step 10 onboarding still requires a separate contemporaneous\nauthorization.',
+        'Step 10 onboarding is authorized by this recovery.',
+      ],
+    ]) {
+      assert.ok(runbook.includes(before), `${label} negative control must mutate real text`)
+      assert.throws(
+        () => assertInvitationRecoveryContract(runbook.replace(before, after)),
+        assert.AssertionError,
+        `${label} must fail the recovery source contract`,
+      )
+    }
+  })
+
+  it('source contract: Phase 3 status documents agree on the bounded release and recovery state', () => {
+    for (const document of [brief, runbook, architecture, phase3Readme]) {
+      assert.match(document, new RegExp(REVIEWED_CLEAN_START_COMMIT))
+      assert.match(document, /founding[- ]invitation/i)
+      assert.match(document, /no (?:recorded )?onboarding|onboarding (?:and acceptance )?incomplete/i)
+    }
+
+    assert.match(runbook, new RegExp(RELEASE_SEQUENCE_009_SHA256))
+    assert.match(phase3Readme, new RegExp(RELEASE_SEQUENCE_009_SHA256))
+    assert.match(brief, /release record now closes steps 1–9 only/i)
+    assert.match(architecture, /external\s+release record.*production steps\s+1–9/is)
+    assert.match(architecture, /Item 15 locally verified with required\s+review pending/i)
+    assert.match(phase3Readme, /\| 13 \|[^\n]+\| reviewed; dormant under clean start \|/)
+    assert.match(phase3Readme, /\| 14 \|[^\n]+\| reviewed; release recorded through step 9 \|/)
+    assert.match(phase3Readme, /\| 15 \|[^\n]+\| locally verified; review pending \|/)
+    assert.match(brief, /15\. Expired founding-invitation recovery and status reconciliation/)
   })
 
   it('boundary: the release rehearsal executes real runner and candidate-rules evidence', () => {
@@ -1075,11 +1244,13 @@ describe('Phase 3 release-order source contract', () => {
     )
   })
 
-  it('boundary: the brief still declares itself planning-only', () => {
+  it('boundary: the reconciled brief remains evidence rather than authorization', () => {
     assert.match(
       brief,
-      /Status: \*\*clean-start release planning and review only; not production\s+authorization\*\*/,
+      /Status: \*\*clean-start application released through founding-invitation\s+creation; onboarding and acceptance incomplete; not production authorization\*\*/,
       'the brief must not silently become an authorization document',
     )
+    assert.match(brief, /This document does not authorize production inspection/)
+    assert.match(brief, /invitation recovery, real-account onboarding/)
   })
 })

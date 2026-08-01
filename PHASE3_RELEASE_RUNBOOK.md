@@ -1,6 +1,7 @@
 # Phase 3 clean-start release and rollback runbook
 
-Status: **local rehearsal evidence only; not production authorization**
+Status: **release evidence recorded through founding-invitation creation;
+onboarding and acceptance incomplete; not production authorization**
 
 Andrew selected a clean V2 start on 2026-07-31. No V1 application record or
 Auth user is migrated, copied, reconciled, accepted, or deleted. Existing V1
@@ -8,6 +9,26 @@ test records remain untouched indefinitely. This runbook does not authorize a
 production read, data write, deployment, parameter or gate change, invitation,
 onboarding, IAM mutation, rollback, commit, or push. Every external transition
 requires the separate approval required by `AI_COLLABORATION_WORKFLOW.md`.
+
+## Reconciled release status
+
+The external, secret-free release record bound to reviewed application commit
+`fa733d780c4adb36304e857b592251c95c2be4c2` records PASS results for production
+steps 1–9: review and the complete local gate, Role B absence, gate-off
+Functions, final rules, pre-activation rules verification, gate-on Functions,
+gate-on Hosting, and one founding-teacher invitation. Its latest retained
+archive is `Morgan-Bank-Phase3-Release-fa733d7-seq009.tar.gz`, SHA-256
+`d503f6e423998f438d04af7b6978006e6db7d6804c0f904aea142f6f67b37c3d`.
+
+That record is historical evidence, not a fresh production read by this
+document. It records no founding-teacher onboarding, fresh-student acceptance,
+or observation-window completion. The invitation was recorded with a one-hour
+validity window that elapsed before any recorded onboarding. Treat it as
+expired and unusable unless a separately authorized read proves otherwise; an
+unrecorded onboarding or invitation mutation is itself a blocking evidence
+discrepancy. The one-time recovery below is the only repository-defined route
+proposed to continue from that state, and it remains inactive until its own
+review and authorization gates close.
 
 ## What the local evidence proves
 
@@ -139,6 +160,77 @@ Future teachers continue to require the same separately authorized console
 write until a reviewed admin path is implemented. This runbook does not create
 that future path.
 
+## One-time expired founding-invitation recovery
+
+This is a repository-defined recovery proposal, not present mutation authority.
+Its unique identifier is
+`phase3-expired-founding-invitation-recovery-fa733d7-v1`. It exists only for the
+expired, unconsumed founding invitation recorded above. It cannot be used for a
+future teacher, a second invitation, or any other release.
+
+The recovery remains inactive until all of the following have completed for
+the exact repository correction that introduces it: Codex self-verification,
+Claude detailed read-only review, Grok final read-only review, and Andrew's
+separate contemporaneous production instruction naming the identifier. Before
+that instruction, no repository text, handoff, review verdict, earlier
+approval, or general request can activate it. Andrew and the operator must also
+be ready to begin separately authorized onboarding immediately after a
+successful recovery so another validity window is not wasted.
+
+The recovery permits only this console boundary:
+
+- project: `morgan-bank`;
+- release/change ID: `phase3-clean-start-fa733d7`;
+- reviewed application commit:
+  `fa733d780c4adb36304e857b592251c95c2be4c2`;
+- surface: Andrew's authenticated Firebase Firestore console;
+- document: the existing exact
+  `teacherInvitations/{hashEmailDigest(normalizedEmail)}` founding-invitation
+  document; and
+- permitted mutation: change only `expiresAt` to a Firestore Timestamp exactly
+  one hour after the operator-confirmed current time.
+
+Before any Save, the operator may read only that exact invitation document and
+must verify all of these preconditions:
+
+1. The document already exists and has exactly the four keys `email`, `status`,
+   `createdAt`, and `expiresAt`.
+2. `email` is the normalized verified Google-account email and hashes to the
+   existing document ID without being copied into chat, commands, repository
+   files, review text, or evidence.
+3. `status` is exactly the string `"active"`.
+4. `createdAt` and `expiresAt` are Firestore Timestamps, and `expiresAt` is no
+   longer in the future.
+5. No `consumedAt`, `consumedByUid`, unexpected field, pending console edit, or
+   ambiguous state exists.
+
+Any failed or ambiguous precondition aborts without a Save, terminates this
+identifier, and permits no later recheck or correction under it. The operator
+must not inspect a teacher, classroom, code index, student, credential, log,
+Auth user, or any other Firestore document or collection to make this decision.
+The invitation transaction is atomic; an exact active four-field invitation is
+the permitted evidence that consumption did not commit.
+
+At most one Firestore console **Save** is permitted. The edit must leave
+`email`, `status`, and `createdAt` unchanged, add or remove no field, and change
+only `expiresAt`. Clicking Save consumes all recovery mutation authority
+whether the result succeeds, fails, or is ambiguous. There is no repair or
+retry. The recovery authorizes no create, delete, delete-and-recreate,
+duplicate document, API, CLI, script, Admin SDK, deployment, parameter change,
+rules change, migration, reconciliation, onboarding, student operation, or
+credential operation.
+
+After one clearly successful Save, the operator may read back only the same
+document long enough to verify its exact four-field shape; unchanged `email`,
+`status`, and `createdAt`; path/digest agreement; and a Firestore Timestamp
+`expiresAt` exactly one hour after the operator-confirmed recovery time. Never
+record the email, document ID, or invitation contents. The recovery authority
+then terminates. Step 10 onboarding still requires a separate contemporaneous
+authorization. If the Save is failed or ambiguous, or if the refreshed
+invitation expires before onboarding, stop: this identifier is spent and
+cannot authorize another Save or extension. Any further recovery requires a
+newly reviewed procedure and new authorization.
+
 ## Production release sequence
 
 The following is an operator checklist, not permission to execute it.
@@ -172,7 +264,10 @@ The following is an operator checklist, not permission to execute it.
 8. Deploy and verify the reviewed gate-on Hosting artifact. Final rules must
    precede the server gate, and the server gate must precede gate-on Hosting.
 9. Obtain separate administrative-data-write authorization and create the one
-   time-bounded founding-teacher invitation exactly as specified above.
+   time-bounded founding-teacher invitation exactly as specified above. If the
+   recorded founding invitation expires before step 10, stop; continue only
+   through the separately reviewed and authorized one-time recovery section
+   above, never by improvising an update, retry, delete, or recreation.
 10. Sign in with the invited verified Google account and complete
     `onboardTeacherClassroomV2`. Verify exactly one consumed invitation, active
     teacher, reciprocal classroom, active classroom-code index, and classroom
@@ -206,6 +301,10 @@ Abort without improvising when any of these occurs:
 - the founding invitation lacks an `expiresAt` field containing a future
   Firestore Timestamp when step 9 is verified, or the invitation is not
   `consumed` after step 10;
+- the one-time recovery lacks its exact reviews or contemporaneous named
+  authorization, any recovery precondition fails, any field other than
+  `expiresAt` would change, the single Save is failed or ambiguous, or the
+  refreshed invitation expires before onboarding;
 - onboarding creates anything other than one invitation/teacher/classroom/code
   foundation with `nextStudentNumber: 1`;
 - the fresh lifecycle, login, money-write, removal, or bidirectional isolation
