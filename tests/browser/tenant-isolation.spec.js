@@ -34,6 +34,7 @@ import {
   createStudentIdentity,
   poisonEnvelopes,
   readClassroomWithRulesDisabled,
+  readInvitationWithRulesDisabled,
   seedAll
 } from "./phase2b-fixtures.js";
 import { registerTenantDataBrowserTests } from "../phase3/tenant-data.browser.spec.js";
@@ -229,6 +230,38 @@ function sentinelsOf(tenant) {
 async function pageText(page) {
   return page.evaluate(() => document.body.innerText || "");
 }
+
+test("platform-admin invitation UI is authority-gated and creates a server-only invitation", async ({
+  page
+}) => {
+  await gotoApp(page);
+  await signIn(page, TENANT_A);
+  await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_A, seeded.aUid);
+
+  const adminButton = page.getByRole("button", { name: "Teacher Invitations" });
+  await expect(adminButton).toBeVisible();
+  await adminButton.click();
+  await page.getByLabel("Teacher Google email").fill("browser.friend@example.test");
+  await page.getByLabel("Invitation expires after").selectOption("24");
+  await page.getByRole("button", { name: "Create Invitation" }).click();
+  await expect(page.getByText("Invitation created. The teacher can now sign in with Google.")).toBeVisible();
+
+  const invitation = await readInvitationWithRulesDisabled("browser.friend@example.test");
+  expect(invitation).not.toBeNull();
+  expect(Object.keys(invitation).sort()).toEqual(["createdAt", "email", "expiresAt", "status"]);
+  expect(invitation.email).toBe("browser.friend@example.test");
+  expect(invitation.status).toBe("active");
+
+  await signOutPage(page);
+  await signIn(page, TENANT_B);
+  await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_B, seeded.bUid);
+  await expect(page.getByRole("button", { name: "Teacher Invitations" })).toHaveCount(0);
+
+  await page.evaluate(() => window.setScreen("teacherInvitations"));
+  await expect(page.getByRole("heading", { name: "Teacher Invitations" })).toHaveCount(0);
+});
 
 // ---------------------------------------------------------------------------
 // Account switching and ordinary refresh, run in BOTH directions.

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { TenantSession, SESSION_STATES } from "./tenantSession.js";
 import {
   mapSafeClientError,
+  mapSafeInvitationAdminError,
   normalizeFirebaseErrorCode,
   orchestrateProductionLogout,
   orchestrateStudentLogin,
@@ -18,7 +19,8 @@ import {
   orchestrateStudentPinReset,
   orchestrateBulkOperation,
   orchestrateCreateStudent,
-  orchestrateRemoveStudent
+  orchestrateRemoveStudent,
+  orchestrateTeacherInvitationAdmin
 } from "./tenantClient.js";
 import { connectPhase2bEmulatorsIfConfigured, isPortValid } from "../firebase/firebase.js";
 import { purgeTenantCache, purgeLegacyCache, buildCacheKey, writeTeacherCache } from "./tenantCache.js";
@@ -87,6 +89,113 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.equal(mapSafeClientError(precond), "This account cannot be set up automatically. Contact your administrator for assistance.");
     assert.equal(mapSafeClientError(invalid), "The request was invalid.");
     assert.equal(mapSafeClientError(internal), "An unexpected internal error occurred.");
+    assert.equal(
+      mapSafeInvitationAdminError(perm),
+      "Platform administrator access is required."
+    );
+    assert.equal(
+      mapSafeInvitationAdminError(precond),
+      "This invitation cannot be changed automatically."
+    );
+  });
+
+  test("platform-admin invitation orchestration sends only exact callable payloads", async () => {
+    const session = new TenantSession();
+    session.uid = "platform-admin-1";
+    session.role = "teacher";
+    session.classroomId = "classroom-admin";
+    session.state = SESSION_STATES.READY;
+    session.epoch = 4;
+    const calls = [];
+    const callableAdapter = async (name, payload) => {
+      calls.push({ name, payload: { ...payload } });
+      return name === "createTeacherInvitationV2"
+        ? { data: { success: true, status: "active", created: true } }
+        : { data: { success: true, status: "revoked", revoked: true } };
+    };
+
+    const created = await orchestrateTeacherInvitationAdmin(
+      session,
+      callableAdapter,
+      "create",
+      { email: "friend@school.org", expiresInHours: 48 }
+    );
+    const revoked = await orchestrateTeacherInvitationAdmin(
+      session,
+      callableAdapter,
+      "revoke",
+      { email: "friend@school.org" }
+    );
+
+    assert.equal(created.executed, true);
+    assert.equal(revoked.executed, true);
+    assert.deepEqual(calls, [
+      {
+        name: "createTeacherInvitationV2",
+        payload: { email: "friend@school.org", expiresInHours: 48 }
+      },
+      {
+        name: "revokeTeacherInvitationV2",
+        payload: { email: "friend@school.org" }
+      }
+    ]);
+  });
+
+  test("platform-admin invitation orchestration rejects malformed responses and stale completions", async () => {
+    const session = new TenantSession();
+    session.uid = "platform-admin-1";
+    session.role = "teacher";
+    session.classroomId = "classroom-admin";
+    session.state = SESSION_STATES.READY;
+    session.epoch = 7;
+
+    const malformed = await orchestrateTeacherInvitationAdmin(
+      session,
+      async () => ({ data: { success: true, status: "active", created: true, email: "leak" } }),
+      "create",
+      { email: "friend@school.org", expiresInHours: 48 }
+    );
+    assert.deepEqual(malformed, {
+      executed: false,
+      reason: "invalid-server-response",
+      error: "The invitation service returned an invalid response."
+    });
+
+    const stale = await orchestrateTeacherInvitationAdmin(
+      session,
+      async () => {
+        session.epoch += 1;
+        return { data: { success: true, status: "revoked", revoked: true } };
+      },
+      "revoke",
+      { email: "friend@school.org" }
+    );
+    assert.deepEqual(stale, { executed: false, reason: "stale-epoch-ignored" });
+  });
+
+  test("platform-admin invitation orchestration maps authorization errors without raw details", async () => {
+    const session = new TenantSession();
+    session.uid = "teacher-1";
+    session.role = "teacher";
+    session.classroomId = "classroom-1";
+    session.state = SESSION_STATES.READY;
+
+    const result = await orchestrateTeacherInvitationAdmin(
+      session,
+      async () => {
+        const error = new Error("teacher@example.org and internal path leaked");
+        error.code = "functions/permission-denied";
+        throw error;
+      },
+      "create",
+      { email: "friend@school.org", expiresInHours: 48 }
+    );
+
+    assert.deepEqual(result, {
+      executed: false,
+      reason: "invitation-call-failed",
+      error: "Platform administrator access is required."
+    });
   });
 
   test("Commit 8 V2 student login sends the exact classroom-qualified payload and consumes only an exact token response", async () => {
@@ -1487,6 +1596,33 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.ok(
       gateAt < transitionAt,
       "The quarantine gate must run BEFORE handleAuthTransition resolves classroom data"
+    );
+  });
+
+  test("SOURCE GUARD: teacher invitation UI is authority-gated and uses only versioned callables", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const clientSource = readFileSync(
+      fileURLToPath(new URL("./tenantClient.js", import.meta.url)),
+      "utf8"
+    );
+
+    assert.match(
+      source,
+      /isPlatformAdmin\s*=\s*user\?\.uid\s*===\s*TEACHER_UID\s*\|\|\s*tokenResult\?\.claims\?\.platformAdmin\s*===\s*true/,
+      "the visible admin capability must come from the signed founding UID or ID-token claim"
+    );
+    assert.match(
+      source,
+      /isTeacher\s*&&\s*isPlatformAdmin\s*\?\s*`<button[^`]+Teacher Invitations/,
+      "ordinary teachers must not receive the invitation navigation control"
+    );
+    assert.match(source, /orchestrateTeacherInvitationAdmin/);
+    assert.match(clientSource, /createTeacherInvitationV2/);
+    assert.match(clientSource, /revokeTeacherInvitationV2/);
+    assert.equal(
+      /(?:collection|doc)\(\s*db\s*,\s*["']teacherInvitations["']/.test(source),
+      false,
+      "the browser must never read or write the server-only invitation collection directly"
     );
   });
 

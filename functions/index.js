@@ -16,6 +16,10 @@ import {
   onboardTeacherClassroomCallable,
   resolveTeacherTenantCallable,
 } from './phase2b/teacherCallables.js'
+import {
+  createTeacherInvitationCallable,
+  revokeTeacherInvitationCallable,
+} from './phase2b/teacherInvitationAdmin.js'
 import { studentPinLoginV2CallableHandler } from './phase2b/studentCredentialVerifier.js'
 import { resetStudentPinV2CallableHandler } from './phase2b/resetStudentPin.js'
 import { syncStudentProfilesV2Handler } from './phase2b/syncStudentProfiles.js'
@@ -36,7 +40,7 @@ export const MULTI_TEACHER_V2_RELEASE_ID = defineString('MULTI_TEACHER_V2_RELEAS
 // This identifier is part of the reviewed Functions artifact. Production V2
 // invocations require the separately configured release parameter to match it
 // exactly; emulator invocations have no deployed release and therefore do not.
-export const REVIEWED_V2_FUNCTIONS_RELEASE_ID = 'phase3-commit8-functions-v1'
+export const REVIEWED_V2_FUNCTIONS_RELEASE_ID = 'multi-account-invitations-functions-v1'
 
 /**
  * Module loading is deliberately unconditional. Section 6 requires discovery
@@ -149,6 +153,20 @@ export const onboardTeacherClassroomV2 = onCall(async (request) => {
   return onboardTeacherClassroomCallable(request, {
     firestore: getFirestore(),
     auth: getAuth(),
+  })
+})
+
+export const createTeacherInvitationV2 = onCall(async (request) => {
+  assertV2Invocation('createTeacherInvitationV2')
+  return createTeacherInvitationCallable(request, {
+    firestore: getFirestore(),
+  })
+})
+
+export const revokeTeacherInvitationV2 = onCall(async (request) => {
+  assertV2Invocation('revokeTeacherInvitationV2')
+  return revokeTeacherInvitationCallable(request, {
+    firestore: getFirestore(),
   })
 })
 

@@ -39,6 +39,16 @@ export function mapSafeClientError(error) {
   return "An unexpected internal error occurred.";
 }
 
+export function mapSafeInvitationAdminError(error) {
+  const rawCode = normalizeFirebaseErrorCode(error);
+  if (rawCode === "unauthenticated") return "Sign in required.";
+  if (rawCode === "permission-denied") return "Platform administrator access is required.";
+  if (rawCode === "invalid-argument") return "Enter a valid teacher email and invitation expiration.";
+  if (rawCode === "failed-precondition") return "This invitation cannot be changed automatically.";
+  if (rawCode === "aborted") return "The invitation could not be changed. Please try again.";
+  return "An unexpected internal error occurred.";
+}
+
 export async function orchestrateProductionLogout(session, authAdapter, onRender) {
   if (!session) throw new Error("Tenant session is required for logout.");
   if (typeof onRender === "function") {
@@ -646,4 +656,86 @@ export async function safeExecuteWithEpochCheck(session, asyncFn, applyFn) {
     applyFn(result);
   }
   return { executed: true, result };
+}
+
+export async function orchestrateTeacherInvitationAdmin(
+  session,
+  callableAdapter,
+  action,
+  payload
+) {
+  if (!session || typeof session.captureIdentity !== "function") {
+    throw new Error("Tenant session is required.");
+  }
+  if (typeof callableAdapter !== "function") {
+    throw new Error("Callable adapter function is required.");
+  }
+  if (action !== "create" && action !== "revoke") {
+    throw new Error("Invitation action must be create or revoke.");
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Invitation payload is required.");
+  }
+
+  const expectedKeys = action === "create"
+    ? ["email", "expiresInHours"]
+    : ["email"];
+  if (!exactObject(payload, expectedKeys)) {
+    throw new Error("Invitation payload shape is invalid.");
+  }
+  if (typeof payload.email !== "string" || !payload.email.trim()) {
+    throw new Error("Invitation email is required.");
+  }
+  if (
+    action === "create" &&
+    (!Number.isInteger(payload.expiresInHours) ||
+      payload.expiresInHours < 1 ||
+      payload.expiresInHours > 168)
+  ) {
+    throw new Error("Invitation expiration is invalid.");
+  }
+
+  const captured = session.captureIdentity();
+  const functionName = action === "create"
+    ? "createTeacherInvitationV2"
+    : "revokeTeacherInvitationV2";
+
+  try {
+    const response = await callableAdapter(functionName, payload);
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+
+    const result = response?.data || response;
+    const validCreate = action === "create" &&
+      exactObject(result, ["success", "status", "created"]) &&
+      result.success === true &&
+      result.status === "active" &&
+      typeof result.created === "boolean";
+    const validRevoke = action === "revoke" &&
+      exactObject(result, ["success", "status", "revoked"]) &&
+      result.success === true &&
+      ["revoked", "not-found"].includes(result.status) &&
+      typeof result.revoked === "boolean" &&
+      (result.status !== "not-found" || result.revoked === false);
+
+    if (!validCreate && !validRevoke) {
+      return {
+        executed: false,
+        reason: "invalid-server-response",
+        error: "The invitation service returned an invalid response.",
+      };
+    }
+
+    return { executed: true, result };
+  } catch (error) {
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+    return {
+      executed: false,
+      reason: "invitation-call-failed",
+      error: mapSafeInvitationAdminError(error),
+    };
+  }
 }

@@ -756,7 +756,7 @@ import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, writeB
 import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
-import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
+import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 
@@ -828,6 +828,10 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let studentPinResetPending = false;
     let bulkOperationPending = false;
     let studentLifecyclePending = false;
+    let isPlatformAdmin = false;
+    let teacherInvitationPending = false;
+    let teacherInvitationEmailDraft = "";
+    let teacherInvitationExpiryHours = 48;
     // View-only record of which students this session has just issued a PIN
     // for. It is deliberately NOT stored on the student object: Section 4
     // forbids credential-activation state in any write payload or cache
@@ -2751,6 +2755,7 @@ link.click();
             ${isTeacher ? `<button onclick="setScreen('roster')">Roster</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('settings')">Settings</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('credentials')">Credentials</button>` : ""}
+            ${isTeacher && isPlatformAdmin ? `<button onclick="setScreen('teacherInvitations')">Teacher Invitations</button>` : ""}
             ${isTeacher ? `<button onclick="openStudentAuthLogs()">Student Auth Logs</button>` : ""}
             
             <button onclick="logout()">Log Out</button>
@@ -3277,6 +3282,59 @@ ${transactionTarget !== "whole" ? `
           </div>
         `;
       }
+
+      if (screen === "teacherInvitations" && isTeacher && isPlatformAdmin) {
+        html += `
+          <div class="card soft-card" style="max-width: 680px; margin: 0 auto;">
+            <h2>Teacher Invitations</h2>
+            <p class="small-note">
+              Invite a teacher using the exact email address on their Google account.
+              After signing in, they will create their own isolated classroom.
+            </p>
+
+            <label for="teacherInvitationEmail">Teacher Google email</label>
+            <input
+              id="teacherInvitationEmail"
+              type="email"
+              value="${escapeHtml(teacherInvitationEmailDraft)}"
+              placeholder="teacher@school.org"
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              ${teacherInvitationPending ? "disabled" : ""}
+            />
+
+            <label for="teacherInvitationExpiryHours">Invitation expires after</label>
+            <select id="teacherInvitationExpiryHours" ${teacherInvitationPending ? "disabled" : ""}>
+              ${[
+                [24, "24 hours"],
+                [48, "48 hours"],
+                [72, "72 hours"],
+                [168, "7 days"]
+              ].map(([hours, label]) => `
+                <option value="${hours}" ${teacherInvitationExpiryHours === hours ? "selected" : ""}>${label}</option>
+              `).join("")}
+            </select>
+
+            <div style="display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap;">
+              <button
+                class="primary"
+                onclick="manageTeacherInvitation('create')"
+                ${teacherInvitationPending ? "disabled" : ""}
+              >${teacherInvitationPending ? "Working..." : "Create Invitation"}</button>
+              <button
+                onclick="manageTeacherInvitation('revoke')"
+                ${teacherInvitationPending ? "disabled" : ""}
+              >Revoke Invitation</button>
+            </div>
+
+            <p class="small-note" style="margin-top: 16px;">
+              Invitations do not send email automatically. Tell the teacher to open Morgan Bank
+              and choose Continue with Google before the invitation expires.
+            </p>
+          </div>
+        `;
+      }
       if (screen === "studentAuthLogs" && isTeacher) {
         html += `
           <div class="card">
@@ -3435,6 +3493,10 @@ if (screen === "editSettingsLists" && isTeacher) {
       // global contract must be cleared by the same synchronous reset, or a
       // previous tenant's offline badge / profile login ID can survive a switch.
       v2IsOffline = false;
+      isPlatformAdmin = false;
+      teacherInvitationPending = false;
+      teacherInvitationEmailDraft = "";
+      teacherInvitationExpiryHours = 48;
       profileLoginIdStatus = "Checking...";
       // The persisted-data baseline belongs to the outgoing tenant. Keeping it
       // would let the next tenant's first save diff against a foreign
@@ -3473,6 +3535,77 @@ if (screen === "editSettingsLists" && isTeacher) {
           storageAdapter: localStorage,
           projectId: v2TenantSession.projectId
         });
+      }
+      render();
+    }
+
+    async function manageTeacherInvitation(action) {
+      if (
+        !IS_MULTI_TEACHER_V2_ENABLED ||
+        !requireTeacher() ||
+        !isPlatformAdmin ||
+        teacherInvitationPending ||
+        (action !== "create" && action !== "revoke")
+      ) {
+        return;
+      }
+
+      const emailInput = document.getElementById("teacherInvitationEmail");
+      const expiryInput = document.getElementById("teacherInvitationExpiryHours");
+      const email = typeof emailInput?.value === "string" ? emailInput.value.trim() : "";
+      const expiresInHours = Number(expiryInput?.value);
+
+      if (!email) {
+        message = "Enter the teacher's Google email address.";
+        render();
+        return;
+      }
+      if (
+        action === "create" &&
+        (!Number.isInteger(expiresInHours) || expiresInHours < 1 || expiresInHours > 168)
+      ) {
+        message = "Choose an invitation expiration between 1 and 168 hours.";
+        render();
+        return;
+      }
+
+      teacherInvitationEmailDraft = email;
+      if (Number.isInteger(expiresInHours)) {
+        teacherInvitationExpiryHours = expiresInHours;
+      }
+      teacherInvitationPending = true;
+      message = action === "create" ? "Creating invitation..." : "Revoking invitation...";
+      render();
+
+      const callAdapter = async (name, payload) => {
+        const callable = httpsCallable(functions, name);
+        return await callable(payload);
+      };
+      const payload = action === "create"
+        ? { email, expiresInHours: teacherInvitationExpiryHours }
+        : { email };
+      const result = await orchestrateTeacherInvitationAdmin(
+        v2TenantSession,
+        callAdapter,
+        action,
+        payload
+      );
+
+      if (result.reason === "stale-epoch-ignored") return;
+
+      teacherInvitationPending = false;
+      if (!result.executed) {
+        message = result.error || "The invitation could not be changed.";
+      } else if (action === "create") {
+        message = result.result.created
+          ? "Invitation created. The teacher can now sign in with Google."
+          : "An active invitation already exists. Its expiration was not changed.";
+      } else if (result.result.status === "not-found") {
+        message = "No invitation was found for that email address.";
+      } else {
+        message = result.result.revoked
+          ? "Invitation revoked."
+          : "The invitation was already revoked.";
       }
       render();
     }
@@ -3617,6 +3750,12 @@ if (screen === "editSettingsLists" && isTeacher) {
 
         if (currentAuthGeneration !== authObservedGeneration) return;
 
+        // handleAuthTransition intentionally performs a second tenant
+        // invalidation, which resets all outgoing render state. Apply this
+        // signed-token capability only after that reset has completed so the
+        // current administrator's control is not accidentally erased.
+        isPlatformAdmin = user?.uid === TEACHER_UID || tokenResult?.claims?.platformAdmin === true;
+
         if (res.executed && res.data) {
           data = res.data;
           v2IsOffline = Boolean(res.isOffline);
@@ -3698,6 +3837,7 @@ window.resetProfileStudentPin = resetProfileStudentPin;
 window.activateStudent = activateStudent;
 window.bulkActivateStudents = bulkActivateStudents;
 window.submitV2Onboarding = submitV2Onboarding;
+window.manageTeacherInvitation = manageTeacherInvitation;
 window.render = render;
 window.addStudent = addStudent;
 window.removeStudent = removeStudent;

@@ -1,5 +1,21 @@
 # Phase 2B test suites
 
+## Post-Phase-3 multi-account invitation coverage
+
+The current suites also cover the administrator-only teacher invitation
+workflow defined in `MULTI_ACCOUNT_INVITATION_IMPLEMENTATION_BRIEF.md`.
+Functions-emulator evidence uses real Auth-emulator tokens to prove both the
+founding UID and `platformAdmin: true` paths, ordinary and forged denial,
+transactional create/revoke behavior, and two complete invited-teacher
+onboardings with reciprocal cross-tenant denial under final rules. The browser
+suite proves the invitation control is absent for an ordinary teacher and that
+the visible administrator flow reaches the real callable without directly
+accessing the server-only collection.
+
+Historical Item 10 counts below describe their named checkpoint. Fresh counts
+for the multi-account change belong in its final self-verification and review
+handoff rather than overwriting that historical record.
+
 ## Commands
 
 | Command | Needs Java/emulator | Needs Chromium |

@@ -25,6 +25,7 @@
 // anything.
 
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { initializeTestEnvironment } from "@firebase/rules-unit-testing";
 
 export const EMULATOR_HOST = "127.0.0.1";
@@ -165,6 +166,26 @@ export async function createUser(email, password) {
   return out.localId;
 }
 
+export async function setCustomClaims(uid, claims) {
+  const res = await fetch(
+    `${AUTH_BASE}/projects/${PROJECT_ID}/accounts:update?key=${API_KEY}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer owner",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        localId: uid,
+        customAttributes: JSON.stringify(claims)
+      })
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`fixtures: custom claims -> ${res.status}: ${await res.text()}`);
+  }
+}
+
 // Creates a real Auth-emulator account and applies student custom claims, so
 // the student-session test does not use a teacher session mislabeled as one.
 export async function createStudentIdentity({ classroomId, studentId }) {
@@ -190,23 +211,7 @@ export async function createStudentIdentity({ classroomId, studentId }) {
 
   // Apply the student claims the app's V2 path reads.
   const claims = { role: "student", classroomId, studentId };
-  const upd = await fetch(
-    `${AUTH_BASE}/projects/${PROJECT_ID}/accounts:update?key=${API_KEY}`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer owner",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        localId: uid,
-        customAttributes: JSON.stringify(claims)
-      })
-    }
-  );
-  if (!upd.ok) {
-    throw new Error(`fixtures: student claims -> ${upd.status}: ${await upd.text()}`);
-  }
+  await setCustomClaims(uid, claims);
   return {
     uid,
     email: `${requestedUid}@example.test`,
@@ -220,6 +225,20 @@ export async function readClassroomWithRulesDisabled(classroomId) {
   let result = null;
   await te.withSecurityRulesDisabled(async (context) => {
     const snap = await context.firestore().doc(`classrooms/${classroomId}`).get();
+    if (snap.exists) result = snap.data();
+  });
+  return result;
+}
+
+export async function readInvitationWithRulesDisabled(email) {
+  const te = await env();
+  const normalizedEmail = email.trim().replace(/[A-Z]/g, (character) =>
+    String.fromCharCode(character.charCodeAt(0) + 32)
+  );
+  const digest = createHash("sha256").update(normalizedEmail, "utf8").digest("hex");
+  let result = null;
+  await te.withSecurityRulesDisabled(async (context) => {
+    const snap = await context.firestore().doc(`teacherInvitations/${digest}`).get();
     if (snap.exists) result = snap.data();
   });
   return result;
@@ -354,6 +373,7 @@ export async function seedAll() {
 
   const aUid = await createUser(TENANT_A.email, TENANT_A.password);
   const bUid = await createUser(TENANT_B.email, TENANT_B.password);
+  await setCustomClaims(aUid, { platformAdmin: true });
 
   const disabledUid = await createUser("disabled@example.test", "test-password-d");
   const missingDocUid = await createUser("missing-doc@example.test", "test-password-m");

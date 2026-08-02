@@ -44,7 +44,11 @@ import {
   connectFunctionsEmulator,
   httpsCallable,
 } from 'firebase/functions'
-import { initializeTestEnvironment } from '@firebase/rules-unit-testing'
+import {
+  assertFails,
+  assertSucceeds,
+  initializeTestEnvironment,
+} from '@firebase/rules-unit-testing'
 
 // ---------------------------------------------------------------------------
 // Environment refusal. Nothing below this block may run — and in particular no
@@ -323,6 +327,15 @@ async function signInAsGoogleUser(email, { emailVerified = true } = {}) {
   return { ...client, uid: userCred.user.uid, email, tokenResult }
 }
 
+async function signInAsPlatformAdmin(email) {
+  const identity = await signInAsGoogleUser(email)
+  await adminAuth.setCustomUserClaims(identity.uid, { platformAdmin: true })
+  const tokenResult = await getIdTokenResult(identity.auth.currentUser, true)
+  assert.equal(tokenResult.claims.platformAdmin, true)
+  await assertGoogleIdentity(tokenResult, email)
+  return { ...identity, tokenResult }
+}
+
 async function assertGoogleIdentity(tokenResult, email) {
   assert.equal(tokenResult.claims.email, email)
   assert.equal(tokenResult.claims.email_verified, true)
@@ -407,6 +420,8 @@ if (testMode === 'gate-off') {
         'ensureTeacherClassroom',
         'resolveTeacherTenantV2',
         'onboardTeacherClassroomV2',
+        'createTeacherInvitationV2',
+        'revokeTeacherInvitationV2',
         'studentPinLoginV2',
         'resetStudentPinV2',
         'createStudentV2',
@@ -447,6 +462,8 @@ if (testMode === 'gate-off') {
       for (const name of [
         'resolveTeacherTenantV2',
         'onboardTeacherClassroomV2',
+        'createTeacherInvitationV2',
+        'revokeTeacherInvitationV2',
         'studentPinLoginV2',
         'resetStudentPinV2',
         'createStudentV2',
@@ -624,7 +641,7 @@ if (testMode === 'gate-on') {
     '  try { await imported.studentPinLoginV2.run({ data: {} }); invocation = { succeeded: true } }',
     '  catch (error) { invocation = { succeeded: false, code: error?.code || null, message: String(error?.message || error) } }',
     '}',
-    "console.log('GUARD_RESULT ' + JSON.stringify({ threw, apps: getApps().length, message, invocation, reviewedRelease: imported?.REVIEWED_V2_FUNCTIONS_RELEASE_ID || null, releaseParamAvailable: Boolean(imported?.MULTI_TEACHER_V2_RELEASE_ID), exportsAvailable: Boolean(imported?.studentPinLogin && imported?.studentPinLoginV2 && imported?.syncStudentProfilesV2) }))",
+    "console.log('GUARD_RESULT ' + JSON.stringify({ threw, apps: getApps().length, message, invocation, reviewedRelease: imported?.REVIEWED_V2_FUNCTIONS_RELEASE_ID || null, releaseParamAvailable: Boolean(imported?.MULTI_TEACHER_V2_RELEASE_ID), exportsAvailable: Boolean(imported?.studentPinLogin && imported?.studentPinLoginV2 && imported?.createTeacherInvitationV2 && imported?.revokeTeacherInvitationV2 && imported?.syncStudentProfilesV2) }))",
     'process.exit(0)',
   ].join('\n')
 
@@ -780,10 +797,10 @@ if (testMode === 'gate-on') {
         assertV2RefusedAtInvocation(production, 'mismatched production release')
         const accepted = runGuardProbe({
           ...production,
-          MULTI_TEACHER_V2_RELEASE_ID: 'phase3-commit8-functions-v1',
+          MULTI_TEACHER_V2_RELEASE_ID: 'multi-account-invitations-functions-v1',
         })
         assert.equal(accepted.threw, false)
-        assert.equal(accepted.reviewedRelease, 'phase3-commit8-functions-v1')
+        assert.equal(accepted.reviewedRelease, 'multi-account-invitations-functions-v1')
         assert.equal(accepted.invocation, null)
       })
     })
@@ -956,6 +973,236 @@ if (testMode === 'gate-on') {
 
         const rows = await raceCol.where('studentId', '==', 'x2').get()
         assert.equal(rows.size, 1, 'the create precondition must leave exactly one document')
+      })
+    })
+
+    // -----------------------------------------------------------------------
+    describe('C0. Platform-admin teacher invitation workflow', () => {
+      it('denies unauthenticated, ordinary-teacher, and request-forged authority', async () => {
+        const unauthenticated = createTestClientApp()
+        await expectCallableError(
+          () => httpsCallable(unauthenticated.functions, 'createTeacherInvitationV2')({
+            email: 'friend@school.org',
+            expiresInHours: 48,
+          }),
+          'unauthenticated',
+          'Sign in required.',
+        )
+
+        const ordinary = await signInAsGoogleUser('ordinary@school.org')
+        await expectCallableError(
+          () => httpsCallable(ordinary.functions, 'createTeacherInvitationV2')({
+            email: 'friend@school.org',
+            expiresInHours: 48,
+          }),
+          'permission-denied',
+          'Platform administrator access is required.',
+        )
+        await expectCallableError(
+          () => httpsCallable(ordinary.functions, 'createTeacherInvitationV2')({
+            email: 'friend@school.org',
+            expiresInHours: 48,
+            platformAdmin: true,
+          }),
+          'permission-denied',
+          'Platform administrator access is required.',
+        )
+
+        const student = createTestClientApp()
+        await signInWithCustomToken(
+          student.auth,
+          await adminAuth.createCustomToken('student-admin-conflict', {
+            role: 'student',
+            classroomId: 'student-classroom',
+            studentId: '1',
+            platformAdmin: true,
+          }),
+        )
+        await expectCallableError(
+          () => httpsCallable(student.functions, 'createTeacherInvitationV2')({
+            email: 'friend@school.org',
+            expiresInHours: 48,
+          }),
+          'permission-denied',
+          'Platform administrator access is required.',
+        )
+
+        assert.equal(
+          (await db.collection('teacherInvitations').get()).size,
+          0,
+          'denied callers must not create or inspect invitation state',
+        )
+      })
+
+      it('creates and revokes one exact invitation idempotently', async () => {
+        const adminIdentity = await signInAsPlatformAdmin('platform.admin@school.org')
+        const createInvitation = httpsCallable(
+          adminIdentity.functions,
+          'createTeacherInvitationV2',
+        )
+        const revokeInvitation = httpsCallable(
+          adminIdentity.functions,
+          'revokeTeacherInvitationV2',
+        )
+        const email = 'invited.teacher@school.org'
+
+        const created = await createInvitation({ email: ` ${email.toUpperCase()} `, expiresInHours: 24 })
+        assert.deepEqual(created.data, { success: true, status: 'active', created: true })
+
+        const invitationRef = db.collection('teacherInvitations').doc(sha256Hex(email))
+        const firstSnapshot = await invitationRef.get()
+        assert.equal(firstSnapshot.exists, true)
+        assert.deepEqual(Object.keys(firstSnapshot.data()).sort(), [
+          'createdAt', 'email', 'expiresAt', 'status',
+        ])
+        assert.equal(firstSnapshot.data().email, email)
+        assert.equal(firstSnapshot.data().status, 'active')
+        assert.ok(firstSnapshot.data().createdAt instanceof admin.firestore.Timestamp)
+        assert.ok(firstSnapshot.data().expiresAt instanceof admin.firestore.Timestamp)
+        assert.ok(firstSnapshot.data().expiresAt.toMillis() > firstSnapshot.data().createdAt.toMillis())
+
+        const repeated = await createInvitation({ email, expiresInHours: 168 })
+        assert.deepEqual(repeated.data, { success: true, status: 'active', created: false })
+        const repeatedSnapshot = await invitationRef.get()
+        assert.equal(
+          repeatedSnapshot.data().expiresAt.toMillis(),
+          firstSnapshot.data().expiresAt.toMillis(),
+          'an active retry must not silently extend the invitation',
+        )
+
+        const revoked = await revokeInvitation({ email })
+        assert.deepEqual(revoked.data, { success: true, status: 'revoked', revoked: true })
+        assert.equal((await invitationRef.get()).data().status, 'revoked')
+
+        const repeatedRevoke = await revokeInvitation({ email })
+        assert.deepEqual(repeatedRevoke.data, {
+          success: true,
+          status: 'revoked',
+          revoked: false,
+        })
+
+        const deniedTeacher = await signInAsGoogleUser(email)
+        await expectCallableError(
+          () => httpsCallable(deniedTeacher.functions, 'onboardTeacherClassroomV2')({
+            classroomName: 'Revoked Room',
+          }),
+          'permission-denied',
+          'This account is not eligible to complete this action.',
+        )
+      })
+
+      it('authorizes the signed founding UID without requiring a custom claim', async () => {
+        const client = createTestClientApp()
+        const customToken = await adminAuth.createCustomToken(LEGACY_TEACHER_UID)
+        await signInWithCustomToken(client.auth, customToken)
+        const claims = await getIdTokenResult(client.auth.currentUser, true)
+        assert.equal(claims.claims.platformAdmin, undefined)
+
+        const result = await httpsCallable(client.functions, 'createTeacherInvitationV2')({
+          email: 'founding.invite@school.org',
+          expiresInHours: 48,
+        })
+        assert.deepEqual(result.data, { success: true, status: 'active', created: true })
+        assert.equal(
+          (
+            await db
+              .collection('teacherInvitations')
+              .doc(sha256Hex('founding.invite@school.org'))
+              .get()
+          ).data().status,
+          'active',
+        )
+      })
+
+      it('serializes simultaneous invitation creation to one durable active document', async () => {
+        const adminIdentity = await signInAsPlatformAdmin('race.admin@school.org')
+        const createInvitation = httpsCallable(
+          adminIdentity.functions,
+          'createTeacherInvitationV2',
+        )
+        const email = 'race.invite@school.org'
+
+        const results = await Promise.all([
+          createInvitation({ email, expiresInHours: 48 }),
+          createInvitation({ email, expiresInHours: 48 }),
+          createInvitation({ email, expiresInHours: 48 }),
+        ])
+
+        assert.equal(results.filter(result => result.data.created === true).length, 1)
+        assert.equal(results.filter(result => result.data.created === false).length, 2)
+        const invitations = await db.collection('teacherInvitations').get()
+        assert.equal(invitations.size, 1)
+        assert.equal(invitations.docs[0].id, sha256Hex(email))
+        assert.equal(invitations.docs[0].data().status, 'active')
+      })
+
+      it('uses admin-created invitations to onboard two isolated teacher accounts', async () => {
+        const adminIdentity = await signInAsPlatformAdmin('multi.admin@school.org')
+        const createInvitation = httpsCallable(
+          adminIdentity.functions,
+          'createTeacherInvitationV2',
+        )
+        const teacherEmails = ['friend.one@school.org', 'friend.two@school.org']
+
+        for (const email of teacherEmails) {
+          const result = await createInvitation({ email, expiresInHours: 48 })
+          assert.deepEqual(result.data, { success: true, status: 'active', created: true })
+        }
+
+        const identities = await Promise.all(teacherEmails.map(email => signInAsGoogleUser(email)))
+        const onboarded = []
+        for (const [index, identity] of identities.entries()) {
+          const eligibility = await httpsCallable(identity.functions, 'resolveTeacherTenantV2')({})
+          assert.deepEqual(eligibility.data, {
+            state: 'onboarding-required',
+            eligibility: 'invited',
+          })
+          const response = await httpsCallable(identity.functions, 'onboardTeacherClassroomV2')({
+            classroomName: `Friend Room ${index + 1}`,
+          })
+          onboarded.push({ identity, response: response.data })
+        }
+
+        assert.notEqual(onboarded[0].response.classroom.id, onboarded[1].response.classroom.id)
+        assert.equal(
+          (await db.collection('teachers').get()).size,
+          2,
+          'each invited friend must receive a separate teacher document',
+        )
+        assert.equal(
+          (await db.collection('classrooms').get()).size,
+          2,
+          'each invited friend must receive a separate classroom document',
+        )
+
+        for (const [index, { identity, response }] of onboarded.entries()) {
+          const ownDb = gateOnRulesEnvironment.authenticatedContext(identity.uid).firestore()
+          const foreign = onboarded[index === 0 ? 1 : 0].response.classroom.id
+          await assertSucceeds(ownDb.doc(`classrooms/${response.classroom.id}`).get())
+          await assertFails(ownDb.doc(`classrooms/${foreign}`).get())
+
+          const invitation = await db
+            .collection('teacherInvitations')
+            .doc(sha256Hex(identity.email))
+            .get()
+          assert.equal(invitation.data().status, 'consumed')
+          assert.equal(invitation.data().consumedByUid, identity.uid)
+        }
+
+        await expectCallableError(
+          () => createInvitation({ email: teacherEmails[0], expiresInHours: 48 }),
+          'failed-precondition',
+          'This invitation cannot be changed automatically.',
+        )
+
+        await expectCallableError(
+          () => httpsCallable(identities[0].functions, 'createTeacherInvitationV2')({
+            email: 'friend.three@school.org',
+            expiresInHours: 48,
+          }),
+          'permission-denied',
+          'Platform administrator access is required.',
+        )
       })
     })
 
