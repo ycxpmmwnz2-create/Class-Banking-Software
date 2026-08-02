@@ -1606,6 +1606,25 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       "utf8"
     );
 
+    const resetStart = source.indexOf("function resetAllGlobalState() {");
+    const resetEnd = source.indexOf("\n    async function submitV2Onboarding", resetStart);
+    assert.notEqual(resetStart, -1, "the complete tenant reset function must exist");
+    assert.notEqual(resetEnd, -1, "the complete tenant reset function must have a bounded source block");
+    const resetBlock = source.slice(resetStart, resetEnd);
+
+    for (const [pattern, description] of [
+      [/\bisPlatformAdmin\s*=\s*false;/, "administrator capability"],
+      [/\bteacherInvitationPending\s*=\s*false;/, "pending invitation operation"],
+      [/\bteacherInvitationEmailDraft\s*=\s*"";/, "invitation email draft"],
+      [/\bteacherInvitationExpiryHours\s*=\s*48;/, "invitation expiration draft"]
+    ]) {
+      assert.match(
+        resetBlock,
+        pattern,
+        `${description} must reset synchronously before an incoming tenant can render`
+      );
+    }
+
     assert.match(
       source,
       /isPlatformAdmin\s*=\s*user\?\.uid\s*===\s*TEACHER_UID\s*\|\|\s*tokenResult\?\.claims\?\.platformAdmin\s*===\s*true/,

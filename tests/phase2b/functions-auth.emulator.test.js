@@ -482,6 +482,7 @@ if (testMode === 'gate-off') {
       assert.equal((await db.collection('studentAuthUnresolvedLogs').get()).size, 0)
       assert.equal((await db.collection('teachers').get()).size, 0)
       assert.equal((await db.collection('classroomLoginCodes').get()).size, 0)
+      assert.equal((await db.collection('teacherInvitations').get()).size, 0)
     })
 
     it('signs a student in through the untouched legacy flat credential path', async () => {
