@@ -147,6 +147,97 @@ function runbookRollbackSteps() {
   return steps
 }
 
+function currentPhase3StatusSections({
+  briefMarkdown = brief,
+  runbookMarkdown = runbook,
+  architectureMarkdown = architecture,
+  phase3ReadmeMarkdown = phase3Readme,
+} = {}) {
+  const briefSection = briefMarkdown.split('\n## 1. Historical challenge-finding disposition')[0]
+
+  assert.ok(
+    runbookMarkdown.includes('## Reconciled release status'),
+    'the runbook reconciled release status must exist',
+  )
+  const runbookSection = runbookMarkdown.split('\n## What the local evidence proves')[0]
+
+  const architectureAfterHeading = architectureMarkdown.split('**Phase 3 —')[1]
+  assert.ok(architectureAfterHeading, 'the architecture Phase 3 status must exist')
+  const architectureSection = `**Phase 3 —${architectureAfterHeading.split('\n**Phase 4 —')[0]}`
+
+  const phase3ReadmeSection = phase3ReadmeMarkdown.split(
+    '\nItem 15 added no runtime behavior.',
+  )[0]
+
+  return [
+    {
+      label: 'brief',
+      section: briefSection,
+      completion: /Status: \*\*clean-start production Steps 10–11 completed and privacy-safely\s+verified; observation window incomplete; not production authorization\*\*/i,
+    },
+    {
+      label: 'runbook',
+      section: runbookSection,
+      completion: /Status: \*\*production Steps 10–11 completed and privacy-safely verified;\s+observation window incomplete; not production authorization\*\*/i,
+    },
+    {
+      label: 'architecture',
+      section: architectureSection,
+      completion: /\*\*Phase 3 — Items 1–16 implemented; clean-start production Steps 10–11\s+completed and privacy-safely verified; observation window incomplete\*\*/i,
+    },
+    {
+      label: 'Phase 3 README',
+      section: phase3ReadmeSection,
+      completion: /\| 16 \|[^\n]+\| production recovery and Steps 10–11 complete; reviews explicitly skipped by Andrew for recovery\/onboarding \|/i,
+    },
+  ]
+}
+
+function assertCompletedProductionStatus({
+  briefMarkdown = brief,
+  runbookMarkdown = runbook,
+  architectureMarkdown = architecture,
+  phase3ReadmeMarkdown = phase3Readme,
+} = {}) {
+  const statusSections = currentPhase3StatusSections({
+    briefMarkdown,
+    runbookMarkdown,
+    architectureMarkdown,
+    phase3ReadmeMarkdown,
+  })
+
+  for (const { label, section, completion } of statusSections) {
+    assert.match(section, new RegExp(REVIEWED_CLEAN_START_COMMIT), `${label} binds the release`)
+    assert.match(
+      section,
+      /founding(?:-teacher)?[- ]invitation/i,
+      `${label} retains the invitation boundary`,
+    )
+    assert.match(section, completion, `${label} records Steps 10–11 as complete`)
+    assert.match(
+      section,
+      /(?:verified\s+all\s+five\s+sanitized\s+foundation\s+checks\s+`true`|(?:^|[.;]\s+)all\s+five\s+(?:sanitized\s+)?(?:Boolean\s+)?(?:results|foundation\s+checks)\s+(?:were\s+`true`|are\s+directly\s+verified|`true`))/im,
+      `${label} records a positive all-five foundation verdict`,
+    )
+    assert.match(
+      section,
+      /independent\s+sanitized\s+reads\s+verified\s+the\s+student\s+absent,\s+(?:its\s+)?credential\s+retained\/inactive,\s+(?:the\s+)?transaction\s+preserved,\s+and\s+`nextStudentNumber(?::\s*2`|`\s+(?:still|remains)\s+`2`)/i,
+      `${label} records all four positive cleanup-retention facts`,
+    )
+    assert.match(
+      section,
+      /observation\s+window(?:\s+and\s+every\s+later\s+production\s+transition)?\s+(?:remains?\s+incomplete(?:\s+and\s+unauthorized)?|has\s+not\s+begun|is\s+incomplete)/i,
+      `${label} keeps the observation window incomplete`,
+    )
+  }
+
+  assert.match(
+    runbookMarkdown,
+    /Step 12's\s+observation window has not begun and is not authorized by this record\./i,
+    'the runbook must keep Step 12 both unstarted and unauthorized',
+  )
+}
+
 function invitationRecoverySection(markdown = runbook) {
   const heading = '## One-time expired founding-invitation recovery'
   assert.equal(
@@ -729,18 +820,7 @@ describe('Phase 3 release-order source contract', () => {
   })
 
   it('source contract: status documents agree on completed Steps 10–11 and the remaining observation boundary', () => {
-    for (const document of [brief, runbook, architecture, phase3Readme]) {
-      assert.match(document, new RegExp(REVIEWED_CLEAN_START_COMMIT))
-      assert.match(document, /founding[- ]invitation/i)
-      assert.match(document, /Step 10/i)
-      assert.match(document, /Step 11/i)
-      assert.match(document, /five sanitized|all five sanitized/i)
-      assert.match(document, /all (?:five )?(?:sanitized )?(?:Boolean )?results were `true`|all five sanitized foundation checks (?:are directly verified|`true`)/i)
-      assert.match(document, /credential (?:is )?retained(?:\/inactive| and inactive)|credential retained\/inactive|credential retained and inactive|credential retained, inactive|its credential retained\/inactive/i)
-      assert.match(document, /transaction (?:is )?(?:preserved|remains)/i)
-      assert.match(document, /`nextStudentNumber(?:: 2`|` (?:still|remains) `2`)/i)
-      assert.match(document, /observation window (?:remains incomplete|has not begun|is incomplete|incomplete)/i)
-    }
+    assertCompletedProductionStatus()
 
     assert.match(runbook, new RegExp(RELEASE_SEQUENCE_009_SHA256))
     assert.match(phase3Readme, new RegExp(RELEASE_SEQUENCE_009_SHA256))
@@ -770,6 +850,40 @@ describe('Phase 3 release-order source contract', () => {
         0,
       )
       assert.equal(occurrences, 3, `${identifier} must appear once in runbook, brief, and contract`)
+    }
+  })
+
+  it('source contract: status assertions reject negated completion, retention, and Step 12 facts', () => {
+    for (const [label, before, after] of [
+      [
+        'incomplete Steps 10–11',
+        'Status: **production Steps 10–11 completed and privacy-safely verified;\nobservation window incomplete; not production authorization**',
+        'Status: **production Steps 10–11 incomplete and not verified;\nobservation window incomplete; not production authorization**',
+      ],
+      [
+        'negated foundation verdict',
+        'All five\nresults were `true`.',
+        'Not all five\nresults were `true`; two checks failed.',
+      ],
+      [
+        'negated cleanup retention',
+        'Independent sanitized reads verified the student absent, credential\nretained/inactive, transaction preserved, and `nextStudentNumber` still `2`.',
+        'Independent sanitized reads did not verify the student absent, credential\nretained/inactive, transaction preserved, or `nextStudentNumber` still `2`.',
+      ],
+      [
+        'started and authorized Step 12',
+        "Step 12's\nobservation window has not begun and is not authorized by this record.",
+        "Step 12's\nobservation window has begun and is fully authorized by this record.",
+      ],
+    ]) {
+      assert.ok(runbook.includes(before), `${label} negative control must mutate real text`)
+      assert.throws(
+        () => assertCompletedProductionStatus({
+          runbookMarkdown: runbook.replace(before, after),
+        }),
+        assert.AssertionError,
+        `${label} must fail the completed-status source contract`,
+      )
     }
   })
 
