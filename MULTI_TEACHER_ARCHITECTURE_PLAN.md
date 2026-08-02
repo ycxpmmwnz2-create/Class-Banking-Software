@@ -9,14 +9,23 @@ implemented from local repository, unit, source-contract, emulator, rules,
 browser, release-rehearsal, and rollback-rehearsal evidence. Later Items 13–14
 closed the production-readiness correction and clean-start pivot. Item 15's
 reviewed recovery v1 terminated without a Save or mutation after its browser
-output violated the privacy boundary. Item 16 defines a distinct repository-
-only privacy-preserving v2 proposal. The external
+output violated the privacy boundary. Item 16 defined a distinct repository-
+only privacy-preserving v2 proposal. Andrew later explicitly instructed Codex
+to skip Claude and Grok review for the completed v2 recovery/onboarding cycle;
+no such review occurred. The content-private recovery and normal Google
+onboarding completed, and a separate authorized Step 10 read verified all five
+sanitized foundation checks `true`. A later separately authorized Step 11
+acceptance created only the synthetic first lifecycle student, completed the
+login, money, exact-self-read, and deployed-rules isolation checks, then
+removed that student and verified the retained inactive credential, preserved
+transaction, and allocator value `2`. The external
 release record bound to application commit
 `fa733d780c4adb36304e857b592251c95c2be4c2` records production steps 1–9
-through founding-invitation creation, but no onboarding or fresh-student
-acceptance. Item 16 remains subject to Claude and Grok review plus separate
-named v2 production authorization. **Live production state is never inferred
-from local evidence; only the exact recorded external events are carried
+through founding-invitation creation; the later recovery, onboarding, and
+foundation verification and Step 11 acceptance are separate direct production
+evidence. The observation window remains incomplete and unauthorized. **Live
+production state is never inferred from local evidence; only the exact recorded
+external events and separately authorized sanitized reads are carried
 forward.**
 
 This document builds directly on `GOOGLE_AUTH_MIGRATION_PLAN.md` (Phase B),
@@ -37,12 +46,11 @@ holds; it extends it into a concrete, phased implementation plan.
 > this historical analysis as design provenance, not as the current branch
 > inventory; use symbol names and `tests/phase3/README.md` for current evidence.
 > **Whether any of the Phase 1 branch-state facts noted below (the `teachers`/
-> `classrooms` documents, or the `ensureTeacherClassroom` callable) exist in
-> the live deployed Firebase project is unknown and is not asserted or
-> inferred anywhere in this document** — the existence of code capable of
-> creating a document is not the same as that document existing in
-> production. See Part 3 "Genuine remaining blockers" for this same caveat
-> restated at the phasing level.
+> `classrooms` documents, or the `ensureTeacherClassroom` callable) existed in
+> the live deployed Firebase project was unknown at this historical design
+> boundary** — the existence of code capable of creating a document is not the
+> same as that document existing in production. Later bounded evidence in Part
+> 3 directly verifies the clean-start foundation created during Step 10.
 
 ### Structural note
 
@@ -81,13 +89,14 @@ written by any legacy client code path above):
 | `teachers/{teacherUid}` | Document model exists in code (`functions/phase1/teacherClassroomModels.js`); created by `provisionTeacherClassroom`, invoked through the `ensureTeacherClassroom` callable (see §5, §7). Nothing in the legacy `index.html` read/write path (§1's other rows) references this collection. |
 | `classrooms/{classroomId}` (root document only, generated ID) | Document model exists in code; created by the same provisioner alongside its paired `teachers/{teacherUid}` document. Distinct from the legacy `classrooms/morgan/students/*` mirror above, which is a different subcollection under the same top-level `classrooms` name. |
 
-The local branch therefore contains teacher/classroom document *models* and
-the code to create them — it does not follow that either collection exists
-in the live deployed project. No `teachers` document, and no `classrooms`
-root document with an `ownerUid` field, is read or written anywhere in the
-*legacy* client/rules/functions path described in the rest of Part 1; the
-teacher today is still authorized purely by a literal UID string compared
-in code, exactly as before Phase 1.
+The local branch therefore contained teacher/classroom document *models* and
+the code to create them — at this historical design boundary it did not follow
+that either collection existed in the live deployed project. No `teachers`
+document, and no `classrooms` root document with an `ownerUid` field, was read
+or written anywhere in the *legacy* client/rules/functions path described in
+the rest of Part 1; the legacy teacher was authorized purely by a literal UID
+string compared in code, exactly as before Phase 1. Later bounded evidence in
+Part 3 directly verifies one clean-start teacher/classroom foundation.
 
 ### 2. Current document hierarchy
 
@@ -109,8 +118,10 @@ Within the legacy hierarchy above, the only "foreign key" fields are
 document model checked into `functions/phase1/teacherClassroomModels.js`
 (§1) *does* define an `ownerUid` field — see "Teacher profile model" and
 "Classroom ownership model" in Part 2 for that shape — but no legacy
-read/write path in this document's Part 1 references it, and whether any
-such document exists in the live deployed project is unknown.
+read/write path in this document's Part 1 references it. Whether any such
+document existed in production was unknown at this historical design
+boundary; later bounded evidence in Part 3 directly verifies the clean-start
+foundation.
 
 ### 3. Authentication flow
 
@@ -3350,9 +3361,8 @@ emulator evidence)**
   later Phase 3 release record below supersedes that historical deployment and
   gate status; no migration or real second-teacher onboarding is recorded.
 
-**Phase 3 — Items 1–15 implemented and reviewed; clean-start release recorded
-through founding-invitation creation; v1 recovery terminated without mutation;
-Item 16 locally verified with required review pending**
+**Phase 3 — Items 1–16 implemented; clean-start production Steps 10–11
+completed and privacy-safely verified; observation window incomplete**
 - Items 1–14 in `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` provide the
   production environment guards, read-only preflight and immutable manifest,
   bounded two-stage writer and journal, reconciliation/reverification,
@@ -3377,19 +3387,33 @@ Item 16 locally verified with required review pending**
   any recorded onboarding. Item 15's reviewed v1 recovery reached an authorized
   pre-Save read, but browser output violated its privacy boundary. No edit, Save,
   mutation, or onboarding occurred; v1 is permanently terminated.
-- Item 16 proposes the distinct v2 identifier. It confines raw values to
-  transient browser-control memory, emits only fixed-key booleans, and may
-  change only the existing invitation's `expiresAt` through one Save after its
-  own reviews and Andrew's separate named authorization. It authorizes no
-  production action merely by existing in the repository.
-- Founding-teacher onboarding, fresh-account lifecycle/login/money/isolation
-  acceptance, and the observation window remain incomplete. Each requires the
-  ordered procedure and separate authorization in
-  `PHASE3_RELEASE_RUNBOOK.md`.
+- Item 16 defined the distinct v2 identifier, confined raw values to transient
+  browser-control memory, allowed only fixed-key Boolean output, and limited
+  recovery to one `expiresAt` Save. Andrew explicitly instructed Codex to skip
+  Claude and Grok review for the completed recovery/onboarding cycle; neither
+  review occurred. A fresh content-private execution and separately authorized
+  normal onboarding then completed. This one-time direction is not reusable.
+- The invitation was directly reread as consumed and the working classroom
+  interface loaded. A later separately authorized read-only verification found
+  exactly one active teacher, one reciprocal owned classroom, one active code
+  index pointing to it, `nextStudentNumber: 1`, and no unexpected foundation
+  state; all five sanitized results were `true`.
+- Separately authorized Step 11 acceptance used only a synthetic student. The
+  first lifecycle allocation was student `"1"`; the returned login ID and
+  submitted PIN authenticated through the normal classroom-code path; the
+  exact teacher balance/transaction readback was reflected in exact student
+  self-read; and the deployed Rules Playground denied the actual teacher's
+  authenticated `get` against a fabricated foreign-classroom student path.
+  `removeStudentV2` then removed the synthetic student. Independent sanitized
+  reads verified the student absent, its credential retained/inactive, the
+  transaction preserved, and `nextStudentNumber: 2`. No real student or second
+  teacher was added. The observation window remains incomplete and requires
+  separate authorization in `PHASE3_RELEASE_RUNBOOK.md`.
 
-**Phase 4 — Production verification**
-- Full manual + automated acceptance pass (Part 2, "Testing strategy" §4)
-  against the fresh clean-start production classroom.
+**Phase 4 — Production verification and observation**
+- The initial fresh-account production acceptance is complete. Continue only
+  with the separately authorized observation window and any later acceptance
+  explicitly required by Part 2, "Testing strategy" §4.
 - Old `morganBank/classroomData` retained, untouched, as rollback safety net.
 
 **Phase 5 — Second-teacher onboarding**
@@ -3411,21 +3435,22 @@ Item 16 locally verified with required review pending**
 These remaining gates must not be mistaken for implementation or production
 authorization:
 - **Repository source is not a live-state oracle.** The external release record
-  supplies bounded evidence through founding-invitation creation; this plan
-  does not independently re-read or extrapolate current production state.
-- **The founding invitation is recorded expired and unconsumed.** V1 terminated
-  without a Save or mutation and cannot be reused. The Item 16 v2 proposal has
-  completed Codex local verification but still requires Claude review, Grok
-  review, and separate named v2 production authorization before its single
-  `expiresAt` Save can occur. It cannot authorize itself.
-- **Onboarding and production acceptance are absent.** No founding teacher,
-  reciprocal fresh classroom, lifecycle test student, money-flow acceptance,
-  or observation-window completion is established by the retained evidence.
+  supplies bounded evidence through founding-invitation creation; current Step
+  10 state is established only by the later authorized, sanitized production
+  reads recorded above, not inferred from repository source.
+- **The one-time recovery is spent.** V1 terminated without a Save or mutation
+  and cannot be reused. The content-private v2 execution completed its one
+  `expiresAt` Save and likewise retains no authority for another edit,
+  extension, invitation, or recovery.
+- **The observation window is absent.** Step 11's synthetic lifecycle student,
+  login, money flow, exact self-read, deployed-rules foreign-path denial, and
+  cleanup checks are complete, but no observation-window completion exists.
 - **No current production authorization exists.** Invitation recovery,
-  onboarding, acceptance, service withdrawal, rollback, and every later
-  external transition remain separate authority boundaries.
-- **Phase 4 and Phase 5 evidence is still absent.** The existing real classroom
-  has not completed post-cutover production acceptance, and no second real
+  onboarding, Step 10 verification, and Step 11 acceptance are complete and
+  spent. Observation, service withdrawal, rollback, and every later external
+  transition remain separate authority boundaries.
+- **Observation and Phase 5 evidence is still absent.** The existing classroom
+  has not completed the post-acceptance observation window, and no second real
   teacher has been invited or onboarded by this work.
 
 ---

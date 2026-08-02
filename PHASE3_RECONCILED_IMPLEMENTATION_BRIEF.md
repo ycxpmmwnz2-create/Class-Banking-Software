@@ -1,7 +1,7 @@
 # Phase 3 Reconciled Implementation and Release Brief
 
-Status: **clean-start application released through founding-invitation
-creation; onboarding and acceptance incomplete; not production authorization**.
+Status: **clean-start production Steps 10–11 completed and privacy-safely
+verified; observation window incomplete; not production authorization**.
 
 On 2026-07-31 Andrew selected a clean V2 start. The existing production records
 are development-only V1 test data and are not copied, reconciled, accepted, or
@@ -18,10 +18,28 @@ Role B absence, gate-off and gate-on Functions, final rules, gate-on Hosting,
 and founding-invitation creation. The corrected N9/N10 observations remain
 immutable evidence and agreed on all five deployment surfaces and active-writer
 classification. The clean-start route does not consume them and requires no
-replacement inventory. No broader production application data was inspected;
-the bounded v1 recovery attempt read only the founding invitation before a
-privacy-boundary abort and performed no Save or mutation. No recorded
-onboarding, fresh-student acceptance, or observation-window completion exists.
+replacement inventory. The bounded v1 recovery attempt read only the founding
+invitation before a privacy-boundary abort and performed no Save or mutation.
+Subsequent separately authorized work completed the content-private v2 recovery
+through exactly one `expiresAt` update and completed normal Google onboarding
+through `onboardTeacherClassroomV2`. Andrew explicitly instructed Codex to skip
+Claude and Grok review for that completed cycle, and no such review occurred.
+The consumed invitation and classroom interface were directly verified.
+
+A later, separately authorized, privacy-preserving production read verified
+exactly one active teacher, one reciprocal owned classroom, one active
+classroom-code index pointing to it, `nextStudentNumber: 1`, and no unexpected
+foundation state; all five sanitized Boolean results were `true`. No student
+existed at that Step 10 boundary. Andrew later separately authorized Step 11.
+The normal application created synthetic student `"1"`, authenticated the
+returned login ID and submitted PIN, committed and read back the exact teacher
+balance/transaction, and reflected it through exact student self-read. The
+deployed Rules Playground denied the actual teacher's authenticated `get`
+against a fabricated foreign-classroom student path. The normal removal path
+then deleted the synthetic student, and independent sanitized reads verified
+the student absent, credential retained/inactive, transaction preserved, and
+`nextStudentNumber: 2`. No real student or second teacher was added. The
+observation window remains incomplete.
 This document does not authorize production inspection, data deletion,
 migration, deployment, a rules change, feature-gate activation, invitation
 recovery, real-account onboarding, cleanup, IAM mutation, commit, or push.
@@ -33,8 +51,11 @@ Reviewed baseline for the production-readiness correction:
   `c39b40c50abd5e31e56d68eb9d80ae3ba5761215`
 - Checked-in `firestore.rules` SHA-256:
   `0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50`
-- Live state is not inferred from repository source; the external release
-  record described above is the bounded evidence for completed steps 1–9.
+- Live state is not inferred from repository source. The external release
+  record described above remains the bounded evidence for completed steps 1–9;
+  the separately authorized, content-private reads described above are the
+  direct evidence for invitation consumption, Step 10 foundation state, and
+  Step 11's retained post-cleanup state.
 
 This brief reconciles Claude's earlier Phase 3 migration challenge report, the
 clean-start pivot, repository evidence, and the authoritative Phase 2B
@@ -47,7 +68,8 @@ This section records the pre-implementation findings that shaped the Phase 3
 contracts. Statements about missing client, Function, rules, or runner behavior
 describe the baseline at reconciliation commit `5db34e5`; they are not a
 current inventory. Current local implementation and evidence are recorded in
-`tests/phase3/README.md`. Production state remains unknown.
+`tests/phase3/README.md`. Production state outside the bounded evidence
+summarized above remains unknown.
 
 The migration-specific findings below remain historical rationale only. The
 clean-start release neither satisfies nor works around them; it has no legacy
@@ -559,23 +581,37 @@ freeze, snapshot, bridge rules, and legacy acceptance have no step in this
 sequence. The absence is deliberate: nothing is copied from V1. The old test
 documents remain untouched and client-denied under final rules.
 
-The release record now closes steps 1–9 only. It records a one-hour founding
-invitation that elapsed before any recorded onboarding. Item 15 defined and
-completed review of the first recovery identifier,
+The retained release archive closes steps 1–9 only. It records a one-hour
+founding invitation that elapsed before any onboarding recorded in that
+archive. Item 15 defined and completed review of the first recovery identifier,
 `phase3-expired-founding-invitation-recovery-fa733d7-v1`. Its authorized
 pre-Save read emitted prohibited browser content into the conversation, so v1
 terminated without an edit, Save, mutation, or onboarding and can never be
 reused.
 
-Item 16 defines the distinct privacy-preserving proposal
+Item 16 defined the distinct privacy-preserving proposal
 `phase3-expired-founding-invitation-recovery-fa733d7-v2`. It confines invitation
 inspection to transient browser-control memory and permits only exact fixed-key
-boolean observations to leave the page. After its own Codex, Claude, and Grok
-review gates close and Andrew separately activates v2, at most one console Save
-may change only the existing invitation's `expiresAt`. Every output constraint,
-precondition, one-Save/no-retry rule, privacy boundary, and termination rule in
-`PHASE3_RELEASE_RUNBOOK.md` is normative. V2 is not a numbered release step,
-cannot activate itself, and does not authorize onboarding.
+boolean observations to leave the page. Its retained source contract required
+Codex, Claude, and Grok review before Andrew's separate activation and allowed
+at most one console Save changing only the existing invitation's `expiresAt`.
+Andrew later explicitly instructed Codex to skip Claude and Grok review for the
+completed recovery/onboarding cycle, then separately authorized a fresh
+content-private recovery execution and normal onboarding. No Claude or Grok
+review occurred. The recovery Save and Step 10 onboarding completed; a separate
+read-only verification returned all five sanitized foundation checks `true`.
+Every output constraint, one-field/one-Save boundary, privacy rule, and
+termination rule remains preserved as the historical execution contract, not
+as reusable authority.
+
+Step 11 was later separately authorized and completed through normal
+application paths. It created only the synthetic first lifecycle student,
+proved classroom-code/PIN login, exact teacher money readback, exact student
+self-read, and a deployed-rules foreign-path denial, then removed the student.
+The final read-only verification returned only sanitized results and confirmed
+the absent student, retained inactive credential, preserved transaction, and
+counter `2`. That authorization is spent and grants no observation, rollback,
+deployment, real-student, or second-teacher authority.
 
 1. Complete Codex implementation and self-verification. Obtain Claude's
    detailed read-only PASS, then Grok's independent 5,000-foot PASS for the
@@ -851,8 +887,11 @@ under the narrower `npm run test:phase3:contracts` name.
     identifier, confine raw invitation values to transient browser-control
     memory, allow only exact fixed-key boolean observations, and preserve the
     one-field/one-Save/no-retry and separately authorized onboarding boundary.
-    This item changes no runtime code or production state and requires its own
-    Claude and Grok review before Andrew may separately activate v2.
+    The repository item changed no runtime code or production state. Andrew
+    later explicitly skipped its Claude and Grok reviews for the completed
+    recovery/onboarding cycle, separately authorized the content-private
+    recovery and normal onboarding, and both completed. This one-time execution
+    record creates no standing review or production exception.
 
 Claude and Codex retain the detailed plan-build-review-correct loop. After a
 material item reaches review-quality, Grok performs the bounded read-only

@@ -1,7 +1,7 @@
 # Phase 3 clean-start release and rollback runbook
 
-Status: **release evidence recorded through founding-invitation creation;
-onboarding and acceptance incomplete; not production authorization**
+Status: **production Steps 10–11 completed and privacy-safely verified;
+observation window incomplete; not production authorization**
 
 Andrew selected a clean V2 start on 2026-07-31. No V1 application record or
 Auth user is migrated, copied, reconciled, accepted, or deleted. Existing V1
@@ -20,16 +20,38 @@ gate-on Hosting, and one founding-teacher invitation. Its latest retained
 archive is `Morgan-Bank-Phase3-Release-fa733d7-seq009.tar.gz`, SHA-256
 `d503f6e423998f438d04af7b6978006e6db7d6804c0f904aea142f6f67b37c3d`.
 
-That record is historical evidence, not a fresh production read by this
+That archive is historical evidence, not a fresh production read by this
 document. It records no founding-teacher onboarding, fresh-student acceptance,
-or observation-window completion. The invitation was recorded with a one-hour
-validity window that elapsed before any recorded onboarding. Treat it as
-expired and unusable unless a separately authorized read proves otherwise; an
-unrecorded onboarding or invitation mutation is itself a blocking evidence
-discrepancy. The terminated v1 record and the new v2 proposal below do not
-establish current invitation state. V2 is the only unspent repository-defined
-route proposed to continue, and it remains inactive until its own review and
-authorization gates close.
+or observation-window completion, and its one-hour invitation validity window
+elapsed before any onboarding recorded in the archive.
+
+Subsequent separately authorized work on 2026-07-31 recovered that exact
+invitation through one `expiresAt` update and completed normal Google onboarding
+through `onboardTeacherClassroomV2`. Andrew explicitly instructed Codex to skip
+Claude and Grok review for that completed recovery/onboarding cycle; neither
+review occurred, and that one-time direction is not a reusable workflow or
+production exception. The consumed invitation and working classroom interface
+were directly verified. A later, separately authorized, privacy-preserving
+production read then returned only five sanitized Boolean results: exactly one
+active teacher, exactly one reciprocal classroom owned by that teacher, exactly
+one active classroom-code index pointing to that classroom,
+`nextStudentNumber` exactly `1`, and no unexpected foundation state. All five
+results were `true`.
+
+No student existed at that Step 10 boundary. Andrew later separately
+authorized Step 11. The normal application created synthetic student `"1"`,
+authenticated the returned login ID and submitted PIN through
+`studentPinLoginV2`, committed and read back the exact teacher
+balance/transaction, and reflected it through exact student self-read. The
+deployed Rules Playground denied the actual teacher's authenticated `get`
+against a fabricated foreign-classroom student path; no real other tenant was
+read or created. The normal `removeStudentV2` path then removed the synthetic
+student. Independent sanitized reads verified the student absent, credential
+retained/inactive, transaction preserved, and `nextStudentNumber` still `2`.
+No real student or second teacher was added. The observation window and every
+later production transition remain incomplete and require their own explicit
+authorization. No migration, deployment, rules change, gate change, or
+unrelated production mutation occurred during Steps 10–11.
 
 ## What the local evidence proves
 
@@ -180,23 +202,25 @@ or treated as authority for v2. Deleting, hiding, or losing the conversation
 cannot undo the violation or restore v1 authority. This historical subsection
 grants no production or review exception.
 
-### Privacy-preserving v2 proposal
+### Privacy-preserving v2 proposal and completed execution record
 
-This is a new repository-defined recovery proposal, not present mutation
-authority. Its unique identifier is
+At the repository-definition boundary, this was a new repository-defined
+recovery proposal, not present mutation authority. Its unique identifier is
 `phase3-expired-founding-invitation-recovery-fa733d7-v2`. It exists only for the
 same expired, unconsumed founding invitation recorded above. It cannot be used
 for a future teacher, a second invitation, or any other release.
 
-The v2 recovery remains inactive until all of the following have completed for
-the exact repository correction that introduces it: Codex self-verification,
-Claude detailed read-only review, Grok final read-only review, and Andrew's new
-separate contemporaneous production instruction naming the v2 identifier.
-Before that instruction, no repository text, handoff, review verdict, v1
-authorization, earlier approval, or general request can activate v2. Andrew
-and Codex must also be ready to begin separately authorized onboarding
-immediately after a successful recovery so another validity window is not
-wasted.
+As originally defined, the following gates applied. The v2 recovery remains
+inactive until all of the following have completed for the exact repository
+correction that introduces it: Codex self-verification, Claude detailed
+read-only review, Grok final read-only review, and Andrew's new separate
+contemporaneous production instruction naming the v2 identifier. Before that
+instruction, no repository text, handoff, review verdict, v1 authorization,
+earlier approval, or general request can activate v2. Andrew and Codex must also
+be ready to begin separately authorized onboarding immediately after a
+successful recovery so another validity window is not wasted. The execution
+record below documents Andrew's later explicit direction for the completed
+cycle without changing this retained source contract into standing authority.
 
 The v2 recovery permits only this console boundary:
 
@@ -346,6 +370,22 @@ invitation expires before onboarding, stop: v2 is spent and cannot authorize
 another Save or extension. Any further recovery requires a newly reviewed
 procedure and new authorization.
 
+An initial strict setup attempt stopped before Save after one harmless extra
+diagnostic; it made no edit or production mutation. Andrew then explicitly
+authorized a fresh content-private execution. That execution completed exactly
+one successful `expiresAt` Save, emitted no sensitive invitation value, and
+terminated the recovery authority. Andrew separately authorized normal Google
+onboarding, which completed through `onboardTeacherClassroomV2`. The exact
+invitation was reread and verified consumed with correctly typed consumption
+fields, and the Morgan Bank classroom interface loaded successfully.
+
+Andrew explicitly directed Codex to skip the proposal's Claude and Grok reviews
+for this completed recovery/onboarding cycle, so no such review occurred. This
+is a factual exception record, not permission to skip review or production
+authorization in any future cycle. The later Step 10 foundation read described
+in the reconciled status above was separately authorized, read-only, and
+privacy-preserving.
+
 ## Production release sequence
 
 The following is an operator checklist, not permission to execute it.
@@ -397,6 +437,12 @@ The following is an operator checklist, not permission to execute it.
 12. Observe through the recorded pre-school rollback window. Do not onboard a
     second real teacher or add any real student. Preserve all fresh and legacy
     documents and retained historical artifacts.
+
+Current checkpoint on 2026-07-31: steps 1–11 are complete. Step 10's consumed
+invitation and all five sanitized foundation checks are directly verified.
+Step 11's synthetic create/login/money/self-read/deployed-rules-denial/removal
+path and all four post-cleanup retention checks are verified. Step 12's
+observation window has not begun and is not authorized by this record.
 
 ## Abort criteria
 

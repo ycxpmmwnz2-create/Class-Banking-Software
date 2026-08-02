@@ -169,13 +169,13 @@ function terminatedRecoveryV1Section(markdown = runbook) {
     'the recovery section must contain one terminated-v1 subsection',
   )
   return section.split(heading)[1].split(
-    '### Privacy-preserving v2 proposal',
+    '### Privacy-preserving v2 proposal and completed execution record',
   )[0]
 }
 
 function privacyRecoveryV2Section(markdown = runbook) {
   const section = invitationRecoverySection(markdown)
-  const heading = '### Privacy-preserving v2 proposal'
+  const heading = '### Privacy-preserving v2 proposal and completed execution record'
   assert.equal(
     section.split(heading).length,
     2,
@@ -285,14 +285,14 @@ function assertPrivacyRecoveryV2Contract(markdown = runbook) {
     1,
     'the unique v2 identifier must appear exactly once in its subsection',
   )
-  assert.match(section, /new repository-defined recovery proposal, not present mutation\s+authority/i)
+  assert.match(section, /new repository-defined\s+recovery proposal, not present mutation\s+authority/i)
   assert.match(
     section,
-    /Codex self-verification,\s+Claude detailed read-only review, Grok final read-only review, and Andrew's new\s+separate contemporaneous production instruction naming the v2 identifier/i,
+    /Codex\s+self-verification,\s+Claude\s+detailed\s+read-only\s+review,\s+Grok\s+final\s+read-only\s+review,\s+and\s+Andrew's\s+new\s+separate\s+contemporaneous\s+production\s+instruction\s+naming\s+the\s+v2\s+identifier/i,
   )
   assert.match(
     section,
-    /no repository text, handoff, review verdict, v1\s+authorization, earlier approval, or general request can activate v2/i,
+    /no\s+repository\s+text,\s+handoff,\s+review\s+verdict,\s+v1\s+authorization,\s+earlier\s+approval,\s+or\s+general\s+request\s+can\s+activate\s+v2/i,
   )
 
   const consoleBoundary = section.split(
@@ -586,7 +586,7 @@ describe('Phase 3 release-order source contract', () => {
   it('boundary: the runbook binds the clean-start release and withdrawal rollback to the reviewed order', () => {
     assert.match(
       runbook,
-      /release evidence recorded through founding-invitation creation;\s+onboarding and acceptance incomplete; not production authorization/i,
+      /production Steps 10–11 completed and privacy-safely verified;\s+observation window incomplete; not production authorization/i,
     )
     const release = runbookReleaseSteps()
     const functionsGateOff = stepIndex(release, /deploy/i, /V2 Functions/i, /false/i)
@@ -728,22 +728,29 @@ describe('Phase 3 release-order source contract', () => {
     }
   })
 
-  it('source contract: Phase 3 status documents agree on the bounded release and recovery state', () => {
+  it('source contract: status documents agree on completed Steps 10–11 and the remaining observation boundary', () => {
     for (const document of [brief, runbook, architecture, phase3Readme]) {
       assert.match(document, new RegExp(REVIEWED_CLEAN_START_COMMIT))
       assert.match(document, /founding[- ]invitation/i)
-      assert.match(document, /no (?:recorded )?onboarding|onboarding (?:and acceptance )?incomplete/i)
+      assert.match(document, /Step 10/i)
+      assert.match(document, /Step 11/i)
+      assert.match(document, /five sanitized|all five sanitized/i)
+      assert.match(document, /all (?:five )?(?:sanitized )?(?:Boolean )?results were `true`|all five sanitized foundation checks (?:are directly verified|`true`)/i)
+      assert.match(document, /credential (?:is )?retained(?:\/inactive| and inactive)|credential retained\/inactive|credential retained and inactive|credential retained, inactive|its credential retained\/inactive/i)
+      assert.match(document, /transaction (?:is )?(?:preserved|remains)/i)
+      assert.match(document, /`nextStudentNumber(?:: 2`|` (?:still|remains) `2`)/i)
+      assert.match(document, /observation window (?:remains incomplete|has not begun|is incomplete|incomplete)/i)
     }
 
     assert.match(runbook, new RegExp(RELEASE_SEQUENCE_009_SHA256))
     assert.match(phase3Readme, new RegExp(RELEASE_SEQUENCE_009_SHA256))
-    assert.match(brief, /release record now closes steps 1–9 only/i)
+    assert.match(brief, /retained release archive closes steps 1–9 only/i)
     assert.match(architecture, /external\s+release record.*production steps\s+1–9/is)
-    assert.match(architecture, /Item 16 locally verified with required review pending/i)
+    assert.match(architecture, /Items 1–16 implemented; clean-start production Steps 10–11\s+completed/i)
     assert.match(phase3Readme, /\| 13 \|[^\n]+\| reviewed; dormant under clean start \|/)
     assert.match(phase3Readme, /\| 14 \|[^\n]+\| reviewed; release recorded through step 9 \|/)
     assert.match(phase3Readme, /\| 15 \|[^\n]+\| reviewed; v1 terminated without Save or mutation \|/)
-    assert.match(phase3Readme, /\| 16 \|[^\n]+\| locally verified; review pending \|/)
+    assert.match(phase3Readme, /\| 16 \|[^\n]+\| production recovery and Steps 10–11 complete; reviews explicitly skipped by Andrew for recovery\/onboarding \|/)
     assert.match(brief, /15\. Expired founding-invitation recovery and status reconciliation/)
     assert.match(brief, /16\. Privacy-preserving expired-invitation recovery/)
 
@@ -1470,7 +1477,7 @@ describe('Phase 3 release-order source contract', () => {
   it('boundary: the reconciled brief remains evidence rather than authorization', () => {
     assert.match(
       brief,
-      /Status: \*\*clean-start application released through founding-invitation\s+creation; onboarding and acceptance incomplete; not production authorization\*\*/,
+      /Status: \*\*clean-start production Steps 10–11 completed and privacy-safely\s+verified; observation window incomplete; not production authorization\*\*/,
       'the brief must not silently become an authorization document',
     )
     assert.match(brief, /This document does not authorize production inspection/)
