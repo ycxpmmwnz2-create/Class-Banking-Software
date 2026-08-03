@@ -96,8 +96,17 @@ export function resolveFirebaseBuildConfiguration(environment = {}) {
   if (!/^\d+$/.test(firebaseConfig.messagingSenderId)) {
     throw new Error("The staging Firebase messaging sender ID is invalid.");
   }
-  if (!/^\d+:\d+:web:[A-Za-z0-9]+$/.test(firebaseConfig.appId)) {
+  if (!/^1:\d+:web:[A-Za-z0-9]+$/.test(firebaseConfig.appId)) {
     throw new Error("The staging Firebase app ID is invalid.");
+  }
+  for (const [configKey, productionValue] of Object.entries(PRODUCTION_FIREBASE_CONFIG)) {
+    if (Object.prototype.hasOwnProperty.call(firebaseConfig, configKey) &&
+        firebaseConfig[configKey] === productionValue) {
+      throw new Error(`The staging Firebase ${configKey} must not reuse the production value.`);
+    }
+  }
+  if (!firebaseConfig.appId.startsWith(`1:${firebaseConfig.messagingSenderId}:web:`)) {
+    throw new Error("The staging Firebase app ID must match its messaging sender ID.");
   }
 
   return Object.freeze({

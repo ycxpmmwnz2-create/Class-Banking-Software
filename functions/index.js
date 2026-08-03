@@ -81,7 +81,7 @@ function assertV2Invocation(operation) {
     const validated = assertV2GateAllowed({
       v2Enabled: MULTI_TEACHER_V2_ENABLED.value(),
       expectedReleaseId: REVIEWED_V2_FUNCTIONS_RELEASE_ID,
-      deploymentTier: MORGAN_BANK_DEPLOYMENT_TIER.value(),
+      deploymentTier: MORGAN_BANK_DEPLOYMENT_TIER.value() || 'production',
       stagingProjectId: MORGAN_BANK_STAGING_PROJECT_ID.value(),
       environment: process.env,
     })

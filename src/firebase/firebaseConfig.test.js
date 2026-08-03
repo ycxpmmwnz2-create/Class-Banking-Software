@@ -136,5 +136,27 @@ describe("Firebase build configuration isolation", () => {
       })),
       /app ID is invalid/
     );
+    assert.throws(
+      () => resolveFirebaseBuildConfiguration(stagingEnvironment({
+        VITE_FIREBASE_APP_ID: "1:999999999999:web:abcdef123456"
+      })),
+      /app ID must match its messaging sender ID/
+    );
+  });
+
+  test("staging rejects every production Firebase identity value", () => {
+    for (const [environmentKey, productionValue] of [
+      ["VITE_FIREBASE_API_KEY", PRODUCTION_FIREBASE_CONFIG.apiKey],
+      ["VITE_FIREBASE_MESSAGING_SENDER_ID", PRODUCTION_FIREBASE_CONFIG.messagingSenderId],
+      ["VITE_FIREBASE_APP_ID", PRODUCTION_FIREBASE_CONFIG.appId],
+      ["VITE_FIREBASE_MEASUREMENT_ID", PRODUCTION_FIREBASE_CONFIG.measurementId]
+    ]) {
+      assert.throws(
+        () => resolveFirebaseBuildConfiguration(stagingEnvironment({
+          [environmentKey]: productionValue
+        })),
+        /must not reuse the production value/
+      );
+    }
   });
 });

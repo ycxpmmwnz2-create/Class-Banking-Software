@@ -631,18 +631,21 @@ if (testMode === 'gate-on') {
 
   /** Child-process discovery and per-invocation guard probe. */
   const GUARD_PROBE = [
-    "const { getApps } = await import('firebase-admin/app')",
+    "const { getApps, initializeApp } = await import('firebase-admin/app')",
     'let threw = false',
     'let message = ""',
     'let imported = null',
     'let invocation = null',
+    'const warningCategories = []',
+    'console.warn = (_message, details) => { warningCategories.push(details?.category || null) }',
     `try { imported = await import(${JSON.stringify(INDEX_SPECIFIER)}) }`,
     'catch (error) { threw = true; message = String(error && error.message) }',
+    'if (imported && process.env.FORCE_POST_GATE_APP_GUARD === "true") { initializeApp({}, "phase2b-guard-probe-second-app") }',
     'if (imported && process.env.RUN_V2_PROBE === "true") {',
     '  try { await imported.studentPinLoginV2.run({ data: {} }); invocation = { succeeded: true } }',
     '  catch (error) { invocation = { succeeded: false, code: error?.code || null, message: String(error?.message || error) } }',
     '}',
-    "console.log('GUARD_RESULT ' + JSON.stringify({ threw, apps: getApps().length, message, invocation, reviewedRelease: imported?.REVIEWED_V2_FUNCTIONS_RELEASE_ID || null, releaseParamAvailable: Boolean(imported?.MULTI_TEACHER_V2_RELEASE_ID), exportsAvailable: Boolean(imported?.studentPinLogin && imported?.studentPinLoginV2 && imported?.createTeacherInvitationV2 && imported?.revokeTeacherInvitationV2 && imported?.syncStudentProfilesV2) }))",
+    "console.log('GUARD_RESULT ' + JSON.stringify({ threw, apps: getApps().length, message, invocation, warningCategories, reviewedRelease: imported?.REVIEWED_V2_FUNCTIONS_RELEASE_ID || null, releaseParamAvailable: Boolean(imported?.MULTI_TEACHER_V2_RELEASE_ID), exportsAvailable: Boolean(imported?.studentPinLogin && imported?.studentPinLoginV2 && imported?.createTeacherInvitationV2 && imported?.revokeTeacherInvitationV2 && imported?.syncStudentProfilesV2) }))",
     'process.exit(0)',
   ].join('\n')
 
@@ -654,6 +657,8 @@ if (testMode === 'gate-on') {
     FIREBASE_AUTH_EMULATOR_HOST: authHost,
     GCLOUD_PROJECT: GATE_ON_PROJECT_ID,
     MULTI_TEACHER_V2_ENABLED: 'true',
+    MORGAN_BANK_DEPLOYMENT_TIER: 'production',
+    MORGAN_BANK_STAGING_PROJECT_ID: '',
   })
 
   function runGuardProbe(envOverrides) {
@@ -689,6 +694,7 @@ if (testMode === 'gate-on') {
       code: 'failed-precondition',
       message: 'Multi-teacher V2 is disabled.',
     })
+    return result
   }
 
   describe('Gate-on: real-emulator V2 acceptance', () => {
@@ -795,14 +801,46 @@ if (testMode === 'gate-on') {
           GCLOUD_PROJECT: 'morgan-bank',
           MULTI_TEACHER_V2_RELEASE_ID: 'wrong-release',
         }
-        assertV2RefusedAtInvocation(production, 'mismatched production release')
+        const rejected = assertV2RefusedAtInvocation({
+          ...production,
+          FORCE_POST_GATE_APP_GUARD: 'true',
+        }, 'mismatched production release')
+        assert.deepEqual(rejected.warningCategories, ['release-id-mismatch'])
         const accepted = runGuardProbe({
           ...production,
           MULTI_TEACHER_V2_RELEASE_ID: 'staging-support-functions-v1',
+          FORCE_POST_GATE_APP_GUARD: 'true',
+          RUN_V2_PROBE: 'true',
         })
         assert.equal(accepted.threw, false)
         assert.equal(accepted.reviewedRelease, 'staging-support-functions-v1')
-        assert.equal(accepted.invocation, null)
+        assert.deepEqual(accepted.invocation, {
+          succeeded: false,
+          code: 'failed-precondition',
+          message: 'Multi-teacher V2 is disabled.',
+        })
+        assert.deepEqual(accepted.warningCategories, ['invalid-runtime'])
+      })
+
+      it('defaults an absent deployed tier to production at the real parameter boundary', () => {
+        const accepted = runGuardProbe({
+          FUNCTIONS_EMULATOR: undefined,
+          FIRESTORE_EMULATOR_HOST: undefined,
+          FIREBASE_AUTH_EMULATOR_HOST: undefined,
+          FIREBASE_CONFIG: undefined,
+          GCLOUD_PROJECT: 'morgan-bank',
+          MULTI_TEACHER_V2_RELEASE_ID: 'staging-support-functions-v1',
+          MORGAN_BANK_DEPLOYMENT_TIER: undefined,
+          FORCE_POST_GATE_APP_GUARD: 'true',
+          RUN_V2_PROBE: 'true',
+        })
+        assert.equal(accepted.threw, false)
+        assert.deepEqual(accepted.invocation, {
+          succeeded: false,
+          code: 'failed-precondition',
+          message: 'Multi-teacher V2 is disabled.',
+        })
+        assert.deepEqual(accepted.warningCategories, ['invalid-runtime'])
       })
     })
 
