@@ -45,6 +45,11 @@ export const EXECUTION_CONTEXT = Object.freeze({
   PRODUCTION: 'production',
 })
 
+// Deliberately private: the shared Phase 3 context vocabulary must remain the
+// exact production/emulator pair used by migration and write code. Only the V2
+// invocation validator below may emit this additional context.
+const V2_STAGING_EXECUTION_CONTEXT = 'staging'
+
 export const PRODUCTION_ENVIRONMENT_CATEGORIES = Object.freeze({
   AMBIGUOUS_PROJECT_ID: 'ambiguous-project-id',
   CHECKOUT_DIRTY: 'checkout-dirty',
@@ -55,6 +60,7 @@ export const PRODUCTION_ENVIRONMENT_CATEGORIES = Object.freeze({
   INVALID_AUTHORIZATION: 'invalid-authorization',
   INVALID_EMULATOR_HOST: 'invalid-emulator-host',
   INVALID_RELEASE_ID: 'invalid-release-id',
+  INVALID_STAGING_CONFIGURATION: 'invalid-staging-configuration',
   MALFORMED_ARTIFACT: 'malformed-artifact',
   MALFORMED_CREDENTIAL: 'malformed-credential',
   MISSING_AUTHORIZATION: 'missing-authorization',
@@ -88,6 +94,9 @@ export const EMULATOR_FLAG_VARIABLES = Object.freeze([
 
 /** Release IDs are opaque to this module but must be unambiguous strings. */
 const RELEASE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
+/** Firebase/GCP project IDs accepted for the isolated V2 staging context. */
+const STAGING_PROJECT_ID_PATTERN = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/
 
 /** Authorization identifiers follow the same conservative shape. */
 const AUTHORIZATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
@@ -453,12 +462,115 @@ export function validateExecutionEnvironment(...args) {
 }
 
 /**
+ * Extends the per-invocation V2 gate with one explicitly named staging project.
+ *
+ * This does not widen `classifyAllowedProject` or
+ * `validateExecutionEnvironment`: migration, inventory, preflight, reverify,
+ * and write runners therefore continue to recognize only the exact production
+ * and demo-emulator projects. Staging exists solely for deployed V2 callables.
+ */
+export function validateV2ExecutionEnvironment(environment, options = {}) {
+  if (environment === null || typeof environment !== 'object' ||
+      Array.isArray(environment)) {
+    throw new TypeError('environment must be an object.')
+  }
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new TypeError('options must be an object.')
+  }
+
+  const { deploymentTier, stagingProjectId } = options
+
+  try {
+    const validated = validateExecutionEnvironment(environment)
+
+    // Deployed production and local emulator invocations use the production
+    // parameter default. Any staging declaration in either recognized context
+    // is a contradictory configuration and blocks the invocation.
+    if (deploymentTier !== 'production') {
+      fail(
+        PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_STAGING_CONFIGURATION,
+        'A recognized production or emulator project cannot use the staging tier.',
+      )
+    }
+    if (stagingProjectId !== '') {
+      fail(
+        PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_STAGING_CONFIGURATION,
+        'A recognized production or emulator project cannot declare a staging project.',
+      )
+    }
+
+    return validated
+  } catch (error) {
+    // Only an otherwise-unapproved project is eligible for the narrow staging
+    // path. Ambiguous routing, malformed FIREBASE_CONFIG, and every recognized
+    // context failure keep their original blocking verdict.
+    if (!(error instanceof ProductionEnvironmentError) ||
+        error.category !== PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED) {
+      throw error
+    }
+  }
+
+  if (deploymentTier !== 'staging') {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+      'Project ID is not on the V2 invocation allowlist.',
+    )
+  }
+  if (typeof stagingProjectId !== 'string' ||
+      !STAGING_PROJECT_ID_PATTERN.test(stagingProjectId) ||
+      stagingProjectId === ALLOWED_PRODUCTION_PROJECT_ID ||
+      stagingProjectId === ALLOWED_EMULATOR_PROJECT_ID ||
+      stagingProjectId.startsWith('demo-')) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_STAGING_CONFIGURATION,
+      'The configured staging project ID is invalid or prohibited.',
+    )
+  }
+
+  const runtimeProjectId = resolveRuntimeProjectId(environment)
+  if (runtimeProjectId !== stagingProjectId) {
+    fail(
+      PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+      'The runtime project does not match the configured staging project.',
+    )
+  }
+
+  // Staging is a deployed context, never an emulator context. An emulator host
+  // or flag could silently redirect one SDK layer and must block exactly as it
+  // does in production.
+  for (const name of EMULATOR_HOST_VARIABLES) {
+    if (!isBlank(readVariable(environment, name))) {
+      fail(
+        PRODUCTION_ENVIRONMENT_CATEGORIES.EMULATOR_HOST_IN_PRODUCTION,
+        'An emulator host variable is set in a deployed staging context.',
+        { variable: name },
+      )
+    }
+  }
+  for (const name of EMULATOR_FLAG_VARIABLES) {
+    if (!isBlank(readVariable(environment, name))) {
+      fail(
+        PRODUCTION_ENVIRONMENT_CATEGORIES.EMULATOR_FLAG_IN_PRODUCTION,
+        'An emulator flag variable is set in a deployed staging context.',
+        { variable: name },
+      )
+    }
+  }
+
+  return Object.freeze({
+    context: V2_STAGING_EXECUTION_CONTEXT,
+    projectId: runtimeProjectId,
+  })
+}
+
+/**
  * Per-invocation V2 gate check for a recognized environment.
  *
  * Section 6 requires that a mismatch fail only this invocation, so callers are
  * expected to catch and collapse the error into a generic client-facing message.
- * Production additionally requires a release ID matching the reviewed deployed
- * artifact; the emulator context does not, because no release exists there.
+ * Production and staging additionally require a release ID matching the
+ * reviewed deployed artifact; the emulator context does not, because no
+ * release exists there.
  */
 export function assertV2GateAllowed(options = {}) {
   const { v2Enabled, expectedReleaseId } = options
@@ -474,9 +586,17 @@ export function assertV2GateAllowed(options = {}) {
   // supplied `environment: undefined` must not silently become `process.env`.
   const suppliedEnvironment = Object.hasOwn(options, 'environment')
   const environment = suppliedEnvironment ? options.environment : process.env
+  const deploymentOptions = {
+    deploymentTier: Object.hasOwn(options, 'deploymentTier')
+      ? options.deploymentTier
+      : 'production',
+    stagingProjectId: Object.hasOwn(options, 'stagingProjectId')
+      ? options.stagingProjectId
+      : '',
+  }
   const validated = suppliedEnvironment
-    ? validateExecutionEnvironment(options.environment)
-    : validateExecutionEnvironment()
+    ? validateV2ExecutionEnvironment(options.environment, deploymentOptions)
+    : validateV2ExecutionEnvironment(process.env, deploymentOptions)
 
   if (validated.context === EXECUTION_CONTEXT.EMULATOR) {
     return validated
@@ -486,7 +606,7 @@ export function assertV2GateAllowed(options = {}) {
   if (isBlank(actualReleaseId)) {
     fail(
       PRODUCTION_ENVIRONMENT_CATEGORIES.MISSING_AUTHORIZATION,
-      'A production V2 invocation requires MULTI_TEACHER_V2_RELEASE_ID.',
+      'A deployed V2 invocation requires MULTI_TEACHER_V2_RELEASE_ID.',
     )
   }
   if (!RELEASE_ID_PATTERN.test(actualReleaseId)) {
@@ -497,7 +617,7 @@ export function assertV2GateAllowed(options = {}) {
   }
   requireCanonicalReleaseId(
     expectedReleaseId,
-    'An expected release identifier is required to validate a production gate.',
+    'An expected release identifier is required to validate a deployed gate.',
   )
   if (actualReleaseId !== expectedReleaseId) {
     // Values are deliberately omitted: Section 6 requires redacted telemetry.

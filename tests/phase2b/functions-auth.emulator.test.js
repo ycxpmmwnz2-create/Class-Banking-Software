@@ -798,10 +798,10 @@ if (testMode === 'gate-on') {
         assertV2RefusedAtInvocation(production, 'mismatched production release')
         const accepted = runGuardProbe({
           ...production,
-          MULTI_TEACHER_V2_RELEASE_ID: 'multi-account-invitations-functions-v1',
+          MULTI_TEACHER_V2_RELEASE_ID: 'staging-support-functions-v1',
         })
         assert.equal(accepted.threw, false)
-        assert.equal(accepted.reviewedRelease, 'multi-account-invitations-functions-v1')
+        assert.equal(accepted.reviewedRelease, 'staging-support-functions-v1')
         assert.equal(accepted.invocation, null)
       })
     })

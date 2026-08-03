@@ -2,16 +2,22 @@ import { initializeApp } from "firebase/app";
 import { getAuth, connectAuthEmulator } from "firebase/auth";
 import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
 import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
+import { resolveFirebaseBuildConfiguration } from "./firebaseConfig.js";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyC-96VLdKfwtQ-WaFT6BA2q1WLnk8hDe1A",
-  authDomain: "morgan-bank.firebaseapp.com",
-  projectId: "morgan-bank",
-  storageBucket: "morgan-bank.firebasestorage.app",
-  messagingSenderId: "242031426628",
-  appId: "1:242031426628:web:5caa4640a7eb7e3576d011",
-  measurementId: "G-FG1ZHTHF7G"
-};
+const firebaseBuildEnvironment = import.meta.env || {};
+const resolvedFirebaseBuild = resolveFirebaseBuildConfiguration(firebaseBuildEnvironment);
+const firebaseConfig = resolvedFirebaseBuild.firebaseConfig;
+
+export const firebaseDeploymentTier = resolvedFirebaseBuild.tier;
+export const isStagingDeployment = resolvedFirebaseBuild.isStaging;
+
+if (isStagingDeployment && typeof document !== "undefined") {
+  const stagingDeploymentBanner = document.getElementById("stagingDeploymentBanner");
+  if (!stagingDeploymentBanner) {
+    throw new Error("The staging deployment warning is missing.");
+  }
+  stagingDeploymentBanner.hidden = false;
+}
 
 let app = initializeApp(firebaseConfig);
 let auth = getAuth(app);

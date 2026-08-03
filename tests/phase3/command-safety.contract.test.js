@@ -72,6 +72,11 @@ const REQUIRED_SCRUBBED_VARIABLES = Object.freeze([
   // identifier could satisfy the production branch of the V2 gate during what
   // was meant to be a local run, so it belongs beside MULTI_TEACHER_V2_ENABLED.
   'MULTI_TEACHER_V2_RELEASE_ID',
+  // Staging support adds two server parameters that can change which deployed
+  // project reaches the V2 invocation guard. Emulator commands must clear any
+  // ambient values before their demo-project dotenv fixture is loaded.
+  'MORGAN_BANK_DEPLOYMENT_TIER',
+  'MORGAN_BANK_STAGING_PROJECT_ID',
 ])
 
 // ---------------------------------------------------------------------------

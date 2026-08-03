@@ -39,6 +39,7 @@ import {
   validateExecutionEnvironment,
   validateExplicitCredential,
   validateRehearsalWriteAuthorization,
+  validateV2ExecutionEnvironment,
   validateWriteAuthorization,
 } from './productionEnvironment.js'
 
@@ -58,6 +59,13 @@ function emulatorEnvironment(overrides = {}) {
     FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099',
     ...overrides,
   }
+}
+
+const STAGING_PROJECT_ID = 'morgan-bank-staging-test'
+
+/** A minimal deployed staging environment. */
+function stagingEnvironment(overrides = {}) {
+  return { GCLOUD_PROJECT: STAGING_PROJECT_ID, ...overrides }
 }
 
 /**
@@ -736,6 +744,174 @@ describe('Phase 3 production environment guards', () => {
       assert.equal(result.releaseIdVerified, true)
     })
 
+    it('allows only the explicitly configured deployed staging project', () => {
+      const result = assertV2GateAllowed({
+        environment: stagingEnvironment({
+          MULTI_TEACHER_V2_RELEASE_ID: RELEASE_ID,
+        }),
+        v2Enabled: true,
+        expectedReleaseId: RELEASE_ID,
+        deploymentTier: 'staging',
+        stagingProjectId: STAGING_PROJECT_ID,
+      })
+      assert.equal(result.context, 'staging')
+      assert.equal(result.projectId, STAGING_PROJECT_ID)
+      assert.equal(result.releaseIdVerified, true)
+      assert.ok(Object.isFrozen(result))
+    })
+
+    it('keeps staging outside every migration and production-write allowlist', () => {
+      assertRejects(
+        () => validateExecutionEnvironment(stagingEnvironment()),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+        'the general execution guard must still reject staging',
+      )
+      assertRejects(
+        () => validateWriteAuthorization(writeAuthorization(), {
+          environment: stagingEnvironment(),
+          expectedReleaseId: RELEASE_ID,
+          nowMillis: WRITE_NOW_MILLIS,
+        }),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+        'the production write guard must still reject staging',
+      )
+    })
+
+    it('requires an exact staging tier, project parameter, and runtime identity', () => {
+      for (const deploymentTier of [undefined, 'production', 'preview', ' staging ']) {
+        assertRejects(
+          () => assertV2GateAllowed({
+            environment: stagingEnvironment({
+              MULTI_TEACHER_V2_RELEASE_ID: RELEASE_ID,
+            }),
+            v2Enabled: true,
+            expectedReleaseId: RELEASE_ID,
+            deploymentTier,
+            stagingProjectId: STAGING_PROJECT_ID,
+          }),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+          `deployment tier ${String(deploymentTier)} must not authorize staging`,
+        )
+      }
+
+      for (const stagingProjectId of [
+        undefined,
+        '',
+        'morgan-bank',
+        ALLOWED_EMULATOR_PROJECT_ID,
+        'demo-staging-project',
+        'Bad_Project',
+        ` ${STAGING_PROJECT_ID}`,
+        `${STAGING_PROJECT_ID} `,
+      ]) {
+        assertRejects(
+          () => validateV2ExecutionEnvironment(stagingEnvironment(), {
+            deploymentTier: 'staging',
+            stagingProjectId,
+          }),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_STAGING_CONFIGURATION,
+          `staging project ${String(stagingProjectId)} must be rejected`,
+        )
+      }
+
+      assertRejects(
+        () => validateV2ExecutionEnvironment(stagingEnvironment(), {
+          deploymentTier: 'staging',
+          stagingProjectId: 'another-staging-project',
+        }),
+        PRODUCTION_ENVIRONMENT_CATEGORIES.PROJECT_NOT_ALLOWED,
+        'runtime and configured staging project IDs must match exactly',
+      )
+    })
+
+    it('rejects emulator routing and flags in deployed staging', () => {
+      for (const variable of EMULATOR_HOST_VARIABLES) {
+        assertRejects(
+          () => validateV2ExecutionEnvironment(
+            stagingEnvironment({ [variable]: '127.0.0.1:8080' }),
+            { deploymentTier: 'staging', stagingProjectId: STAGING_PROJECT_ID },
+          ),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.EMULATOR_HOST_IN_PRODUCTION,
+          `${variable} must block staging`,
+        )
+      }
+      for (const variable of EMULATOR_FLAG_VARIABLES) {
+        assertRejects(
+          () => validateV2ExecutionEnvironment(
+            stagingEnvironment({ [variable]: 'true' }),
+            { deploymentTier: 'staging', stagingProjectId: STAGING_PROJECT_ID },
+          ),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.EMULATOR_FLAG_IN_PRODUCTION,
+          `${variable} must block staging`,
+        )
+      }
+    })
+
+    it('rejects staging parameters in production and emulator contexts', () => {
+      for (const environment of [productionEnvironment(), emulatorEnvironment()]) {
+        assertRejects(
+          () => validateV2ExecutionEnvironment(environment, {
+            deploymentTier: 'staging',
+            stagingProjectId: STAGING_PROJECT_ID,
+          }),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_STAGING_CONFIGURATION,
+          'staging parameters must not widen a recognized context',
+        )
+      }
+    })
+
+    it('requires canonical production parameters when they are supplied explicitly', () => {
+      for (const deploymentTier of [undefined, '', ' production ', 'staging']) {
+        assertRejects(
+          () => assertV2GateAllowed({
+            environment: productionEnvironment({
+              MULTI_TEACHER_V2_RELEASE_ID: RELEASE_ID,
+            }),
+            v2Enabled: true,
+            expectedReleaseId: RELEASE_ID,
+            deploymentTier,
+            stagingProjectId: '',
+          }),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_STAGING_CONFIGURATION,
+          `explicit production tier ${String(deploymentTier)} must fail closed`,
+        )
+      }
+      for (const stagingProjectId of [undefined, null, ' ', STAGING_PROJECT_ID]) {
+        assertRejects(
+          () => assertV2GateAllowed({
+            environment: productionEnvironment({
+              MULTI_TEACHER_V2_RELEASE_ID: RELEASE_ID,
+            }),
+            v2Enabled: true,
+            expectedReleaseId: RELEASE_ID,
+            deploymentTier: 'production',
+            stagingProjectId,
+          }),
+          PRODUCTION_ENVIRONMENT_CATEGORIES.INVALID_STAGING_CONFIGURATION,
+          `explicit staging project ${String(stagingProjectId)} must fail closed in production`,
+        )
+      }
+    })
+
+    it('does not leak staging project identities in a mismatch error', () => {
+      const runtimeProjectId = 'secret-runtime-staging'
+      const configuredProjectId = 'secret-configured-staging'
+      try {
+        validateV2ExecutionEnvironment(
+          { GCLOUD_PROJECT: runtimeProjectId },
+          { deploymentTier: 'staging', stagingProjectId: configuredProjectId },
+        )
+        assert.fail('should have thrown')
+      } catch (error) {
+        const serialized = JSON.stringify({
+          message: error.message,
+          details: error.details,
+        })
+        assert.ok(!serialized.includes(runtimeProjectId))
+        assert.ok(!serialized.includes(configuredProjectId))
+      }
+    })
+
     it('rejects a production gate with a missing release ID', () => {
       assertRejects(
         () => assertV2GateAllowed({
@@ -1293,6 +1469,7 @@ describe('Phase 3 production environment guards', () => {
         'validateExecutionEnvironment',
         'validateExplicitCredential',
         'validateRehearsalWriteAuthorization',
+        'validateV2ExecutionEnvironment',
         'validateWriteAuthorization',
       ], 'Commit 2/5 must expose guards only — no runner, manifest, or writer')
     })

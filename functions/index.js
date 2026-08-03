@@ -37,10 +37,18 @@ export const MULTI_TEACHER_V2_RELEASE_ID = defineString('MULTI_TEACHER_V2_RELEAS
   default: '',
 })
 
+export const MORGAN_BANK_DEPLOYMENT_TIER = defineString('MORGAN_BANK_DEPLOYMENT_TIER', {
+  default: 'production',
+})
+
+export const MORGAN_BANK_STAGING_PROJECT_ID = defineString('MORGAN_BANK_STAGING_PROJECT_ID', {
+  default: '',
+})
+
 // This identifier is part of the reviewed Functions artifact. Production V2
 // invocations require the separately configured release parameter to match it
 // exactly; emulator invocations have no deployed release and therefore do not.
-export const REVIEWED_V2_FUNCTIONS_RELEASE_ID = 'multi-account-invitations-functions-v1'
+export const REVIEWED_V2_FUNCTIONS_RELEASE_ID = 'staging-support-functions-v1'
 
 /**
  * Module loading is deliberately unconditional. Section 6 requires discovery
@@ -73,6 +81,8 @@ function assertV2Invocation(operation) {
     const validated = assertV2GateAllowed({
       v2Enabled: MULTI_TEACHER_V2_ENABLED.value(),
       expectedReleaseId: REVIEWED_V2_FUNCTIONS_RELEASE_ID,
+      deploymentTier: MORGAN_BANK_DEPLOYMENT_TIER.value(),
+      stagingProjectId: MORGAN_BANK_STAGING_PROJECT_ID.value(),
       environment: process.env,
     })
     if (getApps().length !== 1) {
