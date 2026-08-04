@@ -1766,6 +1766,11 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
 
     assert.equal(validRes.connected, true);
     assert.equal(validRes.app.options.projectId, "demo-morgan-bank-full-test");
+    assert.equal(
+      validRes.db._settings.experimentalForceLongPolling,
+      true,
+      "an explicit true transport option must initialize Firestore with forced long polling"
+    );
 
     // 12. Repeated invocation with exact same config succeeds
     const repeatRes = connectPhase2bEmulatorsIfConfigured({

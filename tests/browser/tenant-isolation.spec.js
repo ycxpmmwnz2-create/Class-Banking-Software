@@ -74,6 +74,7 @@ async function waitForAppReady(page) {
     harnessReady: true,
     projectId: PROJECT_ID,
     authAppName: "phase2b-emulator-app",
+    forceLongPolling: test.info().project.name === "webkit",
     lastError: null
   };
   let lastSignature = null;
@@ -88,6 +89,8 @@ async function waitForAppReady(page) {
             harnessReady: window.__PHASE2B_TEST__?.ready === true,
             projectId: window.__PHASE2B_TEST__?.projectId?.() ?? null,
             authAppName: window.__PHASE2B_TEST__?.authAppName?.() ?? null,
+            forceLongPolling:
+              window.PHASE2B_EMULATOR_TEST_CONFIG?.forceLongPolling ?? null,
             lastError: window.__PHASE2B_TEST__?.lastError?.() ?? null
           }));
           const signature = JSON.stringify(snapshot);
@@ -238,7 +241,7 @@ async function assertTenantEstablished(page, tenant, uid) {
         }
       },
       {
-        message: `${tenant.label}: an owned cache envelope must exist after resolution`,
+        message: `${tenant.label}: rejected cache must be replaced by a valid owned envelope`,
         timeout: 20_000
       }
     )
