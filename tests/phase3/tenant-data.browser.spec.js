@@ -27,9 +27,20 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
 
   async function activateThroughProductionUi(page, tenant, pin) {
     await signInTeacher(page, tenant)
-    await page.evaluate(studentId => window.viewStudentProfile(Number(studentId)), tenant.sharedStudentId)
-    await expect(page.locator('#profileNewStudentPin')).toBeVisible()
-    await page.locator('#profileNewStudentPin').fill(pin)
+    // viewStudentProfile renders the input synchronously, then awaits its
+    // auxiliary login-ID read. Enter the PIN in that same task so the read is
+    // guaranteed to complete after typing; its targeted status update must not
+    // replace the input or discard the value.
+    await page.evaluate(({ studentId, enteredPin }) => {
+      window.__PHASE3_PROFILE_STATUS_PROMISE__ = window.viewStudentProfile(Number(studentId))
+      const input = document.getElementById('profileNewStudentPin')
+      if (!input) throw new Error('profile PIN input did not render synchronously')
+      input.value = enteredPin
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }, { studentId: tenant.sharedStudentId, enteredPin: pin })
+    await page.evaluate(() => window.__PHASE3_PROFILE_STATUS_PROMISE__)
+    await expect(page.locator('#profileLoginIdStatus')).toHaveText(SHARED_LOGIN_ID)
+    await expect(page.locator('#profileNewStudentPin')).toHaveValue(pin)
     await page.evaluate(() => window.resetProfileStudentPin())
     await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain(
       'PIN reset successfully for Shared Name.',
@@ -155,7 +166,10 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     const before = await page.evaluate(() => ({
       uid: window.__PHASE2B_TEST__.currentUid(),
       eventCount: window.__PHASE2B_TEST__.events().length,
-      body: document.body.innerText,
+      rosterOptions: Array.from(
+        document.querySelectorAll('#loginHistoryStudentSelect option'),
+        option => option.textContent?.trim(),
+      ),
     }))
 
     await page.evaluate(() => window.clearTransactions())
@@ -170,12 +184,15 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     const after = await page.evaluate(() => ({
       uid: window.__PHASE2B_TEST__.currentUid(),
       eventCount: window.__PHASE2B_TEST__.events().length,
-      body: document.body.innerText,
+      rosterOptions: Array.from(
+        document.querySelectorAll('#loginHistoryStudentSelect option'),
+        option => option.textContent?.trim(),
+      ),
     }))
     expect(after.uid).toBe(before.uid)
     expect(after.eventCount).toBe(before.eventCount)
-    expect(after.body).toContain(TENANT_A.studentMarker)
-    expect(before.body).toContain(TENANT_A.studentMarker)
+    expect(before.rosterOptions).toContain(TENANT_A.studentMarker)
+    expect(after.rosterOptions).toEqual(before.rosterOptions)
   })
 
   test('Phase 3 supported student removal survives reload and a later scoped save', async ({ page }) => {

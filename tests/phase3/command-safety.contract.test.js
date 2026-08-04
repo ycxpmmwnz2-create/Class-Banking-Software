@@ -341,9 +341,20 @@ describe('Phase 3 command-safety source contract', () => {
     const releaseRunner = scripts['test:phase3:release-rehearsal:runner']
     const releaseBrowser = scripts['test:phase3:release-rehearsal:browser']
     assert.match(releaseRunner, /production-runner\.emulator\.test\.js/)
-    assert.match(releaseBrowser, /playwright test/)
     assert.match(releaseRunner, /PHASE3_REHEARSAL_MODE=release/)
-    assert.match(releaseBrowser, /PHASE3_REHEARSAL_MODE=release/)
+    assert.equal(
+      releaseBrowser,
+      'npm run test:phase3:release-rehearsal:browser:chromium && ' +
+        'npm run test:phase3:release-rehearsal:browser:webkit',
+    )
+
+    for (const name of [
+      'test:phase3:release-rehearsal:browser:chromium',
+      'test:phase3:release-rehearsal:browser:webkit',
+    ]) {
+      assert.match(scripts[name], /playwright test/)
+      assert.match(scripts[name], /PHASE3_REHEARSAL_MODE=release/)
+    }
 
     const rollbackGate = scripts['test:phase3:rollback-rehearsal']
     assert.equal(typeof rollbackGate, 'string')
@@ -353,7 +364,8 @@ describe('Phase 3 command-safety source contract', () => {
 
     for (const name of [
       'test:phase3:release-rehearsal:runner',
-      'test:phase3:release-rehearsal:browser',
+      'test:phase3:release-rehearsal:browser:chromium',
+      'test:phase3:release-rehearsal:browser:webkit',
       'test:phase3:rollback-rehearsal',
     ]) {
       assert.ok(ISOLATED_EMULATOR_COMMANDS.includes(name))
@@ -363,10 +375,19 @@ describe('Phase 3 command-safety source contract', () => {
       )
     }
 
-    assert.ok(
-      scrubsVariable(scripts['test:phase2b:browser'], 'PHASE3_REHEARSAL_MODE'),
-      'the historical browser gate must scrub the final-rules rehearsal selector',
+    assert.equal(
+      scripts['test:phase2b:browser'],
+      'npm run test:phase2b:browser:chromium && npm run test:phase2b:browser:webkit',
     )
+    for (const name of [
+      'test:phase2b:browser:chromium',
+      'test:phase2b:browser:webkit',
+    ]) {
+      assert.ok(
+        scrubsVariable(scripts[name], 'PHASE3_REHEARSAL_MODE'),
+        `${name} must scrub the final-rules rehearsal selector`,
+      )
+    }
 
     // test:phase3:migration was earned in Commit 3 alongside the real
     // production-runner emulator suite. It must name the suite it runs, and that

@@ -1747,32 +1747,54 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       /Invalid Functions emulator port: 0/
     );
 
-    // 10. Valid complete configuration connects successfully
+    // 10. Non-boolean transport configuration throws
+    assert.throws(
+      () => connectPhase2bEmulatorsIfConfigured({ enabled: true, projectId: "demo-test", host: "127.0.0.1", authPort: 9099, firestorePort: 8080, functionsPort: 5001, forceLongPolling: "yes" }),
+      /Emulator forceLongPolling must be a boolean/
+    );
+
+    // 11. Valid complete configuration connects successfully
     const validRes = connectPhase2bEmulatorsIfConfigured({
       enabled: true,
       projectId: "demo-morgan-bank-full-test",
       host: "127.0.0.1",
       authPort: 9099,
       firestorePort: 8080,
-      functionsPort: 5001
+      functionsPort: 5001,
+      forceLongPolling: true
     });
 
     assert.equal(validRes.connected, true);
     assert.equal(validRes.app.options.projectId, "demo-morgan-bank-full-test");
 
-    // 11. Repeated invocation with exact same config succeeds
+    // 12. Repeated invocation with exact same config succeeds
     const repeatRes = connectPhase2bEmulatorsIfConfigured({
       enabled: true,
       projectId: "demo-morgan-bank-full-test",
       host: "127.0.0.1",
       authPort: 9099,
       firestorePort: 8080,
-      functionsPort: 5001
+      functionsPort: 5001,
+      forceLongPolling: true
     });
     assert.equal(repeatRes.connected, true);
     assert.equal(repeatRes.reason, "already-connected");
 
-    // 12. Repeated invocation with conflicting config throws
+    // 13. Repeated invocation with conflicting transport configuration throws
+    assert.throws(
+      () => connectPhase2bEmulatorsIfConfigured({
+        enabled: true,
+        projectId: "demo-morgan-bank-full-test",
+        host: "127.0.0.1",
+        authPort: 9099,
+        firestorePort: 8080,
+        functionsPort: 5001,
+        forceLongPolling: false
+      }),
+      /Conflicting emulator configuration/
+    );
+
+    // 14. Repeated invocation with conflicting project config throws
     assert.throws(
       () => connectPhase2bEmulatorsIfConfigured({
         enabled: true,

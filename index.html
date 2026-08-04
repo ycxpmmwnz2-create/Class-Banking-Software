@@ -1219,6 +1219,13 @@ function toggleStudentDropdown() {
 
     let profileLoginIdStatus = "Checking...";
 
+    function updateProfileLoginIdStatus(studentId, status) {
+      if (screen !== "studentProfile" || teacherProfileStudentId !== studentId) return;
+      profileLoginIdStatus = status;
+      const statusElement = document.getElementById("profileLoginIdStatus");
+      if (statusElement) statusElement.textContent = profileLoginIdStatus;
+    }
+
     async function viewStudentProfile(studentId) {
       if (!requireTeacher()) return;
       teacherProfileStudentId = Number(studentId);
@@ -1232,28 +1239,29 @@ function toggleStudentDropdown() {
         // V2 never falls back to the hardcoded legacy classroom: an absent
         // resolved classroom ID is a fail-closed condition, not a default.
         if (IS_MULTI_TEACHER_V2_ENABLED && !v2TenantSession.classroomId) {
-          profileLoginIdStatus = "Classroom not resolved.";
-          render();
+          updateProfileLoginIdStatus(student.id, "Classroom not resolved.");
           return;
         }
         const classroomId = IS_MULTI_TEACHER_V2_ENABLED ? v2TenantSession.classroomId : "morgan";
+        let resolvedLoginIdStatus;
         try {
           const snapshot = await getDoc(doc(db, "classrooms", classroomId, "students", String(student.id)));
           if (IS_MULTI_TEACHER_V2_ENABLED && !v2TenantSession.validateCapturedIdentity(captured)) return;
           if (snapshot.exists()) {
             const studentName = typeof student.name === "string" ? student.name : "Student";
-            profileLoginIdStatus = studentName.trim().replaceAll(' ', '-').toLowerCase();
+            resolvedLoginIdStatus = studentName.trim().replaceAll(' ', '-').toLowerCase();
           } else {
-            profileLoginIdStatus = "Login ID not created yet.";
+            resolvedLoginIdStatus = "Login ID not created yet.";
           }
         } catch (error) {
           if (IS_MULTI_TEACHER_V2_ENABLED && !v2TenantSession.validateCapturedIdentity(captured)) return;
           console.error("Failed to check profile sync status:", error);
-          profileLoginIdStatus = "Error checking ID.";
+          resolvedLoginIdStatus = "Error checking ID.";
         }
-        if (screen === "studentProfile" && teacherProfileStudentId === student.id) {
-          render();
-        }
+        // Only this status changed. Re-rendering the whole profile here would
+        // replace the PIN input and discard a value the teacher started typing
+        // while the auxiliary Firestore read was in flight.
+        updateProfileLoginIdStatus(student.id, resolvedLoginIdStatus);
       }
     }
 
@@ -3105,7 +3113,7 @@ ${transactionTarget !== "whole" ? `
             <div class="balance-card" style="margin-top: 14px;">
               <h2>${escapeHtml(profileStudent.name)}</h2>
               <div class="big-balance">${dollars(profileStudent.balance)}</div>
-              <p><strong>Login ID:</strong> ${escapeHtml(profileLoginIdStatus)}</p>
+              <p><strong>Login ID:</strong> <span id="profileLoginIdStatus">${escapeHtml(profileLoginIdStatus)}</span></p>
               ${IS_MULTI_TEACHER_V2_ENABLED
                 ? ``
                 : `<p><strong>PIN:</strong> ${escapeHtml(profileStudent.pin)}</p>`}

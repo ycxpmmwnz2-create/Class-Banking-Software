@@ -18,7 +18,7 @@ handoff rather than overwriting that historical record.
 
 ## Commands
 
-| Command | Needs Java/emulator | Needs Chromium |
+| Command | Needs Java/emulator | Needs Playwright browsers |
 | --- | --- | --- |
 | `npm run test:phase2b:client` | no | no |
 | `npm run test:phase2b:build-contract` | no | no |
@@ -26,6 +26,16 @@ handoff rather than overwriting that historical record.
 | `npm run test:phase2b:browser` | yes | yes |
 | `npm run test:phase2b:server` | yes | no |
 | `npm run test:rules` | yes | no |
+
+The current Playwright configuration runs the browser suite in both Chromium
+and WebKit. Each engine receives a fresh credential-isolated emulator lifecycle
+so fixture cleanup from one engine cannot affect the other. Historical
+checkpoint counts below retain the engine coverage that was actually executed
+at those checkpoints. The harness also forces Firestore long-polling only for
+WebKit in its explicit demo-emulator configuration so WebKit cannot indefinitely
+buffer an open emulator stream; Chromium keeps its normal streaming transport,
+and normal development, staging, and production builds do not receive that
+setting.
 
 ## Item 10 status
 

@@ -69,26 +69,45 @@ async function waitForAppReady(page) {
   // top-level ReferenceError aborts the whole thing silently (exactly the
   // updateStudent regression fixed in 19ec8a7). The real gate is therefore a
   // window export written at the END of that module.
-  await expect
-    .poll(() => page.evaluate(() => typeof window.importBackup === "function"), { timeout: 20_000 })
-    .toBe(true);
+  const expected = {
+    appExportReady: true,
+    harnessReady: true,
+    projectId: PROJECT_ID,
+    authAppName: "phase2b-emulator-app",
+    lastError: null
+  };
+  let lastSignature = null;
+  let stablePolls = 0;
 
   await expect
-    .poll(() => page.evaluate(() => window.__PHASE2B_TEST__?.ready === true), { timeout: 20_000 })
-    .toBe(true);
-
-  // The harness must have reused the app's singleton and connected to the demo
-  // project. If this fails, the injected config never reached firebase.js.
-  expect(await page.evaluate(() => window.__PHASE2B_TEST__.projectId())).toBe(PROJECT_ID);
-
-  // Auth must be the emulator-connected NAMED app, never the default production
-  // app. This is the standing guard against the bare-getAuth() class of mistake.
-  expect(await page.evaluate(() => window.__PHASE2B_TEST__.authAppName())).toBe(
-    "phase2b-emulator-app"
-  );
-
-  // No uncaught error may have occurred during boot.
-  expect(await page.evaluate(() => window.__PHASE2B_TEST__.lastError())).toBeNull();
+    .poll(
+      async () => {
+        try {
+          const snapshot = await page.evaluate(() => ({
+            appExportReady: typeof window.importBackup === "function",
+            harnessReady: window.__PHASE2B_TEST__?.ready === true,
+            projectId: window.__PHASE2B_TEST__?.projectId?.() ?? null,
+            authAppName: window.__PHASE2B_TEST__?.authAppName?.() ?? null,
+            lastError: window.__PHASE2B_TEST__?.lastError?.() ?? null
+          }));
+          const signature = JSON.stringify(snapshot);
+          stablePolls = signature === lastSignature ? stablePolls + 1 : 1;
+          lastSignature = signature;
+          return JSON.stringify(snapshot) === JSON.stringify(expected) ? stablePolls : 0;
+        } catch (error) {
+          if (/Execution context was destroyed|most likely because of a navigation/.test(error.message)) {
+            // A cold Vite server can optimize dependencies and replace the
+            // first document. Prove readiness in the replacement context.
+            lastSignature = null;
+            stablePolls = 0;
+            return 0;
+          }
+          throw error;
+        }
+      },
+      { intervals: Array(40).fill(100), timeout: 20_000 }
+    )
+    .toBeGreaterThanOrEqual(3);
 }
 
 // Installs a MutationObserver BEFORE the action under test, recording every
@@ -129,7 +148,19 @@ async function waitForQuiescence(page) {
   await expect
     .poll(
       async () => {
-        const now = await page.evaluate(() => window.__PHASE2B_TEST__.activityTotal());
+        let now;
+        try {
+          now = await page.evaluate(() => window.__PHASE2B_TEST__.activityTotal());
+        } catch (error) {
+          if (/Execution context was destroyed|most likely because of a navigation/.test(error.message)) {
+            // A reload can replace the document between two quiescence polls.
+            // Reset the stability window and keep polling the new context.
+            last = -1;
+            stable = 0;
+            return stable;
+          }
+          throw error;
+        }
         stable = now === last ? stable + 1 : 0;
         last = now;
         return stable;
@@ -187,11 +218,35 @@ async function assertTenantEstablished(page, tenant, uid) {
     .toBe(tenant.classroomId);
 
   const key = cacheKey(PROJECT_ID, uid, tenant.classroomId);
-  const envelope = await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), key);
-  expect(envelope, `${tenant.label}: a cache envelope must exist after resolution`).not.toBeNull();
-  const parsed = JSON.parse(envelope);
-  expect(parsed.ownerUid, `${tenant.label}: envelope must be owned by this teacher`).toBe(uid);
-  expect(parsed.projectId).toBe(PROJECT_ID);
+  await expect
+    .poll(
+      async () => {
+        const envelope = await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), key);
+        if (!envelope) return null;
+        try {
+          const parsed = JSON.parse(envelope);
+          return {
+            ownerUid: parsed.ownerUid,
+            projectId: parsed.projectId,
+            classroomId: parsed.classroomId
+          };
+        } catch {
+          // A malformed envelope is deliberately installed by the poison-cache
+          // coverage. WebKit can expose the short replacement window here, so
+          // keep waiting for the network-loaded envelope that proves readiness.
+          return null;
+        }
+      },
+      {
+        message: `${tenant.label}: an owned cache envelope must exist after resolution`,
+        timeout: 20_000
+      }
+    )
+    .toEqual({
+      ownerUid: uid,
+      projectId: PROJECT_ID,
+      classroomId: tenant.classroomId
+    });
 
   // The tenant's own sentinel must be present, and the foreign one absent.
   const text = await pageText(page);

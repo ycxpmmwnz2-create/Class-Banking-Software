@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, connectAuthEmulator } from "firebase/auth";
-import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
+import { getFirestore, initializeFirestore, connectFirestoreEmulator } from "firebase/firestore";
 import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
 import { resolveFirebaseBuildConfiguration } from "./firebaseConfig.js";
 
@@ -54,6 +54,11 @@ export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
   if (!isPortValid(config.functionsPort)) {
     throw new Error(`Invalid Functions emulator port: ${config.functionsPort}`);
   }
+  if (config.forceLongPolling !== undefined && typeof config.forceLongPolling !== "boolean") {
+    throw new Error("Emulator forceLongPolling must be a boolean when provided.");
+  }
+
+  const forceLongPolling = config.forceLongPolling === true;
 
   if (isEmulatorConnected) {
     if (
@@ -61,7 +66,8 @@ export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
       connectedEmulatorConfig.host !== host ||
       connectedEmulatorConfig.authPort !== config.authPort ||
       connectedEmulatorConfig.firestorePort !== config.firestorePort ||
-      connectedEmulatorConfig.functionsPort !== config.functionsPort
+      connectedEmulatorConfig.functionsPort !== config.functionsPort ||
+      connectedEmulatorConfig.forceLongPolling !== forceLongPolling
     ) {
       throw new Error("Conflicting emulator configuration.");
     }
@@ -72,7 +78,9 @@ export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
     const demoConfig = { ...firebaseConfig, projectId };
     app = initializeApp(demoConfig, "phase2b-emulator-app");
     auth = getAuth(app);
-    db = getFirestore(app);
+    db = forceLongPolling
+      ? initializeFirestore(app, { experimentalForceLongPolling: true })
+      : getFirestore(app);
     functions = getFunctions(app);
   }
 
@@ -86,7 +94,8 @@ export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
     host,
     authPort: config.authPort,
     firestorePort: config.firestorePort,
-    functionsPort: config.functionsPort
+    functionsPort: config.functionsPort,
+    forceLongPolling
   };
 
   return { connected: true, app, auth, db, functions };

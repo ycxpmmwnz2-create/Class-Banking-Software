@@ -56,7 +56,16 @@ function installHarness() {
   const cfg = readInjectedConfig();
 
   // MUST happen before the app module imports firebase.js and connects.
-  window.PHASE2B_EMULATOR_TEST_CONFIG = cfg.emulator;
+  // Limit the emulator transport workaround to WebKit. Chromium's normal
+  // streaming path remains covered, while WebKit closes each long-poll response
+  // as soon as emulator data arrives instead of indefinitely buffering it.
+  const isWebKit =
+    navigator.userAgent.includes("AppleWebKit") &&
+    !/(?:Chrome|Chromium|Edg)\//.test(navigator.userAgent);
+  window.PHASE2B_EMULATOR_TEST_CONFIG = {
+    ...cfg.emulator,
+    forceLongPolling: cfg.forceLongPollingForWebKit === true && isWebKit
+  };
 
   // ---------------------------------------------------------------------------
   // Observation surface. Purely additive: the harness records what the app did,
@@ -194,8 +203,6 @@ function installHarness() {
         record("loadAdapter:start", { path });
       }
 
-      await gate("classroomLoad");
-
       // Armed failures are consumed on the anchor read only, so one armed code
       // fails one load rather than being consumed by whichever of the four
       // concurrent reads happens to resolve first.
@@ -209,7 +216,20 @@ function installHarness() {
         }
       }
 
-      const snapshot = await primitives.getDocs(ref);
+      // Start the genuine emulator request before entering the barrier. The
+      // barrier models a completed response arriving late; delaying invocation
+      // would instead start stale and incoming requests together after release.
+      // Capture rejection immediately so a held, failed request cannot surface
+      // as an unhandled rejection while the test is waiting to release it.
+      const pending = primitives.getDocs(ref).then(
+        (snapshot) => ({ ok: true, snapshot }),
+        (error) => ({ ok: false, error })
+      );
+      await gate("classroomLoad");
+      const outcome = await pending;
+      if (!outcome.ok) throw outcome.error;
+
+      const snapshot = outcome.snapshot;
       if (isLoadAnchor) {
         record("loadAdapter:done", { path, docCount: snapshot?.docs?.length ?? 0 });
       }
@@ -226,7 +246,6 @@ function installHarness() {
 
       obs.counters.loadAdapterCalls++;
       record("loadAdapter:start", { path });
-      await gate("classroomLoad");
 
       const injected = takeNextLoadFailure();
       if (injected) {
@@ -236,7 +255,15 @@ function installHarness() {
         throw err;
       }
 
-      const snapshot = await primitives.getDoc(ref);
+      const pending = primitives.getDoc(ref).then(
+        (snapshot) => ({ ok: true, snapshot }),
+        (error) => ({ ok: false, error })
+      );
+      await gate("classroomLoad");
+      const outcome = await pending;
+      if (!outcome.ok) throw outcome.error;
+
+      const snapshot = outcome.snapshot;
       record("loadAdapter:done", { path });
       return snapshot;
     };

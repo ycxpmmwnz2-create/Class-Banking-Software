@@ -126,7 +126,12 @@ export default defineConfig({
     "import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED": JSON.stringify("true"),
     "import.meta.env.PHASE2B_BROWSER_TEST": JSON.stringify(true),
     "import.meta.env.PHASE2B_BROWSER_TEST_CONFIG": JSON.stringify({
-      emulator: PHASE2B_EMULATOR_CONFIG
+      emulator: PHASE2B_EMULATOR_CONFIG,
+      // WebKit can buffer the Firestore emulator's open streaming response
+      // after the reads were accepted. The harness converts this into the
+      // documented forceLongPolling boolean only for WebKit; Chromium retains
+      // its normal transport, and non-test builds never receive this config.
+      forceLongPollingForWebKit: true
     })
   },
   server: {

@@ -368,7 +368,11 @@ layer, so cite the right one:
 | --- | --- | --- |
 | Behavioral unit | `src/phase3/*.test.js` (via `test:phase3:unit`) | The real read/write, projection, fail-closed, and staleness decisions. Firestore primitives are **injected**, so no emulator, credential, or network is involved. |
 | Source contract | `tests/phase3/student-identity.contract.test.js` | That production wires the service, is PIN-free, and exposes no test hook. |
-| Browser + rules | `npm run test:phase2b:browser` | The service's real I/O against the Firestore emulator under `firestore.phase2b.proposed.rules`, including stale-load/stale-save isolation and offline cache behavior. |
+| Browser + rules | `npm run test:phase2b:browser` | The service's real I/O in Chromium and WebKit against the Firestore emulator under `firestore.phase2b.proposed.rules`, including stale-load/stale-save isolation and offline cache behavior. |
+
+The Chromium and WebKit browser projects run in separate emulator lifecycles.
+This prevents asynchronous fixture cleanup from one engine from becoming test
+input for the next engine.
 
 The unit layer alone is **not** sufficient for rules-dependent claims. Commit 7's
 root-document write was denied by the proposed rules
