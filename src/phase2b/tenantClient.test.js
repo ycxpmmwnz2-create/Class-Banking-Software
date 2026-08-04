@@ -1599,6 +1599,54 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
+  test("SOURCE GUARD: completed onboarding replaces the pending message only after the classroom is READY", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const onboardingStart = source.indexOf("async function submitV2Onboarding() {");
+    const onboardingEnd = source.indexOf("\n    async function manageTeacherInvitation", onboardingStart);
+    assert.notEqual(onboardingStart, -1, "the production onboarding function must exist");
+    assert.notEqual(onboardingEnd, -1, "the production onboarding function must have a bounded source block");
+    const onboardingBlock = source.slice(onboardingStart, onboardingEnd);
+
+    const pendingAt = onboardingBlock.indexOf('message = "Creating classroom...";');
+    const loadAt = onboardingBlock.indexOf("const loadResult = await loadClassroomDataWithCacheFallback");
+    const readyAt = onboardingBlock.indexOf("v2TenantSession.getState() === SESSION_STATES.READY");
+    const dataAt = onboardingBlock.indexOf("if (loadResult.data) data = loadResult.data;");
+    const offlineAt = onboardingBlock.indexOf("v2IsOffline = Boolean(loadResult.isOffline);");
+    const completionAt = onboardingBlock.indexOf(
+      'message = res.created ? "Classroom created." : "Classroom ready.";'
+    );
+    const failureAt = onboardingBlock.indexOf('if (message === "Creating classroom...") {');
+    const finalRenderAt = onboardingBlock.lastIndexOf("render();");
+
+    assert.notEqual(pendingAt, -1, "onboarding must render a pending status before starting");
+    assert.notEqual(loadAt, -1, "onboarding must retain the authoritative classroom load result");
+    assert.notEqual(readyAt, -1, "the completion message must require the READY tenant state");
+    assert.notEqual(dataAt, -1, "READY onboarding must apply the epoch-validated classroom data");
+    assert.notEqual(offlineAt, -1, "READY onboarding must apply the matching offline state");
+    assert.notEqual(completionAt, -1, "onboarding must replace the pending status after success");
+    assert.notEqual(failureAt, -1, "failed onboarding must replace the pending status");
+    assert.match(
+      onboardingBlock,
+      /if \(\s*loadResult\.executed &&\s*v2TenantSession\.getState\(\) === SESSION_STATES\.READY\s*\)\s*\{[^}]*if \(loadResult\.data\) data = loadResult\.data;[^}]*v2IsOffline = Boolean\(loadResult\.isOffline\);[^}]*message = res\.created \? "Classroom created\." : "Classroom ready\.";[^}]*\}/,
+      "data, offline state, and the success message must live inside the executed+READY gate"
+    );
+    assert.match(
+      onboardingBlock,
+      /if \(message === "Creating classroom\.\.\."\) \{\s*message = res\.error \|\| "Classroom setup did not complete\. Please try again\.";\s*\}/,
+      "a failed or incomplete onboarding attempt must not leave the pending message visible"
+    );
+    assert.ok(
+      pendingAt < loadAt &&
+      loadAt < readyAt &&
+      readyAt < dataAt &&
+      dataAt < offlineAt &&
+      offlineAt < completionAt &&
+      completionAt < failureAt &&
+      failureAt < finalRenderAt,
+      "the authoritative result and final message must be applied before the final render"
+    );
+  });
+
   test("SOURCE GUARD: teacher invitation UI is authority-gated and uses only versioned callables", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const clientSource = readFileSync(

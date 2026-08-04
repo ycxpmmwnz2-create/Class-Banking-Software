@@ -3553,11 +3553,22 @@ if (screen === "editSettingsLists" && isTeacher) {
           v2LastPersistedData = JSON.parse(JSON.stringify(loaded));
           return loaded;
         };
-        await loadClassroomDataWithCacheFallback(v2TenantSession, {
+        const loadResult = await loadClassroomDataWithCacheFallback(v2TenantSession, {
           loadNetworkFn,
           storageAdapter: localStorage,
           projectId: v2TenantSession.projectId
         });
+        if (
+          loadResult.executed &&
+          v2TenantSession.getState() === SESSION_STATES.READY
+        ) {
+          if (loadResult.data) data = loadResult.data;
+          v2IsOffline = Boolean(loadResult.isOffline);
+          message = res.created ? "Classroom created." : "Classroom ready.";
+        }
+      }
+      if (message === "Creating classroom...") {
+        message = res.error || "Classroom setup did not complete. Please try again.";
       }
       render();
     }
