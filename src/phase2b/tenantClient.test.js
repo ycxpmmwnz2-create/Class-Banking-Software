@@ -1647,6 +1647,31 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
+  test("SOURCE GUARD: the ready teacher header displays only the resolved tenant classroom code", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const helperStart = source.indexOf("function resolvedStudentLoginCode() {");
+    const helperEnd = source.indexOf("\n    function render() {", helperStart);
+    assert.notEqual(helperStart, -1, "the resolved classroom-code helper must exist");
+    assert.notEqual(helperEnd, -1, "the classroom-code helper must have a bounded source block");
+    const helperBlock = source.slice(helperStart, helperEnd);
+
+    assert.match(
+      helperBlock,
+      /if \(!IS_MULTI_TEACHER_V2_ENABLED \|\| !isTeacher\) return "";/,
+      "legacy, signed-out, and student views must not receive the teacher classroom code"
+    );
+    assert.match(
+      helperBlock,
+      /resolvedClassroom \|\| v2TenantSession\?\.classroom \|\| null/,
+      "the code must come from the authoritatively resolved classroom object"
+    );
+    assert.match(
+      source,
+      /Classroom code: <span class="classroom-code">\$\{escapeHtml\(resolvedStudentLoginCode\(\)\)\}<\/span>/,
+      "the ready header must HTML-escape the resolved classroom code"
+    );
+  });
+
   test("SOURCE GUARD: teacher invitation UI is authority-gated and uses only versioned callables", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const clientSource = readFileSync(

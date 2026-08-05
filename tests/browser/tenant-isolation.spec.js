@@ -321,6 +321,26 @@ test("platform-admin invitation UI is authority-gated and creates a server-only 
   await expect(page.getByRole("heading", { name: "Teacher Invitations" })).toHaveCount(0);
 });
 
+test("ready teacher header shows only the resolved tenant classroom code", async ({ page }) => {
+  await gotoApp(page);
+
+  await signIn(page, TENANT_A);
+  await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_A, seeded.aUid);
+
+  const badge = page.locator(".hero-badge");
+  await expect(badge).toContainText(`Classroom code: ${TENANT_A.studentLoginCode}`);
+  await expect(badge).not.toContainText(TENANT_B.studentLoginCode);
+
+  await signOutPage(page);
+  await signIn(page, TENANT_B);
+  await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_B, seeded.bUid);
+
+  await expect(badge).toContainText(`Classroom code: ${TENANT_B.studentLoginCode}`);
+  await expect(badge).not.toContainText(TENANT_A.studentLoginCode);
+});
+
 // ---------------------------------------------------------------------------
 // Account switching and ordinary refresh, run in BOTH directions.
 // ---------------------------------------------------------------------------

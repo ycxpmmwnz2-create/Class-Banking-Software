@@ -143,6 +143,12 @@
       white-space: nowrap;
     }
 
+    .classroom-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      letter-spacing: 0.06em;
+      user-select: all;
+    }
+
     .message {
       background: rgba(211, 238, 233, 0.98);
       border: 1px solid rgba(216, 231, 236, 0.9);
@@ -2685,6 +2691,16 @@ link.click();
       return typeof label === "string" ? label : "";
     }
 
+    // The resolved classroom code is a student-facing locator, not a classroom
+    // identity. Show it only in the ready V2 teacher UI, where the matching
+    // classroom has already been resolved and ownership-checked by the server.
+    function resolvedStudentLoginCode() {
+      if (!IS_MULTI_TEACHER_V2_ENABLED || !isTeacher) return "";
+      const classroom = resolvedClassroom || v2TenantSession?.classroom || null;
+      const code = classroom?.studentLoginCode;
+      return typeof code === "string" ? code : "";
+    }
+
     function render() {
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         const state = v2TenantSession.getState();
@@ -2773,7 +2789,7 @@ link.click();
               <h1>Mr. Morgan's Class Cash</h1>
               <p class="tagline">Classroom Banking Platform · Positive Vibes Only</p>
             </div>
-            ${(resolvedClassroom || v2TenantSession?.classroom || v2TenantSession?.classroomId) ? `<div class="hero-badge">Classroom: ${escapeHtml(resolvedClassroom?.name || v2TenantSession?.classroom?.name || v2TenantSession?.classroomId || "")}${resolvedTeacherLabel() ? ` &middot; Teacher: ${escapeHtml(resolvedTeacherLabel())}` : ""}${v2IsOffline ? ' <span class="offline-badge" style="background: #f59e0b; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px;">[Offline view]</span>' : ""}</div>` : '<div class="hero-badge">Fast, Simple and Student Friendly</div>'}
+            ${(resolvedClassroom || v2TenantSession?.classroom || v2TenantSession?.classroomId) ? `<div class="hero-badge">Classroom: ${escapeHtml(resolvedClassroom?.name || v2TenantSession?.classroom?.name || v2TenantSession?.classroomId || "")}${resolvedStudentLoginCode() ? ` &middot; Classroom code: <span class="classroom-code">${escapeHtml(resolvedStudentLoginCode())}</span>` : ""}${resolvedTeacherLabel() ? ` &middot; Teacher: ${escapeHtml(resolvedTeacherLabel())}` : ""}${v2IsOffline ? ' <span class="offline-badge" style="background: #f59e0b; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px;">[Offline view]</span>' : ""}</div>` : '<div class="hero-badge">Fast, Simple and Student Friendly</div>'}
           </div>
         </section>
 
