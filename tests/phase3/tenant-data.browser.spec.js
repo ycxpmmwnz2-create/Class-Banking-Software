@@ -9,7 +9,7 @@
 
 import { expect, test } from '@playwright/test'
 
-import { SHARED_LOGIN_ID, TENANT_A, TENANT_B } from '../browser/phase2b-fixtures.js'
+import { PROJECT_ID, SHARED_LOGIN_ID, TENANT_A, TENANT_B } from '../browser/phase2b-fixtures.js'
 
 export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuiescence }) {
   async function signInTeacher(page, tenant) {
@@ -79,6 +79,10 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
       'Wrong classroom code, student login ID, or PIN.',
     )
     expect(await page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull()
+    expect(
+      await page.evaluate(() => window.__PHASE2B_TEST__.localKeys()
+        .filter(key => key.endsWith(':student-login:classroom-code:v1'))),
+    ).toEqual([])
 
     await submitStudentLogin(page, {
       classroomCode: TENANT_A.studentLoginCode,
@@ -121,13 +125,23 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     }))
     expect(localState.keys.filter(key => key.endsWith(':data:v1'))).toEqual([])
     expect(localState.keys).not.toContain('mrMorganClassCashDataV5')
+    expect(localState.keys.filter(key => key.endsWith(':student-login:classroom-code:v1'))).toEqual([
+      `morganBank:v2:${PROJECT_ID}:student-login:classroom-code:v1`,
+    ])
+    expect(localState.values).toContain(TENANT_A.studentLoginCode)
     expect(localState.values.join('\n')).not.toContain('2468')
     expect(localState.values.join('\n')).not.toContain('8642')
+    expect(localState.values.join('\n')).not.toContain(SHARED_LOGIN_ID)
     expect(localState.body).not.toContain('2468')
     expect(localState.body).not.toContain('8642')
     expect(localState.pinPresent).toBe(false)
 
     await logout(page)
+    await page.evaluate(() => window.setLoginTab('student'))
+    await expect(page.locator('#studentClassroomCode')).toHaveValue(TENANT_A.studentLoginCode)
+    await expect(page.locator('#studentLoginId')).toHaveValue('')
+    await expect(page.locator('#studentPin')).toHaveValue('')
+
     const beforeB = await page.evaluate(() => window.__PHASE2B_TEST__.events().length)
     await submitStudentLogin(page, {
       classroomCode: TENANT_B.studentLoginCode,
@@ -148,6 +162,12 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     expect(studentBPaths).toEqual([
       `classrooms/${TENANT_B.classroomId}/students/${TENANT_B.sharedStudentId}`,
     ])
+    expect(
+      await page.evaluate(
+        key => window.__PHASE2B_TEST__.localGet(key),
+        `morganBank:v2:${PROJECT_ID}:student-login:classroom-code:v1`,
+      ),
+    ).toBe(TENANT_B.studentLoginCode)
     expect(await page.evaluate(() => document.body.innerText)).not.toContain(TENANT_A.studentMarker)
   })
 

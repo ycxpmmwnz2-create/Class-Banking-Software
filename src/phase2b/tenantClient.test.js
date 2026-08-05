@@ -1672,6 +1672,59 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
+  test("SOURCE GUARD: classroom-code convenience stores only a project-scoped locator after successful V2 login", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const loginStart = source.indexOf("async function loginStudent() {");
+    const loginEnd = source.indexOf("\n    async function logout() {", loginStart);
+    assert.notEqual(loginStart, -1, "the production student-login function must exist");
+    assert.notEqual(loginEnd, -1, "the production student-login function must have a bounded source block");
+    const loginBlock = source.slice(loginStart, loginEnd);
+
+    const successAt = loginBlock.indexOf("if (!result.executed) {");
+    const rememberAt = loginBlock.indexOf("rememberStudentClassroomCode(classroomCode);");
+    assert.ok(
+      successAt !== -1 && rememberAt > successAt,
+      "the classroom code may be remembered only after V2 login reports a successful execution"
+    );
+    assert.doesNotMatch(
+      source,
+      /localStorage\.setItem\([^\n]*(?:loginId|studentLoginId|\bpin\b|studentPin)/i,
+      "student login IDs and PINs must never be written to localStorage"
+    );
+    assert.match(
+      source,
+      /`morganBank:v2:\$\{V2_ACTIVE_PROJECT_ID\}:student-login:classroom-code:v1`/,
+      "the preference must be isolated by the active Firebase project"
+    );
+    assert.match(
+      source,
+      /studentClassroomCodeDraft = readRememberedStudentClassroomCode\(\);/,
+      "the signed-out form must rehydrate the remembered classroom code"
+    );
+  });
+
+  test("SOURCE GUARD: the teacher dashboard exposes a copyable resolved code without widening visibility", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const teacherStart = source.indexOf('if (screen === "teacher" && isTeacher) {');
+    const teacherEnd = source.indexOf('\n      if (screen === "approvals"', teacherStart);
+    assert.notEqual(teacherStart, -1, "the teacher dashboard block must exist");
+    assert.notEqual(teacherEnd, -1, "the teacher dashboard block must have a bounded source range");
+    const teacherBlock = source.slice(teacherStart, teacherEnd);
+
+    assert.match(teacherBlock, /<h2>Student Login Information<\/h2>/);
+    assert.match(
+      teacherBlock,
+      /id="teacherStudentClassroomCode"[^>]*>\$\{escapeHtml\(resolvedStudentLoginCode\(\)\)\}<\/span>/,
+      "the dashboard card must use the escaped, authoritatively resolved code"
+    );
+    assert.match(teacherBlock, /onclick="copyStudentClassroomCode\(\)"/);
+    assert.match(
+      source,
+      /async function copyStudentClassroomCode\(\) \{\s*if \(!requireTeacher\(\)\) return;/,
+      "the copy action must remain teacher-gated"
+    );
+  });
+
   test("SOURCE GUARD: teacher invitation UI is authority-gated and uses only versioned callables", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const clientSource = readFileSync(

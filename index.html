@@ -248,6 +248,38 @@
       line-height: 1.25;
     }
 
+    .student-login-info {
+      border: 2px solid rgba(36, 148, 144, 0.42);
+      margin-bottom: 12px;
+    }
+
+    .student-login-info h2 {
+      margin-bottom: 8px;
+    }
+
+    .student-login-info-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    .student-login-info-code {
+      display: inline-block;
+      padding: 10px 14px;
+      border: 1px solid rgba(36, 148, 144, 0.35);
+      border-radius: var(--radius-sm);
+      background: white;
+      color: var(--teal-dark);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 24px;
+      font-weight: 950;
+      letter-spacing: 0.08em;
+      -webkit-user-select: all;
+      user-select: all;
+    }
+
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
@@ -733,6 +765,12 @@
       .dashboard-insights .stats { grid-template-columns: 1fr; }
       .dashboard-insights { padding: 12px; }
       .dashboard-insights .stat-box { min-height: 48px; }
+      .student-login-info-row { align-items: stretch; }
+      .student-login-info-code {
+        width: 100%;
+        text-align: center;
+      }
+      .student-login-info-row button { width: 100%; }
       .quick-cash-grid {
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 8px;
@@ -1562,7 +1600,8 @@ function toggleStudentDropdown() {
               : "Student login is unavailable. Please try again.";
             return;
           }
-          studentClassroomCodeDraft = "";
+          rememberStudentClassroomCode(classroomCode);
+          studentClassroomCodeDraft = readRememberedStudentClassroomCode();
           studentLoginIdDraft = "";
           return;
         }
@@ -2702,6 +2741,82 @@ link.click();
       return typeof code === "string" ? code : "";
     }
 
+    function formatRememberedStudentClassroomCode(rawCode) {
+      if (typeof rawCode !== "string") return "";
+      const canonical = rawCode.trim().toUpperCase().replace(/[-\s]/g, "");
+      if (!/^[2-9A-HJ-NP-Z]{8}$/.test(canonical)) return "";
+      return `${canonical.slice(0, 4)}-${canonical.slice(4)}`;
+    }
+
+    function readRememberedStudentClassroomCode() {
+      if (!IS_MULTI_TEACHER_V2_ENABLED) return "";
+      try {
+        return formatRememberedStudentClassroomCode(
+          localStorage.getItem(V2_STUDENT_CLASSROOM_CODE_STORAGE_KEY)
+        );
+      } catch {
+        return "";
+      }
+    }
+
+    function rememberStudentClassroomCode(rawCode) {
+      if (!IS_MULTI_TEACHER_V2_ENABLED) return false;
+      const formattedCode = formatRememberedStudentClassroomCode(rawCode);
+      if (!formattedCode) return false;
+      try {
+        localStorage.setItem(V2_STUDENT_CLASSROOM_CODE_STORAGE_KEY, formattedCode);
+        return true;
+      } catch {
+        // Storage may be unavailable or ephemeral in private browsing. A
+        // successful student sign-in must never fail because preference storage
+        // is unavailable.
+        return false;
+      }
+    }
+
+    function legacyCopyText(text) {
+      const input = document.createElement("textarea");
+      input.value = text;
+      input.setAttribute("readonly", "");
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.select();
+      input.setSelectionRange(0, input.value.length);
+      let copied = false;
+      try {
+        copied = document.execCommand("copy") === true;
+      } catch {
+        copied = false;
+      }
+      input.remove();
+      return copied;
+    }
+
+    async function copyStudentClassroomCode() {
+      if (!requireTeacher()) return;
+      const code = resolvedStudentLoginCode();
+      if (!code) {
+        showMessage("The classroom code is not available yet.");
+        return;
+      }
+
+      let copied = false;
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          await navigator.clipboard.writeText(code);
+          copied = true;
+        }
+      } catch {
+        copied = false;
+      }
+
+      if (!copied) copied = legacyCopyText(code);
+      showMessage(copied
+        ? "Classroom code copied."
+        : "Could not copy the classroom code. Select the code and copy it manually.");
+    }
+
     function render() {
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         const state = v2TenantSession.getState();
@@ -2845,6 +2960,7 @@ link.click();
               ${IS_MULTI_TEACHER_V2_ENABLED ? `
                 <label for="studentClassroomCode">Classroom code</label>
                 <input id="studentClassroomCode" value="${escapeHtml(studentClassroomCodeDraft)}" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
+                <p class="small-note">After a successful login, this browser remembers only the classroom code. Your PIN is never saved. Private browsing forgets the code when the private window closes.</p>
               ` : ""}
               <label for="studentLoginId">Student login ID</label>
               <input id="studentLoginId" value="${escapeHtml(studentLoginIdDraft)}" placeholder="Student login ID" autocomplete="username" autocapitalize="none" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
@@ -2858,6 +2974,18 @@ link.click();
 
       if (screen === "teacher" && isTeacher) {
         html += `
+          ${resolvedStudentLoginCode() ? `
+          <div class="card no-print student-login-info">
+            <h2>Student Login Information</h2>
+            <p>Share this classroom code with your students. After a successful login, Morgan Bank can remember it on that browser.</p>
+            <div class="student-login-info-row">
+              <span>Classroom code:</span>
+              <span id="teacherStudentClassroomCode" class="student-login-info-code">${escapeHtml(resolvedStudentLoginCode())}</span>
+              <button type="button" class="primary" onclick="copyStudentClassroomCode()" aria-label="Copy classroom code">Copy code</button>
+            </div>
+          </div>
+          ` : ""}
+
           <div class="card no-print dashboard-insights">
             <h2>Dashboard Insights</h2>
             <div class="stats">
@@ -3538,6 +3666,11 @@ if (screen === "editSettingsLists" && isTeacher) {
 
     function resetAllGlobalState() {
       resetGlobalApplicationState(windowAppGlobals, cloneDefault);
+      // The remembered classroom locator is intentionally separate from tenant
+      // data. Rehydrate it after the shared reset so logout keeps the next
+      // student login convenient without retaining a login ID, PIN, token, or
+      // student record.
+      studentClassroomCodeDraft = readRememberedStudentClassroomCode();
       // Render-affecting V2 view state that is not part of the shared legacy
       // global contract must be cleared by the same synchronous reset, or a
       // previous tenant's offline badge / profile login ID can survive a switch.
@@ -3681,6 +3814,10 @@ if (screen === "editSettingsLists" && isTeacher) {
     // Firebase app actually in use. Production/default resolves to
     // "morgan-bank"; the browser emulator harness resolves to its demo project.
     const V2_ACTIVE_PROJECT_ID = app.options.projectId;
+    const V2_STUDENT_CLASSROOM_CODE_STORAGE_KEY =
+      `morganBank:v2:${V2_ACTIVE_PROJECT_ID}:student-login:classroom-code:v1`;
+
+    studentClassroomCodeDraft = readRememberedStudentClassroomCode();
 
     const v2TenantSession = new TenantSession({
       storageAdapter: localStorage,
@@ -3890,6 +4027,7 @@ window.loginTeacherWithGoogle = loginTeacherWithGoogle;
 window.linkGoogleAccount = linkGoogleAccount;
 window.handleLoginEnter = handleLoginEnter;
 window.loginStudent = loginStudent;
+window.copyStudentClassroomCode = copyStudentClassroomCode;
 window.openStudentAuthLogs = openStudentAuthLogs;
 window.setScreen = setScreen;
 window.viewStudentProfile = viewStudentProfile;

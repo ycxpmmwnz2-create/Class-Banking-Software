@@ -322,6 +322,16 @@ test("platform-admin invitation UI is authority-gated and creates a server-only 
 });
 
 test("ready teacher header shows only the resolved tenant classroom code", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async value => {
+          window.__COPIED_CLASSROOM_CODE__ = value;
+        }
+      }
+    });
+  });
   await gotoApp(page);
 
   await signIn(page, TENANT_A);
@@ -331,14 +341,24 @@ test("ready teacher header shows only the resolved tenant classroom code", async
   const badge = page.locator(".hero-badge");
   await expect(badge).toContainText(`Classroom code: ${TENANT_A.studentLoginCode}`);
   await expect(badge).not.toContainText(TENANT_B.studentLoginCode);
+  const loginInfo = page.locator(".student-login-info");
+  await expect(loginInfo).toContainText("Student Login Information");
+  await expect(loginInfo.locator("#teacherStudentClassroomCode")).toHaveText(TENANT_A.studentLoginCode);
+  await loginInfo.getByRole("button", { name: "Copy classroom code" }).click();
+  await expect.poll(() => page.evaluate(() => window.__COPIED_CLASSROOM_CODE__)).toBe(
+    TENANT_A.studentLoginCode
+  );
+  await expect(page.getByText("Classroom code copied.")).toBeVisible();
 
   await signOutPage(page);
+  await expect(page.locator(".student-login-info")).toHaveCount(0);
   await signIn(page, TENANT_B);
   await waitForQuiescence(page);
   await assertTenantEstablished(page, TENANT_B, seeded.bUid);
 
   await expect(badge).toContainText(`Classroom code: ${TENANT_B.studentLoginCode}`);
   await expect(badge).not.toContainText(TENANT_A.studentLoginCode);
+  await expect(loginInfo.locator("#teacherStudentClassroomCode")).toHaveText(TENANT_B.studentLoginCode);
 });
 
 // ---------------------------------------------------------------------------
