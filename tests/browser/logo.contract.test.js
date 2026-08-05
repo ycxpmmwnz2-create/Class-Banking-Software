@@ -70,5 +70,9 @@ test("the document links a Morgan Bank favicon instead of the stock Vite mark", 
   assert.match(faviconSvg, /<title>Morgan Bank<\/title>/);
   assert.match(faviconSvg, /#12323a/i, "favicon must use the Morgan Bank dark brand color");
   assert.match(faviconSvg, /#5ec7c2/i, "favicon must use the Morgan Bank teal brand color");
-  assert.doesNotMatch(faviconSvg, /#863bff|vite/i, "stock Vite branding must not remain");
+  assert.doesNotMatch(
+    faviconSvg,
+    /#863bff|#7e14ff|#47bfff|vite/i,
+    "stock Vite branding must not remain"
+  );
 });

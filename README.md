@@ -28,7 +28,7 @@ npm run test:phase3:contracts
 npm run test:staging:contracts
 ```
 
-The permanent browser gates cover Chromium and WebKit/Desktop Safari in separate Firebase emulator lifecycles:
+The permanent release gates include Chromium and WebKit/Desktop Safari browser coverage in separate Firebase emulator lifecycles:
 
 ```bash
 npm run test:phase2b:browser
@@ -42,7 +42,7 @@ Emulator scripts refuse to run when local Google Application Default Credentials
 `.firebaserc` defaults to the production project, `morgan-bank`. Do not infer deployment authority from permission to build, test, commit, or push.
 
 - Emulator commands must keep their explicit `demo-` project IDs.
-- Staging work must explicitly target `morgan-bank-staging` and use the reviewed staging configuration.
+- The staging project is `morgan-bank-staging`. Because `.firebaserc` defines no staging alias, every staging Firebase command must explicitly pass `--project morgan-bank-staging` and use the reviewed staging configuration.
 - Never reuse production Firebase identity values for staging.
 - Deployment, migration, production reads or writes, Auth-provider changes, billing changes, commits, and pushes are separate approval boundaries.
 

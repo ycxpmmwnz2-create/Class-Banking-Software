@@ -104,6 +104,8 @@ function combined(files) {
 }
 
 describe("Phase 2B Item 10: build artifact composition", () => {
+  let offBuildDir;
+  let onBuildDir;
   let offFiles;
   let onFiles;
 
@@ -113,8 +115,10 @@ describe("Phase 2B Item 10: build artifact composition", () => {
     // absence assertions vacuous.
     const offEnv = { ...process.env };
     delete offEnv.VITE_MULTI_TEACHER_V2_ENABLED;
-    offFiles = collectJs(buildInto("off", { ...offEnv, VITE_MULTI_TEACHER_V2_ENABLED: undefined }));
-    onFiles = collectJs(buildInto("on", { VITE_MULTI_TEACHER_V2_ENABLED: "true" }));
+    offBuildDir = buildInto("off", { ...offEnv, VITE_MULTI_TEACHER_V2_ENABLED: undefined });
+    onBuildDir = buildInto("on", { VITE_MULTI_TEACHER_V2_ENABLED: "true" });
+    offFiles = collectJs(offBuildDir);
+    onFiles = collectJs(onBuildDir);
   });
 
   after(() => {
@@ -135,6 +139,19 @@ describe("Phase 2B Item 10: build artifact composition", () => {
   test("both builds contain the V1 sentinel, proving the scanned artifact is the real application", () => {
     assert.ok(combined(offFiles).includes(V1_SENTINEL), `default-off is missing ${V1_SENTINEL}`);
     assert.ok(combined(onFiles).includes(V1_SENTINEL), `gate-on is missing ${V1_SENTINEL}`);
+  });
+
+  test("both builds copy the exact Morgan Bank favicon", () => {
+    const sourceFavicon = readFileSync(join(REPO_ROOT, "public", "favicon.svg"));
+    for (const [label, buildDir] of [["default-off", offBuildDir], ["gate-on", onBuildDir]]) {
+      const builtFavicon = join(buildDir, "favicon.svg");
+      assert.ok(existsSync(builtFavicon), `${label}: build emitted no favicon.svg`);
+      assert.deepEqual(
+        readFileSync(builtFavicon),
+        sourceFavicon,
+        `${label}: built favicon.svg must exactly match public/favicon.svg`
+      );
+    }
   });
 
   test("default-off omits every operational V2 transport and persistence marker", () => {
