@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 const indexHtml = readFileSync(join(process.cwd(), "index.html"), "utf8");
+const faviconSvg = readFileSync(join(process.cwd(), "public", "favicon.svg"), "utf8");
 
 function embeddedLogoBase64(source) {
   const matches = [...source.matchAll(
@@ -58,4 +59,16 @@ test("logo integrity check rejects the demonstrated two-character data loss", ()
   const truncated = intact.replace(historicalRepairPoint, "WhkgSdE3");
 
   assert.throws(() => assertCompleteWebp(truncated), assert.AssertionError);
+});
+
+test("the document links a Morgan Bank favicon instead of the stock Vite mark", () => {
+  assert.match(
+    indexHtml,
+    /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg" \/>/,
+    "index.html must explicitly link the favicon Safari and other browsers should request"
+  );
+  assert.match(faviconSvg, /<title>Morgan Bank<\/title>/);
+  assert.match(faviconSvg, /#12323a/i, "favicon must use the Morgan Bank dark brand color");
+  assert.match(faviconSvg, /#5ec7c2/i, "favicon must use the Morgan Bank teal brand color");
+  assert.doesNotMatch(faviconSvg, /#863bff|vite/i, "stock Vite branding must not remain");
 });
