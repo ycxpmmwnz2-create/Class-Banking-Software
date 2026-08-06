@@ -567,6 +567,11 @@
       color: #14532d;
     }
 
+    .student-money-card .purchase-note {
+      line-height: 1.2;
+      min-height: calc(4 * 1.2em + 30px);
+    }
+
     .backup-reminder {
       background-color: #fffbeb;
       color: #78350f;
@@ -3823,7 +3828,7 @@ if (screen === "editSettingsLists" && isTeacher) {
               </div>
 
               <div class="grid">
-                <div class="card soft-card">
+                <div class="card soft-card student-money-card">
                   <h2>Add Money</h2>
                   ${student.frozen ? `
                     <div class="empty">This account is frozen. Add Money is not available.</div>
@@ -3842,7 +3847,7 @@ if (screen === "editSettingsLists" && isTeacher) {
                   `}
                 </div>
 
-                <div class="card soft-card">
+                <div class="card soft-card student-money-card">
                   <h2>Subtract Money</h2>
                   ${student.frozen ? `
                     <div class="empty">This account is frozen. Subtract Money is not available.</div>

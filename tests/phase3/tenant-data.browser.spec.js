@@ -236,6 +236,17 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await waitForQuiescence(page)
     await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain('Shared Name')
 
+    // At the desktop width where the two money cards sit side by side, the
+    // shorter subtract explanation must reserve the same row height as the add
+    // explanation so both forms begin on the same horizontal line.
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    const moneyFormReasonTops = await page.evaluate(() => [
+      document.querySelector('label[for="studentAddReason"]')?.getBoundingClientRect().top,
+      document.querySelector('label[for="studentSubtractReason"]')?.getBoundingClientRect().top,
+    ])
+    expect(moneyFormReasonTops.every(Number.isFinite)).toBe(true)
+    expect(Math.abs(moneyFormReasonTops[0] - moneyFormReasonTops[1])).toBeLessThanOrEqual(1)
+
     const studentAPaths = await page.evaluate(
       from => window.__PHASE2B_TEST__.events()
         .slice(from)
