@@ -361,6 +361,42 @@ test("ready teacher header shows only the resolved tenant classroom code", async
   await expect(loginInfo.locator("#teacherStudentClassroomCode")).toHaveText(TENANT_B.studentLoginCode);
 });
 
+test("clipboard denial uses the legacy fallback and leaves no temporary textarea", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async () => {
+          throw new Error("clipboard denied");
+        }
+      }
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: command => {
+        window.__LEGACY_COPY_COMMANDS__ = [
+          ...(window.__LEGACY_COPY_COMMANDS__ || []),
+          command
+        ];
+        return undefined;
+      }
+    });
+  });
+  await gotoApp(page);
+  await signIn(page, TENANT_A);
+  await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_A, seeded.aUid);
+
+  const textareaCountBefore = await page.locator("textarea").count();
+  await page.getByRole("button", { name: "Copy classroom code" }).click();
+
+  await expect.poll(() => page.evaluate(() => window.__LEGACY_COPY_COMMANDS__)).toEqual(["copy"]);
+  await expect(page.getByText(
+    "Could not copy the classroom code. Select the code and copy it manually."
+  )).toBeVisible();
+  await expect(page.locator("textarea")).toHaveCount(textareaCountBefore);
+});
+
 // ---------------------------------------------------------------------------
 // Account switching and ordinary refresh, run in BOTH directions.
 // ---------------------------------------------------------------------------

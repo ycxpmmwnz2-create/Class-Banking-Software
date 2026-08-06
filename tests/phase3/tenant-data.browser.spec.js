@@ -11,6 +11,9 @@ import { expect, test } from '@playwright/test'
 
 import { PROJECT_ID, SHARED_LOGIN_ID, TENANT_A, TENANT_B } from '../browser/phase2b-fixtures.js'
 
+const CLASSROOM_CODE_STORAGE_KEY =
+  `morganBank:v2:${PROJECT_ID}:student-login:classroom-code:v1`
+
 export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuiescence }) {
   async function signInTeacher(page, tenant) {
     await page.evaluate(
@@ -126,12 +129,13 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     expect(localState.keys.filter(key => key.endsWith(':data:v1'))).toEqual([])
     expect(localState.keys).not.toContain('mrMorganClassCashDataV5')
     expect(localState.keys.filter(key => key.endsWith(':student-login:classroom-code:v1'))).toEqual([
-      `morganBank:v2:${PROJECT_ID}:student-login:classroom-code:v1`,
+      CLASSROOM_CODE_STORAGE_KEY,
     ])
     expect(localState.values).toContain(TENANT_A.studentLoginCode)
     expect(localState.values.join('\n')).not.toContain('2468')
     expect(localState.values.join('\n')).not.toContain('8642')
     expect(localState.values.join('\n')).not.toContain(SHARED_LOGIN_ID)
+    expect(localState.keys.join('\n')).not.toContain(SHARED_LOGIN_ID)
     expect(localState.body).not.toContain('2468')
     expect(localState.body).not.toContain('8642')
     expect(localState.pinPresent).toBe(false)
@@ -141,6 +145,22 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await expect(page.locator('#studentClassroomCode')).toHaveValue(TENANT_A.studentLoginCode)
     await expect(page.locator('#studentLoginId')).toHaveValue('')
     await expect(page.locator('#studentPin')).toHaveValue('')
+
+    await submitStudentLogin(page, {
+      classroomCode: TENANT_B.studentLoginCode,
+      loginId: SHARED_LOGIN_ID,
+      pin: '2468',
+    })
+    await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain(
+      'Wrong classroom code, student login ID, or PIN.',
+    )
+    expect(await page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull()
+    expect(
+      await page.evaluate(
+        key => window.__PHASE2B_TEST__.localGet(key),
+        CLASSROOM_CODE_STORAGE_KEY,
+      ),
+    ).toBe(TENANT_A.studentLoginCode)
 
     const beforeB = await page.evaluate(() => window.__PHASE2B_TEST__.events().length)
     await submitStudentLogin(page, {
@@ -165,10 +185,49 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     expect(
       await page.evaluate(
         key => window.__PHASE2B_TEST__.localGet(key),
-        `morganBank:v2:${PROJECT_ID}:student-login:classroom-code:v1`,
+        CLASSROOM_CODE_STORAGE_KEY,
       ),
     ).toBe(TENANT_B.studentLoginCode)
     expect(await page.evaluate(() => document.body.innerText)).not.toContain(TENANT_A.studentMarker)
+  })
+
+  test('student login succeeds when remembering the classroom code is unavailable', async ({ page }) => {
+    await page.addInitScript(() => {
+      const originalSetItem = Storage.prototype.setItem
+      Object.defineProperty(Storage.prototype, 'setItem', {
+        configurable: true,
+        value(key, value) {
+          if (String(key).endsWith(':student-login:classroom-code:v1')) {
+            window.__CLASSROOM_CODE_STORAGE_ATTEMPTS__ =
+              (window.__CLASSROOM_CODE_STORAGE_ATTEMPTS__ || 0) + 1
+            throw new DOMException('Storage unavailable', 'QuotaExceededError')
+          }
+          return originalSetItem.call(this, key, value)
+        },
+      })
+    })
+
+    const seeded = getSeeded()
+    await gotoApp(page)
+    await activateThroughProductionUi(page, TENANT_A, '2468')
+    await submitStudentLogin(page, {
+      classroomCode: TENANT_A.studentLoginCode,
+      loginId: SHARED_LOGIN_ID,
+      pin: '2468',
+    })
+
+    await expect.poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBe(
+      seeded.credentials.aSharedCredential.authUid,
+    )
+    await waitForQuiescence(page)
+    await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain('Shared Name')
+    expect(await page.evaluate(() => window.__CLASSROOM_CODE_STORAGE_ATTEMPTS__)).toBe(1)
+    expect(
+      await page.evaluate(
+        key => window.__PHASE2B_TEST__.localGet(key),
+        CLASSROOM_CODE_STORAGE_KEY,
+      ),
+    ).toBeNull()
   })
 
   test('Phase 3 V2 destructive controls are absent and direct invocation is inert', async ({ page }) => {

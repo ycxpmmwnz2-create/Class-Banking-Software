@@ -1680,15 +1680,27 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.notEqual(loginEnd, -1, "the production student-login function must have a bounded source block");
     const loginBlock = source.slice(loginStart, loginEnd);
 
-    const successAt = loginBlock.indexOf("if (!result.executed) {");
+    const failureStartAt = loginBlock.indexOf("if (!result.executed) {");
+    const failureEndAt = loginBlock.indexOf("\n          }", failureStartAt);
     const rememberAt = loginBlock.indexOf("rememberStudentClassroomCode(classroomCode);");
+    assert.notEqual(failureStartAt, -1, "the V2 login failure branch must exist");
+    assert.notEqual(failureEndAt, -1, "the V2 login failure branch must have a closing brace");
     assert.ok(
-      successAt !== -1 && rememberAt > successAt,
+      rememberAt > failureEndAt,
       "the classroom code may be remembered only after V2 login reports a successful execution"
     );
+    const persistedCredentialPattern =
+      /localStorage\.setItem\([\s\S]{0,200}?(?:,\s*(?:loginId|studentLoginId|pin|studentPin)\s*\)|["'](?:loginId|studentLoginId|pin|studentPin)["']\s*:|[{,]\s*(?:loginId|studentLoginId|pin|studentPin)\s*(?=[:,}]))/i;
+    for (const unsafeWrite of [
+      "localStorage.setItem(key,\n  JSON.stringify({ pin }));",
+      "localStorage.setItem(key,\n  JSON.stringify({ 'loginId': loginId }));",
+      "localStorage.setItem(key,\n  studentPin);"
+    ]) {
+      assert.match(unsafeWrite, persistedCredentialPattern, "the guard must catch multiline credential writes");
+    }
     assert.doesNotMatch(
       source,
-      /localStorage\.setItem\([^\n]*(?:loginId|studentLoginId|\bpin\b|studentPin)/i,
+      persistedCredentialPattern,
       "student login IDs and PINs must never be written to localStorage"
     );
     assert.match(
@@ -1696,8 +1708,13 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       /`morganBank:v2:\$\{V2_ACTIVE_PROJECT_ID\}:student-login:classroom-code:v1`/,
       "the preference must be isolated by the active Firebase project"
     );
+    const resetStart = source.indexOf("function resetAllGlobalState() {");
+    const resetEnd = source.indexOf("\n    async function submitV2Onboarding() {", resetStart);
+    assert.notEqual(resetStart, -1, "the global reset function must exist");
+    assert.notEqual(resetEnd, -1, "the global reset function must have a bounded source block");
+    const resetBlock = source.slice(resetStart, resetEnd);
     assert.match(
-      source,
+      resetBlock,
       /studentClassroomCodeDraft = readRememberedStudentClassroomCode\(\);/,
       "the signed-out form must rehydrate the remembered classroom code"
     );
