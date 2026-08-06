@@ -60,6 +60,79 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await page.evaluate(() => window.loginStudent())
   }
 
+  test('teacher can reveal, copy, and temporarily display only the newly submitted PIN', async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          async writeText(text) {
+            window.__COPIED_PROFILE_PIN__ = String(text)
+          },
+        },
+      })
+    })
+
+    await gotoApp(page)
+    await signInTeacher(page, TENANT_A)
+    await page.evaluate(studentId => window.viewStudentProfile(Number(studentId)), TENANT_A.sharedStudentId)
+    await expect(page.locator('#profileLoginIdStatus')).toHaveText(SHARED_LOGIN_ID)
+
+    const pinInput = page.locator('#profileNewStudentPin')
+    const visibilityButton = page.locator('#profileNewStudentPinVisibilityButton')
+    await pinInput.fill('1357')
+    await expect(pinInput).toHaveAttribute('type', 'password')
+    await visibilityButton.click()
+    await expect(pinInput).toHaveAttribute('type', 'text')
+    await expect(visibilityButton).toHaveText('Hide PIN')
+    await expect(visibilityButton).toHaveAttribute('aria-pressed', 'true')
+    await visibilityButton.click()
+    await expect(pinInput).toHaveAttribute('type', 'password')
+
+    await page.getByRole('button', { name: 'Copy new PIN' }).first().click()
+    await expect(page.locator('#profileNewStudentPinCopyStatus')).toHaveText('New PIN copied.')
+    expect(await page.evaluate(() => window.__COPIED_PROFILE_PIN__)).toBe('1357')
+
+    await page.evaluate(() => window.resetProfileStudentPin())
+    await expect(page.locator('#temporaryProfileStudentPin')).toBeVisible()
+    await expect(page.locator('#temporaryProfileStudentPinValue')).toHaveText('1357')
+    await expect(page.locator('#profileNewStudentPin')).toHaveValue('')
+
+    const storageValues = await page.evaluate(() => [
+      ...Object.keys(localStorage).map(key => localStorage.getItem(key)),
+      ...Object.keys(sessionStorage).map(key => sessionStorage.getItem(key)),
+    ])
+    expect(storageValues.join('\n')).not.toContain('1357')
+
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async () => { throw new DOMException('Denied', 'NotAllowedError') } },
+      })
+      document.execCommand = () => false
+    })
+    await page.getByRole('button', { name: 'Copy new PIN' }).last().click()
+    await expect(page.locator('#temporaryProfileStudentPinCopyStatus')).toHaveText(
+      'Could not copy the new PIN. Select it and copy it manually.',
+    )
+    expect(await page.locator('textarea').count()).toBe(0)
+
+    await page.locator('#profileStudentSelect').selectOption(TENANT_A.studentId)
+    await expect(page.locator('#temporaryProfileStudentPin')).toHaveCount(0)
+    await page.locator('#profileStudentSelect').selectOption(TENANT_A.sharedStudentId)
+    await expect(page.locator('#temporaryProfileStudentPin')).toHaveCount(0)
+
+    await pinInput.fill('1357')
+    await page.evaluate(() => window.resetProfileStudentPin())
+    await expect(page.locator('#temporaryProfileStudentPinValue')).toHaveText('1357')
+    await page.reload()
+    await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain(TENANT_A.studentMarker)
+    await expect(page.getByText('1357', { exact: true })).toHaveCount(0)
+    expect((await page.evaluate(() => [
+      ...Object.keys(localStorage).map(key => localStorage.getItem(key)),
+      ...Object.keys(sessionStorage).map(key => sessionStorage.getItem(key)),
+    ])).join('\n')).not.toContain('1357')
+  })
+
   test('Phase 3 student UI uses classroom-qualified V2 login, real custom-token claims, and the exact self document', async ({ page }) => {
     const seeded = getSeeded()
     await gotoApp(page)

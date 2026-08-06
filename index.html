@@ -895,6 +895,11 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let studentAuthLogsLoading = false;
     let studentAuthLogsError = "";
     let studentPinResetPending = false;
+    // The only plaintext PIN retained after a reset is the exact value the
+    // teacher just submitted, and only while that same student profile remains
+    // open. It is never added to application data, storage, exports, logs, or a
+    // callable response.
+    let temporaryProfileStudentPin = null;
     let bulkOperationPending = false;
     let studentLifecyclePending = false;
     let isPlatformAdmin = false;
@@ -1258,7 +1263,12 @@ function toggleStudentDropdown() {
       `;
     }
 
+    function clearTemporaryProfileStudentPin() {
+      temporaryProfileStudentPin = null;
+    }
+
     function setScreen(newScreen) {
+      if (newScreen !== "studentProfile") clearTemporaryProfileStudentPin();
       screen = newScreen;
       render();
     }
@@ -1274,7 +1284,11 @@ function toggleStudentDropdown() {
 
     async function viewStudentProfile(studentId) {
       if (!requireTeacher()) return;
-      teacherProfileStudentId = Number(studentId);
+      const nextStudentId = Number(studentId);
+      if (teacherProfileStudentId !== nextStudentId) {
+        clearTemporaryProfileStudentPin();
+      }
+      teacherProfileStudentId = nextStudentId;
       profileLoginIdStatus = "Checking...";
       screen = "studentProfile";
       render();
@@ -1318,6 +1332,7 @@ function toggleStudentDropdown() {
         item => item.id === teacherProfileStudentId
       );
       const newPin = document.getElementById("profileNewStudentPin")?.value ?? "";
+      clearTemporaryProfileStudentPin();
 
       if (!student) {
         message = "This student is no longer on the roster.";
@@ -1355,6 +1370,9 @@ function toggleStudentDropdown() {
           v2ActivatedStudentIds.add(String(student.id));
           if (v2TenantSession.validateCapturedIdentity(captured)) {
             message = `PIN reset successfully for ${student.name}.`;
+            if (screen === "studentProfile" && teacherProfileStudentId === student.id) {
+              temporaryProfileStudentPin = { studentId: student.id, pin: newPin };
+            }
             studentPinResetPending = false;
             render();
           }
@@ -1378,6 +1396,9 @@ function toggleStudentDropdown() {
         student.credentialActive = true;
         saveData();
         message = `PIN reset successfully for ${student.name}.`;
+        if (screen === "studentProfile" && teacherProfileStudentId === student.id) {
+          temporaryProfileStudentPin = { studentId: student.id, pin: newPin };
+        }
       } catch (error) {
         console.error("Student PIN reset failed:", error);
         message = error.code === "functions/not-found"
@@ -1632,6 +1653,7 @@ function toggleStudentDropdown() {
     }
 
     async function logout() {
+      clearTemporaryProfileStudentPin();
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         const result = await orchestrateProductionLogout(
           v2TenantSession,
@@ -2807,6 +2829,72 @@ link.click();
       return copied;
     }
 
+    async function copyTextWithFallback(text) {
+      let copied = false;
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        }
+      } catch {
+        copied = false;
+      }
+
+      return copied || legacyCopyText(text);
+    }
+
+    function toggleProfileNewStudentPinVisibility() {
+      if (!requireTeacher() || screen !== "studentProfile") return;
+      const input = document.getElementById("profileNewStudentPin");
+      const button = document.getElementById("profileNewStudentPinVisibilityButton");
+      if (!input || !button) return;
+
+      const reveal = input.type === "password";
+      input.type = reveal ? "text" : "password";
+      button.textContent = reveal ? "Hide PIN" : "Show PIN";
+      button.setAttribute("aria-pressed", String(reveal));
+      input.focus({ preventScroll: true });
+    }
+
+    async function copyProfileNewStudentPin() {
+      if (!requireTeacher() || screen !== "studentProfile") return;
+      const studentId = teacherProfileStudentId;
+      const pin = document.getElementById("profileNewStudentPin")?.value ?? "";
+      const status = document.getElementById("profileNewStudentPinCopyStatus");
+      if (!/^\d{4}$/.test(pin)) {
+        if (status) status.textContent = "Enter a 4-digit PIN before copying.";
+        return;
+      }
+
+      const copied = await copyTextWithFallback(pin);
+      if (screen !== "studentProfile" || teacherProfileStudentId !== studentId) return;
+      const currentStatus = document.getElementById("profileNewStudentPinCopyStatus");
+      if (currentStatus) {
+        currentStatus.textContent = copied
+          ? "New PIN copied."
+          : "Could not copy the new PIN. Show it and copy it manually.";
+      }
+    }
+
+    async function copyTemporaryProfileStudentPin() {
+      if (!requireTeacher() || screen !== "studentProfile") return;
+      const temporaryPin = temporaryProfileStudentPin;
+      if (!temporaryPin || temporaryPin.studentId !== teacherProfileStudentId) return;
+
+      const copied = await copyTextWithFallback(temporaryPin.pin);
+      if (
+        temporaryProfileStudentPin !== temporaryPin
+        || screen !== "studentProfile"
+        || teacherProfileStudentId !== temporaryPin.studentId
+      ) return;
+      const status = document.getElementById("temporaryProfileStudentPinCopyStatus");
+      if (status) {
+        status.textContent = copied
+          ? "New PIN copied."
+          : "Could not copy the new PIN. Select it and copy it manually.";
+      }
+    }
+
     async function copyStudentClassroomCode() {
       if (!requireTeacher()) return;
       const code = resolvedStudentLoginCode();
@@ -2815,23 +2903,16 @@ link.click();
         return;
       }
 
-      let copied = false;
-      try {
-        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-          await navigator.clipboard.writeText(code);
-          copied = true;
-        }
-      } catch {
-        copied = false;
-      }
-
-      if (!copied) copied = legacyCopyText(code);
+      const copied = await copyTextWithFallback(code);
       showMessage(copied
         ? "Classroom code copied."
         : "Could not copy the classroom code. Select the code and copy it manually.");
     }
 
     function render() {
+      if (screen !== "studentProfile" || !isTeacher) {
+        clearTemporaryProfileStudentPin();
+      }
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         const state = v2TenantSession.getState();
         if (state === SESSION_STATES.AUTHENTICATING) {
@@ -3284,9 +3365,22 @@ ${transactionTarget !== "whole" ? `
                 <p class="small-note">Enter a new 4-digit PIN for this student's secure login.</p>
                 <label for="profileNewStudentPin">New PIN</label>
                 <input id="profileNewStudentPin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" ${studentPinResetPending ? "disabled" : ""} />
+                <button type="button" id="profileNewStudentPinVisibilityButton" onclick="toggleProfileNewStudentPinVisibility()" aria-controls="profileNewStudentPin" aria-pressed="false" ${studentPinResetPending ? "disabled" : ""}>Show PIN</button>
+                <button type="button" onclick="copyProfileNewStudentPin()" ${studentPinResetPending ? "disabled" : ""}>Copy new PIN</button>
+                <p id="profileNewStudentPinCopyStatus" class="small-note" role="status" aria-live="polite"></p>
                 <button class="primary" onclick="resetProfileStudentPin()" ${studentPinResetPending ? "disabled" : ""}>
                   ${studentPinResetPending ? "Resetting..." : "Reset PIN"}
                 </button>
+                ${temporaryProfileStudentPin?.studentId === profileStudent.id ? `
+                  <div id="temporaryProfileStudentPin" class="backup-reminder" style="margin-top: 14px;" role="status" aria-live="polite">
+                    <strong>PIN reset complete.</strong>
+                    <p>Give this new PIN to ${escapeHtml(profileStudent.name)}:</p>
+                    <p><strong id="temporaryProfileStudentPinValue">${escapeHtml(temporaryProfileStudentPin.pin)}</strong></p>
+                    <button type="button" onclick="copyTemporaryProfileStudentPin()">Copy new PIN</button>
+                    <p id="temporaryProfileStudentPinCopyStatus" class="small-note"></p>
+                    <p class="small-note">This PIN disappears when you leave this profile or reload the page.</p>
+                  </div>
+                ` : ""}
               </div>
             </div>
 
@@ -3694,6 +3788,7 @@ if (screen === "editSettingsLists" && isTeacher) {
       teacherInvitationEmailDraft = "";
       teacherInvitationExpiryHours = 48;
       profileLoginIdStatus = "Checking...";
+      clearTemporaryProfileStudentPin();
       // The persisted-data baseline belongs to the outgoing tenant. Keeping it
       // would let the next tenant's first save diff against a foreign
       // classroom and skip documents it must write.
@@ -4048,6 +4143,9 @@ window.linkGoogleAccount = linkGoogleAccount;
 window.handleLoginEnter = handleLoginEnter;
 window.loginStudent = loginStudent;
 window.copyStudentClassroomCode = copyStudentClassroomCode;
+window.toggleProfileNewStudentPinVisibility = toggleProfileNewStudentPinVisibility;
+window.copyProfileNewStudentPin = copyProfileNewStudentPin;
+window.copyTemporaryProfileStudentPin = copyTemporaryProfileStudentPin;
 window.openStudentAuthLogs = openStudentAuthLogs;
 window.setScreen = setScreen;
 window.viewStudentProfile = viewStudentProfile;

@@ -1867,6 +1867,69 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
+  test("SOURCE GUARD: the temporary profile PIN comes only from the submitted input and clears with its teacher context", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const resetStart = source.indexOf("async function resetProfileStudentPin");
+    const resetEnd = source.indexOf("\n    function setLoginTab", resetStart);
+    const resetBlock = source.slice(resetStart, resetEnd);
+    assert.ok(resetStart >= 0 && resetEnd > resetStart, "the profile PIN reset function must be bounded");
+
+    assert.match(
+      resetBlock,
+      /const newPin = document\.getElementById\("profileNewStudentPin"\)\?\.value \?\? "";/,
+      "the temporary value must originate in the teacher's current reset input"
+    );
+    assert.equal(
+      (source.match(/temporaryProfileStudentPin\s*=\s*\{\s*studentId:\s*student\.id,\s*pin:\s*newPin\s*\}/g) || []).length,
+      2,
+      "only the successful V2 and legacy reset paths may retain the submitted PIN"
+    );
+    assert.equal(
+      (source.match(/temporaryProfileStudentPin\s*=/g) || []).length,
+      4,
+      "temporary PIN state must have only its initializer, clearer, and two success assignments"
+    );
+    assert.equal(/(?:profileStudent|student)\.pin\s*=\s*newPin/.test(resetBlock), false);
+    assert.equal(/temporaryProfileStudentPin\s*=\s*\{[^}]*pin:\s*(?:student|profileStudent)\.pin/.test(source), false);
+
+    const showStart = source.indexOf("function toggleProfileNewStudentPinVisibility");
+    const copyEnd = source.indexOf("\n    async function copyStudentClassroomCode", showStart);
+    const interactionBlock = source.slice(showStart, copyEnd);
+    assert.match(interactionBlock, /if \(!requireTeacher\(\) \|\| screen !== "studentProfile"\) return;/);
+    assert.match(interactionBlock, /input\.type = reveal \? "text" : "password";/);
+    assert.match(interactionBlock, /copyTextWithFallback\(pin\)/);
+    assert.match(interactionBlock, /copyTextWithFallback\(temporaryPin\.pin\)/);
+
+    assert.match(
+      source,
+      /function setScreen\(newScreen\) \{\s*if \(newScreen !== "studentProfile"\) clearTemporaryProfileStudentPin\(\);/,
+      "leaving the profile must clear the temporary PIN before rendering another screen"
+    );
+    assert.match(
+      source,
+      /if \(teacherProfileStudentId !== nextStudentId\) \{\s*clearTemporaryProfileStudentPin\(\);/,
+      "selecting another student must clear the previous student's temporary PIN"
+    );
+    assert.match(
+      source,
+      /function render\(\) \{\s*if \(screen !== "studentProfile" \|\| !isTeacher\) \{\s*clearTemporaryProfileStudentPin\(\);/,
+      "signed-out, student, and unresolved screens must clear teacher-only PIN state"
+    );
+
+    const globalResetStart = source.indexOf("function resetAllGlobalState");
+    const globalResetEnd = source.indexOf("\n    async function submitV2Onboarding", globalResetStart);
+    assert.match(
+      source.slice(globalResetStart, globalResetEnd),
+      /clearTemporaryProfileStudentPin\(\);/,
+      "tenant invalidation and logout state reset must clear the temporary PIN"
+    );
+    assert.match(
+      source,
+      /temporaryProfileStudentPin\?\.studentId === profileStudent\.id[\s\S]*id="temporaryProfileStudentPinValue">\$\{escapeHtml\(temporaryProfileStudentPin\.pin\)\}/,
+      "the success display must be bound to the still-selected student and escape its in-memory PIN"
+    );
+  });
+
   test("SOURCE GUARD: teacher invitation UI is authority-gated and uses only versioned callables", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const clientSource = readFileSync(
