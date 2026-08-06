@@ -1906,10 +1906,15 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.match(interactionBlock, /copyTextWithFallback\(temporaryPin\.pin\)/);
     assert.match(
       interactionBlock,
-      /function dismissTemporaryProfileStudentPin\(\) \{\s*if \(!requireTeacher\(\) \|\| screen !== "studentProfile"\) return;\s*clearTemporaryProfileStudentPin\(\);\s*render\(\);/,
-      "the manual dismiss control must remain teacher/profile-gated and clear before rendering"
+      /function dismissTemporaryProfileStudentPin\(\) \{\s*if \(!requireTeacher\(\) \|\| screen !== "studentProfile"\) return;\s*const banner = document\.getElementById\("temporaryProfileStudentPin"\);\s*clearTemporaryProfileStudentPin\(\);\s*if \(banner\) banner\.remove\(\);/,
+      "the manual dismiss control must remain teacher/profile-gated and remove only the cleared banner"
     );
-    assert.equal(source.includes("aria-pressed"), false, "the action-named visibility button must not expose contradictory pressed state");
+    assert.doesNotMatch(
+      source,
+      /id="profileNewStudentPinVisibilityButton"[^>]*aria-pressed/,
+      "the action-named visibility button must not expose contradictory pressed state"
+    );
+    assert.equal(interactionBlock.includes("aria-pressed"), false);
     assert.match(source, />Copy typed PIN<\/button>/);
     assert.match(source, />Copy PIN for student<\/button>/);
 

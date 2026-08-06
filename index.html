@@ -2896,8 +2896,9 @@ link.click();
 
     function dismissTemporaryProfileStudentPin() {
       if (!requireTeacher() || screen !== "studentProfile") return;
+      const banner = document.getElementById("temporaryProfileStudentPin");
       clearTemporaryProfileStudentPin();
-      render();
+      if (banner) banner.remove();
     }
 
     async function copyStudentClassroomCode() {

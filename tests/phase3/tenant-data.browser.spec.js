@@ -125,8 +125,10 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await pinInput.fill('1357')
     await page.evaluate(() => window.resetProfileStudentPin())
     await expect(page.locator('#temporaryProfileStudentPinValue')).toHaveText('1357')
+    await pinInput.fill('9753')
     await page.getByRole('button', { name: 'Done — hide PIN' }).click()
     await expect(page.locator('#temporaryProfileStudentPin')).toHaveCount(0)
+    await expect(pinInput).toHaveValue('9753')
 
     await pinInput.fill('1357')
     await page.evaluate(() => window.resetProfileStudentPin())
@@ -142,10 +144,12 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await page.reload()
     await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain(TENANT_A.studentMarker)
     await expect(page.getByText('1357', { exact: true })).toHaveCount(0)
-    expect((await page.evaluate(() => [
+    const finalStorageValues = (await page.evaluate(() => [
       ...Object.keys(localStorage).map(key => localStorage.getItem(key)),
       ...Object.keys(sessionStorage).map(key => sessionStorage.getItem(key)),
-    ])).join('\n')).not.toContain('1357')
+    ])).join('\n')
+    expect(finalStorageValues).not.toContain('1357')
+    expect(finalStorageValues).not.toContain('9753')
   })
 
   test('Phase 3 student UI uses classroom-qualified V2 login, real custom-token claims, and the exact self document', async ({ page }) => {
