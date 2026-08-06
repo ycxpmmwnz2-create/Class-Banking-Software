@@ -147,8 +147,16 @@ test fixtures):
 The default-off branch of `requireTeacher()` in `index.html` gates ~30+
 teacher-only actions by re-checking the same module-level `isTeacher` boolean
 and UID equality.
-Session persistence is `browserSessionPersistence` (sign-out on full browser
-close), provider-agnostic, unaffected by this migration.
+The v1.1.0 baseline used `browserSessionPersistence` for every identity. The
+current teacher-login UX changes only Google teacher sign-in to
+`browserLocalPersistence`, so the same teacher is restored on the same browser
+profile until explicit sign-out or browser-data deletion. The legacy teacher
+email/password fallback and every student custom-token sign-in remain
+`browserSessionPersistence`. This persistence split does not change Firebase
+UIDs, provider linking, claims, or tenant authorization. A shared-device teacher
+must use the application's Log Out control; local teacher auth synchronizes
+across tabs in the same browser profile, while private browsing remains bounded
+by the browser's private session.
 
 **Student:** Student ID + PIN → `studentPinLogin` callable Cloud Function →
 `studentCredentialVerifier.js` verifies bcrypt hash server-side, enforces a
@@ -651,9 +659,11 @@ Phase 2B design below changes its locator contract to classroom code + login ID
 also replaces the literal `classroomId === "morgan"` check with validation of
 the server-minted claims against a valid classroom-scoped student path.
 
-Teacher login: Google Sign-In / linked email-password stays exactly as
-shipped in v1.1.0 (no further auth-provider changes needed). What changes is
-*what happens after* a successful sign-in — instead of a hardcoded UID
+Teacher login: Google Sign-In / linked email-password keeps the identity and
+account-linking model shipped in v1.1.0 (no auth-provider changes needed).
+Google teacher sign-in alone uses the durable browser persistence described in
+Section 3; password fallback and student sign-in stay session-only. What changes
+is *what happens after* a successful sign-in — instead of a hardcoded UID
 equality check, `onAuthStateChanged` (or an equivalent) now:
 1. Looks up `teachers/{user.uid}`.
 2. If it doesn't exist, this is a first-time sign-in → **New Teacher

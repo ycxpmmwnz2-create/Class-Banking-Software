@@ -820,7 +820,7 @@
   <div id="app"></div>
   <script type="module">
 import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured } from "./src/firebase/firebase.js";
-import { browserSessionPersistence, GoogleAuthProvider, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
+import { browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, writeBatch } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
@@ -1506,7 +1506,7 @@ function toggleStudentDropdown() {
 
     async function loginTeacherWithGoogle() {
       try {
-        await setPersistence(auth, browserSessionPersistence);
+        await setPersistence(auth, browserLocalPersistence);
         const provider = new GoogleAuthProvider();
         provider.setCustomParameters({
           prompt: "select_account"

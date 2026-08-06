@@ -26,6 +26,7 @@
 //     lazy or async would leave the barriers silently uninstalled.
 
 import {
+  browserLocalPersistence,
   browserSessionPersistence,
   setPersistence,
   signInWithCustomToken,
@@ -421,9 +422,16 @@ function installHarness() {
     // `auth` here is the ES live binding from firebase.js, so it observes the
     // rebind performed during emulator connection.
     signInTeacher: async (email, password) => {
-      // Matches production (index.html sets this before its own sign-ins), and
-      // it is the persistence mode the cross-tab reanimation tests depend on.
+      // Matches the email/password fallback and remains the isolated per-tab
+      // persistence mode the cross-tab quarantine tests depend on.
       await setPersistence(auth, browserSessionPersistence);
+      const cred = await signInWithEmailAndPassword(auth, email, password);
+      return cred.user.uid;
+    },
+    signInTeacherPersistently: async (email, password) => {
+      // Exercises the same Firebase persistence used by production Google
+      // teacher login without replacing the real Auth-emulator identity.
+      await setPersistence(auth, browserLocalPersistence);
       const cred = await signInWithEmailAndPassword(auth, email, password);
       return cred.user.uid;
     },

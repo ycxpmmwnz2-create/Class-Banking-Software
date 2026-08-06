@@ -1672,6 +1672,57 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
+  test("SOURCE GUARD: Google teachers persist locally while password and student sign-ins stay session-only", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const passwordStart = source.indexOf("async function loginTeacher() {");
+    const googleStart = source.indexOf("async function loginTeacherWithGoogle() {");
+    const linkStart = source.indexOf("async function linkGoogleAccount() {");
+    const studentStart = source.indexOf("async function loginStudent() {");
+    const logoutStart = source.indexOf("async function logout() {");
+
+    for (const [label, position] of [
+      ["password teacher login", passwordStart],
+      ["Google teacher login", googleStart],
+      ["Google linking", linkStart],
+      ["student login", studentStart],
+      ["logout", logoutStart]
+    ]) {
+      assert.notEqual(position, -1, `${label} must remain present`);
+    }
+
+    const passwordBlock = source.slice(passwordStart, googleStart);
+    const googleBlock = source.slice(googleStart, linkStart);
+    const studentBlock = source.slice(studentStart, logoutStart);
+    const googlePersistenceAt = googleBlock.indexOf(
+      "setPersistence(auth, browserLocalPersistence)"
+    );
+    const googlePopupAt = googleBlock.indexOf("signInWithPopup(auth, provider)");
+    assert.ok(
+      googlePersistenceAt !== -1 && googlePersistenceAt < googlePopupAt,
+      "Google teacher persistence must be local before the popup sign-in begins"
+    );
+    assert.doesNotMatch(
+      googleBlock,
+      /browserSessionPersistence/,
+      "Google teacher sign-in must not silently fall back to session-only persistence"
+    );
+    assert.match(
+      passwordBlock,
+      /setPersistence\(auth, browserSessionPersistence\)[\s\S]*signInWithEmailAndPassword/,
+      "the legacy password fallback must remain session-only"
+    );
+    assert.match(
+      studentBlock,
+      /setPersistence\(auth, browserSessionPersistence\)[\s\S]*signInWithCustomToken/,
+      "student custom-token authentication must remain session-only"
+    );
+    assert.match(
+      source,
+      /import \{ browserLocalPersistence, browserSessionPersistence,[^\n]+ \} from "firebase\/auth";/,
+      "both explicit persistence modes must remain imported"
+    );
+  });
+
   test("SOURCE GUARD: classroom-code convenience stores only a project-scoped locator after successful V2 login", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const loginStart = source.indexOf("async function loginStudent() {");

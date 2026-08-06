@@ -27,6 +27,7 @@ import { expect, test } from "@playwright/test";
 import {
   PROJECT_ID,
   SHARED_LOGIN_ID,
+  SHARED_STUDENT_NAME,
   TENANT_A,
   TENANT_B,
   cacheKey,
@@ -181,6 +182,13 @@ async function waitForQuiescence(page) {
 async function signIn(page, tenant) {
   return page.evaluate(
     ({ email, password }) => window.__PHASE2B_TEST__.signInTeacher(email, password),
+    { email: tenant.email, password: tenant.password }
+  );
+}
+
+async function signInPersistently(page, tenant) {
+  return page.evaluate(
+    ({ email, password }) => window.__PHASE2B_TEST__.signInTeacherPersistently(email, password),
     { email: tenant.email, password: tenant.password }
   );
 }
@@ -359,6 +367,79 @@ test("ready teacher header shows only the resolved tenant classroom code", async
   await expect(badge).toContainText(`Classroom code: ${TENANT_B.studentLoginCode}`);
   await expect(badge).not.toContainText(TENANT_A.studentLoginCode);
   await expect(loginInfo.locator("#teacherStudentClassroomCode")).toHaveText(TENANT_B.studentLoginCode);
+});
+
+test("teacher local persistence survives a closed tab, synchronizes the profile, and production logout clears it", async ({
+  context
+}) => {
+  // OAuth popup behavior is owned by Firebase/Google and is not reproducible
+  // against the Auth emulator. The source contract pins the production Google
+  // call site to browserLocalPersistence; this real-browser test proves that
+  // exact Firebase persistence mode across a genuinely closed tab.
+  const initialPage = await context.newPage();
+  await gotoApp(initialPage);
+  await signInPersistently(initialPage, TENANT_A);
+  await waitForQuiescence(initialPage);
+  await assertTenantEstablished(initialPage, TENANT_A, seeded.aUid);
+  await initialPage.close();
+
+  const restoredPage = await context.newPage();
+  await gotoApp(restoredPage);
+  await waitForQuiescence(restoredPage);
+  await assertTenantEstablished(restoredPage, TENANT_A, seeded.aUid);
+
+  const synchronizedPage = await context.newPage();
+  await gotoApp(synchronizedPage);
+  await waitForQuiescence(synchronizedPage);
+  await assertTenantEstablished(synchronizedPage, TENANT_A, seeded.aUid);
+
+  await restoredPage.getByRole("button", { name: "Log Out", exact: true }).click();
+  await expect
+    .poll(() => restoredPage.evaluate(() => window.__PHASE2B_TEST__.currentUid()))
+    .toBeNull();
+  await expect
+    .poll(() => synchronizedPage.evaluate(() => window.__PHASE2B_TEST__.currentUid()))
+    .toBeNull();
+  await waitForQuiescence(restoredPage);
+  await waitForQuiescence(synchronizedPage);
+  expect(await pageText(synchronizedPage)).not.toContain(TENANT_A.studentMarker);
+  await expect(restoredPage.getByRole("button", { name: "Continue with Google" })).toBeVisible();
+  await synchronizedPage.close();
+  await restoredPage.close();
+
+  const signedOutPage = await context.newPage();
+  await gotoApp(signedOutPage);
+  await waitForQuiescence(signedOutPage);
+  expect(await signedOutPage.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull();
+  expect(await pageText(signedOutPage)).not.toContain(TENANT_A.studentMarker);
+  await expect(signedOutPage.getByRole("button", { name: "Continue with Google" })).toBeVisible();
+  await signedOutPage.close();
+});
+
+test("a real claimed student remains session-only after its tab closes", async ({ context }) => {
+  const student = await createStudentIdentity({
+    classroomId: TENANT_A.classroomId,
+    studentId: TENANT_A.sharedStudentId
+  });
+  const initialPage = await context.newPage();
+  await gotoApp(initialPage);
+  await initialPage.evaluate(
+    ({ email, password }) => window.__PHASE2B_TEST__.signInTeacher(email, password),
+    { email: student.email, password: student.password }
+  );
+  await expect
+    .poll(() => initialPage.evaluate(() => window.__PHASE2B_TEST__.currentUid()))
+    .toBe(student.uid);
+  await waitForQuiescence(initialPage);
+  await expect.poll(() => pageText(initialPage)).toContain(SHARED_STUDENT_NAME);
+  await initialPage.close();
+
+  const reopenedPage = await context.newPage();
+  await gotoApp(reopenedPage);
+  await waitForQuiescence(reopenedPage);
+  expect(await reopenedPage.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull();
+  await expect(reopenedPage.getByRole("button", { name: "Continue with Google" })).toBeVisible();
+  await reopenedPage.close();
 });
 
 test("clipboard denial uses the legacy fallback and leaves no temporary textarea", async ({ page }) => {
