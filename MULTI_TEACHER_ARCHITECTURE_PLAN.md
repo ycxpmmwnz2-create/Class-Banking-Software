@@ -154,13 +154,16 @@ closes that historical gap: both the legacy and V2 student custom-token paths,
 plus the teacher email/password fallback, explicitly use
 `browserSessionPersistence`. Google teacher sign-in alone uses
 `browserLocalPersistence`, so the same teacher is restored on the same browser
-profile until explicit sign-out or browser-data deletion. Explicit logout first
-downgrades durable Auth state to memory-only and then signs out, so a sign-out
-transport failure cannot silently leave a reopenable local teacher credential;
-an incomplete in-tab sign-out is reported to the user. This persistence split
-does not change Firebase UIDs, provider linking, claims, or tenant authorization.
-A shared-device teacher must use the application's Log Out control; local
-teacher auth synchronizes across tabs in the same browser profile, while private
+profile until explicit sign-out or browser-data deletion. In the V2 arm,
+explicit logout first downgrades durable Auth state to memory-only and then
+signs out, so a sign-out transport failure cannot silently leave a reopenable
+local teacher credential; an incomplete in-tab sign-out is reported to the
+user. The preserved default-off arm calls Firebase sign-out directly with no
+persistence downgrade; a rejected sign-out is reported and the session is
+deliberately left intact rather than cleared. This persistence split does not
+change Firebase UIDs, provider linking, claims, or tenant authorization. A
+shared-device teacher must use the application's Log Out control; local teacher
+auth synchronizes across tabs in the same browser profile, while private
 browsing remains bounded by the browser's private session.
 
 **Student:** Student ID + PIN → `studentPinLogin` callable Cloud Function →
