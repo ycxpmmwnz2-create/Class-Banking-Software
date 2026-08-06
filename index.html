@@ -2827,11 +2827,14 @@ link.click();
     // identity the server did not issue.
     function canonicalStudentLoginId(rawLoginId) {
       if (typeof rawLoginId !== "string") return "";
-      if (rawLoginId.length < 1 || rawLoginId.length > 64) return "";
-      if (!/^[a-z0-9-]+$/.test(rawLoginId)) return "";
-      if (rawLoginId.startsWith("-") || rawLoginId.endsWith("-")) return "";
-      if (rawLoginId.includes("--")) return "";
-      return rawLoginId;
+      const canonical = rawLoginId
+        .trim()
+        .replace(/[A-Z]/g, char => String.fromCharCode(char.charCodeAt(0) + 32));
+      if (canonical.length < 1 || canonical.length > 64) return "";
+      if (!/^[a-z0-9-]+$/.test(canonical)) return "";
+      if (canonical.startsWith("-") || canonical.endsWith("-")) return "";
+      if (canonical.includes("--")) return "";
+      return canonical;
     }
 
     // Exactly these two non-secret fields, so a returning student normally types

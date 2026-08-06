@@ -224,7 +224,10 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     const beforeA = await page.evaluate(() => window.__PHASE2B_TEST__.events().length)
     await submitStudentLogin(page, {
       classroomCode: TENANT_A.studentLoginCode,
-      loginId: SHARED_LOGIN_ID,
+      // The server contract accepts ASCII uppercase and resolves the canonical
+      // lowercase credential. The remembered record must store that canonical
+      // identity rather than silently giving up after a successful login.
+      loginId: SHARED_LOGIN_ID.toUpperCase(),
       pin: '2468',
     })
     await expect.poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBe(

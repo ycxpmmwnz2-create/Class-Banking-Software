@@ -1865,6 +1865,45 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       /localStorage\.setItem\(\s*V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY,\s*JSON\.stringify\(\{ classroomCode, loginId \}\)\s*\);/,
       "the locator writer must persist exactly the two canonical non-secret fields"
     );
+
+    // Inventory every storage write call, independent of its receiver name or
+    // whether its payload was assembled before the call. The earlier payload
+    // regex alone missed both of these privacy regressions:
+    //
+    //   const saved = { loginId }; localStorage.setItem(key, JSON.stringify(saved));
+    //   const storage = localStorage; storage.setItem(key, JSON.stringify({ loginId }));
+    //
+    // index.html has exactly two permitted writers: the bounded legacy saveData
+    // fallback and this exact locator writer. Any third write site requires an
+    // explicit contract decision instead of silently widening persistence.
+    const storageWritePattern = /(?:\.\s*setItem|\[\s*["']setItem["']\s*\])\s*\(/g;
+    for (const indirectWrite of [
+      "const saved = { loginId }; localStorage.setItem(key, JSON.stringify(saved));",
+      "const storage = localStorage; storage.setItem(key, JSON.stringify({ loginId }));",
+      "localStorage['setItem'](key, JSON.stringify({ loginId }));"
+    ]) {
+      assert.equal(
+        [...indirectWrite.matchAll(storageWritePattern)].length,
+        1,
+        "the storage-call inventory must catch indirect and aliased login-ID writes"
+      );
+    }
+
+    const saveDataStart = source.indexOf("async function saveData() {");
+    const saveDataEnd = source.indexOf("\n    function dollars(", saveDataStart);
+    assert.notEqual(saveDataStart, -1, "the default-off saveData writer must exist");
+    assert.notEqual(saveDataEnd, -1, "the default-off saveData writer must have a bounded source block");
+    const storageWriteOffsets = [...source.matchAll(storageWritePattern)].map(match => match.index);
+    assert.equal(storageWriteOffsets.length, 2, "index.html may contain only the two reviewed storage writers");
+    assert.ok(
+      storageWriteOffsets.some(offset => offset > saveDataStart && offset < saveDataEnd),
+      "one storage writer must be the bounded default-off saveData fallback"
+    );
+    assert.ok(
+      storageWriteOffsets.some(offset => offset > writerStart && offset < writerEnd),
+      "one storage writer must be the bounded remembered-login locator writer"
+    );
+
     // The superseded key is removed only after the locator write succeeded, so a
     // failed upgrade still leaves the older one-field convenience usable.
     const locatorWriteAt = writerBlock.indexOf("localStorage.setItem(");
