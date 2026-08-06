@@ -45,6 +45,25 @@ Credential documents must not contain student names, balances, transactions, or
 plaintext PINs. Browser clients must not receive direct access to this
 collection.
 
+## Remembered Student Login Locator
+
+After a successful V2 student login, a browser may remember one project-scoped
+record holding exactly the classroom code and the canonical student login ID, so a
+returning student normally types only a PIN.
+
+This locator is **not** an authentication credential. It contains no PIN, no PIN
+hash, no custom or ID token, no Auth UID, and no student, credential, balance, or
+transaction data, and it grants no access on its own: the server still receives
+the classroom code, login ID, and PIN and still verifies the PIN with bcrypt
+before returning a custom token. Student Firebase Auth persistence remains
+session-only, so remembering the locator never keeps a student signed in.
+
+Residual risk: on a shared or unattended browser the locator narrows an attacker
+to guessing a 4-digit PIN against a login ID that is now visible on the sign-in
+screen. The existing server-side bcrypt verification, consecutive-failure
+counter, and temporary lockout are the mitigations. "Use a different student"
+clears the locator and is student-operable.
+
 ## Required Future Work
 - Provision production credentials when the real roster is available.
 - Split and migrate real student data into safer Firestore collections.

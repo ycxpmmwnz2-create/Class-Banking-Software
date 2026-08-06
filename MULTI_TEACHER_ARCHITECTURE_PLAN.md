@@ -2736,11 +2736,16 @@ studentAuthLogs/B/logs/{logId}
 ```
 
 Within one classroom, normalized login IDs must be unique; deterministic
-suffixing is performed transactionally. The UI asks for the classroom code,
-student login ID, and PIN, remembers neither PIN nor persistent student data,
-and formats the code without claiming it is secret. Teachers can view their
-own code and each student's assigned login ID only after active tenant
-resolution. The code index and credential collections have no client reads or
+suffixing is performed transactionally. On a browser's first successful login the
+UI asks for the classroom code, student login ID, and PIN. Andrew later approved
+one narrow returning-login exception: that browser may remember the classroom code
+and canonical login ID and then ask only for the PIN, so students who sign in
+several times a school day type one field instead of three. See "Remembered
+student login locator" in `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` for its
+exact shape and validation rules. The UI still remembers no PIN, token, Auth UID,
+or student record, and formats the code without claiming it is secret. Teachers
+can view their own code and each student's assigned login ID only after active
+tenant resolution. The code index and credential collections have no client reads or
 writes under the Phase 3 rules contract; only Admin SDK handlers access them.
 
 Phase 2A correctly preserved flat `studentCredentials/{loginId}` documents and

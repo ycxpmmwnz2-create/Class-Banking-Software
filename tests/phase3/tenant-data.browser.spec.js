@@ -13,6 +13,12 @@ import { PROJECT_ID, SHARED_LOGIN_ID, TENANT_A, TENANT_B } from '../browser/phas
 
 const CLASSROOM_CODE_STORAGE_KEY =
   `morganBank:v2:${PROJECT_ID}:student-login:classroom-code:v1`
+// The combined locator that supersedes the classroom-code-only key. Andrew
+// approved remembering the non-secret classroom code and canonical login ID so a
+// returning student types only a PIN; the PIN, token, and every student record
+// stay unstored.
+const LOGIN_LOCATOR_STORAGE_KEY =
+  `morganBank:v2:${PROJECT_ID}:student-login:locator:v1`
 
 export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuiescence }) {
   async function signInTeacher(page, tenant) {
@@ -51,13 +57,37 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await logout(page)
   }
 
+  // A browser that already remembers a student renders the PIN-only form, so the
+  // full form is reached through the same student-operable switch control rather
+  // than by clearing storage behind the UI's back.
   async function submitStudentLogin(page, { classroomCode, loginId, pin }) {
     await page.evaluate(() => window.setLoginTab('student'))
+    if (await page.locator('#useDifferentStudent').count()) {
+      await page.locator('#useDifferentStudent').click()
+    }
     await expect(page.locator('#studentClassroomCode')).toBeVisible()
     await page.locator('#studentClassroomCode').fill(classroomCode)
     await page.locator('#studentLoginId').fill(loginId)
     await page.locator('#studentPin').fill(pin)
     await page.evaluate(() => window.loginStudent())
+  }
+
+  // The returning-student path: the PIN is the only value typed, and the classroom
+  // code and login ID must come from the remembered locator.
+  async function submitRememberedStudentPin(page, pin) {
+    await page.evaluate(() => window.setLoginTab('student'))
+    await expect(page.locator('#studentPin')).toBeVisible()
+    await expect(page.locator('#studentClassroomCode')).toHaveCount(0)
+    await expect(page.locator('#studentLoginId')).toHaveCount(0)
+    await page.locator('#studentPin').fill(pin)
+    await page.evaluate(() => window.loginStudent())
+  }
+
+  function readLocator(page) {
+    return page.evaluate(
+      key => window.__PHASE2B_TEST__.localGet(key),
+      LOGIN_LOCATOR_STORAGE_KEY,
+    )
   }
 
   test('teacher can reveal, copy, and temporarily display only the newly submitted PIN', async ({ page }) => {
@@ -174,9 +204,11 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
       'Wrong classroom code, student login ID, or PIN.',
     )
     expect(await page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull()
+    // A refused login stores no locator at all — not the classroom code, and not
+    // the login ID it was asked to remember.
     expect(
       await page.evaluate(() => window.__PHASE2B_TEST__.localKeys()
-        .filter(key => key.endsWith(':student-login:classroom-code:v1'))),
+        .filter(key => key.includes(':student-login:'))),
     ).toEqual([])
 
     await submitStudentLogin(page, {
@@ -220,23 +252,93 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     }))
     expect(localState.keys.filter(key => key.endsWith(':data:v1'))).toEqual([])
     expect(localState.keys).not.toContain('mrMorganClassCashDataV5')
-    expect(localState.keys.filter(key => key.endsWith(':student-login:classroom-code:v1'))).toEqual([
-      CLASSROOM_CODE_STORAGE_KEY,
+    // Exactly one login-preference key: the combined locator. The superseded
+    // classroom-code-only key is never written again.
+    expect(localState.keys.filter(key => key.includes(':student-login:'))).toEqual([
+      LOGIN_LOCATOR_STORAGE_KEY,
     ])
-    expect(localState.values).toContain(TENANT_A.studentLoginCode)
+    // The exact canonical record, proving the stored shape rather than merely that
+    // the code appears somewhere in storage.
+    expect(await readLocator(page)).toBe(
+      JSON.stringify({ classroomCode: TENANT_A.studentLoginCode, loginId: SHARED_LOGIN_ID }),
+    )
+    // The login ID is now deliberately persisted, but only inside that locator
+    // value. No PIN, and no key is named after a student.
+    expect(
+      localState.values.filter(value => String(value).includes(SHARED_LOGIN_ID)),
+    ).toHaveLength(1)
     expect(localState.values.join('\n')).not.toContain('2468')
     expect(localState.values.join('\n')).not.toContain('8642')
-    expect(localState.values.join('\n')).not.toContain(SHARED_LOGIN_ID)
     expect(localState.keys.join('\n')).not.toContain(SHARED_LOGIN_ID)
     expect(localState.body).not.toContain('2468')
     expect(localState.body).not.toContain('8642')
     expect(localState.pinPresent).toBe(false)
+    // Remembering the locator must not retain an Auth token or student record.
+    const authStorage = await page.evaluate(() => [
+      ...Object.keys(localStorage).map(key => `${key}=${localStorage.getItem(key)}`),
+      ...Object.keys(sessionStorage).map(key => `${key}=${sessionStorage.getItem(key)}`),
+    ])
+    expect(authStorage.filter(entry => entry.startsWith(LOGIN_LOCATOR_STORAGE_KEY)).join('\n'))
+      .not.toContain('Shared Name')
 
+    // ---- returning login: the remembered locator yields a PIN-only form ----
     await logout(page)
     await page.evaluate(() => window.setLoginTab('student'))
-    await expect(page.locator('#studentClassroomCode')).toHaveValue(TENANT_A.studentLoginCode)
+    await expect(page.locator('#rememberedStudentIdentity')).toContainText(SHARED_LOGIN_ID)
+    await expect(page.locator('#rememberedStudentClassroomCode')).toHaveText(
+      TENANT_A.studentLoginCode,
+    )
+    await expect(page.locator('#studentClassroomCode')).toHaveCount(0)
+    await expect(page.locator('#studentLoginId')).toHaveCount(0)
+    await expect(page.locator('#studentPin')).toHaveValue('')
+    // Session-only student Auth: logout must leave no signed-in student behind.
+    expect(await page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull()
+
+    // A wrong PIN in PIN-only mode stays generic and must not disturb the locator.
+    await submitRememberedStudentPin(page, '1111')
+    await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain(
+      'Wrong classroom code, student login ID, or PIN.',
+    )
+    expect(await page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull()
+    expect(await readLocator(page)).toBe(
+      JSON.stringify({ classroomCode: TENANT_A.studentLoginCode, loginId: SHARED_LOGIN_ID }),
+    )
+
+    // The PIN alone completes a real second login through the unchanged callable.
+    const beforeReturning = await page.evaluate(() => window.__PHASE2B_TEST__.events().length)
+    await submitRememberedStudentPin(page, '2468')
+    await expect.poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBe(
+      seeded.credentials.aSharedCredential.authUid,
+    )
+    await waitForQuiescence(page)
+    expect(
+      await page.evaluate(
+        from => window.__PHASE2B_TEST__.events()
+          .slice(from)
+          .filter(event => event.type === 'loadAdapter:start')
+          .map(event => event.detail?.path),
+        beforeReturning,
+      ),
+    ).toEqual([`classrooms/${TENANT_A.classroomId}/students/${TENANT_A.sharedStudentId}`])
+    expect(await readLocator(page)).toBe(
+      JSON.stringify({ classroomCode: TENANT_A.studentLoginCode, loginId: SHARED_LOGIN_ID }),
+    )
+
+    // ---- switching students clears only the locator and restores the full form ----
+    await logout(page)
+    await page.evaluate(() => window.setLoginTab('student'))
+    const eventsBeforeSwitch = await page.evaluate(() => window.__PHASE2B_TEST__.events().length)
+    await page.locator('#useDifferentStudent').click()
+    expect(await readLocator(page)).toBeNull()
+    await expect(page.locator('#rememberedStudentIdentity')).toHaveCount(0)
     await expect(page.locator('#studentLoginId')).toHaveValue('')
     await expect(page.locator('#studentPin')).toHaveValue('')
+    // No Firebase call and no sign-in side effect: the switch is local and synchronous.
+    expect(await page.evaluate(() => window.__PHASE2B_TEST__.events().length)).toBe(
+      eventsBeforeSwitch,
+    )
+    expect(await page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull()
+    expect(await page.evaluate(() => window.__PHASE2B_TEST__.lastError())).toBeNull()
 
     await submitStudentLogin(page, {
       classroomCode: TENANT_B.studentLoginCode,
@@ -247,12 +349,9 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
       'Wrong classroom code, student login ID, or PIN.',
     )
     expect(await page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBeNull()
-    expect(
-      await page.evaluate(
-        key => window.__PHASE2B_TEST__.localGet(key),
-        CLASSROOM_CODE_STORAGE_KEY,
-      ),
-    ).toBe(TENANT_A.studentLoginCode)
+    // A refused cross-tenant attempt stores nothing, so the switch remains the only
+    // thing that changed the remembered state.
+    expect(await readLocator(page)).toBeNull()
 
     const beforeB = await page.evaluate(() => window.__PHASE2B_TEST__.events().length)
     await submitStudentLogin(page, {
@@ -274,22 +373,19 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     expect(studentBPaths).toEqual([
       `classrooms/${TENANT_B.classroomId}/students/${TENANT_B.sharedStudentId}`,
     ])
-    expect(
-      await page.evaluate(
-        key => window.__PHASE2B_TEST__.localGet(key),
-        CLASSROOM_CODE_STORAGE_KEY,
-      ),
-    ).toBe(TENANT_B.studentLoginCode)
+    expect(await readLocator(page)).toBe(
+      JSON.stringify({ classroomCode: TENANT_B.studentLoginCode, loginId: SHARED_LOGIN_ID }),
+    )
     expect(await page.evaluate(() => document.body.innerText)).not.toContain(TENANT_A.studentMarker)
   })
 
-  test('student login succeeds when remembering the classroom code is unavailable', async ({ page }) => {
+  test('student login succeeds when remembering the login locator is unavailable', async ({ page }) => {
     await page.addInitScript(() => {
       const originalSetItem = Storage.prototype.setItem
       Object.defineProperty(Storage.prototype, 'setItem', {
         configurable: true,
         value(key, value) {
-          if (String(key).endsWith(':student-login:classroom-code:v1')) {
+          if (String(key).endsWith(':student-login:locator:v1')) {
             window.__CLASSROOM_CODE_STORAGE_ATTEMPTS__ =
               (window.__CLASSROOM_CODE_STORAGE_ATTEMPTS__ || 0) + 1
             throw new DOMException('Storage unavailable', 'QuotaExceededError')
@@ -314,12 +410,183 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await waitForQuiescence(page)
     await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain('Shared Name')
     expect(await page.evaluate(() => window.__CLASSROOM_CODE_STORAGE_ATTEMPTS__)).toBe(1)
+    expect(await readLocator(page)).toBeNull()
+
+    // A failed write must not be papered over with a partial record, and the next
+    // visit simply asks for the full form again rather than a PIN-only form built
+    // from a locator that was never stored.
+    expect(
+      await page.evaluate(() => window.__PHASE2B_TEST__.localKeys()
+        .filter(key => key.includes(':student-login:'))),
+    ).toEqual([])
+    await logout(page)
+    await page.evaluate(() => window.setLoginTab('student'))
+    await expect(page.locator('#studentClassroomCode')).toBeVisible()
+    await expect(page.locator('#studentLoginId')).toBeVisible()
+    await expect(page.locator('#rememberedStudentIdentity')).toHaveCount(0)
+  })
+
+  test('a malformed, foreign-project, or unreadable locator fails safe to the full form', async ({ page }) => {
+    const seeded = getSeeded()
+    await gotoApp(page)
+    await activateThroughProductionUi(page, TENANT_A, '2468')
+
+    // Every one of these must be refused rather than repaired, because a repaired
+    // record would let the browser assemble a login identity the server never
+    // issued. A foreign-project key must be ignored outright.
+    const rejectedRecords = [
+      ['not JSON at all', 'x'],
+      ['an array', JSON.stringify([TENANT_A.studentLoginCode, SHARED_LOGIN_ID])],
+      ['a bare string', JSON.stringify(TENANT_A.studentLoginCode)],
+      ['null', JSON.stringify(null)],
+      ['a missing login ID', JSON.stringify({ classroomCode: TENANT_A.studentLoginCode })],
+      [
+        'an extra field smuggling a PIN',
+        JSON.stringify({
+          classroomCode: TENANT_A.studentLoginCode,
+          loginId: SHARED_LOGIN_ID,
+          pin: '2468',
+        }),
+      ],
+      [
+        'a padded classroom code',
+        JSON.stringify({ classroomCode: ` ${TENANT_A.studentLoginCode} `, loginId: SHARED_LOGIN_ID }),
+      ],
+      [
+        'an unformatted classroom code',
+        JSON.stringify({
+          classroomCode: TENANT_A.studentLoginCode.replace('-', ''),
+          loginId: SHARED_LOGIN_ID,
+        }),
+      ],
+      [
+        'a noncanonical login ID',
+        JSON.stringify({ classroomCode: TENANT_A.studentLoginCode, loginId: 'Shared-Name' }),
+      ],
+      [
+        'a login ID with repeated hyphens',
+        JSON.stringify({ classroomCode: TENANT_A.studentLoginCode, loginId: 'shared--name' }),
+      ],
+      [
+        'a non-string login ID',
+        JSON.stringify({ classroomCode: TENANT_A.studentLoginCode, loginId: 7 }),
+      ],
+      [
+        'a blank login ID',
+        JSON.stringify({ classroomCode: TENANT_A.studentLoginCode, loginId: '' }),
+      ],
+      // Both canonicalizers return "" for a value they reject, so an already-blank
+      // record must not be able to compare equal to its own rejection.
+      ['blank fields', JSON.stringify({ classroomCode: '', loginId: '' })],
+      [
+        'a blank classroom code',
+        JSON.stringify({ classroomCode: '', loginId: SHARED_LOGIN_ID }),
+      ],
+    ]
+
+    for (const [label, record] of rejectedRecords) {
+      await page.evaluate(
+        ({ key, value }) => localStorage.setItem(key, value),
+        { key: LOGIN_LOCATOR_STORAGE_KEY, value: record },
+      )
+      await gotoApp(page)
+      await page.evaluate(() => window.setLoginTab('student'))
+      await expect(page.locator('#studentClassroomCode'), label).toBeVisible()
+      await expect(page.locator('#studentLoginId'), label).toBeVisible()
+      await expect(page.locator('#rememberedStudentIdentity'), label).toHaveCount(0)
+      // The corrupt record is dropped rather than re-read forever.
+      expect(await readLocator(page), label).toBeNull()
+    }
+
+    // A locator belonging to another Firebase project is not this project's key and
+    // must never be consumed.
+    await page.evaluate(
+      value => localStorage.setItem(
+        'morganBank:v2:some-other-project:student-login:locator:v1',
+        value,
+      ),
+      JSON.stringify({ classroomCode: TENANT_A.studentLoginCode, loginId: SHARED_LOGIN_ID }),
+    )
+    await gotoApp(page)
+    await page.evaluate(() => window.setLoginTab('student'))
+    await expect(page.locator('#rememberedStudentIdentity')).toHaveCount(0)
+    await expect(page.locator('#studentClassroomCode')).toBeVisible()
+    expect(await readLocator(page)).toBeNull()
+
+    // Failing safe must still leave a working login through the real callable.
+    await submitStudentLogin(page, {
+      classroomCode: TENANT_A.studentLoginCode,
+      loginId: SHARED_LOGIN_ID,
+      pin: '2468',
+    })
+    await expect.poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBe(
+      seeded.credentials.aSharedCredential.authUid,
+    )
+  })
+
+  test('a legacy classroom-code-only preference still prefills and upgrades only after success', async ({ page }) => {
+    const seeded = getSeeded()
+    await gotoApp(page)
+    await activateThroughProductionUi(page, TENANT_A, '2468')
+
+    // The state a browser is left in by the previous release.
+    await page.evaluate(
+      ({ key, value }) => localStorage.setItem(key, value),
+      { key: CLASSROOM_CODE_STORAGE_KEY, value: TENANT_A.studentLoginCode },
+    )
+    await gotoApp(page)
+    await page.evaluate(() => window.setLoginTab('student'))
+
+    // One-field convenience only: the code is prefilled, the login ID and PIN are
+    // still required, and no PIN-only form appears.
+    await expect(page.locator('#rememberedStudentIdentity')).toHaveCount(0)
+    await expect(page.locator('#studentClassroomCode')).toHaveValue(TENANT_A.studentLoginCode)
+    await expect(page.locator('#studentLoginId')).toHaveValue('')
+
+    // A refused login must not upgrade the legacy key.
+    await page.locator('#studentPin').fill('1111')
+    await page.locator('#studentLoginId').fill(SHARED_LOGIN_ID)
+    await page.evaluate(() => window.loginStudent())
+    await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain(
+      'Wrong classroom code, student login ID, or PIN.',
+    )
+    expect(await readLocator(page)).toBeNull()
+    expect(
+      await page.evaluate(
+        key => window.__PHASE2B_TEST__.localGet(key),
+        CLASSROOM_CODE_STORAGE_KEY,
+      ),
+    ).toBe(TENANT_A.studentLoginCode)
+
+    await submitStudentLogin(page, {
+      classroomCode: TENANT_A.studentLoginCode,
+      loginId: SHARED_LOGIN_ID,
+      pin: '2468',
+    })
+    await expect.poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBe(
+      seeded.credentials.aSharedCredential.authUid,
+    )
+    await waitForQuiescence(page)
+
+    // The upgrade is atomic: the locator exists and the superseded key is gone.
+    expect(await readLocator(page)).toBe(
+      JSON.stringify({ classroomCode: TENANT_A.studentLoginCode, loginId: SHARED_LOGIN_ID }),
+    )
     expect(
       await page.evaluate(
         key => window.__PHASE2B_TEST__.localGet(key),
         CLASSROOM_CODE_STORAGE_KEY,
       ),
     ).toBeNull()
+    expect(
+      await page.evaluate(() => window.__PHASE2B_TEST__.localKeys()
+        .filter(key => key.includes(':student-login:'))),
+    ).toEqual([LOGIN_LOCATOR_STORAGE_KEY])
+
+    // And the browser is now on the fast path.
+    await logout(page)
+    await page.evaluate(() => window.setLoginTab('student'))
+    await expect(page.locator('#rememberedStudentIdentity')).toContainText(SHARED_LOGIN_ID)
   })
 
   test('Phase 3 V2 destructive controls are absent and direct invocation is inert', async ({ page }) => {

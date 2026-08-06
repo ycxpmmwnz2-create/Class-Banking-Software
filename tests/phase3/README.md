@@ -798,6 +798,48 @@ then signs into each tenant through the real V2 callable and Auth emulator. It
 observes exactly one read of each authenticated student's own document and no
 teacher cache, legacy aggregate, or submitted PIN persistence.
 
+## Remembered student login locator evidence
+
+Three browser cases in `tests/phase3/tenant-data.browser.spec.js` cover the
+returning-student convenience, on both Chromium and WebKit.
+
+The extended Commit 8 case proves the whole locator lifecycle against the real
+callable: a refused login stores no `:student-login:` key at all; a successful
+login stores exactly one key whose value is the byte-exact canonical record
+`{"classroomCode":…,"loginId":…}`; the submitted PIN appears in no storage value
+and no key is named after a student; after logout the form renders the remembered
+identity plus a PIN input and **no** classroom-code or login-ID input; a wrong PIN
+in that PIN-only form stays generic and leaves the locator untouched; the PIN alone
+then completes a second real custom-token login that reads exactly the
+authenticated student's own document; and "Use a different student" removes the
+locator, restores the full form, and adds no instrumented event, no signed-in UID,
+and no error — proving it is local and synchronous rather than a Firebase call.
+The pre-existing cross-tenant refusal and isolation assertions are preserved and
+now run after that explicit switch.
+
+The malformed-locator case walks fourteen rejected records — non-JSON, an array, a
+bare string, `null`, a missing field, an extra field smuggling a PIN, a padded or
+unformatted classroom code, a non-canonical or repeated-hyphen or non-string or
+blank login ID, and wholly blank fields — plus a foreign-project key. Each must
+fail safe to the full form and be dropped rather than repaired, and a real login
+must still succeed afterward. The blank-field cases are load-bearing: both
+canonicalizers return `""` for a value they reject, so without an explicit
+non-empty check an already-blank record compares equal to its own rejection and is
+admitted. Verified non-vacuous by mutation — removing that check fails this case.
+
+The legacy-compatibility case seeds the previous release's classroom-code-only key
+and proves it still prefills the code while requiring the login ID and PIN, that a
+refused login does not upgrade it, and that a successful login writes the locator
+and removes the superseded key so exactly one login-preference key remains.
+
+Storage failure is covered by retargeting the existing unavailable-storage case at
+the locator key: the write is attempted once, login still succeeds, no partial
+record is left behind, and the next visit returns to the full form.
+
+Default-off runtime evidence lives in `tests/browser/student-session.gate-off.spec.js`,
+which asserts that a real legacy login persists no `:student-login:` key and no
+login ID anywhere in storage.
+
 ## Commit 8 — classroom-code login and Function gate evidence
 
 The client unit suite proves the exact V2 request/response contract, malformed

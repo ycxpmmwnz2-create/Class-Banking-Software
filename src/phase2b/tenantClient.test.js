@@ -1797,7 +1797,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
-  test("SOURCE GUARD: classroom-code convenience stores only a project-scoped locator after successful V2 login", () => {
+  test("SOURCE GUARD: the login locator stores only a project-scoped classroom code and login ID after successful V2 login", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const loginStart = source.indexOf("async function loginStudent() {");
     const loginEnd = source.indexOf("\n    async function logout() {", loginStart);
@@ -1807,32 +1807,119 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
 
     const failureStartAt = loginBlock.indexOf("if (!result.executed) {");
     const failureEndAt = loginBlock.indexOf("\n          }", failureStartAt);
-    const rememberAt = loginBlock.indexOf("rememberStudentClassroomCode(classroomCode);");
+    const rememberAt = loginBlock.indexOf("rememberStudentLoginLocator(classroomCode, loginId);");
     assert.notEqual(failureStartAt, -1, "the V2 login failure branch must exist");
     assert.notEqual(failureEndAt, -1, "the V2 login failure branch must have a closing brace");
+    assert.notEqual(rememberAt, -1, "the successful V2 branch must remember the combined locator");
     assert.ok(
       rememberAt > failureEndAt,
-      "the classroom code may be remembered only after V2 login reports a successful execution"
+      "the locator may be remembered only after V2 login reports a successful execution"
     );
-    const persistedCredentialPattern =
-      /localStorage\.setItem\([\s\S]{0,200}?(?:,\s*(?:loginId|studentLoginId|pin|studentPin)\s*\)|["'](?:loginId|studentLoginId|pin|studentPin)["']\s*:|[{,]\s*(?:loginId|studentLoginId|pin|studentPin)\s*(?=[:,}]))/i;
+    assert.match(
+      loginBlock,
+      /\{ classroomCode, loginId, pin \}/,
+      "the submitted V2 payload must stay identical in PIN-only and full-form modes"
+    );
+    assert.match(
+      loginBlock,
+      /const rememberedLocator = IS_MULTI_TEACHER_V2_ENABLED \? studentLoginLocator : null;/,
+      "the default-off build must never consult the remembered locator"
+    );
+    // PIN-only mode renders no login-ID input, so an unguarded DOM read here would
+    // throw a TypeError before the callable is ever reached.
+    assert.doesNotMatch(
+      loginBlock,
+      /document\.getElementById\("studentLoginId"\)\.value/,
+      "the login-ID DOM read must tolerate a form that has no login-ID input"
+    );
+
+    // Secrets stay prohibited across the whole document, with no exception.
+    const persistedSecretPattern =
+      /localStorage\.setItem\([\s\S]{0,200}?(?:,\s*(?:pin|studentPin|token|idToken|customToken|authUid|uid)\s*\)|["'](?:pin|studentPin|token|idToken|customToken|authUid|uid)["']\s*:|[{,]\s*(?:pin|studentPin|token|idToken|customToken|authUid|uid)\s*(?=[:,}]))/i;
     for (const unsafeWrite of [
       "localStorage.setItem(key,\n  JSON.stringify({ pin }));",
-      "localStorage.setItem(key,\n  JSON.stringify({ 'loginId': loginId }));",
+      "localStorage.setItem(key,\n  JSON.stringify({ 'studentPin': pin }));",
+      "localStorage.setItem(key,\n  JSON.stringify({ classroomCode, token }));",
+      "localStorage.setItem(key,\n  JSON.stringify({ authUid }));",
       "localStorage.setItem(key,\n  studentPin);"
     ]) {
-      assert.match(unsafeWrite, persistedCredentialPattern, "the guard must catch multiline credential writes");
+      assert.match(unsafeWrite, persistedSecretPattern, "the guard must catch multiline secret writes");
     }
     assert.doesNotMatch(
       source,
-      persistedCredentialPattern,
-      "student login IDs and PINs must never be written to localStorage"
+      persistedSecretPattern,
+      "PINs, tokens, and Auth UIDs must never be written to localStorage"
+    );
+
+    // Persisting the non-secret login ID is deliberately permitted for the
+    // remembered-student convenience, but ONLY inside the single named locator
+    // writer. A login-ID write anywhere else is still a privacy regression, so
+    // every match in the document must fall inside that bounded body.
+    const writerStart = source.indexOf("function rememberStudentLoginLocator(rawCode, rawLoginId) {");
+    const writerEnd = source.indexOf("\n    function useDifferentStudent() {", writerStart);
+    assert.notEqual(writerStart, -1, "the single locator writer must exist");
+    assert.notEqual(writerEnd, -1, "the locator writer must have a bounded source block");
+    const writerBlock = source.slice(writerStart, writerEnd);
+    assert.match(
+      writerBlock,
+      /localStorage\.setItem\(\s*V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY,\s*JSON\.stringify\(\{ classroomCode, loginId \}\)\s*\);/,
+      "the locator writer must persist exactly the two canonical non-secret fields"
+    );
+    // The superseded key is removed only after the locator write succeeded, so a
+    // failed upgrade still leaves the older one-field convenience usable.
+    const locatorWriteAt = writerBlock.indexOf("localStorage.setItem(");
+    const legacyRemoveAt = writerBlock.indexOf(
+      "localStorage.removeItem(V2_STUDENT_CLASSROOM_CODE_STORAGE_KEY);"
+    );
+    assert.notEqual(legacyRemoveAt, -1, "the writer must retire the superseded classroom-code key");
+    assert.ok(
+      legacyRemoveAt > locatorWriteAt,
+      "the superseded key may be removed only after the locator write succeeds"
+    );
+
+    const persistedLoginIdPattern =
+      /localStorage\.setItem\([\s\S]{0,200}?(?:,\s*(?:loginId|studentLoginId)\s*\)|["'](?:loginId|studentLoginId)["']\s*:|[{,]\s*(?:loginId|studentLoginId)\s*(?=[:,}]))/gi;
+    assert.match(
+      "localStorage.setItem(key,\n  JSON.stringify({ 'loginId': loginId }));",
+      new RegExp(persistedLoginIdPattern.source, "i"),
+      "the guard must still catch multiline login-ID writes"
+    );
+    const loginIdWriteOffsets = [...source.matchAll(persistedLoginIdPattern)].map(match => match.index);
+    assert.equal(loginIdWriteOffsets.length, 1, "exactly one source site may persist a login ID");
+    assert.ok(
+      loginIdWriteOffsets[0] > writerStart && loginIdWriteOffsets[0] < writerEnd,
+      "the only login-ID write must be inside rememberStudentLoginLocator"
+    );
+
+    assert.match(
+      source,
+      /`morganBank:v2:\$\{V2_ACTIVE_PROJECT_ID\}:student-login:locator:v1`/,
+      "the locator must be isolated by the active Firebase project"
     );
     assert.match(
       source,
       /`morganBank:v2:\$\{V2_ACTIVE_PROJECT_ID\}:student-login:classroom-code:v1`/,
-      "the preference must be isolated by the active Firebase project"
+      "the superseded classroom-code key must stay project-scoped while it is still read"
     );
+
+    // Switching students is a local storage removal plus a render. It must not
+    // sign anyone out or reach Firebase.
+    const switchStart = source.indexOf("function useDifferentStudent() {");
+    const switchEnd = source.indexOf("\n    function legacyCopyText(", switchStart);
+    assert.notEqual(switchStart, -1, "the switch-student control must exist");
+    assert.notEqual(switchEnd, -1, "the switch-student control must have a bounded source block");
+    const switchBlock = source.slice(switchStart, switchEnd);
+    assert.match(
+      switchBlock,
+      /localStorage\.removeItem\(V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY\);/,
+      "switching students must remove the remembered locator"
+    );
+    assert.doesNotMatch(
+      switchBlock,
+      /signOut|httpsCallable|auth\.|orchestrate|await/,
+      "switching students must stay synchronous and must not call Firebase"
+    );
+
     const resetStart = source.indexOf("function resetAllGlobalState() {");
     const resetEnd = source.indexOf("\n    async function submitV2Onboarding() {", resetStart);
     assert.notEqual(resetStart, -1, "the global reset function must exist");
@@ -1840,8 +1927,90 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     const resetBlock = source.slice(resetStart, resetEnd);
     assert.match(
       resetBlock,
-      /studentClassroomCodeDraft = readRememberedStudentClassroomCode\(\);/,
-      "the signed-out form must rehydrate the remembered classroom code"
+      /studentLoginLocator = readStudentLoginLocator\(\);/,
+      "an ordinary logout must rehydrate the remembered locator so daily login stays fast"
+    );
+  });
+
+  test("SOURCE GUARD: the remembered locator is validated on every read and never renders student data", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+
+    const parseStart = source.indexOf("function parseStudentLoginLocator(rawRecord) {");
+    const parseEnd = source.indexOf("\n    function readStudentLoginLocator() {", parseStart);
+    assert.notEqual(parseStart, -1, "the locator parser must exist");
+    assert.notEqual(parseEnd, -1, "the locator parser must have a bounded source block");
+    const parseBlock = source.slice(parseStart, parseEnd);
+
+    // Each of these rejections is what keeps a corrupt or foreign record from
+    // becoming a login payload.
+    assert.match(parseBlock, /Array\.isArray\(parsed\)/, "arrays must be refused");
+    assert.match(
+      parseBlock,
+      /Object\.keys\(parsed\)\.length !== V2_STUDENT_LOGIN_LOCATOR_FIELDS\.length/,
+      "an extra or missing field must be refused, so a smuggled PIN or token cannot ride along"
+    );
+    assert.match(
+      parseBlock,
+      /typeof parsed\[field\] !== "string"/,
+      "non-string members must be refused"
+    );
+    assert.match(
+      parseBlock,
+      /if \(!classroomCode \|\| classroomCode !== parsed\.classroomCode\) return null;/,
+      "a blank, padded, or noncanonical classroom code must be refused rather than repaired"
+    );
+    assert.match(
+      parseBlock,
+      /if \(!loginId \|\| loginId !== parsed\.loginId\) return null;/,
+      "a blank login ID or one the server would not have issued must be refused"
+    );
+
+    const readStart = source.indexOf("function readStudentLoginLocator() {");
+    const readEnd = source.indexOf("\n    function rememberStudentLoginLocator(", readStart);
+    assert.notEqual(readEnd, -1, "the locator reader must have a bounded source block");
+    const readBlock = source.slice(readStart, readEnd);
+    assert.match(
+      readBlock,
+      /if \(!IS_MULTI_TEACHER_V2_ENABLED\) return null;/,
+      "the default-off build must never consume a locator"
+    );
+    assert.match(
+      readBlock,
+      /localStorage\.removeItem\(V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY\);/,
+      "a malformed record must be dropped so the full form returns"
+    );
+
+    // The remembered state may show the canonical login ID and classroom code and
+    // nothing else. A display name would persist additional student data.
+    const rememberedStart = source.indexOf("<p id=\"rememberedStudentIdentity\">");
+    assert.notEqual(rememberedStart, -1, "the remembered identity must be visible text");
+    const rememberedEnd = source.indexOf("Use a different student</button>", rememberedStart);
+    assert.notEqual(rememberedEnd, -1, "the switch control must be reachable from the remembered state");
+    const rememberedBlock = source.slice(rememberedStart, rememberedEnd);
+    assert.match(
+      rememberedBlock,
+      /\$\{escapeHtml\(studentLoginLocator\.loginId\)\}/,
+      "the remembered identity must be the escaped canonical login ID"
+    );
+    assert.match(
+      rememberedBlock,
+      /id="studentPin"[^>]*type="password"[^>]*autocomplete="current-password"/,
+      "the PIN must remain the only credential input and keep its semantics"
+    );
+    assert.match(
+      rememberedBlock,
+      /<label for="studentPin">/,
+      "the PIN input must keep its accessible label"
+    );
+    assert.doesNotMatch(
+      rememberedBlock,
+      /studentLoginLocator\.(?!loginId|classroomCode)[a-zA-Z]/,
+      "the remembered state must read only the two locator fields"
+    );
+    assert.doesNotMatch(
+      rememberedBlock,
+      /id="studentLoginId"|id="studentClassroomCode"/,
+      "PIN-only mode must not render the classroom-code or login-ID inputs"
     );
   });
 

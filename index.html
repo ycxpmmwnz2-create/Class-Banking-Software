@@ -890,6 +890,12 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let message = "";
     let studentClassroomCodeDraft = "";
     let studentLoginIdDraft = "";
+    // The validated signed-out login locator for this browser, or null. It holds
+    // only the two non-secret fields a returning student would otherwise retype:
+    // the classroom code and the canonical login ID the server already issued.
+    // Never a PIN, custom token, ID token, Auth UID, student name, student
+    // document, credential document, balance, transaction, or tenant data.
+    let studentLoginLocator = null;
     let studentLoginPending = false;
     let studentAuthLogs = [];
     let studentAuthLogsLoading = false;
@@ -1568,11 +1574,19 @@ function toggleStudentDropdown() {
     async function loginStudent() {
       if (studentLoginPending) return;
 
-      const classroomCode = IS_MULTI_TEACHER_V2_ENABLED
-        ? document.getElementById("studentClassroomCode")?.value.trim() || ""
-        : "";
-      const loginId = document.getElementById("studentLoginId").value.trim();
-      const pin = document.getElementById("studentPin").value;
+      // A returning student in PIN-only mode has no classroom-code or login-ID
+      // input to read, so the already validated locator supplies both non-secret
+      // fields. The submitted payload stays identical to the full form's.
+      const rememberedLocator = IS_MULTI_TEACHER_V2_ENABLED ? studentLoginLocator : null;
+      const classroomCode = rememberedLocator
+        ? rememberedLocator.classroomCode
+        : IS_MULTI_TEACHER_V2_ENABLED
+          ? document.getElementById("studentClassroomCode")?.value.trim() || ""
+          : "";
+      const loginId = rememberedLocator
+        ? rememberedLocator.loginId
+        : document.getElementById("studentLoginId")?.value.trim() || "";
+      const pin = document.getElementById("studentPin")?.value || "";
       studentClassroomCodeDraft = classroomCode;
       studentLoginIdDraft = loginId;
 
@@ -1621,8 +1635,14 @@ function toggleStudentDropdown() {
               : "Student login is unavailable. Please try again.";
             return;
           }
-          rememberStudentClassroomCode(classroomCode);
-          studentClassroomCodeDraft = readRememberedStudentClassroomCode();
+          rememberStudentLoginLocator(classroomCode, loginId);
+          // Re-read rather than trusting the write: if storage was unavailable the
+          // locator stays null and the next visit simply asks for the full form
+          // again. A successful login is never made conditional on storage.
+          studentLoginLocator = readStudentLoginLocator();
+          studentClassroomCodeDraft = studentLoginLocator
+            ? studentLoginLocator.classroomCode
+            : readRememberedStudentClassroomCode();
           studentLoginIdDraft = "";
           return;
         }
@@ -2784,6 +2804,9 @@ link.click();
       return `${canonical.slice(0, 4)}-${canonical.slice(4)}`;
     }
 
+    // The superseded one-field convenience. Still read so a browser that only
+    // ever stored a classroom code keeps that prefill until its next successful
+    // login upgrades it to the combined locator. Nothing writes this key anymore.
     function readRememberedStudentClassroomCode() {
       if (!IS_MULTI_TEACHER_V2_ENABLED) return "";
       try {
@@ -2795,19 +2818,125 @@ link.click();
       }
     }
 
-    function rememberStudentClassroomCode(rawCode) {
-      if (!IS_MULTI_TEACHER_V2_ENABLED) return false;
-      const formattedCode = formatRememberedStudentClassroomCode(rawCode);
-      if (!formattedCode) return false;
+    // The canonical classroom-scoped login ID grammar the server allocates and
+    // enforces: lowercase ASCII alphanumerics with single interior hyphens, 1-64
+    // characters, no leading or trailing hyphen. This mirrors
+    // normalizeStudentLoginId in functions/phase2b/identityNormalization.js and
+    // the callable-response guard in src/phase2b/tenantClient.js. A stored value
+    // is rejected rather than repaired: the browser must never assemble a login
+    // identity the server did not issue.
+    function canonicalStudentLoginId(rawLoginId) {
+      if (typeof rawLoginId !== "string") return "";
+      if (rawLoginId.length < 1 || rawLoginId.length > 64) return "";
+      if (!/^[a-z0-9-]+$/.test(rawLoginId)) return "";
+      if (rawLoginId.startsWith("-") || rawLoginId.endsWith("-")) return "";
+      if (rawLoginId.includes("--")) return "";
+      return rawLoginId;
+    }
+
+    // Exactly these two non-secret fields, so a returning student normally types
+    // only the PIN. Any other shape is treated as corrupt.
+    const V2_STUDENT_LOGIN_LOCATOR_FIELDS = ["classroomCode", "loginId"];
+
+    function parseStudentLoginLocator(rawRecord) {
+      if (typeof rawRecord !== "string" || !rawRecord) return null;
+      let parsed;
       try {
-        localStorage.setItem(V2_STUDENT_CLASSROOM_CODE_STORAGE_KEY, formattedCode);
-        return true;
+        parsed = JSON.parse(rawRecord);
+      } catch {
+        return null;
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      // An exact key set, so a record carrying a smuggled PIN, token, UID, or any
+      // other extra field is refused outright instead of being partially trusted.
+      if (Object.keys(parsed).length !== V2_STUDENT_LOGIN_LOCATOR_FIELDS.length) return null;
+      for (const field of V2_STUDENT_LOGIN_LOCATOR_FIELDS) {
+        if (!Object.prototype.hasOwnProperty.call(parsed, field)) return null;
+        if (typeof parsed[field] !== "string") return null;
+      }
+      // Compare against the canonical forms rather than accepting whatever
+      // normalization would produce: a padded, lowercase, or otherwise
+      // noncanonical record was not written by this feature and must not be used
+      // to build a login payload. Both canonicalizers return "" for a value they
+      // reject, so each result must also be non-empty — otherwise a record whose
+      // fields are already blank would compare equal to its own rejection and be
+      // admitted as a valid locator.
+      const classroomCode = formatRememberedStudentClassroomCode(parsed.classroomCode);
+      const loginId = canonicalStudentLoginId(parsed.loginId);
+      if (!classroomCode || classroomCode !== parsed.classroomCode) return null;
+      if (!loginId || loginId !== parsed.loginId) return null;
+      return { classroomCode, loginId };
+    }
+
+    function readStudentLoginLocator() {
+      if (!IS_MULTI_TEACHER_V2_ENABLED) return null;
+      let stored;
+      try {
+        stored = localStorage.getItem(V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY);
+      } catch {
+        return null;
+      }
+      if (stored === null) return null;
+      const locator = parseStudentLoginLocator(stored);
+      if (!locator) {
+        // A malformed record can never become a login payload. Drop it so the
+        // full form returns instead of re-reading the same corruption forever.
+        try {
+          localStorage.removeItem(V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY);
+        } catch {
+          // Best effort only; the full form is already the safe outcome.
+        }
+        return null;
+      }
+      return locator;
+    }
+
+    function rememberStudentLoginLocator(rawCode, rawLoginId) {
+      if (!IS_MULTI_TEACHER_V2_ENABLED) return false;
+      const classroomCode = formatRememberedStudentClassroomCode(rawCode);
+      const loginId = canonicalStudentLoginId(rawLoginId);
+      if (!classroomCode || !loginId) return false;
+      try {
+        localStorage.setItem(
+          V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY,
+          JSON.stringify({ classroomCode, loginId })
+        );
       } catch {
         // Storage may be unavailable or ephemeral in private browsing. A
         // successful student sign-in must never fail because preference storage
         // is unavailable.
         return false;
       }
+      // Only after the combined locator is durably written does the superseded
+      // classroom-code-only key go away, so a failed upgrade still leaves the
+      // older one-field convenience intact.
+      try {
+        localStorage.removeItem(V2_STUDENT_CLASSROOM_CODE_STORAGE_KEY);
+      } catch {
+        // A surviving legacy key is harmless: the locator takes precedence on read.
+      }
+      return true;
+    }
+
+    // Synchronous and local by contract: switching students forgets the locator
+    // and restores the full form without signing anyone out, calling Firebase, or
+    // disturbing any other stored teacher or student data.
+    function useDifferentStudent() {
+      if (studentLoginPending) return;
+      const rememberedCode = studentLoginLocator ? studentLoginLocator.classroomCode : "";
+      studentLoginLocator = null;
+      studentLoginIdDraft = "";
+      try {
+        localStorage.removeItem(V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY);
+      } catch {
+        // The in-memory locator is already cleared and the full form is showing.
+      }
+      // The classroom code is a shared, non-secret room locator, so the usual
+      // shared-device case ("same classroom, different student") keeps it in the
+      // in-memory form draft only. Nothing new is persisted: the durable locator
+      // is already gone, and the full form still requires all three values.
+      studentClassroomCodeDraft = rememberedCode || readRememberedStudentClassroomCode();
+      render();
     }
 
     function legacyCopyText(text) {
@@ -3058,16 +3187,26 @@ link.click();
             ` : `
               <h2>Student Login</h2>
               ${message ? `<div class="backup-reminder" role="status" aria-live="polite">${escapeHtml(message)}</div>` : ""}
-              ${IS_MULTI_TEACHER_V2_ENABLED ? `
-                <label for="studentClassroomCode">Classroom code</label>
-                <input id="studentClassroomCode" value="${escapeHtml(studentClassroomCodeDraft)}" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
-                <p class="small-note">After a successful login, this browser remembers only the classroom code. Your PIN is never saved. Private browsing forgets the code when the private window closes.</p>
-              ` : ""}
-              <label for="studentLoginId">Student login ID</label>
-              <input id="studentLoginId" value="${escapeHtml(studentLoginIdDraft)}" placeholder="Student login ID" autocomplete="username" autocapitalize="none" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
-              <label for="studentPin">PIN / password</label>
-              <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
-              <button class="primary" onclick="loginStudent()" ${studentLoginPending ? "disabled" : ""}>${studentLoginPending ? "Signing in..." : "Login as Student"}</button>
+              ${IS_MULTI_TEACHER_V2_ENABLED && studentLoginLocator ? `
+                <p id="rememberedStudentIdentity">Signing in as <strong>${escapeHtml(studentLoginLocator.loginId)}</strong></p>
+                <p class="small-note">Classroom code: <span id="rememberedStudentClassroomCode" class="classroom-code">${escapeHtml(studentLoginLocator.classroomCode)}</span></p>
+                <label for="studentPin">PIN / password</label>
+                <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
+                <button class="primary" onclick="loginStudent()" ${studentLoginPending ? "disabled" : ""}>${studentLoginPending ? "Signing in..." : "Login as Student"}</button>
+                <button type="button" class="link-button" id="useDifferentStudent" onclick="useDifferentStudent()" ${studentLoginPending ? "disabled" : ""}>Use a different student</button>
+                <p class="small-note">This browser remembers only the classroom code and student login ID above. Your PIN is never saved.</p>
+              ` : `
+                ${IS_MULTI_TEACHER_V2_ENABLED ? `
+                  <label for="studentClassroomCode">Classroom code</label>
+                  <input id="studentClassroomCode" value="${escapeHtml(studentClassroomCodeDraft)}" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
+                  <p class="small-note">After a successful login, this browser remembers only the classroom code and student login ID, so next time you sign in with just your PIN. Your PIN is never saved. Private browsing forgets both when the private window closes.</p>
+                ` : ""}
+                <label for="studentLoginId">Student login ID</label>
+                <input id="studentLoginId" value="${escapeHtml(studentLoginIdDraft)}" placeholder="Student login ID" autocomplete="username" autocapitalize="none" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
+                <label for="studentPin">PIN / password</label>
+                <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
+                <button class="primary" onclick="loginStudent()" ${studentLoginPending ? "disabled" : ""}>${studentLoginPending ? "Signing in..." : "Login as Student"}</button>
+              `}
             `}
           </div>
         `;
@@ -3078,7 +3217,7 @@ link.click();
           ${resolvedStudentLoginCode() ? `
           <div class="card no-print student-login-info">
             <h2>Student Login Information</h2>
-            <p>Share this classroom code with your students. After a successful login, Morgan Bank can remember it on that browser.</p>
+            <p>Share this classroom code with your students. After a successful login, Morgan Bank can remember the code and that student's login ID on that browser, so the student signs in with just a PIN next time. PINs are never saved.</p>
             <div class="student-login-info-row">
               <span>Classroom code:</span>
               <span id="teacherStudentClassroomCode" class="student-login-info-code">${escapeHtml(resolvedStudentLoginCode())}</span>
@@ -3781,11 +3920,14 @@ if (screen === "editSettingsLists" && isTeacher) {
 
     function resetAllGlobalState() {
       resetGlobalApplicationState(windowAppGlobals, cloneDefault);
-      // The remembered classroom locator is intentionally separate from tenant
-      // data. Rehydrate it after the shared reset so logout keeps the next
-      // student login convenient without retaining a login ID, PIN, token, or
-      // student record.
-      studentClassroomCodeDraft = readRememberedStudentClassroomCode();
+      // The remembered login locator is intentionally separate from tenant data.
+      // Rehydrate it after the shared reset so an ordinary logout keeps the next
+      // daily student login fast, while retaining no PIN, token, Auth UID, student
+      // name, or student record.
+      studentLoginLocator = readStudentLoginLocator();
+      studentClassroomCodeDraft = studentLoginLocator
+        ? studentLoginLocator.classroomCode
+        : readRememberedStudentClassroomCode();
       // Render-affecting V2 view state that is not part of the shared legacy
       // global contract must be cleared by the same synchronous reset, or a
       // previous tenant's offline badge / profile login ID can survive a switch.
@@ -3932,8 +4074,16 @@ if (screen === "editSettingsLists" && isTeacher) {
     const V2_ACTIVE_PROJECT_ID = app.options.projectId;
     const V2_STUDENT_CLASSROOM_CODE_STORAGE_KEY =
       `morganBank:v2:${V2_ACTIVE_PROJECT_ID}:student-login:classroom-code:v1`;
+    // The combined locator that supersedes the classroom-code-only key. One
+    // atomic, versioned, project-scoped record instead of two independent keys, so
+    // a returning student's remembered code and login ID can never disagree.
+    const V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY =
+      `morganBank:v2:${V2_ACTIVE_PROJECT_ID}:student-login:locator:v1`;
 
-    studentClassroomCodeDraft = readRememberedStudentClassroomCode();
+    studentLoginLocator = readStudentLoginLocator();
+    studentClassroomCodeDraft = studentLoginLocator
+      ? studentLoginLocator.classroomCode
+      : readRememberedStudentClassroomCode();
 
     const v2TenantSession = new TenantSession({
       storageAdapter: localStorage,
@@ -4149,6 +4299,7 @@ window.loginTeacherWithGoogle = loginTeacherWithGoogle;
 window.linkGoogleAccount = linkGoogleAccount;
 window.handleLoginEnter = handleLoginEnter;
 window.loginStudent = loginStudent;
+window.useDifferentStudent = useDifferentStudent;
 window.copyStudentClassroomCode = copyStudentClassroomCode;
 window.toggleProfileNewStudentPinVisibility = toggleProfileNewStudentPinVisibility;
 window.copyProfileNewStudentPin = copyProfileNewStudentPin;

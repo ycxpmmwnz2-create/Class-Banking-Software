@@ -100,6 +100,18 @@ test("the real default-off student form stays session-only after its tab closes"
   await expect(
     initialPage.getByRole("heading", { name: `${STUDENT_NAME}'s Account`, exact: true })
   ).toBeVisible();
+
+  // The remembered-student convenience is V2-only. A default-off login must persist
+  // no login preference at all: no classroom code, and no login ID.
+  expect(
+    await initialPage.evaluate(() =>
+      Object.keys(localStorage).filter(key => key.includes(":student-login:")))
+  ).toEqual([]);
+  expect(
+    await initialPage.evaluate(() =>
+      Object.keys(localStorage).map(key => localStorage.getItem(key)).join("\n"))
+  ).not.toContain(LOGIN_ID);
+
   await initialPage.close();
 
   const reopenedPage = await context.newPage();

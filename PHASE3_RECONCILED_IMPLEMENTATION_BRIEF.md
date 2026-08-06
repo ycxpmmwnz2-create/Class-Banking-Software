@@ -116,7 +116,11 @@ copy operation to which they could apply.
 1. Student creation and deletion are server-only.
 2. Rules deny browser `create` and `delete` on student documents.
 3. Flat credentials are immutable throughout Phase 3, including rollback.
-4. The V2 login UI requires classroom code, login ID, and PIN.
+4. The V2 login UI requires classroom code, login ID, and PIN on a browser's first
+   successful login. Andrew has since approved one narrow returning-login
+   exception: after a successful login that browser may remember the classroom
+   code and canonical login ID and then ask only for the PIN. See
+   "Remembered student login locator" in section 4.
 5. The gate-on V2 client calls versioned V2 Function names.
 6. Stable legacy handlers are not silently mapped to incompatible V2
    handlers.
@@ -182,10 +186,54 @@ No write payload or cache envelope may contain `pin`, `pinHash`, `loginId`,
 `authUid`, credential activation, or lockout state. Emulator tests must inspect
 the actual written key set and fail on any extra field.
 
+This prohibition is scoped to Firestore write payloads and authenticated cache
+envelopes, and it still holds there without exception. It is not a prohibition on
+the single signed-out login-preference record described immediately below, which
+is neither a write payload nor a cache envelope.
+
+### Remembered student login locator
+
+Andrew approved this narrow browser convenience so students who sign in several
+times a school day normally type only a PIN. It overrides the earlier requirement
+that the browser persist the classroom code alone and never the login ID.
+
+One atomic, versioned, project-scoped record:
+
+```
+morganBank:v2:${V2_ACTIVE_PROJECT_ID}:student-login:locator:v1
+{ "classroomCode": "XXXX-XXXX", "loginId": "canonical-login-id" }
+```
+
+Rules:
+
+- It may contain exactly those two non-secret fields and nothing else. It must
+  never contain a PIN, custom token, ID token, Auth UID, student name, student
+  document, credential document, balance, transaction, or tenant data.
+- It is written only after a successful `studentPinLoginV2` custom-token sign-in.
+  A failed, refused, stale-epoch, or cross-tenant attempt writes nothing and never
+  overwrites the last good locator.
+- Every read validates the exact key set and both canonical formats. A malformed,
+  blank, padded, extra-field, array, or non-canonical record is removed and the
+  full form is shown; it is never repaired.
+- The superseded `:student-login:classroom-code:v1` key is still read for
+  backward compatibility, is never written again, and is removed only after a
+  locator write succeeds.
+- Storage that is unavailable, full, or throwing must never block authentication.
+- It is not an Auth credential and grants no access. Student Firebase Auth
+  remains `browserSessionPersistence`; the locator retains no token and never
+  silently authenticates anyone.
+- The default-off legacy build must persist no login ID and no locator.
+- "Use a different student" removes the locator synchronously and locally, restores
+  the full form, calls no Firebase, and touches no other stored data.
+- The remembered state may display the canonical login ID and classroom code only.
+  No display name, and no roster, recent-student picker, or identity guessing.
+
 V2 UI behavior:
 
 - add a classroom-code field to student login;
-- call `studentPinLoginV2({ classroomCode, loginId, pin })`;
+- call `studentPinLoginV2({ classroomCode, loginId, pin })` with the identical
+  payload whether the two non-secret fields were typed or supplied by the
+  remembered locator;
 - do not display or edit stored PINs on roster/profile screens;
 - send a new PIN only to an authorized callable;
 - use `resetStudentPinV2` for PIN changes;
