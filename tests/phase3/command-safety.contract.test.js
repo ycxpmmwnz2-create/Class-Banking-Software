@@ -377,9 +377,11 @@ describe('Phase 3 command-safety source contract', () => {
 
     assert.equal(
       scripts['test:phase2b:browser'],
-      'npm run test:phase2b:browser:chromium && npm run test:phase2b:browser:webkit',
+      'npm run test:phase2b:browser:gate-off && ' +
+        'npm run test:phase2b:browser:chromium && npm run test:phase2b:browser:webkit',
     )
     for (const name of [
+      'test:phase2b:browser:gate-off',
       'test:phase2b:browser:chromium',
       'test:phase2b:browser:webkit',
     ]) {
@@ -388,6 +390,11 @@ describe('Phase 3 command-safety source contract', () => {
         `${name} must scrub the final-rules rehearsal selector`,
       )
     }
+    assert.match(
+      scripts['test:phase2b:browser:gate-off'],
+      /PHASE2B_BROWSER_GATE_MODE=off[\s\S]*student-session\.gate-off\.spec\.js/,
+      'the gate-off selector must run only the dedicated production-form persistence spec',
+    )
 
     // test:phase3:migration was earned in Commit 3 alongside the real
     // production-runner emulator suite. It must name the suite it runs, and that

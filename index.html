@@ -820,12 +820,12 @@
   <div id="app"></div>
   <script type="module">
 import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured } from "./src/firebase/firebase.js";
-import { browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
+import { browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider, inMemoryPersistence, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, writeBatch } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
-import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, safeExecuteWithEpochCheck } from "./src/phase2b/tenantClient.js";
+import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 
@@ -1613,6 +1613,7 @@ function toggleStudentDropdown() {
           throw new Error("The login service did not return a token.");
         }
 
+        await setPersistence(auth, browserSessionPersistence);
         await signInWithCustomToken(auth, response.data.token);
         studentLoginIdDraft = "";
       } catch (error) {
@@ -1632,7 +1633,20 @@ function toggleStudentDropdown() {
 
     async function logout() {
       if (IS_MULTI_TEACHER_V2_ENABLED) {
-        await orchestrateProductionLogout(v2TenantSession, { signOut: () => signOut(auth) }, render);
+        const result = await orchestrateProductionLogout(
+          v2TenantSession,
+          {
+            signOut: () => terminateDurableAuthSession({
+              setMemoryPersistence: () => setPersistence(auth, inMemoryPersistence),
+              signOut: () => signOut(auth)
+            })
+          },
+          render
+        );
+        if (result.warning) {
+          message = "Morgan Bank cleared this page, but Firebase could not confirm a complete sign-out. Close every Morgan Bank tab, reopen the site, and choose Log Out again if your account returns.";
+          render();
+        }
         return;
       }
 
@@ -3875,7 +3889,13 @@ if (screen === "editSettingsLists" && isTeacher) {
           // Ends THIS tab's Firebase Auth session after the cross-tab purge, so
           // a refresh cannot re-resolve the invalidated teacher. Separate from
           // authAdapter above because it must not trigger a rebroadcast.
-          localAuthAdapter: { signOut: () => signOut(auth) }
+          localAuthAdapter: {
+            currentUid: () => auth.currentUser?.uid || null,
+            signOut: () => terminateDurableAuthSession({
+              setMemoryPersistence: () => setPersistence(auth, inMemoryPersistence),
+              signOut: () => signOut(auth)
+            })
+          }
         })
       : null;
     v2TenantSession.multiTabInvalidator = v2MultiTabInvalidator;

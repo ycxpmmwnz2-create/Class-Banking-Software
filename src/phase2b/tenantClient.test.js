@@ -20,7 +20,8 @@ import {
   orchestrateBulkOperation,
   orchestrateCreateStudent,
   orchestrateRemoveStudent,
-  orchestrateTeacherInvitationAdmin
+  orchestrateTeacherInvitationAdmin,
+  terminateDurableAuthSession
 } from "./tenantClient.js";
 import { connectPhase2bEmulatorsIfConfigured, isPortValid } from "../firebase/firebase.js";
 import { purgeTenantCache, purgeLegacyCache, buildCacheKey, writeTeacherCache } from "./tenantCache.js";
@@ -453,10 +454,43 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     const res = await orchestrateProductionLogout(session, rejectingAuthAdapter, () => { renderedState = session.getState(); });
 
     assert.equal(res.success, true);
+    assert.equal(typeof res.warning, "string", "an incomplete Firebase sign-out must be surfaced to the caller");
     assert.equal(session.getState(), SESSION_STATES.SIGNED_OUT);
     assert.equal(renderedState, SESSION_STATES.SIGNED_OUT);
     assert.equal(session.uid, null);
     assert.equal(session.classroomId, null);
+  });
+
+  test("durable logout removes browser persistence before sign-out and never hides a failed current-session sign-out", async () => {
+    const order = [];
+    let signOutCalls = 0;
+
+    await assert.rejects(
+      () => terminateDurableAuthSession({
+        setMemoryPersistence: async () => { order.push("memory"); },
+        signOut: async () => {
+          signOutCalls += 1;
+          order.push(`signOut:${signOutCalls}`);
+          throw new Error("network unavailable");
+        }
+      }),
+      /sign-out did not finish/,
+      "the caller must receive a warning path even after the durable credential was removed"
+    );
+
+    assert.deepEqual(order, ["memory", "signOut:1", "signOut:2"]);
+    assert.equal(signOutCalls, 2, "Firebase sign-out must be retried once");
+  });
+
+  test("durable logout succeeds when Firebase sign-out clears auth even if persistence downgrade is unavailable", async () => {
+    let signOutCalls = 0;
+    const result = await terminateDurableAuthSession({
+      setMemoryPersistence: async () => { throw new Error("storage unavailable"); },
+      signOut: async () => { signOutCalls += 1; }
+    });
+
+    assert.deepEqual(result, { success: true, durablePersistenceRemoved: false });
+    assert.equal(signOutCalls, 1);
   });
 
   test("V2 operation orchestrators fail closed on a rejected callable instead of letting the rejection escape", async () => {
@@ -1550,9 +1584,9 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
   });
 
   // The receiving tab must end its own Firebase Auth session after a cross-tab
-  // invalidation, otherwise browserSessionPersistence lets a refresh re-resolve
+  // invalidation, otherwise durable Google persistence lets a refresh re-resolve
   // the invalidated teacher. Behaviour is proven in tenantCache.test.js; this
-  // guards the production wiring that supplies the adapter.
+  // guards the production wiring that supplies the adapter and live UID reader.
   test("SOURCE GUARD: the production MultiTabInvalidator is wired with a local Firebase Auth sign-out adapter", () => {
     const { source } = readV2Branches();
 
@@ -1562,8 +1596,13 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
 
     assert.match(
       ctorBlock,
-      /localAuthAdapter:\s*\{\s*signOut:\s*\(\)\s*=>\s*signOut\(auth\)\s*\}/,
-      "The production invalidator must receive a local Firebase Auth sign-out adapter"
+      /localAuthAdapter:\s*\{\s*currentUid:\s*\(\)\s*=>\s*auth\.currentUser\?\.uid \|\| null,\s*signOut:\s*\(\)\s*=>\s*terminateDurableAuthSession/,
+      "The production invalidator must receive the live UID reader and durable Firebase Auth terminator"
+    );
+    assert.match(
+      ctorBlock,
+      /setMemoryPersistence:\s*\(\)\s*=>\s*setPersistence\(auth, inMemoryPersistence\)/,
+      "Cross-tab sign-out must remove durable Firebase persistence before terminating auth"
     );
 
     // The quarantine marker is what survives a refresh; without a real
@@ -1693,6 +1732,12 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     const passwordBlock = source.slice(passwordStart, googleStart);
     const googleBlock = source.slice(googleStart, linkStart);
     const studentBlock = source.slice(studentStart, logoutStart);
+    const legacyStudentStart = studentBlock.indexOf(
+      'const studentPinLogin = httpsCallable(functions, "studentPinLogin");'
+    );
+    assert.notEqual(legacyStudentStart, -1, "the default-off student path must remain present");
+    const v2StudentBlock = studentBlock.slice(0, legacyStudentStart);
+    const legacyStudentBlock = studentBlock.slice(legacyStudentStart);
     const googlePersistenceAt = googleBlock.indexOf(
       "setPersistence(auth, browserLocalPersistence)"
     );
@@ -1712,14 +1757,43 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       "the legacy password fallback must remain session-only"
     );
     assert.match(
-      studentBlock,
+      v2StudentBlock,
       /setPersistence\(auth, browserSessionPersistence\)[\s\S]*signInWithCustomToken/,
-      "student custom-token authentication must remain session-only"
+      "the V2 student custom-token path must remain session-only"
+    );
+    assert.match(
+      legacyStudentBlock,
+      /setPersistence\(auth, browserSessionPersistence\)[\s\S]*signInWithCustomToken/,
+      "the default-off student custom-token path must be explicitly session-only"
+    );
+    assert.equal(
+      (studentBlock.match(/setPersistence\(auth, browserSessionPersistence\)/g) || []).length,
+      (studentBlock.match(/signInWithCustomToken\(auth,/g) || []).length,
+      "every production student custom-token sign-in must have its own explicit session persistence assignment"
+    );
+    assert.doesNotMatch(
+      studentBlock,
+      /browserLocalPersistence|inMemoryPersistence/,
+      "no student login path may acquire teacher-local or logout-only persistence"
     );
     assert.match(
       source,
-      /import \{ browserLocalPersistence, browserSessionPersistence,[^\n]+ \} from "firebase\/auth";/,
-      "both explicit persistence modes must remain imported"
+      /import \{[^\n]*browserLocalPersistence[^\n]*browserSessionPersistence[^\n]*inMemoryPersistence[^\n]*\} from "firebase\/auth";/,
+      "teacher-local, student-session, and logout-memory persistence modes must remain explicit"
+    );
+
+    const logoutEnd = source.indexOf("\n    function changeStudentBalance", logoutStart);
+    assert.notEqual(logoutEnd, -1, "the production logout function must have a bounded source block");
+    const logoutBlock = source.slice(logoutStart, logoutEnd);
+    assert.match(
+      logoutBlock,
+      /terminateDurableAuthSession\([\s\S]*setMemoryPersistence:[\s\S]*inMemoryPersistence[\s\S]*signOut:\s*\(\)\s*=>\s*signOut\(auth\)/,
+      "production logout must downgrade durable Firebase Auth before sign-out"
+    );
+    assert.match(
+      logoutBlock,
+      /if \(result\.warning\) \{[\s\S]*could not confirm a complete sign-out/,
+      "an incomplete Firebase sign-out must produce a visible, truthful warning"
     );
   });
 

@@ -416,7 +416,10 @@ test("teacher local persistence survives a closed tab, synchronizes the profile,
   await signedOutPage.close();
 });
 
-test("a real claimed student remains session-only after its tab closes", async ({ context }) => {
+test("a student-claimed harness session remains session-only after its tab closes", async ({ context }) => {
+  // This isolates Firebase's session mode for an identity carrying real student
+  // claims. Production-form coverage lives in student-session.gate-off.spec.js;
+  // this test intentionally makes no claim about a custom-token call site.
   const student = await createStudentIdentity({
     classroomId: TENANT_A.classroomId,
     studentId: TENANT_A.sharedStudentId

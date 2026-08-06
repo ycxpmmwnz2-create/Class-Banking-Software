@@ -502,12 +502,27 @@ export class MultiTabInvalidator {
 
   // Terminates this tab's own Firebase Auth session after the tenant state has
   // already been purged synchronously. Never invalidates again and never
-  // broadcasts, so one inbound message cannot become an outbound one. A
-  // rejected sign-out is contained: the purge above has already happened and
-  // must stay purged.
-  terminateLocalAuth() {
+  // broadcasts, so one inbound message cannot become an outbound one. For a
+  // tenant-scoped invalidation, the live Firebase UID is re-read immediately
+  // before sign-out: session.uid can be stale while Auth has already switched
+  // to a different account in another callback. A rejected sign-out is
+  // contained: the purge above has already happened and must stay purged.
+  terminateLocalAuth(expectedUidDigest = null) {
     const adapter = this.localAuthAdapter;
     if (!adapter || typeof adapter.signOut !== "function") return;
+
+    if (expectedUidDigest && typeof adapter.currentUid === "function") {
+      let liveUid;
+      try {
+        liveUid = adapter.currentUid();
+      } catch (err) {
+        console.error("Could not read the live Firebase identity before cross-tab sign-out:", err);
+        return;
+      }
+      const liveDigest = computeSha256Digest(liveUid);
+      if (!liveDigest || liveDigest !== expectedUidDigest) return;
+    }
+
     try {
       const result = adapter.signOut();
       if (result && typeof result.catch === "function") {
@@ -560,7 +575,7 @@ export class MultiTabInvalidator {
     // Still signed in as the quarantined identity: purge again and retry the
     // sign-out that either never ran or previously rejected.
     this.session.invalidate("multi-tab-invalidation", { state: "signed-out" });
-    this.terminateLocalAuth();
+    this.terminateLocalAuth(computeSha256Digest(uid));
     if (typeof this.onInvalidated === "function") this.onInvalidated();
     return true;
   }
@@ -615,7 +630,7 @@ export class MultiTabInvalidator {
 
     // Purge/reset happens synchronously BEFORE local Auth sign-out begins.
     this.session.invalidate("multi-tab-invalidation", { state: "signed-out" });
-    this.terminateLocalAuth();
+    this.terminateLocalAuth(msg.uidDigest);
     if (typeof this.onInvalidated === "function") this.onInvalidated();
     return true;
   }

@@ -763,6 +763,37 @@ describe("TenantCache Module Specifications", () => {
     assert.equal(signOutCalls, 0, "A late A invalidation must not sign B out");
   });
 
+  test("a stale tenant session cannot sign out a different live Firebase identity", () => {
+    const storage = createMockStorage();
+    const quarantine = createMockStorage();
+    const staleSessionA = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+    let signOutCalls = 0;
+
+    const invalidator = new MultiTabInvalidator(staleSessionA, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      sessionStorageAdapter: quarantine,
+      localAuthAdapter: {
+        // Auth has already advanced to B, but the asynchronous observer has not
+        // yet replaced the TenantSession fields that still describe A.
+        currentUid: () => "teacher_b",
+        signOut: () => { signOutCalls += 1; return Promise.resolve(); }
+      }
+    });
+
+    const applied = invalidator.receiveMessage({
+      type: "session-invalidated",
+      uidDigest: computeSha256Digest("teacher_a"),
+      epoch: 5
+    });
+
+    assert.equal(applied, true, "the stale A tenant state must still be purged");
+    assert.equal(staleSessionA.getState(), SESSION_STATES.SIGNED_OUT);
+    assert.equal(staleSessionA.uid, null);
+    assert.equal(signOutCalls, 0, "the live B Firebase identity must not be signed out by A's message");
+  });
+
   // ---------------------------------------------------------------------------
   // Item 9 correction, round 2: a valid invalidation must not be LOST when it
   // arrives before onAuthStateChanged has established session.uid, and must not

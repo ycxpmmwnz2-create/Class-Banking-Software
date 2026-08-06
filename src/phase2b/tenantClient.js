@@ -57,6 +57,49 @@ export async function orchestrateProductionLogout(session, authAdapter, onRender
   return session.signOut(authAdapter);
 }
 
+/**
+ * Removes a locally persisted Firebase Auth identity before completing sign-out.
+ *
+ * Either a successful persistence downgrade or a successful Firebase sign-out
+ * is enough to prevent the identity from being restored after the browser is
+ * reopened. Both operations are still attempted, and sign-out is retried once
+ * when the first attempt fails. A rejection is returned only when Firebase
+ * could not confirm the current in-memory session ended; callers must surface
+ * that warning instead of reporting an unconditional logout.
+ */
+export async function terminateDurableAuthSession(authAdapter) {
+  if (!authAdapter || typeof authAdapter.setMemoryPersistence !== "function") {
+    throw new Error("A memory-persistence adapter is required.");
+  }
+  if (typeof authAdapter.signOut !== "function") {
+    throw new Error("A Firebase sign-out adapter is required.");
+  }
+
+  let durablePersistenceRemoved = false;
+  try {
+    await authAdapter.setMemoryPersistence();
+    durablePersistenceRemoved = true;
+  } catch {
+    // Sign-out is still attempted below. A successful sign-out clears the
+    // durable Firebase identity even when changing persistence was unavailable.
+  }
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await authAdapter.signOut();
+      return { success: true, durablePersistenceRemoved };
+    } catch {
+      // Retry once. Raw Firebase errors are deliberately not returned to the UI.
+    }
+  }
+
+  throw new Error(
+    durablePersistenceRemoved
+      ? "Firebase sign-out did not finish after durable persistence was removed."
+      : "Firebase durable authentication could not be cleared."
+  );
+}
+
 function exactObject(value, keys) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const actual = Object.keys(value).sort();

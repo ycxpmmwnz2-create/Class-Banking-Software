@@ -147,16 +147,21 @@ test fixtures):
 The default-off branch of `requireTeacher()` in `index.html` gates ~30+
 teacher-only actions by re-checking the same module-level `isTeacher` boolean
 and UID equality.
-The v1.1.0 baseline used `browserSessionPersistence` for every identity. The
-current teacher-login UX changes only Google teacher sign-in to
+The v1.1.0 baseline explicitly selected `browserSessionPersistence` for teacher
+sign-in, but its default-off legacy student custom-token branch inherited the
+Firebase SDK default instead of selecting a mode. The current implementation
+closes that historical gap: both the legacy and V2 student custom-token paths,
+plus the teacher email/password fallback, explicitly use
+`browserSessionPersistence`. Google teacher sign-in alone uses
 `browserLocalPersistence`, so the same teacher is restored on the same browser
-profile until explicit sign-out or browser-data deletion. The legacy teacher
-email/password fallback and every student custom-token sign-in remain
-`browserSessionPersistence`. This persistence split does not change Firebase
-UIDs, provider linking, claims, or tenant authorization. A shared-device teacher
-must use the application's Log Out control; local teacher auth synchronizes
-across tabs in the same browser profile, while private browsing remains bounded
-by the browser's private session.
+profile until explicit sign-out or browser-data deletion. Explicit logout first
+downgrades durable Auth state to memory-only and then signs out, so a sign-out
+transport failure cannot silently leave a reopenable local teacher credential;
+an incomplete in-tab sign-out is reported to the user. This persistence split
+does not change Firebase UIDs, provider linking, claims, or tenant authorization.
+A shared-device teacher must use the application's Log Out control; local
+teacher auth synchronizes across tabs in the same browser profile, while private
+browsing remains bounded by the browser's private session.
 
 **Student:** Student ID + PIN → `studentPinLogin` callable Cloud Function →
 `studentCredentialVerifier.js` verifies bcrypt hash server-side, enforces a

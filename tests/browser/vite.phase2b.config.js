@@ -1,10 +1,11 @@
 // Vite config for the Item 10 browser suite.
 //
-// Serves the real index.html with the V2 gate ON, and injects the harness module
-// BEFORE the application's inline module script. index.html exposes no import
-// specifier to intercept, so injection order via transformIndexHtml is the only
-// available hook; `injectTo: "head-prepend"` guarantees the harness module is
-// evaluated first.
+// Serves the real index.html with the V2 gate ON for the main suite, or with the
+// gate explicitly OFF for the isolated legacy-student persistence contract, and
+// injects the harness module BEFORE the application's inline module script.
+// index.html exposes no import specifier to intercept, so injection order via
+// transformIndexHtml is the only available hook; `injectTo: "head-prepend"`
+// guarantees the harness module is evaluated first.
 //
 // Deliberately NOT part of the production vite.config.js: nothing here can
 // affect a normal dev or production build.
@@ -13,15 +14,19 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 export const PHASE2B_BROWSER_PORT = 5273;
+export const PHASE2B_BROWSER_GATE_OFF = process.env.PHASE2B_BROWSER_GATE_MODE === "off";
+export const PHASE2B_BROWSER_PROJECT_ID = PHASE2B_BROWSER_GATE_OFF
+  ? "demo-morgan-bank-phase2b-server-off-test"
+  : "demo-morgan-bank-phase2b-server-test";
 
 // Distinct from the emulator ports declared in firebase.json:
 //   Auth 9099, Functions 5001, Firestore 8080.
 export const PHASE2B_EMULATOR_CONFIG = {
   enabled: true,
-  // Must match PROJECT_ID in tests/browser/phase2b-fixtures.js and the
-  // --project passed to emulators:exec by test:phase2b:browser. Reusing the
-  // gate-on server project means its .env contract activates V2 Functions.
-  projectId: "demo-morgan-bank-phase2b-server-test",
+  // Must match the --project passed to the corresponding emulators:exec
+  // command. The isolated gate-off browser contract selects the sibling demo
+  // project whose Functions dotenv keeps legacy callables active.
+  projectId: PHASE2B_BROWSER_PROJECT_ID,
   host: "127.0.0.1",
   authPort: 9099,
   firestorePort: 8080,
@@ -122,8 +127,11 @@ export default defineConfig({
   // avoids that failure mode entirely.
   envPrefix: ["VITE_", "PHASE2B_"],
   define: {
-    // The suite exercises the V2 code paths, so the gate must be on.
-    "import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED": JSON.stringify("true"),
+    // The main suite exercises V2. Only the separately invoked legacy-student
+    // contract is allowed to serve the real application with the gate off.
+    "import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED": JSON.stringify(
+      PHASE2B_BROWSER_GATE_OFF ? "false" : "true"
+    ),
     "import.meta.env.PHASE2B_BROWSER_TEST": JSON.stringify(true),
     "import.meta.env.PHASE2B_BROWSER_TEST_CONFIG": JSON.stringify({
       emulator: PHASE2B_EMULATOR_CONFIG,
