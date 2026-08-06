@@ -2852,7 +2852,6 @@ link.click();
       const reveal = input.type === "password";
       input.type = reveal ? "text" : "password";
       button.textContent = reveal ? "Hide PIN" : "Show PIN";
-      button.setAttribute("aria-pressed", String(reveal));
       input.focus({ preventScroll: true });
     }
 
@@ -2893,6 +2892,12 @@ link.click();
           ? "New PIN copied."
           : "Could not copy the new PIN. Select it and copy it manually.";
       }
+    }
+
+    function dismissTemporaryProfileStudentPin() {
+      if (!requireTeacher() || screen !== "studentProfile") return;
+      clearTemporaryProfileStudentPin();
+      render();
     }
 
     async function copyStudentClassroomCode() {
@@ -3365,8 +3370,8 @@ ${transactionTarget !== "whole" ? `
                 <p class="small-note">Enter a new 4-digit PIN for this student's secure login.</p>
                 <label for="profileNewStudentPin">New PIN</label>
                 <input id="profileNewStudentPin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" ${studentPinResetPending ? "disabled" : ""} />
-                <button type="button" id="profileNewStudentPinVisibilityButton" onclick="toggleProfileNewStudentPinVisibility()" aria-controls="profileNewStudentPin" aria-pressed="false" ${studentPinResetPending ? "disabled" : ""}>Show PIN</button>
-                <button type="button" onclick="copyProfileNewStudentPin()" ${studentPinResetPending ? "disabled" : ""}>Copy new PIN</button>
+                <button type="button" id="profileNewStudentPinVisibilityButton" onclick="toggleProfileNewStudentPinVisibility()" aria-controls="profileNewStudentPin" ${studentPinResetPending ? "disabled" : ""}>Show PIN</button>
+                <button type="button" onclick="copyProfileNewStudentPin()" ${studentPinResetPending ? "disabled" : ""}>Copy typed PIN</button>
                 <p id="profileNewStudentPinCopyStatus" class="small-note" role="status" aria-live="polite"></p>
                 <button class="primary" onclick="resetProfileStudentPin()" ${studentPinResetPending ? "disabled" : ""}>
                   ${studentPinResetPending ? "Resetting..." : "Reset PIN"}
@@ -3376,7 +3381,8 @@ ${transactionTarget !== "whole" ? `
                     <strong>PIN reset complete.</strong>
                     <p>Give this new PIN to ${escapeHtml(profileStudent.name)}:</p>
                     <p><strong id="temporaryProfileStudentPinValue">${escapeHtml(temporaryProfileStudentPin.pin)}</strong></p>
-                    <button type="button" onclick="copyTemporaryProfileStudentPin()">Copy new PIN</button>
+                    <button type="button" onclick="copyTemporaryProfileStudentPin()">Copy PIN for student</button>
+                    <button type="button" onclick="dismissTemporaryProfileStudentPin()">Done — hide PIN</button>
                     <p id="temporaryProfileStudentPinCopyStatus" class="small-note"></p>
                     <p class="small-note">This PIN disappears when you leave this profile or reload the page.</p>
                   </div>
@@ -4146,6 +4152,7 @@ window.copyStudentClassroomCode = copyStudentClassroomCode;
 window.toggleProfileNewStudentPinVisibility = toggleProfileNewStudentPinVisibility;
 window.copyProfileNewStudentPin = copyProfileNewStudentPin;
 window.copyTemporaryProfileStudentPin = copyTemporaryProfileStudentPin;
+window.dismissTemporaryProfileStudentPin = dismissTemporaryProfileStudentPin;
 window.openStudentAuthLogs = openStudentAuthLogs;
 window.setScreen = setScreen;
 window.viewStudentProfile = viewStudentProfile;

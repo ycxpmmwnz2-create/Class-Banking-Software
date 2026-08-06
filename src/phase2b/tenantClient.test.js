@@ -1879,6 +1879,11 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       /const newPin = document\.getElementById\("profileNewStudentPin"\)\?\.value \?\? "";/,
       "the temporary value must originate in the teacher's current reset input"
     );
+    assert.match(
+      resetBlock,
+      /const newPin = document\.getElementById\("profileNewStudentPin"\)\?\.value \?\? "";\s*clearTemporaryProfileStudentPin\(\);/,
+      "a rejected or failed retry must clear any banner from an earlier success"
+    );
     assert.equal(
       (source.match(/temporaryProfileStudentPin\s*=\s*\{\s*studentId:\s*student\.id,\s*pin:\s*newPin\s*\}/g) || []).length,
       2,
@@ -1899,6 +1904,14 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.match(interactionBlock, /input\.type = reveal \? "text" : "password";/);
     assert.match(interactionBlock, /copyTextWithFallback\(pin\)/);
     assert.match(interactionBlock, /copyTextWithFallback\(temporaryPin\.pin\)/);
+    assert.match(
+      interactionBlock,
+      /function dismissTemporaryProfileStudentPin\(\) \{\s*if \(!requireTeacher\(\) \|\| screen !== "studentProfile"\) return;\s*clearTemporaryProfileStudentPin\(\);\s*render\(\);/,
+      "the manual dismiss control must remain teacher/profile-gated and clear before rendering"
+    );
+    assert.equal(source.includes("aria-pressed"), false, "the action-named visibility button must not expose contradictory pressed state");
+    assert.match(source, />Copy typed PIN<\/button>/);
+    assert.match(source, />Copy PIN for student<\/button>/);
 
     assert.match(
       source,

@@ -84,11 +84,10 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await visibilityButton.click()
     await expect(pinInput).toHaveAttribute('type', 'text')
     await expect(visibilityButton).toHaveText('Hide PIN')
-    await expect(visibilityButton).toHaveAttribute('aria-pressed', 'true')
     await visibilityButton.click()
     await expect(pinInput).toHaveAttribute('type', 'password')
 
-    await page.getByRole('button', { name: 'Copy new PIN' }).first().click()
+    await page.getByRole('button', { name: 'Copy typed PIN' }).click()
     await expect(page.locator('#profileNewStudentPinCopyStatus')).toHaveText('New PIN copied.')
     expect(await page.evaluate(() => window.__COPIED_PROFILE_PIN__)).toBe('1357')
 
@@ -110,12 +109,28 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
       })
       document.execCommand = () => false
     })
-    await page.getByRole('button', { name: 'Copy new PIN' }).last().click()
+    await page.getByRole('button', { name: 'Copy PIN for student' }).click()
     await expect(page.locator('#temporaryProfileStudentPinCopyStatus')).toHaveText(
       'Could not copy the new PIN. Select it and copy it manually.',
     )
     expect(await page.locator('textarea').count()).toBe(0)
 
+    await pinInput.fill('12')
+    await page.evaluate(() => window.resetProfileStudentPin())
+    await expect(page.locator('#temporaryProfileStudentPin')).toHaveCount(0)
+    await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain(
+      'Enter a new PIN containing exactly 4 digits.',
+    )
+
+    await pinInput.fill('1357')
+    await page.evaluate(() => window.resetProfileStudentPin())
+    await expect(page.locator('#temporaryProfileStudentPinValue')).toHaveText('1357')
+    await page.getByRole('button', { name: 'Done — hide PIN' }).click()
+    await expect(page.locator('#temporaryProfileStudentPin')).toHaveCount(0)
+
+    await pinInput.fill('1357')
+    await page.evaluate(() => window.resetProfileStudentPin())
+    await expect(page.locator('#temporaryProfileStudentPinValue')).toHaveText('1357')
     await page.locator('#profileStudentSelect').selectOption(TENANT_A.studentId)
     await expect(page.locator('#temporaryProfileStudentPin')).toHaveCount(0)
     await page.locator('#profileStudentSelect').selectOption(TENANT_A.sharedStudentId)
