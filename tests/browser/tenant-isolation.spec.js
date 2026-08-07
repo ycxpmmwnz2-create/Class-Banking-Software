@@ -349,6 +349,54 @@ test("ready teacher header shows only the resolved tenant classroom code", async
   const badge = page.locator(".hero-badge");
   await expect(badge).toContainText(`Classroom code: ${TENANT_A.studentLoginCode}`);
   await expect(badge).not.toContainText(TENANT_B.studentLoginCode);
+  const desktopHeader = await page.evaluate(() => {
+    const hero = document.querySelector(".hero");
+    const title = hero?.querySelector("h1");
+    const logo = hero?.querySelector(".center-logo");
+    const content = hero?.querySelector(".hero-content");
+    const navigation = document.querySelector(".button-bar");
+    if (!hero || !title || !logo || !content || !navigation) {
+      throw new Error("ready header did not render");
+    }
+    const heroRect = hero.getBoundingClientRect();
+    const logoRect = logo.getBoundingClientRect();
+    const contentRect = content.getBoundingClientRect();
+    const titleStyle = getComputedStyle(title);
+    return {
+      heroHeight: heroRect.height,
+      titleHeight: title.getBoundingClientRect().height,
+      titleLineHeight: Number.parseFloat(titleStyle.lineHeight),
+      navigationTop: navigation.getBoundingClientRect().top,
+      viewportHeight: window.innerHeight,
+      contentInsideHero:
+        logoRect.left >= heroRect.left &&
+        logoRect.right <= heroRect.right &&
+        contentRect.left >= heroRect.left &&
+        contentRect.right <= heroRect.right,
+    };
+  });
+  expect(desktopHeader.heroHeight).toBeLessThan(260);
+  expect(desktopHeader.titleHeight).toBeLessThanOrEqual(desktopHeader.titleLineHeight * 1.25);
+  expect(desktopHeader.navigationTop).toBeLessThan(desktopHeader.viewportHeight);
+  expect(desktopHeader.contentInsideHero).toBe(true);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileHeader = await page.evaluate(() => {
+    const hero = document.querySelector(".hero");
+    const badge = document.querySelector(".hero-badge");
+    if (!hero || !badge) throw new Error("responsive header did not render");
+    const heroRect = hero.getBoundingClientRect();
+    const badgeRect = badge.getBoundingClientRect();
+    return {
+      heroHeight: heroRect.height,
+      badgeInsideHero: badgeRect.left >= heroRect.left && badgeRect.right <= heroRect.right,
+      pageOverflows: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    };
+  });
+  expect(mobileHeader.heroHeight).toBeLessThan(430);
+  expect(mobileHeader.badgeInsideHero).toBe(true);
+  expect(mobileHeader.pageOverflows).toBe(false);
+  await page.setViewportSize({ width: 1280, height: 720 });
   const loginInfo = page.locator(".student-login-info");
   await expect(loginInfo).toContainText("Student Login Information");
   await expect(loginInfo.locator("#teacherStudentClassroomCode")).toHaveText(TENANT_A.studentLoginCode);

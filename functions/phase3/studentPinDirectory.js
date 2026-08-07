@@ -1,5 +1,6 @@
 import { HttpsError } from 'firebase-functions/v2/https'
 
+import { FIRESTORE_COLLECTIONS, TEACHER_STATUS } from '../phase1/firestoreSchema.js'
 import { validateCanonicalDocumentId } from '../phase2b/identityNormalization.js'
 import { STUDENT_CREDENTIAL_COLLECTIONS } from '../phase2b/studentCredentialPaths.js'
 import {
@@ -46,9 +47,9 @@ import {
  * rules deploy BEFORE the V2 server gate. Because V2 is gated off until then, no
  * document in this collection can exist while the legacy ruleset is live. Do not
  * deploy any V2 Function that writes here while `firestore.rules` is the active
- * ruleset. Note that `firebase.json` still points its firestore.rules target at
- * that legacy file, so a routine `firebase deploy --only firestore:rules` after
- * launch would reintroduce the exposure.
+ * ruleset. The default production `firebase.json` therefore selects
+ * `firestore.phase3.final.rules`; the release-order contract pins that target so
+ * a routine rules deployment cannot silently restore the recursive baseline.
  *
  * `tests/firestore/rules.baseline.test.js` pins this exposure as a fact rather
  * than leaving it an assumption, so narrowing the legacy rule later fails that
@@ -62,6 +63,7 @@ import {
 export const STUDENT_PIN_DIRECTORY_COLLECTION = 'studentPins'
 
 const ASCII_FOUR_DIGITS_REGEX = /^[0-9]{4}$/
+const STUDENT_PIN_DOCUMENT_KEYS = Object.freeze(['pin', 'studentId', 'updatedAt'])
 
 const GENERIC_CLIENT_MESSAGES = Object.freeze({
   'unauthenticated': 'Sign in required.',
@@ -107,11 +109,29 @@ export function buildStudentPinDocument({ studentId, pin, timestamp }) {
       'pin must be exactly 4 ASCII digits.',
     )
   }
+  if (!isValidTimestamp(timestamp)) {
+    throw new StudentPinDirectoryError(
+      'invalid-argument',
+      'timestamp must be a valid timestamp value.',
+    )
+  }
   return Object.freeze({
     studentId: validStudentId,
     pin,
     updatedAt: timestamp,
   })
+}
+
+function isValidTimestamp(value) {
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (value instanceof Date) return Number.isFinite(value.getTime())
+  if (!value || typeof value !== 'object' || typeof value.toDate !== 'function') return false
+  try {
+    const date = value.toDate()
+    return date instanceof Date && Number.isFinite(date.getTime())
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -122,6 +142,11 @@ export function buildStudentPinDocument({ studentId, pin, timestamp }) {
  */
 function readableEntry(docSnap) {
   const data = docSnap.data() ?? {}
+  const keys = Object.keys(data).sort()
+  if (
+    keys.length !== STUDENT_PIN_DOCUMENT_KEYS.length ||
+    keys.some((key, index) => key !== STUDENT_PIN_DOCUMENT_KEYS[index])
+  ) return null
   let canonicalStudentId
   try {
     canonicalStudentId = validateCanonicalDocumentId(docSnap.id, 'studentId')
@@ -131,7 +156,42 @@ function readableEntry(docSnap) {
   if (canonicalStudentId !== docSnap.id) return null
   if (data.studentId !== canonicalStudentId) return null
   if (typeof data.pin !== 'string' || !ASCII_FOUR_DIGITS_REGEX.test(data.pin)) return null
+  if (!isValidTimestamp(data.updatedAt)) return null
   return { studentId: canonicalStudentId, pin: data.pin }
+}
+
+function snapshotExists(snapshot) {
+  return Boolean(snapshot && snapshot.exists === true)
+}
+
+async function readAuthorizedPinSnapshot(transaction, firestore, tenant) {
+  const teacherRef = firestore
+    .collection(FIRESTORE_COLLECTIONS.TEACHERS)
+    .doc(tenant.teacherUid)
+  const classroomRef = firestore
+    .collection(FIRESTORE_COLLECTIONS.CLASSROOMS)
+    .doc(tenant.classroomId)
+
+  const teacherSnap = await transaction.get(teacherRef)
+  const classroomSnap = await transaction.get(classroomRef)
+  const teacher = teacherSnap.data?.() ?? {}
+  const classroom = classroomSnap.data?.() ?? {}
+
+  if (
+    !snapshotExists(teacherSnap) ||
+    !snapshotExists(classroomSnap) ||
+    teacher.uid !== tenant.teacherUid ||
+    teacher.status !== TEACHER_STATUS.ACTIVE ||
+    teacher.classroomId !== tenant.classroomId ||
+    classroom.ownerUid !== tenant.teacherUid
+  ) {
+    throw new StudentPinDirectoryError(
+      'failed-precondition',
+      'The reciprocal tenant foundation changed or is inconsistent.',
+    )
+  }
+
+  return transaction.get(studentPinCollection(firestore, tenant.classroomId))
 }
 
 /**
@@ -142,8 +202,12 @@ function readableEntry(docSnap) {
  * teacher's room. The request must be empty for the same reason.
  */
 export async function listStudentPinsV2(request, { firestore, auth } = {}) {
-  if (!firestore || typeof firestore.collection !== 'function') {
-    throw new TypeError('firestore with collection method is required.')
+  if (
+    !firestore ||
+    typeof firestore.collection !== 'function' ||
+    typeof firestore.runTransaction !== 'function'
+  ) {
+    throw new TypeError('firestore with collection and runTransaction methods is required.')
   }
   if (request !== undefined && request !== null) {
     if (typeof request !== 'object' || Array.isArray(request)) {
@@ -161,16 +225,17 @@ export async function listStudentPinsV2(request, { firestore, auth } = {}) {
   }
 
   const tenant = await resolveActiveTeacherTenant({ firestore, auth })
-  const snapshot = await studentPinCollection(firestore, tenant.classroomId).get()
+  return firestore.runTransaction(async transaction => {
+    const snapshot = await readAuthorizedPinSnapshot(transaction, firestore, tenant)
+    const pins = []
+    for (const docSnap of snapshot.docs ?? []) {
+      const entry = readableEntry(docSnap)
+      if (entry) pins.push(entry)
+    }
+    pins.sort((a, b) => a.studentId.localeCompare(b.studentId))
 
-  const pins = []
-  for (const docSnap of snapshot.docs ?? []) {
-    const entry = readableEntry(docSnap)
-    if (entry) pins.push(entry)
-  }
-  pins.sort((a, b) => a.studentId.localeCompare(b.studentId))
-
-  return Object.freeze({ classroomId: tenant.classroomId, pins })
+    return Object.freeze({ classroomId: tenant.classroomId, pins })
+  })
 }
 
 function externalCodeFor(error) {

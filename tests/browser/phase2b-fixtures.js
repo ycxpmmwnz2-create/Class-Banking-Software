@@ -55,8 +55,9 @@ export const BROWSER_RULES_PATH = process.env.PHASE3_REHEARSAL_MODE === "release
 // numbers Section 5 defines, not free-form slugs. The production tenant data
 // projection now validates identity strictly (a non-canonical ID would let two
 // document IDs map onto one student), so these fixtures must carry the real
-// contract rather than the looser pre-Phase-3 shapes. Values stay distinct
-// across tenants so a cross-tenant render still fails loudly.
+// contract rather than the looser pre-Phase-3 shapes. The shared student uses
+// the same numeric ID in both tenants so browser isolation tests detect a stale
+// tenant-keyed auxiliary map instead of passing because the IDs never collide.
 export const TENANT_A = {
   label: "A",
   email: "teacher-a@example.test",
@@ -82,7 +83,7 @@ export const TENANT_B = {
   password: "test-password-b",
   classroomId: "classroom-b",
   studentId: "21",
-  sharedStudentId: "22",
+  sharedStudentId: "12",
   transactionId: "1700000000021",
   historyId: "1700000000022",
   classroomName: "Room B Afternoon",

@@ -80,11 +80,15 @@
       background: linear-gradient(135deg, rgba(94, 199, 194, 0.96), rgba(199, 233, 249, 0.94));
       border: 1px solid rgba(255, 255, 255, 0.65);
       border-radius: var(--radius-lg);
-      padding: 26px;
+      padding: 20px 24px;
       box-shadow: var(--shadow);
       margin-bottom: 18px;
       position: relative;
       overflow: hidden;
+      display: grid;
+      grid-template-columns: 160px minmax(0, 1fr);
+      gap: 22px;
+      align-items: center;
     }
 
     .hero::after {
@@ -101,25 +105,29 @@
     .hero-content {
       position: relative;
       z-index: 1;
-      display: grid;
-      grid-template-columns: 1.2fr auto;
-      gap: 20px;
-      align-items: center;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      align-items: flex-start;
     }
 
     .center-logo-wrap {
       display: flex;
       justify-content: center;
       align-items: center;
-      margin-bottom: 18px;
+      margin: 0;
+      position: relative;
+      z-index: 1;
     }
 
     .center-logo {
-      width: min(360px, 82vw);
+      width: 160px;
+      max-width: 100%;
       height: auto;
       display: block;
       opacity: 0.96;
-      border-radius: 18px;
+      border-radius: 16px;
     }
 
 
@@ -133,14 +141,25 @@
     }
 
     .hero-badge {
-      background: rgba(255, 255, 255, 0.62);
-      border: 1px solid rgba(255, 255, 255, 0.72);
-      border-radius: 999px;
-      padding: 12px 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      max-width: 100%;
       font-weight: 900;
       color: var(--teal-dark);
-      box-shadow: var(--shadow-soft);
-      white-space: nowrap;
+    }
+
+    .hero-meta-item {
+      min-width: 0;
+      max-width: 100%;
+      background: rgba(255, 255, 255, 0.62);
+      border: 1px solid rgba(255, 255, 255, 0.76);
+      border-radius: 12px;
+      padding: 8px 11px;
+      box-shadow: 0 5px 14px rgba(30, 80, 89, 0.1);
+      font-size: 14px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
     }
 
     .classroom-code {
@@ -723,7 +742,11 @@
       .dashboard-insights .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .grid { grid-template-columns: minmax(0, 1fr); }
       .wide-grid { grid-template-columns: 1fr; }
-      .hero-content { grid-template-columns: 1fr; }
+      .hero {
+        grid-template-columns: 130px minmax(0, 1fr);
+        gap: 18px;
+      }
+      .center-logo { width: 130px; }
       .roster-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .roster-row .no-print {
         grid-column: 1 / -1;
@@ -751,13 +774,19 @@
         padding: 16px;
         margin-bottom: 12px;
         border-radius: 20px;
+        display: block;
       }
-      .hero-content { gap: 12px; }
-      .hero-badge {
-        white-space: normal;
+      .hero-content {
+        gap: 12px;
+        align-items: center;
         text-align: center;
       }
-      .center-logo { width: min(300px, 86vw); }
+      .hero-badge {
+        justify-content: center;
+      }
+      .hero-meta-item { text-align: left; }
+      .center-logo-wrap { margin-bottom: 12px; }
+      .center-logo { width: min(150px, 48vw); }
       .brand-mark { width: 40px; height: 40px; }
       .brand-name { font-size: 18px; }
       .button-bar {
@@ -3225,7 +3254,7 @@ link.click();
               <h1>Mr. Morgan's Class Cash</h1>
               <p class="tagline">Classroom Banking Platform · Positive Vibes Only</p>
             </div>
-            ${resolvedClassroomHeaderLabel() ? `<div class="hero-badge">Classroom: ${escapeHtml(resolvedClassroomHeaderLabel())}${resolvedStudentLoginCode() ? ` &middot; Classroom code: <span class="classroom-code">${escapeHtml(resolvedStudentLoginCode())}</span>` : ""}${resolvedTeacherLabel() ? ` &middot; Teacher: ${escapeHtml(resolvedTeacherLabel())}` : ""}${v2IsOffline ? ' <span class="offline-badge" style="background: #f59e0b; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px;">[Offline view]</span>' : ""}</div>` : '<div class="hero-badge">Fast, Simple and Student Friendly</div>'}
+            ${resolvedClassroomHeaderLabel() ? `<div class="hero-badge"><span class="hero-meta-item">Classroom: ${escapeHtml(resolvedClassroomHeaderLabel())}</span>${resolvedStudentLoginCode() ? `<span class="hero-meta-item">Classroom code: <span class="classroom-code">${escapeHtml(resolvedStudentLoginCode())}</span></span>` : ""}${resolvedTeacherLabel() ? `<span class="hero-meta-item">Teacher: ${escapeHtml(resolvedTeacherLabel())}</span>` : ""}${v2IsOffline ? '<span class="hero-meta-item offline-badge" style="background: #f59e0b; color: white;">Offline view</span>' : ""}</div>` : '<div class="hero-badge"><span class="hero-meta-item">Fast, Simple and Student Friendly</span></div>'}
           </div>
         </section>
 

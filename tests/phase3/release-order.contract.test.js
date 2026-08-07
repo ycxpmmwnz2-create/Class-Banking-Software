@@ -652,6 +652,17 @@ describe('Phase 3 release-order source contract', () => {
     }
   })
 
+  it('boundary: the default production Firebase config can deploy only final rules', () => {
+    const firebaseConfig = JSON.parse(
+      readFileSync(new URL('../../firebase.json', import.meta.url), 'utf8'),
+    )
+    assert.equal(
+      firebaseConfig.firestore?.rules,
+      'firestore.phase3.final.rules',
+      'a routine production rules deploy must never select the recursive legacy baseline',
+    )
+  })
+
   it('boundary: IAM role definitions and all governing references are checksum-pinned', () => {
     const governingDocuments = [brief, runbook, iamEvidence]
     for (const [file, expectedHash] of [

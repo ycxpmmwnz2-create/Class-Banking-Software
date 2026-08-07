@@ -15,7 +15,7 @@ import {
  * `get()`. Documents are addressed by full path so a query can never
  * accidentally span classrooms.
  */
-function createMockFirestore(initialDocs = {}) {
+function createMockFirestore(initialDocs = {}, { beforeTransaction } = {}) {
   const store = new Map(Object.entries(initialDocs))
 
   function snapshot(path, data) {
@@ -53,7 +53,14 @@ function createMockFirestore(initialDocs = {}) {
     }
   }
 
-  return { store, collection: collectionRef }
+  return {
+    store,
+    collection: collectionRef,
+    async runTransaction(callback) {
+      beforeTransaction?.(store)
+      return callback({ get: reference => reference.get() })
+    },
+  }
 }
 
 function foundation() {
@@ -139,6 +146,9 @@ test('a malformed or mis-pathed entry is skipped rather than shown against the w
     'classrooms/class-a/studentPins/4': pinDoc('4', 'abcd'),
     'classrooms/class-a/studentPins/5': pinDoc('5', 1357),
     'classrooms/class-a/studentPins/6': { updatedAt: 1000 },
+    'classrooms/class-a/studentPins/7': { studentId: '7', pin: '7777' },
+    'classrooms/class-a/studentPins/8': pinDoc('8', '8888', { updatedAt: Number.NaN }),
+    'classrooms/class-a/studentPins/9': pinDoc('9', '9999', { extra: true }),
   })
 
   const result = await listStudentPinsV2({}, { firestore, auth: authA })
@@ -146,6 +156,30 @@ test('a malformed or mis-pathed entry is skipped rather than shown against the w
   assert.deepEqual(result.pins, [{ studentId: '1', pin: '1357' }])
   // The copied document's PIN must not surface under either ID.
   assert.ok(!JSON.stringify(result.pins).includes('2468'))
+})
+
+test('tenant authority is revalidated in the same transaction that reads PINs', async () => {
+  const firestore = createMockFirestore(
+    {
+      ...foundation(),
+      'classrooms/class-a/studentPins/1': pinDoc('1', '1357'),
+    },
+    {
+      beforeTransaction(store) {
+        store.set('teachers/teacher-a', {
+          uid: 'teacher-a',
+          classroomId: 'class-a',
+          status: 'disabled',
+        })
+      },
+    },
+  )
+
+  await assert.rejects(
+    () => listStudentPinsV2({}, { firestore, auth: authA }),
+    error => error instanceof StudentPinDirectoryError &&
+      error.code === 'failed-precondition',
+  )
 })
 
 test('an unauthenticated or disabled caller is refused before any PIN is read', async () => {
@@ -181,6 +215,13 @@ test('buildStudentPinDocument pins the exact stored shape and rejects a non-PIN'
     )
   }
   assert.throws(() => buildStudentPinDocument({ studentId: '../x', pin: '0427', timestamp: 1 }))
+  for (const badTimestamp of [undefined, Number.NaN, new Date('invalid'), {}, { toDate: () => 'no' }]) {
+    assert.throws(
+      () => buildStudentPinDocument({ studentId: '7', pin: '0427', timestamp: badTimestamp }),
+      error => error instanceof StudentPinDirectoryError &&
+        error.code === 'invalid-argument',
+    )
+  }
 })
 
 test('studentPinPath refuses a traversal or non-canonical identifier', () => {
