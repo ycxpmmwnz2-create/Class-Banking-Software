@@ -579,6 +579,62 @@ export async function orchestrateAuthLogsFetch(session, fetchFn, applyFn) {
   return { executed: true, logs };
 }
 
+/**
+ * Validates a teacher PIN-directory response before any of it reaches the UI.
+ *
+ * Every entry must be an exact { studentId, pin } pair with a canonical student
+ * ID and exactly four ASCII digits. A malformed entry drops the WHOLE response
+ * rather than being filtered out: a partially trusted PIN list could show one
+ * child's PIN against another child's name, which is worse than showing none.
+ */
+export function validateStudentPinDirectoryResponse(response) {
+  const result = response?.data || response;
+  if (!exactObject(result, ["pins"])) return null;
+  if (!Array.isArray(result.pins)) return null;
+
+  const seen = new Set();
+  const pins = [];
+  for (const entry of result.pins) {
+    if (!exactObject(entry, ["studentId", "pin"])) return null;
+    if (typeof entry.studentId !== "string" || !/^[1-9][0-9]{0,17}$/.test(entry.studentId)) {
+      return null;
+    }
+    if (typeof entry.pin !== "string" || !/^[0-9]{4}$/.test(entry.pin)) return null;
+    if (seen.has(entry.studentId)) return null;
+    seen.add(entry.studentId);
+    pins.push({ studentId: entry.studentId, pin: entry.pin });
+  }
+  return pins;
+}
+
+export async function orchestrateStudentPinDirectoryFetch(session, fetchFn) {
+  const captured = session.captureIdentity();
+  let response;
+  try {
+    response = await fetchFn();
+  } catch (err) {
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+    return {
+      executed: false,
+      reason: "student-pin-directory-fetch-failed",
+      error: mapSafeClientError(err)
+    };
+  }
+  // The epoch is rechecked BEFORE the response is validated or returned, so a
+  // PIN list that arrives after a tenant switch can never be rendered against
+  // the incoming teacher's roster.
+  if (!session.validateCapturedIdentity(captured)) {
+    return { executed: false, reason: "stale-epoch-ignored" };
+  }
+  const pins = validateStudentPinDirectoryResponse(response);
+  if (pins === null) {
+    return { executed: false, reason: "student-pin-directory-malformed" };
+  }
+  return { executed: true, pins };
+}
+
 export async function orchestrateStudentPinReset(session, resetFn, payload) {
   const captured = session.captureIdentity();
   let result;

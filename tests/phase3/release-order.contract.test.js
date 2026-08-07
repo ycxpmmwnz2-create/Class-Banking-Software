@@ -993,6 +993,12 @@ describe('Phase 3 release-order source contract', () => {
       // checkout proof, split out of productionEnvironment.js so the deployed
       // Functions graph carries no subprocess capability.
       'reviewedCheckout.js', 'reviewedCheckout.test.js',
+      // Teacher-visible current student PINs. Andrew approved recoverable PINs so
+      // a teacher can look one up instead of resetting blind. Deliberately a
+      // separate module and a separate Firestore collection, so the reviewed
+      // credential document keeps its exact key set and its authentication
+      // material is untouched.
+      'studentPinDirectory.js', 'studentPinDirectory.test.js',
     ])
 
     /**

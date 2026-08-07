@@ -798,6 +798,45 @@ then signs into each tenant through the real V2 callable and Auth emulator. It
 observes exactly one read of each authenticated student's own document and no
 teacher cache, legacy aggregate, or submitted PIN persistence.
 
+## Teacher-visible student PIN evidence
+
+`functions/phase3/studentPinDirectory.test.js` behaviorally proves that the
+classroom is resolved from the caller's identity rather than the request, that any
+request field is refused so no parameter can select another classroom, that a
+second teacher sees a different set, that malformed or mis-pathed entries are
+skipped rather than shown against the wrong student, that the stored shape is
+exactly `studentId`/`pin`/`updatedAt`, and that every failure maps to a generic
+callable code with no service message or classroom ID echoed back.
+
+The lifecycle and reset unit suites prove the mirror is written in the SAME
+transaction as the bcrypt hash — so the displayed PIN and the hash that actually
+authenticates cannot disagree — that the credential document keeps its exact
+reviewed key set and gains no PIN field, that removal deletes the PIN while
+retaining the deactivated credential and leaving a classmate's PIN intact, and
+that reset uses `set` so a student who predates the directory becomes visible on
+their first reset.
+
+`tests/firestore/rules.phase3.final.test.js` proves the directory is unreachable
+from every client identity **including its own teacher** — the only sanctioned
+read path is the Admin-SDK callable — and that the path appears nowhere in the
+ruleset, so a later `allow` would have to break the pinned digest.
+
+The browser case proves the end-to-end behavior on Chromium and WebKit: a seeded
+student shows "Not set" until one real reset through the production UI, after
+which the roster displays the exact PIN; a real save performed while PINs are
+loaded writes a tenant cache envelope that contains no PIN, which is the decisive
+evidence that the PIN never entered the aggregate; and a tenant switch shows no
+trace of the other classroom's PIN. Verified non-vacuous by mutation: merging the
+PIN into the aggregate student record fails the cache-envelope assertion.
+
+**Known coverage limit.** The browser fixtures use non-overlapping student IDs
+(11/12 versus 21/22), so they cannot distinguish a stale PIN map surviving a
+classroom switch — in production every classroom's IDs restart at 1 and would
+collide. `rosterStudentPin` therefore revalidates the captured tenant identity
+before returning any PIN, and that guard is pinned by source contract in
+`student-identity.contract.test.js` rather than by the browser suite. Removing
+either the guard or its stamp fails that contract.
+
 ## Remembered student login locator evidence
 
 Three browser cases in `tests/phase3/tenant-data.browser.spec.js` cover the

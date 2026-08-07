@@ -533,6 +533,32 @@ describe('Phase 3 Item 10 final rules', () => {
     }
   })
 
+  test('the recoverable student PIN directory is unreachable from any client, including its own teacher', async () => {
+    // Andrew approved storing a recoverable PIN so a teacher can look one up.
+    // `classrooms/{id}/studentPins/{studentId}` deliberately matches NO rule, so
+    // Firestore's default deny is the control and no pinned rules artifact had to
+    // change. That makes this test the actual proof, and it must include the
+    // OWNING teacher: the only sanctioned read path is the Admin-SDK callable,
+    // and a teacher reading the collection directly would bypass its checks.
+    const identities = [
+      teacher(A_UID),
+      teacher(B_UID),
+      student('student-a-auth', A_ROOM, A_STUDENT),
+      testEnv.unauthenticatedContext().firestore(),
+    ]
+    for (const db of identities) {
+      for (const room of [A_ROOM, B_ROOM]) {
+        await denyAllDocumentVerbs(db, `classrooms/${room}/studentPins`, A_STUDENT, room)
+      }
+    }
+
+    // The path is also absent from the ruleset entirely: an explicit allow added
+    // later would have to change the pinned artifact and fail its digest check.
+    const executable = readFileSync(FINAL_RULES_PATH, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
+    assert.doesNotMatch(executable, /studentPins/)
+  })
+
   test('ownership writes, sensitive collections, unenumerated paths, and anonymous access fail closed', async () => {
     const paths = [
       'teacherInvitations/invite',

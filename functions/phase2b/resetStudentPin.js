@@ -10,6 +10,10 @@ import {
 } from './identityNormalization.js'
 import { STUDENT_CREDENTIAL_COLLECTIONS } from './studentCredentialPaths.js'
 import { deriveDeterministicStudentAuthUid } from './scopedCredentialProjection.js'
+import {
+  buildStudentPinDocument,
+  studentPinCollection,
+} from '../phase3/studentPinDirectory.js'
 
 const ASCII_FOUR_DIGITS_REGEX = /^[0-9]{4}$/
 const SUPPORTED_CREDENTIAL_SCHEMA_VERSION = 1
@@ -200,6 +204,20 @@ export async function resetStudentPinV2(
       lockedUntil: null,
       updatedAt: attemptTime,
     })
+
+    // The teacher-visible mirror, written in the same transaction so the shown
+    // PIN and the hash that actually authenticates can never disagree. `set`
+    // rather than `update`: a student created before this directory existed has
+    // no document yet, and their first reset is exactly what makes their PIN
+    // visible.
+    transaction.set(
+      studentPinCollection(firestore, classroomId).doc(validStudentId),
+      buildStudentPinDocument({
+        studentId: validStudentId,
+        pin: request.newPin,
+        timestamp: attemptTime,
+      }),
+    )
 
     return Object.freeze({
       success: true,

@@ -17,6 +17,8 @@ import {
   orchestrateClassroomDataSave,
   orchestrateAuthLogsFetch,
   orchestrateStudentPinReset,
+  orchestrateStudentPinDirectoryFetch,
+  validateStudentPinDirectoryResponse,
   orchestrateBulkOperation,
   orchestrateCreateStudent,
   orchestrateRemoveStudent,
@@ -574,6 +576,115 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       "A rejection that lands after invalidation must be reported as stale so the new tenant's UI is never repainted with the old tenant's error"
     );
     assert.equal(res.error, undefined, "A stale rejection must not surface an error message to the new tenant");
+  });
+
+  test("a PIN directory response is rejected whole unless every entry is an exact canonical pair", async () => {
+    // Partial trust is the danger: a filtered list would keep showing PINs while
+    // silently dropping one, and a shifted list can put one child's PIN under
+    // another child's name. Every malformed response must yield null.
+    for (const [label, response] of [
+      ["a non-object", "pins"],
+      ["a missing pins key", {}],
+      ["an extra top-level key", { pins: [], classroomId: "room_a" }],
+      ["a non-array pins value", { pins: { "1": "1234" } }],
+      ["an entry missing its pin", { pins: [{ studentId: "1" }] }],
+      ["an entry with an extra field", { pins: [{ studentId: "1", pin: "1234", name: "Ada" }] }],
+      ["a three-digit PIN", { pins: [{ studentId: "1", pin: "123" }] }],
+      ["a five-digit PIN", { pins: [{ studentId: "1", pin: "12345" }] }],
+      ["a non-numeric PIN", { pins: [{ studentId: "1", pin: "abcd" }] }],
+      ["a non-string PIN", { pins: [{ studentId: "1", pin: 1234 }] }],
+      ["a non-ASCII digit PIN", { pins: [{ studentId: "1", pin: "١٢٣٤" }] }],
+      ["a zero student ID", { pins: [{ studentId: "0", pin: "1234" }] }],
+      ["a non-canonical student ID", { pins: [{ studentId: "01", pin: "1234" }] }],
+      ["a negative student ID", { pins: [{ studentId: "-1", pin: "1234" }] }],
+      ["a numeric student ID", { pins: [{ studentId: 1, pin: "1234" }] }],
+      ["a duplicate student ID", { pins: [
+        { studentId: "1", pin: "1234" },
+        { studentId: "1", pin: "5678" }
+      ] }],
+      ["one bad entry among good ones", { pins: [
+        { studentId: "1", pin: "1234" },
+        { studentId: "2", pin: "bad" },
+        { studentId: "3", pin: "5678" }
+      ] }]
+    ]) {
+      assert.equal(
+        validateStudentPinDirectoryResponse(response),
+        null,
+        `${label} must reject the whole response`
+      );
+    }
+
+    assert.deepEqual(
+      validateStudentPinDirectoryResponse({ data: { pins: [
+        { studentId: "1", pin: "0000" },
+        { studentId: "12", pin: "9999" }
+      ] } }),
+      [{ studentId: "1", pin: "0000" }, { studentId: "12", pin: "9999" }],
+      "a well-formed callable envelope is unwrapped and preserved in order"
+    );
+    assert.deepEqual(
+      validateStudentPinDirectoryResponse({ pins: [] }),
+      [],
+      "an empty classroom is a valid response, not a failure"
+    );
+  });
+
+  test("a PIN directory response that lands after a tenant switch is discarded before it can be rendered", async () => {
+    const session = new TenantSession();
+    session.transitionTo(SESSION_STATES.AUTHENTICATING);
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_a", role: "teacher", classroomId: "room_a" });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
+
+    let resolvePending;
+    const pending = new Promise(resolve => { resolvePending = resolve; });
+    const fetchPromise = orchestrateStudentPinDirectoryFetch(session, () => pending);
+
+    // Teacher A's PINs are still in flight when the tenant switches to B.
+    session.invalidate("switch-to-b", { uid: "teacher_b", role: "teacher", state: SESSION_STATES.RESOLVING });
+    resolvePending({ pins: [{ studentId: "1", pin: "1357" }] });
+
+    const res = await fetchPromise;
+    assert.equal(res.executed, false);
+    assert.equal(
+      res.reason,
+      "stale-epoch-ignored",
+      "A PIN list resolved after invalidation must never reach the incoming teacher's roster"
+    );
+    assert.equal(res.pins, undefined, "A stale PIN list must not be handed back at all");
+
+    // The same guard must hold for a rejection.
+    const failing = orchestrateStudentPinDirectoryFetch(session, () => Promise.reject(new Error("late")));
+    session.invalidate("switch-to-c", { uid: "teacher_c", role: "teacher", state: SESSION_STATES.RESOLVING });
+    const failed = await failing;
+    assert.equal(failed.executed, false);
+    assert.equal(failed.reason, "stale-epoch-ignored");
+    assert.equal(failed.error, undefined);
+  });
+
+  test("a malformed PIN directory response reports a distinct reason and yields no PINs", async () => {
+    const session = new TenantSession();
+    session.transitionTo(SESSION_STATES.AUTHENTICATING);
+    session.transitionTo(SESSION_STATES.RESOLVING);
+    session.transitionTo(SESSION_STATES.ACTIVE, { uid: "teacher_a", role: "teacher", classroomId: "room_a" });
+    session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    session.transitionTo(SESSION_STATES.READY);
+
+    const res = await orchestrateStudentPinDirectoryFetch(
+      session,
+      async () => ({ pins: [{ studentId: "1", pin: "nope" }] })
+    );
+    assert.equal(res.executed, false);
+    assert.equal(res.reason, "student-pin-directory-malformed");
+    assert.equal(res.pins, undefined);
+
+    const ok = await orchestrateStudentPinDirectoryFetch(
+      session,
+      async () => ({ pins: [{ studentId: "4", pin: "2468" }] })
+    );
+    assert.deepEqual(ok, { executed: true, pins: [{ studentId: "4", pin: "2468" }] });
   });
 
   test("integrity and permission failures never fall back to the tenant cache", async () => {

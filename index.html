@@ -150,6 +150,21 @@
       user-select: all;
     }
 
+    .roster-pin {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      -webkit-user-select: all;
+      user-select: all;
+    }
+
+    /* Printing a roster would put every student's PIN on paper. The teacher can
+       still read them on screen. */
+    @media print {
+      .roster-pin { display: none; }
+    }
+
     .message {
       background: rgba(211, 238, 233, 0.98);
       border: 1px solid rgba(216, 231, 236, 0.9);
@@ -830,7 +845,7 @@ import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, writeB
 import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
-import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
+import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateStudentPinDirectoryFetch, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
 import { formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
@@ -924,6 +939,22 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     // envelope, and the student document contract is exactly five fields.
     // Server-authoritative activation state is not exposed to clients at all.
     const v2ActivatedStudentIds = new Set();
+    // Current student PINs for the signed-in teacher's own classroom, keyed by
+    // student ID. Fetched on demand for the roster and held ONLY in memory: the
+    // PIN is deliberately never merged into `data`, so it cannot reach the tenant
+    // cache, a backup export, localStorage, or a saved write payload, all of
+    // which remain PIN-free by contract. Cleared with the rest of the tenant view
+    // state, or a previous teacher's PINs could survive a classroom switch.
+    let v2StudentPins = new Map();
+    let v2StudentPinsLoading = false;
+    let v2StudentPinsError = "";
+    // The tenant identity the loaded PINs were fetched for. Clearing the map on
+    // reset is not sufficient on its own: setScreen renders BEFORE the fetch
+    // starts, so a map that outlived a classroom switch would paint the previous
+    // teacher's PINs for one frame. Student IDs restart at 1 in every classroom,
+    // so those keys collide across tenants and the wrong child's PIN would show.
+    // This stamp makes that structurally impossible rather than ordering-dependent.
+    let v2StudentPinsIdentity = null;
     let resolvedClassroom = null;
     let resolvedTeacher = null;
     let v2IsOffline = false;
@@ -1227,6 +1258,53 @@ function toggleStudentDropdown() {
       }
     }
 
+    /**
+     * Loads the teacher's own classroom PINs for the roster.
+     *
+     * Teacher-gated and epoch-guarded like every other V2 read. A failure leaves
+     * the roster showing "Unavailable" rather than a stale or foreign PIN: the
+     * map is cleared before the call so a previous tenant's values can never be
+     * displayed against this roster while the fetch is in flight.
+     */
+    async function loadStudentPinDirectory() {
+      if (!IS_MULTI_TEACHER_V2_ENABLED || !requireTeacher()) return;
+      if (v2StudentPinsLoading) return;
+
+      v2StudentPinsLoading = true;
+      v2StudentPinsError = "";
+      v2StudentPins = new Map();
+      render();
+
+      const captured = v2TenantSession.captureIdentity();
+      const fetchFn = async () => {
+        const callable = httpsCallable(functions, "listStudentPinsV2");
+        return await callable({});
+      };
+      const res = await orchestrateStudentPinDirectoryFetch(v2TenantSession, fetchFn);
+      if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+
+      if (res.executed) {
+        v2StudentPins = new Map(res.pins.map(entry => [entry.studentId, entry.pin]));
+        v2StudentPinsIdentity = captured;
+      } else if (res.reason !== "stale-epoch-ignored") {
+        v2StudentPins = new Map();
+        v2StudentPinsIdentity = null;
+        v2StudentPinsError = res.error || "Could not load student PINs.";
+      }
+      v2StudentPinsLoading = false;
+      render();
+    }
+
+    // The roster renders one cell per student from this. Absent means the student
+    // predates the PIN directory and needs one reset before their PIN is stored.
+    // The identity check is the load-bearing part: a PIN may be rendered only
+    // while the session is still the exact tenant it was fetched for.
+    function rosterStudentPin(studentId) {
+      if (!v2StudentPinsIdentity) return "";
+      if (!v2TenantSession.validateCapturedIdentity(v2StudentPinsIdentity)) return "";
+      return v2StudentPins.get(String(studentId)) || "";
+    }
+
     function studentAuthLogTable() {
       if (studentAuthLogsLoading) {
         return '<div class="empty">Loading recent login attempts...</div>';
@@ -1272,6 +1350,11 @@ function toggleStudentDropdown() {
       if (newScreen !== "studentProfile") clearTemporaryProfileStudentPin();
       screen = newScreen;
       render();
+      // Fetched only when the roster is actually opened, so a teacher who never
+      // visits it never pulls plaintext PINs into the page at all.
+      if (newScreen === "roster" && IS_MULTI_TEACHER_V2_ENABLED && isTeacher) {
+        loadStudentPinDirectory();
+      }
     }
 
     let profileLoginIdStatus = "Checking...";
@@ -3450,7 +3533,15 @@ ${transactionTarget !== "whole" ? `
                   ${IS_MULTI_TEACHER_V2_ENABLED ? `
                   <div>
                     <label style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">PIN</label>
-                    <div class="small-note">Hidden. Use the student's profile to reset it.</div>
+                    ${v2StudentPinsLoading ? `
+                      <div class="small-note">Loading...</div>
+                    ` : v2StudentPinsError ? `
+                      <div class="small-note">Unavailable</div>
+                    ` : rosterStudentPin(student.id) ? `
+                      <div id="rosterPin-${student.id}" class="roster-pin">${escapeHtml(rosterStudentPin(student.id))}</div>
+                    ` : `
+                      <div class="small-note">Not set. Use View to set one.</div>
+                    `}
                   </div>
                   ` : `
                   <div>
@@ -3946,6 +4037,12 @@ if (screen === "editSettingsLists" && isTeacher) {
       teacherInvitationExpiryHours = 48;
       profileLoginIdStatus = "Checking...";
       clearTemporaryProfileStudentPin();
+      // Plaintext PINs belong to exactly one tenant. They must not survive a
+      // classroom switch, an invalidation, or a sign-out for even one render.
+      v2StudentPins = new Map();
+      v2StudentPinsIdentity = null;
+      v2StudentPinsLoading = false;
+      v2StudentPinsError = "";
       // The persisted-data baseline belongs to the outgoing tenant. Keeping it
       // would let the next tenant's first save diff against a foreign
       // classroom and skip documents it must write.

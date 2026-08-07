@@ -33,7 +33,9 @@ server-only and contain:
 - `authUid`: Stable Firebase Authentication UID for the student.
 - `classroomId`: Classroom identifier used in custom claims.
 - `studentId`: Student identifier used in custom claims and profile paths.
-- `pinHash`: bcrypt hash. Plaintext PINs are never stored.
+- `pinHash`: bcrypt hash. The credential document never contains a plaintext PIN.
+  Authentication always verifies against this hash. A separate teacher-visible
+  copy exists outside this document; see "Teacher-Visible Student PINs".
 - `active`: Whether the credential may authenticate.
 - `failedAttempts`: Current consecutive failed-login count.
 - `lockedUntil`: Firestore timestamp for temporary lockout, or `null`.
@@ -44,6 +46,45 @@ server-only and contain:
 Credential documents must not contain student names, balances, transactions, or
 plaintext PINs. Browser clients must not receive direct access to this
 collection.
+
+## Teacher-Visible Student PINs
+
+Andrew decided that a teacher must be able to look up a student's current PIN
+rather than reset it blind, and accepted that this requires the PIN to be
+recoverable. This is a deliberate, documented departure from the original
+bcrypt-only design, made for a classroom platform where PINs are four digits and
+guard play-money balances rather than anything of value.
+
+Current PINs are stored at:
+
+`classrooms/{classroomId}/studentPins/{studentId}`
+
+containing exactly `studentId`, `pin`, and `updatedAt`.
+
+Controls:
+
+- **Separate from the credential.** The credential document keeps its exact
+  reviewed key set and its bcrypt hash. Authentication never consults this
+  directory; `studentPinLoginV2` still verifies `pinHash`.
+- **Server-only.** The path matches no rule in any deployed ruleset, so
+  Firestore's default deny makes it unreachable from every client identity —
+  including the owning teacher. No pinned rules artifact was changed. The rules
+  test asserts the denial directly and that the path is absent from the ruleset.
+- **Read only through `listStudentPinsV2`,** which resolves the classroom from
+  the caller's authenticated identity. The request must be empty, so no
+  parameter can point at another teacher's classroom.
+- **Written only inside the same transaction** as the bcrypt hash it mirrors, by
+  `createStudentV2` and `resetStudentPinV2`, so the displayed PIN and the hash
+  that authenticates cannot disagree. Deleted when a student is removed.
+- **Never persisted client-side.** The browser holds fetched PINs in memory only,
+  stamped with the tenant they were fetched for. They never enter the aggregate
+  data object, tenant cache, localStorage, backup export, or any write payload,
+  all of which remain PIN-free by contract.
+
+Residual risk, accepted: anyone who obtains the Firestore data obtains every
+student's current PIN rather than useless hashes, and children reuse PINs
+elsewhere. Students created before this directory existed show no PIN until
+their next reset, because bcrypt hashes cannot be reversed.
 
 ## Remembered Student Login Locator
 

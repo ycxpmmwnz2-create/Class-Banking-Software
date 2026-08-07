@@ -19,6 +19,10 @@ import {
   deriveBaseLoginId,
   assertExistingCredentialIdentity,
 } from '../phase2b/syncStudentProfiles.js'
+import {
+  buildStudentPinDocument,
+  studentPinCollection,
+} from './studentPinDirectory.js'
 
 const ASCII_FOUR_DIGITS_REGEX = /^[0-9]{4}$/
 const MAX_LOGIN_ID_CANDIDATES = 200
@@ -241,11 +245,21 @@ export async function createStudentV2Service(
       pinHash,
       timestamp,
     })
+    // The teacher-visible mirror of the same PIN. Written in this transaction so
+    // a created student can never exist with a credential but no recoverable PIN,
+    // which would silently show "not set" on the roster for a brand new child.
+    const pinRef = studentPinCollection(firestore, tenant.classroomId).doc(studentId)
+    const pinDocument = buildStudentPinDocument({
+      studentId,
+      pin: validated.pin,
+      timestamp,
+    })
 
     // Every transaction read is complete before this first write.
     transaction.update(classroomRef, { nextStudentNumber: studentNumber + 1 })
     transaction.create(studentRef, studentDocument)
     transaction.create(credentialRef, credentialDocument)
+    transaction.create(pinRef, pinDocument)
 
     return Object.freeze({
       student: Object.freeze({
@@ -336,6 +350,11 @@ export async function removeStudentV2Service(
     // The counter is intentionally untouched and the credential is retained.
     transaction.delete(studentRef)
     transaction.update(credentialSnap.ref, { active: false, updatedAt: timestamp })
+    // The credential is retained deactivated for identity reasons, but a removed
+    // student has no roster row to display a PIN on, so keeping the recoverable
+    // copy would be exposure with no purpose. Deleting a document that was never
+    // created is a no-op, which is the pre-existing-student case.
+    transaction.delete(studentPinCollection(firestore, tenant.classroomId).doc(studentId))
     return Object.freeze({ success: true })
   })
 }

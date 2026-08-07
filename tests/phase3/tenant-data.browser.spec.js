@@ -603,6 +603,72 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await expect(page.locator('#rememberedStudentIdentity')).toContainText(SHARED_LOGIN_ID)
   })
 
+  test('the roster shows a current PIN that never reaches storage, an export, or another tenant', async ({ page }) => {
+    await gotoApp(page)
+
+    // Seeded students predate the PIN directory, so the roster starts blank for
+    // them — this is the state of Andrew's existing classroom.
+    await signInTeacher(page, TENANT_A)
+    await waitForQuiescence(page)
+    await page.evaluate(() => window.setScreen('roster'))
+    await expect(page.locator(`#rosterPin-${TENANT_A.sharedStudentId}`)).toHaveCount(0)
+    await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain('Not set')
+    await logout(page)
+
+    // One real reset through the production UI and callable is what makes it
+    // visible. Nothing else changes.
+    await activateThroughProductionUi(page, TENANT_A, '2468')
+
+    await signInTeacher(page, TENANT_A)
+    await waitForQuiescence(page)
+    await page.evaluate(() => window.setScreen('roster'))
+    const pinCell = page.locator(`#rosterPin-${TENANT_A.sharedStudentId}`)
+    await expect(pinCell).toHaveText('2468')
+
+    // The displayed PIN must live only in the page. Every persisted surface stays
+    // PIN-free, which is what lets the tenant cache and backups remain safe.
+    const persisted = await page.evaluate(() => [
+      ...Object.keys(localStorage).map(key => `${key}=${localStorage.getItem(key)}`),
+      ...Object.keys(sessionStorage).map(key => `${key}=${sessionStorage.getItem(key)}`),
+    ])
+    expect(persisted.join('\n')).not.toContain('2468')
+
+    // The decisive check that the PIN never entered the aggregate: perform a real
+    // save while the PINs are loaded, then inspect the tenant cache envelope the
+    // save writes to localStorage. If the PIN had been merged into `data`, it
+    // would be serialized into that envelope here.
+    const savesBefore = await page.evaluate(
+      () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
+    )
+    await page.evaluate(() => {
+      window.setScreen('editSettingsLists')
+      const input = document.getElementById('purchaseCategoryList')
+      if (!input) throw new Error('settings list input did not render')
+      input.value = 'PIN_DIRECTORY_SAVE'
+      window.saveSettingsLists()
+    })
+    await expect.poll(() => page.evaluate(
+      () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
+    )).toBeGreaterThan(savesBefore)
+    await waitForQuiescence(page)
+
+    const cached = await page.evaluate(() => window.__PHASE2B_TEST__.localKeys()
+      .filter(key => key.endsWith(':data:v1'))
+      .map(key => window.__PHASE2B_TEST__.localGet(key))
+      .join('\n'))
+    expect(cached).not.toContain('2468')
+    expect(cached).toContain('PIN_DIRECTORY_SAVE')
+    expect(await page.evaluate(() => window.__PHASE2B_TEST__.lastError())).toBeNull()
+
+    // Switching tenants must not carry the PIN across, even for one render.
+    await logout(page)
+    await signInTeacher(page, TENANT_B)
+    await waitForQuiescence(page)
+    await page.evaluate(() => window.setScreen('roster'))
+    await expect(page.locator(`#rosterPin-${TENANT_A.sharedStudentId}`)).toHaveCount(0)
+    expect(await page.evaluate(() => document.body.innerText)).not.toContain('2468')
+  })
+
   test('Phase 3 V2 destructive controls are absent and direct invocation is inert', async ({ page }) => {
     await gotoApp(page)
     await signInTeacher(page, TENANT_A)

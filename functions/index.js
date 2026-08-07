@@ -27,6 +27,7 @@ import {
   createStudentV2CallableHandler,
   removeStudentV2CallableHandler,
 } from './phase3/studentLifecycle.js'
+import { listStudentPinsV2CallableHandler } from './phase3/studentPinDirectory.js'
 import { assertV2GateAllowed } from './phase3/productionEnvironment.js'
 
 export const MULTI_TEACHER_V2_ENABLED = defineBoolean('MULTI_TEACHER_V2_ENABLED', {
@@ -210,6 +211,15 @@ export const createStudentV2 = onCall(async (request) => {
 export const removeStudentV2 = onCall(async (request) => {
   assertV2Invocation('removeStudentV2')
   return removeStudentV2CallableHandler(
+    request.data,
+    request,
+    { firestore: getFirestore() },
+  )
+})
+
+export const listStudentPinsV2 = onCall(async (request) => {
+  assertV2Invocation('listStudentPinsV2')
+  return listStudentPinsV2CallableHandler(
     request.data,
     request,
     { firestore: getFirestore() },

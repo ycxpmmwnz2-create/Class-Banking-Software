@@ -198,6 +198,24 @@ test('create allocates the counter and login ID atomically with one pre-transact
   assert.equal(credential.studentId, '7')
   assert.equal(credential.authUid, deriveDeterministicStudentAuthUid('class-a', '7'))
   assert.equal(credential.active, true)
+  // The credential document keeps its exact reviewed key set: the recoverable
+  // PIN lives in a separate collection, never as a new credential field.
+  assert.deepEqual(
+    Object.keys(credential).sort(),
+    [
+      'active', 'authUid', 'classroomId', 'createdAt', 'failedAttempts',
+      'lockedUntil', 'loginId', 'pinHash', 'pinUpdatedAt', 'schemaVersion',
+      'studentId', 'updatedAt',
+    ],
+  )
+  assert.equal(credential.pin, undefined)
+  assert.equal(JSON.stringify(credential).includes('0427'), false)
+  // The teacher-visible PIN is created in the SAME transaction, so a new student
+  // can never exist with a credential but no recoverable PIN.
+  assert.deepEqual(
+    firestore.store.get('classrooms/class-a/studentPins/7'),
+    { studentId: '7', pin: '0427', updatedAt: 1000 },
+  )
   for (const attempt of firestore.attempts) {
     const firstWrite = attempt.findIndex(operation => operation.kind !== 'read' && operation.kind !== 'read-query')
     assert.ok(firstWrite > 0)
@@ -319,6 +337,8 @@ test('remove deletes only the exact student, retains and deactivates one credent
       id: 7, name: 'Ada', balance: 2, frozen: false, transactions: [],
     },
     'classrooms/class-a/studentCredentials/ada': credential,
+    'classrooms/class-a/studentPins/7': { studentId: '7', pin: '0427', updatedAt: 1000 },
+    'classrooms/class-a/studentPins/8': { studentId: '8', pin: '1111', updatedAt: 1000 },
     'studentCredentials/ada': { untouched: true, pinHash: 'flat-secret' },
   })
   assert.deepEqual(
@@ -326,6 +346,14 @@ test('remove deletes only the exact student, retains and deactivates one credent
     { success: true },
   )
   assert.equal(firestore.store.has('classrooms/class-a/students/7'), false)
+  // The credential is retained deactivated for identity reasons, but the removed
+  // student has no roster row, so their recoverable PIN is deleted outright. A
+  // classmate's PIN must survive.
+  assert.equal(firestore.store.has('classrooms/class-a/studentPins/7'), false)
+  assert.deepEqual(
+    firestore.store.get('classrooms/class-a/studentPins/8'),
+    { studentId: '8', pin: '1111', updatedAt: 1000 },
+  )
   assert.equal(firestore.store.has('classrooms/class-a/studentCredentials/ada'), true)
   assert.equal(firestore.store.get('classrooms/class-a/studentCredentials/ada').active, false)
   assert.equal(firestore.store.get('classrooms/class-a/studentCredentials/ada').updatedAt, 3000)

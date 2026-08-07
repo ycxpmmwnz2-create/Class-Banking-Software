@@ -242,6 +242,28 @@ test('Teacher A and B reset only their resolved tenant with bidirectional isolat
   assert.equal(credA.schemaVersion, 1)
   assert.equal(credA.createdAt, 500)
   assert.equal(credA.unknownProp, 'keepMe')
+  // The credential never gains a recoverable PIN; only the separate directory
+  // does, written in the same transaction so the shown value and the hash that
+  // actually authenticates can never disagree.
+  assert.equal(credA.pin, undefined)
+  // The reset must not widen the credential document. (The PIN itself cannot be
+  // string-searched here: mockHashPin returns `hashed_<pin>`, so the test double
+  // embeds the PIN in the hash even though real bcrypt would not.)
+  assert.deepEqual(
+    Object.keys(credA).sort(),
+    [
+      'active', 'authUid', 'classroomId', 'createdAt', 'failedAttempts',
+      'lockedUntil', 'loginId', 'pinHash', 'pinUpdatedAt', 'schemaVersion',
+      'studentId', 'unknownProp', 'updatedAt',
+    ],
+  )
+  assert.deepEqual(
+    firestore.store.get('classrooms/classA/studentPins/stu1'),
+    { studentId: 'stu1', pin: '5678', updatedAt: 2000 },
+  )
+  // `set`, not `update`: this student predates the directory and had no document,
+  // which is exactly the one-reset-to-become-visible path for existing rosters.
+  assert.equal(firestore.store.has('classrooms/classB/studentPins/stu2'), false)
 
   // Teacher B's credential document remains untouched
   const credB = firestore.store.get('classrooms/classB/studentCredentials/bob-jones')

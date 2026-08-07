@@ -426,6 +426,7 @@ if (testMode === 'gate-off') {
         'resetStudentPinV2',
         'createStudentV2',
         'removeStudentV2',
+        'listStudentPinsV2',
       ]) {
         let error = null
         try {
@@ -468,6 +469,7 @@ if (testMode === 'gate-off') {
         'resetStudentPinV2',
         'createStudentV2',
         'removeStudentV2',
+        'listStudentPinsV2',
       ]) {
         await expectCallableError(
           () => httpsCallable(functions, name)({}),

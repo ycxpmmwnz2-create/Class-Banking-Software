@@ -234,7 +234,14 @@ V2 UI behavior:
 - call `studentPinLoginV2({ classroomCode, loginId, pin })` with the identical
   payload whether the two non-secret fields were typed or supplied by the
   remembered locator;
-- do not display or edit stored PINs on roster/profile screens;
+- do not allow editing a stored PIN on roster/profile screens, and change a PIN
+  only through `resetStudentPinV2`. Andrew later approved *displaying* a current
+  PIN on the teacher roster; it is read on demand from the server-only
+  `classrooms/{classroomId}/studentPins/{studentId}` directory via
+  `listStudentPinsV2`, held in memory stamped with its tenant, and never merged
+  into the aggregate. The prohibitions above on write payloads and cache
+  envelopes are unaffected. See "Teacher-Visible Student PINs" in
+  `SECURITY_PLAN.md`;
 - send a new PIN only to an authorized callable;
 - use `resetStudentPinV2` for PIN changes;
 - export PIN-free V2 backups; and
