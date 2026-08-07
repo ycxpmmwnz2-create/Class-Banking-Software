@@ -1711,6 +1711,36 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
+  test("SOURCE GUARD: the header never displays the internal classroom ID", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const helperStart = source.indexOf("function resolvedClassroomHeaderLabel() {");
+    const helperEnd = source.indexOf("\n    function resolvedStudentLoginCode() {", helperStart);
+    assert.notEqual(helperStart, -1, "the classroom header-label helper must exist");
+    assert.notEqual(helperEnd, -1, "the classroom header-label helper must have a bounded source block");
+    const helperBlock = source.slice(helperStart, helperEnd);
+
+    assert.match(
+      helperBlock,
+      /resolvedClassroom \|\| v2TenantSession\?\.classroom \|\| null/,
+      "the visible header label must come only from the resolved classroom object"
+    );
+    assert.match(
+      helperBlock,
+      /const label = classroom\?\.name;/,
+      "the visible header label must use the friendly classroom name"
+    );
+    assert.doesNotMatch(
+      helperBlock,
+      /classroomId/,
+      "the visible header label must never fall back to the internal classroom ID"
+    );
+    assert.match(
+      source,
+      /Classroom: \$\{escapeHtml\(resolvedClassroomHeaderLabel\(\)\)\}/,
+      "the ready header must HTML-escape the friendly classroom label"
+    );
+  });
+
   test("SOURCE GUARD: Google teachers persist locally while password and student sign-ins stay session-only", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const passwordStart = source.indexOf("async function loginTeacher() {");
