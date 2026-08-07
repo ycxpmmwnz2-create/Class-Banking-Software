@@ -1741,6 +1741,30 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
+  test("SOURCE GUARD: the teacher auth-log table uses the redacted V2 schema", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const tableStart = source.indexOf("function studentAuthLogTable() {");
+    const tableEnd = source.indexOf("\n    function clearTemporaryProfileStudentPin() {", tableStart);
+    assert.notEqual(tableStart, -1, "the student auth-log table must exist");
+    assert.notEqual(tableEnd, -1, "the student auth-log table must have a bounded source block");
+    const tableBlock = source.slice(tableStart, tableEnd);
+
+    assert.match(tableBlock, /formatStudentAuthLogTimestamp\(log\.timestamp\)/);
+    assert.match(tableBlock, /studentAuthLogStudentLabel\(log, data\.students\)/);
+    assert.match(tableBlock, /studentAuthLogResultLabel\(log\.success\)/);
+    assert.match(tableBlock, /studentAuthLogOutcomeLabel\(log\)/);
+    assert.doesNotMatch(
+      tableBlock,
+      /log\.loginId|<th>Login ID<\/th>/,
+      "the teacher table must not expect or display the deliberately redacted raw login ID"
+    );
+    assert.match(
+      source,
+      /Login IDs and PINs are not stored in this log\./,
+      "the teacher UI must explain the deliberate privacy redaction"
+    );
+  });
+
   test("SOURCE GUARD: Google teachers persist locally while password and student sign-ins stay session-only", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const passwordStart = source.indexOf("async function loginTeacher() {");

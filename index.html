@@ -831,6 +831,7 @@ import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
 import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
+import { formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 
@@ -1226,15 +1227,6 @@ function toggleStudentDropdown() {
       }
     }
 
-    function studentAuthLogTimestamp(timestamp) {
-      const date = typeof timestamp?.toDate === "function"
-        ? timestamp.toDate()
-        : null;
-      return date && !Number.isNaN(date.getTime())
-        ? date.toLocaleString()
-        : "Unknown";
-    }
-
     function studentAuthLogTable() {
       if (studentAuthLogsLoading) {
         return '<div class="empty">Loading recent login attempts...</div>';
@@ -1250,11 +1242,10 @@ function toggleStudentDropdown() {
 
       const rows = studentAuthLogs.map(log => `
         <tr>
-          <td>${escapeHtml(studentAuthLogTimestamp(log.timestamp))}</td>
-          <td>${escapeHtml(log.loginId || "Unknown")}</td>
-          <td>${log.success === true ? "Success" : "Failure"}</td>
-          <td>${escapeHtml(log.reason || "Unknown")}</td>
-          <td>${escapeHtml(log.studentId || "—")}</td>
+          <td>${escapeHtml(formatStudentAuthLogTimestamp(log.timestamp))}</td>
+          <td>${escapeHtml(studentAuthLogStudentLabel(log, data.students))}</td>
+          <td>${escapeHtml(studentAuthLogResultLabel(log.success))}</td>
+          <td>${escapeHtml(studentAuthLogOutcomeLabel(log))}</td>
         </tr>
       `).join("");
 
@@ -1262,11 +1253,10 @@ function toggleStudentDropdown() {
         <table>
           <thead>
             <tr>
-              <th>Timestamp</th>
-              <th>Login ID</th>
+              <th>Time</th>
+              <th>Student</th>
               <th>Result</th>
-              <th>Reason</th>
-              <th>Student ID</th>
+              <th>Details</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -3788,6 +3778,7 @@ ${transactionTarget !== "whole" ? `
           <div class="card">
             <h2>Student Auth Logs</h2>
             <p class="small-note">Most recent 25 server-recorded student login attempts.</p>
+            <p class="small-note">Login IDs and PINs are not stored in this log.</p>
             ${studentAuthLogTable()}
             <button onclick="openStudentAuthLogs()" ${studentAuthLogsLoading ? "disabled" : ""}>Refresh</button>
           </div>
