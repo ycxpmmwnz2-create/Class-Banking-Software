@@ -603,27 +603,45 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await expect(page.locator('#rememberedStudentIdentity')).toContainText(SHARED_LOGIN_ID)
   })
 
-  test('the roster shows a current PIN that never reaches storage, an export, or another tenant', async ({ page }) => {
+  test('Credentials shows a current PIN that never reaches the roster, browser storage, cache, or another tenant', async ({ page }) => {
     await gotoApp(page)
 
-    // Seeded students predate the PIN directory, so the roster starts blank for
-    // them — this is the state of Andrew's existing classroom.
+    // Open Credentials and wait for its on-demand directory read. Earlier cases
+    // may already have assigned this student a PIN, so this test establishes its
+    // own unique value instead of depending on suite order.
     await signInTeacher(page, TENANT_A)
     await waitForQuiescence(page)
     await page.evaluate(() => window.setScreen('roster'))
     await expect(page.locator(`#rosterPin-${TENANT_A.sharedStudentId}`)).toHaveCount(0)
-    await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain('Not set')
+    await page.evaluate(() => window.setScreen('credentials'))
+    const credentialRow = page.locator(
+      `[data-credential-student-id="${TENANT_A.sharedStudentId}"]`,
+    )
+    const pinCell = page.locator(`#credentialPinCell-${TENANT_A.sharedStudentId}`)
+    await expect(pinCell).not.toContainText('Loading...')
+    await expect(pinCell).not.toContainText('Unavailable')
+
+    // One real reset through the production Credentials UI and callable makes
+    // the value visible immediately; no reload or second fetch is required.
+    page.once('dialog', dialog => dialog.accept('8642'))
+    await credentialRow.getByRole('button', { name: /Reset PIN|Activate \/ Set PIN/ }).click()
+    await expect(page.locator(`#credentialPin-${TENANT_A.sharedStudentId}`)).toHaveText('8642')
+    await expect(credentialRow.getByText('Active', { exact: true })).toBeVisible()
+
+    // Moving the display means the roster has no PIN value even after the
+    // directory contains one.
+    await page.evaluate(() => window.setScreen('roster'))
+    await expect(page.locator(`#rosterPin-${TENANT_A.sharedStudentId}`)).toHaveCount(0)
+    await expect(page.locator(`#credentialPin-${TENANT_A.sharedStudentId}`)).toHaveCount(0)
+    expect(await page.evaluate(() => document.body.innerText)).not.toContain('8642')
+
+    // The server-backed value is still present after a fresh teacher session.
     await logout(page)
-
-    // One real reset through the production UI and callable is what makes it
-    // visible. Nothing else changes.
-    await activateThroughProductionUi(page, TENANT_A, '2468')
-
     await signInTeacher(page, TENANT_A)
     await waitForQuiescence(page)
-    await page.evaluate(() => window.setScreen('roster'))
-    const pinCell = page.locator(`#rosterPin-${TENANT_A.sharedStudentId}`)
-    await expect(pinCell).toHaveText('2468')
+    await page.evaluate(() => window.setScreen('credentials'))
+    await expect(page.locator(`#credentialPin-${TENANT_A.sharedStudentId}`)).toHaveText('8642')
+    await expect(credentialRow.getByText('Active', { exact: true })).toBeVisible()
 
     // The displayed PIN must live only in the page. Every persisted surface stays
     // PIN-free, which is what lets the tenant cache and backups remain safe.
@@ -631,7 +649,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
       ...Object.keys(localStorage).map(key => `${key}=${localStorage.getItem(key)}`),
       ...Object.keys(sessionStorage).map(key => `${key}=${sessionStorage.getItem(key)}`),
     ])
-    expect(persisted.join('\n')).not.toContain('2468')
+    expect(persisted.join('\n')).not.toContain('8642')
 
     // The decisive check that the PIN never entered the aggregate: perform a real
     // save while the PINs are loaded, then inspect the tenant cache envelope the
@@ -656,7 +674,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
       .filter(key => key.endsWith(':data:v1'))
       .map(key => window.__PHASE2B_TEST__.localGet(key))
       .join('\n'))
-    expect(cached).not.toContain('2468')
+    expect(cached).not.toContain('8642')
     expect(cached).toContain('PIN_DIRECTORY_SAVE')
     expect(await page.evaluate(() => window.__PHASE2B_TEST__.lastError())).toBeNull()
 
@@ -664,9 +682,10 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await logout(page)
     await signInTeacher(page, TENANT_B)
     await waitForQuiescence(page)
-    await page.evaluate(() => window.setScreen('roster'))
+    await page.evaluate(() => window.setScreen('credentials'))
+    await expect(page.locator(`#credentialPinCell-${TENANT_B.sharedStudentId}`)).toBeVisible()
     await expect(page.locator(`#rosterPin-${TENANT_A.sharedStudentId}`)).toHaveCount(0)
-    expect(await page.evaluate(() => document.body.innerText)).not.toContain('2468')
+    expect(await page.evaluate(() => document.body.innerText)).not.toContain('8642')
   })
 
   test('Phase 3 V2 destructive controls are absent and direct invocation is inert', async ({ page }) => {

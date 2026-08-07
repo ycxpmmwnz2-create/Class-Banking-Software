@@ -373,8 +373,8 @@ describe('Phase 3 student-identity source contract', () => {
     )
   })
 
-  it('source contract: the V2 UI never renders a PIN from the aggregate student record', () => {
-    // Andrew approved showing a student's current PIN on the V2 roster, so the
+  it('source contract: Credentials renders V2 PINs only from the tenant-stamped memory map', () => {
+    // Andrew approved showing a student's current PIN on Credentials, so the
     // original "V2 renders no PIN at all" rule no longer holds. What still holds,
     // and is the reason the aggregate stays safe to cache, export, and persist:
     // the displayed PIN comes from the teacher-only in-memory directory, and
@@ -392,18 +392,57 @@ describe('Phase 3 student-identity source contract', () => {
       )
     }
 
-    const rosterPinLines = matchingLines(/id="rosterPin-\$\{student\.id\}"/)
-    assert.equal(rosterPinLines.length, 1, 'exactly one V2 roster PIN cell')
-    const rosterPinContext = contextAt(rosterPinLines[0], 6, 4)
+    const credentialsStart = indexHtml.indexOf('if (screen === "credentials" && isTeacher) {')
+    const invitationsStart = indexHtml.indexOf('if (screen === "teacherInvitations"', credentialsStart)
+    assert.ok(credentialsStart !== -1 && invitationsStart > credentialsStart)
+    const credentialsMarkup = indexHtml.slice(credentialsStart, invitationsStart)
+
+    const credentialPinLines = matchingLines(/id="credentialPin-\$\{student\.id\}"/)
+    assert.equal(credentialPinLines.length, 1, 'exactly one V2 Credentials PIN value')
+    const credentialPinContext = contextAt(credentialPinLines[0], 6, 4)
     assert.match(
-      rosterPinContext,
-      /escapeHtml\(rosterStudentPin\(student\.id\)\)/,
-      'the V2 roster PIN must be read from the teacher-only directory and escaped',
+      credentialPinContext,
+      /escapeHtml\(currentPin\)/,
+      'the V2 Credentials PIN must be read from the teacher-only directory and escaped',
     )
     assert.doesNotMatch(
-      rosterPinContext,
+      credentialPinContext,
       /student\.pin/,
-      'the V2 roster PIN must never come from the aggregate student record',
+      'the V2 Credentials PIN must never come from the aggregate student record',
+    )
+    assert.match(
+      credentialsMarkup,
+      /currentPin = IS_MULTI_TEACHER_V2_ENABLED\s*\? credentialStudentPin\(student\.id\)/,
+      'Credentials must resolve each V2 PIN through the tenant-stamped reader',
+    )
+
+    const rosterStart = indexHtml.indexOf('if (screen === "roster" && isTeacher) {')
+    const profileStart = indexHtml.indexOf('if (screen === "studentProfile" && isTeacher) {', rosterStart)
+    assert.ok(rosterStart !== -1 && profileStart > rosterStart)
+    const rosterMarkup = indexHtml.slice(rosterStart, profileStart)
+    assert.doesNotMatch(
+      rosterMarkup,
+      /credentialStudentPin|credentialPin-|rosterPin-|class="credential-pin"/,
+      'the V2 roster must not render the teacher-visible PIN directory',
+    )
+    const setScreenStart = indexHtml.indexOf('function setScreen(newScreen) {')
+    const profileStatusStart = indexHtml.indexOf('let profileLoginIdStatus =', setScreenStart)
+    assert.ok(setScreenStart !== -1 && profileStatusStart > setScreenStart)
+    const setScreenBody = indexHtml.slice(setScreenStart, profileStatusStart)
+    assert.match(
+      setScreenBody,
+      /if \(newScreen === "credentials" && IS_MULTI_TEACHER_V2_ENABLED && isTeacher\) \{\s*loadStudentPinDirectory\(\);\s*\}/,
+      'the PIN directory must be fetched on demand for Credentials',
+    )
+    assert.doesNotMatch(
+      setScreenBody,
+      /newScreen === "roster"[^]*loadStudentPinDirectory\(\)/,
+      'opening the roster must not fetch plaintext PINs',
+    )
+    assert.match(
+      indexHtml,
+      /@media print \{\s*\.credential-pin-column \{ display: none !important; \}/,
+      'the PIN column must be excluded from browser printing',
     )
 
     // The fetched PINs live in a module-scoped map and must never flow into the
@@ -426,10 +465,10 @@ describe('Phase 3 student-identity source contract', () => {
     // this guard a map that outlived a classroom switch would paint the previous
     // teacher's PINs for one frame — and because student IDs restart at 1 in
     // every classroom, those keys collide and the wrong child's PIN would show.
-    // The browser fixtures use non-overlapping IDs (11/12 vs 21/22) and therefore
-    // cannot distinguish this, which is why it is pinned here.
-    const readerStart = indexHtml.indexOf('function rosterStudentPin(studentId) {')
-    assert.notEqual(readerStart, -1, 'the roster PIN reader must exist')
+    // The browser fixtures deliberately use the same student ID in both tenants,
+    // and this source contract independently pins the guard itself.
+    const readerStart = indexHtml.indexOf('function credentialStudentPin(studentId) {')
+    assert.notEqual(readerStart, -1, 'the Credentials PIN reader must exist')
     const readerEnd = indexHtml.indexOf('\n    }', readerStart)
     const readerBody = indexHtml.slice(readerStart, readerEnd)
     assert.match(
@@ -440,14 +479,36 @@ describe('Phase 3 student-identity source contract', () => {
     assert.match(
       readerBody,
       /validateCapturedIdentity\(v2StudentPinsIdentity\)/,
-      'the roster PIN reader must revalidate the tenant identity before returning a PIN',
+      'the Credentials PIN reader must revalidate the tenant identity before returning a PIN',
     )
     const stampLine = matchingLines(/v2StudentPinsIdentity = captured;/)
-    assert.equal(stampLine.length, 1, 'the map is stamped exactly where it is populated')
+    assert.equal(stampLine.length, 2, 'fetch and successful reset each stamp the PIN map')
+    const fetchStampLines = stampLine.filter(line => /v2StudentPins = new Map\(res\.pins/.test(
+      contextAt(line, 2, 0),
+    ))
+    assert.equal(fetchStampLines.length, 1, 'exactly one stamp belongs to a directory response')
     assert.match(
-      contextAt(stampLine[0], 2, 0),
+      contextAt(fetchStampLines[0], 2, 0),
       /v2StudentPins = new Map\(res\.pins/,
       'the identity stamp must be set together with the PINs it describes',
+    )
+    assert.match(
+      indexHtml,
+      /const requestVersion = \+\+v2StudentPinsRequestVersion;[^]*requestVersion !== v2StudentPinsRequestVersion/,
+      'a directory response must be rejected after a newer reset invalidates its request version',
+    )
+    const resetMemoryStart = indexHtml.indexOf('function rememberResetStudentPin(')
+    assert.notEqual(resetMemoryStart, -1, 'the successful-reset memory update must exist')
+    const resetMemoryEnd = indexHtml.indexOf('\n    }', resetMemoryStart)
+    const resetMemoryBody = indexHtml.slice(resetMemoryStart, resetMemoryEnd)
+    assert.match(resetMemoryBody, /validateCapturedIdentity\(captured\)/)
+    assert.match(resetMemoryBody, /v2StudentPinsRequestVersion \+= 1;/)
+    assert.match(resetMemoryBody, /nextPins\.set\(String\(studentId\), pin\);/)
+    assert.match(resetMemoryBody, /v2StudentPinsIdentity = captured;/)
+    assert.doesNotMatch(
+      resetMemoryBody,
+      /data\.|localStorage|sessionStorage|writeTeacherCache|saveData/,
+      'a newly reset PIN must update only the tenant-stamped in-memory view',
     )
 
     // The roster PIN input is not merely hidden: updateStudent must not read it

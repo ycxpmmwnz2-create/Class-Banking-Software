@@ -834,21 +834,22 @@ not close this: Firestore rules are a permissive union, so a narrower deny is
 ignored when a broader allow matches. The operative control is release ordering
 (brief decision 8), documented in `SECURITY_PLAN.md`.
 
-The browser case proves the end-to-end behavior on Chromium and WebKit: a seeded
-student shows "Not set" until one real reset through the production UI, after
-which the roster displays the exact PIN; a real save performed while PINs are
-loaded writes a tenant cache envelope that contains no PIN, which is the decisive
-evidence that the PIN never entered the aggregate; and a tenant switch shows no
-trace of the other classroom's PIN. Verified non-vacuous by mutation: merging the
-PIN into the aggregate student record fails the cache-envelope assertion.
+The browser case proves the end-to-end behavior on Chromium and WebKit: one real
+reset through the Credentials production UI makes its unique PIN appear there
+immediately and after a fresh teacher session while the V2 roster remains
+PIN-free; a real save performed while PINs are loaded writes a tenant cache
+envelope that contains no PIN, which is the decisive evidence that the PIN never
+entered the aggregate; and a tenant switch shows no trace of the other
+classroom's unique PIN even if that tenant has its own value. Verified
+non-vacuous by mutation: merging the PIN into the aggregate student record fails
+the cache-envelope assertion.
 
-**Known coverage limit.** The browser fixtures use non-overlapping student IDs
-(11/12 versus 21/22), so they cannot distinguish a stale PIN map surviving a
-classroom switch — in production every classroom's IDs restart at 1 and would
-collide. `rosterStudentPin` therefore revalidates the captured tenant identity
-before returning any PIN, and that guard is pinned by source contract in
-`student-identity.contract.test.js` rather than by the browser suite. Removing
-either the guard or its stamp fails that contract.
+The browser fixtures deliberately give both tenants the same student ID, matching
+the production allocation pattern where IDs restart within each classroom. That
+runtime case proves a tenant switch cannot display the outgoing classroom's PIN.
+`credentialStudentPin` also revalidates the captured tenant identity before
+returning any PIN, and the source contract independently pins both that guard and
+its stamp. Removing either protection fails the focused evidence.
 
 ## Remembered student login locator evidence
 

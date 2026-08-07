@@ -99,6 +99,10 @@ Controls:
 - **Read only through `listStudentPinsV2`,** which resolves the classroom from
   the caller's authenticated identity. The request must be empty, so no
   parameter can point at another teacher's classroom.
+- **Displayed only on the teacher Credentials page.** The V2 roster, student
+  profile, student-facing screens, and printed output do not render the PIN
+  directory. The Credentials page places the PIN beside the already-visible
+  login ID and account status.
 - **Written only inside the same transaction** as the bcrypt hash it mirrors, by
   `createStudentV2` and `resetStudentPinV2`, so the displayed PIN and the hash
   that authenticates cannot disagree. Deleted when a student is removed.

@@ -236,7 +236,8 @@ V2 UI behavior:
   remembered locator;
 - do not allow editing a stored PIN on roster/profile screens, and change a PIN
   only through `resetStudentPinV2`. Andrew later approved *displaying* a current
-  PIN on the teacher roster; it is read on demand from the server-only
+  PIN beside the login ID and account status on the teacher Credentials page;
+  the V2 roster remains PIN-free. The PIN is read on demand from the server-only
   `classrooms/{classroomId}/studentPins/{studentId}` directory via
   `listStudentPinsV2`, held in memory stamped with its tenant, and never merged
   into the aggregate. The prohibitions above on write payloads and cache

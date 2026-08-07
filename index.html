@@ -169,7 +169,7 @@
       user-select: all;
     }
 
-    .roster-pin {
+    .credential-pin {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 18px;
       font-weight: 900;
@@ -178,10 +178,10 @@
       user-select: all;
     }
 
-    /* Printing a roster would put every student's PIN on paper. The teacher can
-       still read them on screen. */
+    /* Credentials are intentionally screen-only. A browser print must not put
+       every student's current PIN on paper. */
     @media print {
-      .roster-pin { display: none; }
+      .credential-pin-column { display: none !important; }
     }
 
     .message {
@@ -647,6 +647,10 @@
       margin-bottom: 10px;
       background: rgba(211, 238, 233, 0.96);
     }
+
+    .roster-row.v2-roster-row {
+      grid-template-columns: 1.2fr 0.7fr auto;
+    }
     
     .roster-row input {
       margin-bottom: 0;
@@ -747,7 +751,8 @@
         gap: 18px;
       }
       .center-logo { width: 130px; }
-      .roster-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .roster-row,
+      .roster-row.v2-roster-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .roster-row .no-print {
         grid-column: 1 / -1;
         display: flex;
@@ -829,7 +834,8 @@
         padding: 12px 4px;
         font-size: 19px;
       }
-      .roster-row {
+      .roster-row,
+      .roster-row.v2-roster-row {
         grid-template-columns: minmax(0, 1fr);
         gap: 6px;
         padding: 10px;
@@ -969,7 +975,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     // Server-authoritative activation state is not exposed to clients at all.
     const v2ActivatedStudentIds = new Set();
     // Current student PINs for the signed-in teacher's own classroom, keyed by
-    // student ID. Fetched on demand for the roster and held ONLY in memory: the
+    // student ID. Fetched on demand for Credentials and held ONLY in memory: the
     // PIN is deliberately never merged into `data`, so it cannot reach the tenant
     // cache, a backup export, localStorage, or a saved write payload, all of
     // which remain PIN-free by contract. Cleared with the rest of the tenant view
@@ -977,6 +983,9 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let v2StudentPins = new Map();
     let v2StudentPinsLoading = false;
     let v2StudentPinsError = "";
+    // Invalidates an older same-tenant directory fetch when a successful PIN
+    // reset supplies a newer value before that fetch completes.
+    let v2StudentPinsRequestVersion = 0;
     // The tenant identity the loaded PINs were fetched for. Clearing the map on
     // reset is not sufficient on its own: setScreen renders BEFORE the fetch
     // starts, so a map that outlived a classroom switch would paint the previous
@@ -1288,12 +1297,12 @@ function toggleStudentDropdown() {
     }
 
     /**
-     * Loads the teacher's own classroom PINs for the roster.
+     * Loads the teacher's own classroom PINs for the Credentials screen.
      *
      * Teacher-gated and epoch-guarded like every other V2 read. A failure leaves
-     * the roster showing "Unavailable" rather than a stale or foreign PIN: the
+     * the screen showing "Unavailable" rather than a stale or foreign PIN: the
      * map is cleared before the call so a previous tenant's values can never be
-     * displayed against this roster while the fetch is in flight.
+     * displayed on this screen while the fetch is in flight.
      */
     async function loadStudentPinDirectory() {
       if (!IS_MULTI_TEACHER_V2_ENABLED || !requireTeacher()) return;
@@ -1302,6 +1311,8 @@ function toggleStudentDropdown() {
       v2StudentPinsLoading = true;
       v2StudentPinsError = "";
       v2StudentPins = new Map();
+      v2StudentPinsIdentity = null;
+      const requestVersion = ++v2StudentPinsRequestVersion;
       render();
 
       const captured = v2TenantSession.captureIdentity();
@@ -1311,6 +1322,7 @@ function toggleStudentDropdown() {
       };
       const res = await orchestrateStudentPinDirectoryFetch(v2TenantSession, fetchFn);
       if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+      if (requestVersion !== v2StudentPinsRequestVersion) return;
 
       if (res.executed) {
         v2StudentPins = new Map(res.pins.map(entry => [entry.studentId, entry.pin]));
@@ -1324,14 +1336,32 @@ function toggleStudentDropdown() {
       render();
     }
 
-    // The roster renders one cell per student from this. Absent means the student
+    // Credentials renders one cell per student from this. Absent means the student
     // predates the PIN directory and needs one reset before their PIN is stored.
     // The identity check is the load-bearing part: a PIN may be rendered only
     // while the session is still the exact tenant it was fetched for.
-    function rosterStudentPin(studentId) {
+    function credentialStudentPin(studentId) {
       if (!v2StudentPinsIdentity) return "";
       if (!v2TenantSession.validateCapturedIdentity(v2StudentPinsIdentity)) return "";
       return v2StudentPins.get(String(studentId)) || "";
+    }
+
+    // A successful reset is newer than any PIN-directory request that was
+    // already in flight. Record the submitted value only in the tenant-stamped
+    // in-memory view and invalidate that older response so it cannot overwrite
+    // the newly confirmed PIN.
+    function rememberResetStudentPin(captured, studentId, pin) {
+      if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+      v2StudentPinsRequestVersion += 1;
+      const nextPins = v2StudentPinsIdentity &&
+        v2TenantSession.validateCapturedIdentity(v2StudentPinsIdentity)
+        ? new Map(v2StudentPins)
+        : new Map();
+      nextPins.set(String(studentId), pin);
+      v2StudentPins = nextPins;
+      v2StudentPinsIdentity = captured;
+      v2StudentPinsLoading = false;
+      v2StudentPinsError = "";
     }
 
     function studentAuthLogTable() {
@@ -1379,9 +1409,9 @@ function toggleStudentDropdown() {
       if (newScreen !== "studentProfile") clearTemporaryProfileStudentPin();
       screen = newScreen;
       render();
-      // Fetched only when the roster is actually opened, so a teacher who never
+      // Fetched only when Credentials is actually opened, so a teacher who never
       // visits it never pulls plaintext PINs into the page at all.
-      if (newScreen === "roster" && IS_MULTI_TEACHER_V2_ENABLED && isTeacher) {
+      if (newScreen === "credentials" && IS_MULTI_TEACHER_V2_ENABLED && isTeacher) {
         loadStudentPinDirectory();
       }
     }
@@ -1481,6 +1511,7 @@ function toggleStudentDropdown() {
           // student document itself carries no activation state, so there is
           // nothing to persist here.
           v2ActivatedStudentIds.add(String(student.id));
+          rememberResetStudentPin(captured, student.id, newPin);
           if (v2TenantSession.validateCapturedIdentity(captured)) {
             message = `PIN reset successfully for ${student.name}.`;
             if (screen === "studentProfile" && teacherProfileStudentId === student.id) {
@@ -2225,6 +2256,7 @@ const targetStudents = transactionTarget === "whole"
 
         if (res.executed) {
           v2ActivatedStudentIds.add(String(student.id));
+          rememberResetStudentPin(captured, student.id, newPin);
           if (v2TenantSession.validateCapturedIdentity(captured)) {
             message = `Account activated for ${student.name}.`;
             render();
@@ -2310,6 +2342,7 @@ const targetStudents = transactionTarget === "whole"
           const { successfulStudentIds, failCount } = res.result;
           for (const sId of successfulStudentIds) {
             v2ActivatedStudentIds.add(sId);
+            rememberResetStudentPin(captured, sId, newPin);
           }
           if (v2TenantSession.validateCapturedIdentity(captured)) {
             message = `Bulk activation complete. ${successfulStudentIds.length} succeeded, ${failCount} failed.`;
@@ -3554,25 +3587,12 @@ ${transactionTarget !== "whole" ? `
               ${data.students.length === 0 ? `
                 <div class="empty">No students yet. Add your first student on the left.</div>
               ` : data.students.map(student => `
-                <div class="roster-row" data-roster-student-name="${escapeHtml(student.name.toLowerCase())}">
+                <div class="roster-row${IS_MULTI_TEACHER_V2_ENABLED ? " v2-roster-row" : ""}" data-roster-student-name="${escapeHtml(student.name.toLowerCase())}">
                   <div>
                     <label for="name-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Student Name</label>
                     <input id="name-${student.id}" value="${escapeHtml(student.name)}" />
                   </div>
-                  ${IS_MULTI_TEACHER_V2_ENABLED ? `
-                  <div>
-                    <label style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">PIN</label>
-                    ${v2StudentPinsLoading ? `
-                      <div class="small-note">Loading...</div>
-                    ` : v2StudentPinsError ? `
-                      <div class="small-note">Unavailable</div>
-                    ` : rosterStudentPin(student.id) ? `
-                      <div id="rosterPin-${student.id}" class="roster-pin">${escapeHtml(rosterStudentPin(student.id))}</div>
-                    ` : `
-                      <div class="small-note">Not set. Use View to set one.</div>
-                    `}
-                  </div>
-                  ` : `
+                  ${IS_MULTI_TEACHER_V2_ENABLED ? "" : `
                   <div>
                     <label for="pin-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">PIN</label>
                     <input id="pin-${student.id}" value="${escapeHtml(student.pin)}" />
@@ -3791,6 +3811,9 @@ ${transactionTarget !== "whole" ? `
           <div class="grid">
             <div class="card">
               <h2>Student Credentials</h2>
+              ${IS_MULTI_TEACHER_V2_ENABLED ? `
+              <p class="small-note">Current PINs are shown only on this teacher screen and are never saved in this browser or included in backups.</p>
+              ` : ""}
 
               <div class="bulk-activate-controls" style="margin-bottom: 16px; padding: 12px; background: rgba(0,0,0,0.05); border-radius: 8px;">
                 <label for="bulkActivatePin" style="font-weight: bold; margin-right: 8px;">Bulk Set PIN:</label>
@@ -3804,6 +3827,7 @@ ${transactionTarget !== "whole" ? `
                     <th style="width: 40px;"></th>
                     <th>Student Name</th>
                     <th>Login ID</th>
+                    ${IS_MULTI_TEACHER_V2_ENABLED ? `<th class="credential-pin-column">PIN</th>` : ""}
                     <th>Status</th>
                     <th>Action</th>
                   </tr>
@@ -3811,16 +3835,32 @@ ${transactionTarget !== "whole" ? `
                 <tbody>
                   ${data.students.map(student => {
                     const loginId = typeof student.name === "string" ? student.name.trim().replaceAll(' ', '-').toLowerCase() : "student";
+                    const currentPin = IS_MULTI_TEACHER_V2_ENABLED
+                      ? credentialStudentPin(student.id)
+                      : "";
                     const isActive = IS_MULTI_TEACHER_V2_ENABLED
-                      ? v2ActivatedStudentIds.has(String(student.id))
+                      ? v2ActivatedStudentIds.has(String(student.id)) || Boolean(currentPin)
                       : student.credentialActive === true;
                     return `
-                      <tr>
+                      <tr data-credential-student-id="${student.id}">
                         <td>
                           <input type="checkbox" class="bulk-activate-check" value="${student.id}" style="width:16px; height:16px; cursor:pointer;" />
                         </td>
                         <td>${escapeHtml(student.name)}</td>
                         <td><code>${escapeHtml(loginId)}</code></td>
+                        ${IS_MULTI_TEACHER_V2_ENABLED ? `
+                        <td id="credentialPinCell-${student.id}" class="credential-pin-column">
+                          ${v2StudentPinsLoading ? `
+                            <span class="small-note">Loading...</span>
+                          ` : v2StudentPinsError ? `
+                            <span class="small-note">Unavailable</span>
+                          ` : currentPin ? `
+                            <span id="credentialPin-${student.id}" class="credential-pin">${escapeHtml(currentPin)}</span>
+                          ` : `
+                            <span class="small-note">Not set. Reset to create one.</span>
+                          `}
+                        </td>
+                        ` : ""}
                         <td>
                           <span style="color: ${isActive ? 'green' : 'red'}; font-weight: bold;">
                             ${isActive ? "Active" : "Inactive"}
@@ -4072,6 +4112,7 @@ if (screen === "editSettingsLists" && isTeacher) {
       v2StudentPinsIdentity = null;
       v2StudentPinsLoading = false;
       v2StudentPinsError = "";
+      v2StudentPinsRequestVersion += 1;
       // The persisted-data baseline belongs to the outgoing tenant. Keeping it
       // would let the next tenant's first save diff against a foreign
       // classroom and skip documents it must write.
