@@ -89,12 +89,13 @@ Controls:
   The operative control is release ordering — decision 8 of
   `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` requires final rules to deploy
   before the V2 server gate, and V2 is gated off until then, so no document can
-  exist in this collection while the legacy ruleset is live. Two standing
-  hazards follow: never run a V2 Function that writes here while
-  `firestore.rules` is active, and note that `firebase.json` still targets that
-  legacy file, so a routine `firebase deploy --only firestore:rules` after launch
-  would reintroduce the exposure. `tests/firestore/rules.baseline.test.js` pins
-  this as a fact so narrowing the rule later fails loudly.
+  exist in this collection while the legacy ruleset is live. One standing
+  hazard remains: never run a V2 Function that writes here while
+  `firestore.rules` is active. The default deployment target in `firebase.json`
+  is now `firestore.phase3.final.rules`, and the release-order contract pins that
+  target so a routine rules deploy cannot select the recursive legacy baseline.
+  `tests/firestore/rules.baseline.test.js` retains the legacy exposure as
+  historical evidence so narrowing that artifact later fails loudly.
 - **Read only through `listStudentPinsV2`,** which resolves the classroom from
   the caller's authenticated identity. The request must be empty, so no
   parameter can point at another teacher's classroom.

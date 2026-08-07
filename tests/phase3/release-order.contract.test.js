@@ -26,6 +26,10 @@ const architecture = readFileSync(
   new URL('../../MULTI_TEACHER_ARCHITECTURE_PLAN.md', import.meta.url),
   'utf8',
 )
+const securityPlan = readFileSync(
+  new URL('../../SECURITY_PLAN.md', import.meta.url),
+  'utf8',
+)
 const phase3Readme = readFileSync(
   new URL('./README.md', import.meta.url),
   'utf8',
@@ -660,6 +664,19 @@ describe('Phase 3 release-order source contract', () => {
       firebaseConfig.firestore?.rules,
       'firestore.phase3.final.rules',
       'a routine production rules deploy must never select the recursive legacy baseline',
+    )
+  })
+
+  it('boundary: the security plan records the safe default rules target', () => {
+    assert.match(
+      securityPlan,
+      /default deployment target in `firebase\.json`\s+is now `firestore\.phase3\.final\.rules`/,
+      'the security plan must identify final rules as the default deployment target',
+    )
+    assert.doesNotMatch(
+      securityPlan,
+      /`firebase\.json` still targets/,
+      'the security plan must not retain the superseded legacy-target warning',
     )
   })
 
