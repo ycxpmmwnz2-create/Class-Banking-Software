@@ -821,6 +821,19 @@ from every client identity **including its own teacher** — the only sanctioned
 read path is the Admin-SDK callable — and that the path appears nowhere in the
 ruleset, so a later `allow` would have to break the pinned digest.
 
+That denial is conditional on a Phase 3 ruleset being active, and
+`tests/firestore/rules.baseline.test.js` pins the counterexample: under the
+legacy production `firestore.rules`, the recursive
+`match /classrooms/{document=**}` reaches this directory, so the one hard-coded
+teacher UID can read a PIN and overwrite one. Those assertions deliberately
+assert success rather than denial — they record the current truth so that
+narrowing the recursive rule later fails loudly and forces the release-ordering
+dependency and the module comment to be rechecked. A companion case proves no
+other identity reaches the path under that ruleset. An explicit deny rule would
+not close this: Firestore rules are a permissive union, so a narrower deny is
+ignored when a broader allow matches. The operative control is release ordering
+(brief decision 8), documented in `SECURITY_PLAN.md`.
+
 The browser case proves the end-to-end behavior on Chromium and WebKit: a seeded
 student shows "Not set" until one real reset through the production UI, after
 which the roster displays the exact PIN; a real save performed while PINs are

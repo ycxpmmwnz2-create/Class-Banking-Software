@@ -21,11 +21,38 @@ import {
  * - the credential document carries the authentication material and has an
  *   exact, independently asserted key set; widening it would weaken a reviewed
  *   security contract for a convenience feature;
- * - `classrooms/{classroomId}/studentPins/{studentId}` matches no rule in any
- *   deployed ruleset, so Firestore's default deny already makes it
- *   server-only. No pinned rules artifact has to change; and
+ * - `classrooms/{classroomId}/studentPins/{studentId}` matches no rule in the
+ *   three Phase 3 rulesets, so under those Firestore's default deny makes it
+ *   server-only and no pinned artifact had to change (see the CAVEAT below,
+ *   which is load-bearing); and
  * - authentication continues to verify the bcrypt hash in the credential
  *   document. Nothing in this directory is ever consulted to authorize a login.
+ *
+ * CAVEAT — the server-only property is NOT unconditional. The legacy production
+ * ruleset `firestore.rules` contains a recursive
+ * `match /classrooms/{document=**}` that grants the single hard-coded teacher
+ * UID read AND write on everything beneath /classrooms, this directory
+ * included. Verified in the emulator: that identity can both read a PIN and
+ * overwrite one, which would make a displayed PIN disagree with the bcrypt hash
+ * that actually authenticates.
+ *
+ * An added `allow read, write: if false` does NOT fix this. Firestore rules are
+ * a permissive union — any matching allow wins, and a narrower deny is ignored.
+ * Closing it properly means narrowing that recursive legacy rule, which is a
+ * change to the live V1 ruleset and out of scope for this feature.
+ *
+ * The operative control is therefore release ordering, which
+ * `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` decision 8 already requires: final
+ * rules deploy BEFORE the V2 server gate. Because V2 is gated off until then, no
+ * document in this collection can exist while the legacy ruleset is live. Do not
+ * deploy any V2 Function that writes here while `firestore.rules` is the active
+ * ruleset. Note that `firebase.json` still points its firestore.rules target at
+ * that legacy file, so a routine `firebase deploy --only firestore:rules` after
+ * launch would reintroduce the exposure.
+ *
+ * `tests/firestore/rules.baseline.test.js` pins this exposure as a fact rather
+ * than leaving it an assumption, so narrowing the legacy rule later fails that
+ * test and forces this comment to be revisited.
  *
  * The plaintext PIN is a real secret at rest. It must reach only the
  * authenticated, active, owning teacher of that exact classroom, and it must

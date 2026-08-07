@@ -66,10 +66,35 @@ Controls:
 - **Separate from the credential.** The credential document keeps its exact
   reviewed key set and its bcrypt hash. Authentication never consults this
   directory; `studentPinLoginV2` still verifies `pinHash`.
-- **Server-only.** The path matches no rule in any deployed ruleset, so
-  Firestore's default deny makes it unreachable from every client identity —
-  including the owning teacher. No pinned rules artifact was changed. The rules
-  test asserts the denial directly and that the path is absent from the ruleset.
+- **Server-only under the Phase 3 rulesets.** The path matches no rule in
+  `firestore.phase3.final.rules`, `.bridge.rules`, or `.rollback.rules`, so
+  Firestore's default deny makes it unreachable from every client identity there
+  — including the owning teacher. No pinned rules artifact was changed. The
+  final-rules test asserts that denial directly and that the path is absent from
+  the ruleset.
+
+  **This is conditional, and the condition matters.** The legacy production
+  ruleset `firestore.rules` has a recursive `match /classrooms/{document=**}`
+  granting the one hard-coded teacher UID read and write beneath `/classrooms`,
+  which reaches this directory. Verified in the emulator: that identity can read
+  a PIN and overwrite one, and overwriting would make a displayed PIN disagree
+  with the bcrypt hash that authenticates. No other identity — student, other
+  authenticated user, or anonymous — reaches it under any ruleset.
+
+  Adding `allow read, write: if false` does **not** fix this: Firestore rules are
+  a permissive union, so any matching allow wins and a narrower deny is ignored.
+  Closing it properly requires narrowing the recursive legacy rule, which is a
+  change to the live V1 ruleset and has not been made.
+
+  The operative control is release ordering — decision 8 of
+  `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` requires final rules to deploy
+  before the V2 server gate, and V2 is gated off until then, so no document can
+  exist in this collection while the legacy ruleset is live. Two standing
+  hazards follow: never run a V2 Function that writes here while
+  `firestore.rules` is active, and note that `firebase.json` still targets that
+  legacy file, so a routine `firebase deploy --only firestore:rules` after launch
+  would reintroduce the exposure. `tests/firestore/rules.baseline.test.js` pins
+  this as a fact so narrowing the rule later fails loudly.
 - **Read only through `listStudentPinsV2`,** which resolves the classroom from
   the caller's authenticated identity. The request must be empty, so no
   parameter can point at another teacher's classroom.

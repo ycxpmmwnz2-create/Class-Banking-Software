@@ -130,6 +130,51 @@ describe('Teacher (existing hardcoded TEACHER_UID)', () => {
     await assertSucceeds(db.doc('studentAuthLogs/log-1').get())
   })
 
+  // KNOWN EXPOSURE, pinned deliberately rather than left as an assumption.
+  //
+  // The teacher-visible PIN directory at classrooms/{id}/studentPins/{studentId}
+  // relies on Firestore's default deny to stay server-only. That holds under the
+  // three Phase 3 rulesets, which enumerate their classroom subcollections. It
+  // does NOT hold here: this legacy ruleset has a recursive
+  // match /classrooms/{document=**} granting the hard-coded teacher UID read and
+  // write beneath /classrooms, which reaches the directory.
+  //
+  // An explicit `allow read, write: if false` would NOT close it — Firestore
+  // rules are a permissive union, so any matching allow wins and a narrower deny
+  // is ignored. Closing it means narrowing the recursive legacy rule, a change to
+  // the live V1 ruleset that is out of scope for the PIN feature.
+  //
+  // The operative control is release ordering (brief decision 8: final rules
+  // deploy before the V2 server gate), so no document can exist here while this
+  // ruleset is live. These assertions state the current truth so that narrowing
+  // the recursive rule later fails loudly and forces the dependency to be
+  // rechecked — including the comment in functions/phase3/studentPinDirectory.js.
+  test('legacy recursive classrooms rule still reaches the V2 student PIN directory', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertSucceeds(db.doc(`classrooms/${CLASSROOM_ID}/studentPins/${STUDENT_ID}`).get())
+    // The write side is the more damaging half: it could make a displayed PIN
+    // disagree with the bcrypt hash that actually authenticates.
+    await assertSucceeds(
+      db
+        .doc(`classrooms/${CLASSROOM_ID}/studentPins/${STUDENT_ID}`)
+        .set({ studentId: STUDENT_ID, pin: '0000', updatedAt: 1 }),
+    )
+  })
+
+  test('no other identity reaches the V2 student PIN directory under the legacy ruleset', async () => {
+    // The exposure above is scoped to the one hard-coded teacher UID. Confirm it
+    // does not extend to students, other authenticated users, or anonymous callers.
+    for (const db of [
+      testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore(),
+      testEnv.unauthenticatedContext().firestore(),
+    ]) {
+      await assertFails(db.doc(`classrooms/${CLASSROOM_ID}/studentPins/${STUDENT_ID}`).get())
+      await assertFails(
+        db.doc(`classrooms/${CLASSROOM_ID}/studentPins/${STUDENT_ID}`).set({ pin: '9999' }),
+      )
+    }
+  })
+
   test('cannot read the Phase 1 teacher document', async () => {
     const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
     await assertFails(db.doc(`teachers/${TEACHER_UID}`).get())
