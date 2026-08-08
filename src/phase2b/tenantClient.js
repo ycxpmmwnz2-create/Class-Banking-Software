@@ -49,6 +49,25 @@ export function mapSafeInvitationAdminError(error) {
   return "An unexpected internal error occurred.";
 }
 
+export function mapSafeStudentTransactionError(error) {
+  const rawCode = normalizeFirebaseErrorCode(error);
+  if (rawCode === "unauthenticated") return "Sign in required.";
+  if (rawCode === "permission-denied") return "This account cannot submit student transactions.";
+  if (rawCode === "invalid-argument") return "The transaction request was invalid.";
+  if (rawCode === "not-found") return "Your student account is not available.";
+  if (rawCode === "failed-precondition") {
+    return "This transaction cannot be completed right now. Refresh and try again.";
+  }
+  if (rawCode === "already-exists") {
+    return "This request conflicts with an existing transaction. Refresh before trying again.";
+  }
+  if (rawCode === "resource-exhausted") {
+    return "The transaction could not be completed. Please try again later.";
+  }
+  if (rawCode === "aborted") return "The transaction could not be completed. Please try again.";
+  return "An unexpected internal error occurred.";
+}
+
 export async function orchestrateProductionLogout(session, authAdapter, onRender) {
   if (!session) throw new Error("Tenant session is required for logout.");
   if (typeof onRender === "function") {
@@ -545,6 +564,13 @@ export async function orchestrateClassroomDataSave(session, saveAdapter, data, o
     }
     // A failed server save must never seed the tenant cache: the cache is only
     // ever allowed to mirror data the server accepted.
+    if (err?.reason === "concurrent-classroom-change") {
+      return {
+        executed: false,
+        reason: "concurrent-classroom-change",
+        error: "Your classroom changed while you were working. Reload and try again."
+      };
+    }
     return { executed: false, reason: "save-failed", error: mapSafeClientError(err) };
   }
 
@@ -721,6 +747,86 @@ export async function orchestrateStudentPinReset(session, resetFn, payload) {
     return { executed: false, reason: "stale-epoch-ignored-post-reset" };
   }
   return { executed: true, result };
+}
+
+function validateStudentTransactionResponse(response, captured, payload) {
+  const result = response?.data || response;
+  if (!exactObject(result, ["transaction", "balance"])) return null;
+  const transaction = result.transaction;
+  if (!exactObject(transaction, [
+    "id", "date", "studentId", "studentName", "type", "amount",
+    "reason", "memo", "category", "status", "source"
+  ])) return null;
+  const expectedStudentId = Number(captured?.studentId);
+  const validStatus = payload?.type === "Add"
+    ? ["Pending", "Approved", "Denied"].includes(transaction.status)
+    : transaction.status === "Approved";
+  if (
+    !Number.isSafeInteger(payload?.transactionId) || payload.transactionId < 1 ||
+    (payload.type !== "Add" && payload.type !== "Subtract") ||
+    !Number.isSafeInteger(payload.amount) || payload.amount < 1 ||
+    typeof payload.reason !== "string" || !payload.reason ||
+    transaction.id !== payload.transactionId ||
+    transaction.studentId !== expectedStudentId ||
+    typeof transaction.studentName !== "string" || !transaction.studentName ||
+    transaction.type !== payload.type ||
+    transaction.amount !== payload.amount ||
+    transaction.reason !== payload.reason ||
+    transaction.memo !== "" || transaction.category !== "" ||
+    transaction.source !== "Student" || !validStatus ||
+    typeof transaction.date !== "string" ||
+    Number.isNaN(new Date(transaction.date).getTime()) ||
+    typeof result.balance !== "number" || !Number.isFinite(result.balance)
+  ) return null;
+  return result;
+}
+
+export async function orchestrateStudentTransaction(session, callableAdapter, payload) {
+  if (!session) throw new Error("Tenant session is required.");
+  if (typeof callableAdapter !== "function") {
+    throw new Error("Callable adapter function is required.");
+  }
+  const captured = session.captureIdentity();
+  const readyStudent = session.getState() === SESSION_STATES.READY &&
+    captured.role === "student" &&
+    typeof captured.uid === "string" && Boolean(captured.uid) &&
+    typeof captured.classroomId === "string" && Boolean(captured.classroomId) &&
+    typeof captured.studentId === "string" && /^[1-9][0-9]*$/.test(captured.studentId) &&
+    Number.isSafeInteger(Number(captured.studentId));
+  if (!readyStudent) {
+    return {
+      executed: false,
+      reason: "student-transaction-not-ready",
+      error: "Student sign-in is required."
+    };
+  }
+
+  try {
+    const response = await callableAdapter("submitStudentTransactionV2", payload);
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+    const result = validateStudentTransactionResponse(response, captured, payload);
+    if (!result) {
+      return {
+        executed: false,
+        reason: "malformed-student-transaction-response",
+        error: "An unexpected internal error occurred."
+      };
+    }
+    return { executed: true, result };
+  } catch (error) {
+    if (!session.validateCapturedIdentity(captured)) {
+      return { executed: false, reason: "stale-epoch-ignored" };
+    }
+    const rawCode = normalizeFirebaseErrorCode(error);
+    return {
+      executed: false,
+      reason: "student-transaction-failed",
+      error: mapSafeStudentTransactionError(error),
+      rawCode
+    };
+  }
 }
 
 function validateCreatedStudentResponse(response) {

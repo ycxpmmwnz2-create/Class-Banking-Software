@@ -28,6 +28,7 @@ import {
   removeStudentV2CallableHandler,
 } from './phase3/studentLifecycle.js'
 import { listStudentPinsV2CallableHandler } from './phase3/studentPinDirectory.js'
+import { submitStudentTransactionV2CallableHandler } from './phase3/studentMoney.js'
 import { assertV2GateAllowed } from './phase3/productionEnvironment.js'
 
 export const MULTI_TEACHER_V2_ENABLED = defineBoolean('MULTI_TEACHER_V2_ENABLED', {
@@ -49,7 +50,7 @@ export const MORGAN_BANK_STAGING_PROJECT_ID = defineString('MORGAN_BANK_STAGING_
 // This identifier is part of the reviewed Functions artifact. Production V2
 // invocations require the separately configured release parameter to match it
 // exactly; emulator invocations have no deployed release and therefore do not.
-export const REVIEWED_V2_FUNCTIONS_RELEASE_ID = 'staging-support-functions-v1'
+export const REVIEWED_V2_FUNCTIONS_RELEASE_ID = 'student-money-functions-v1'
 
 /**
  * Module loading is deliberately unconditional. Section 6 requires discovery
@@ -220,6 +221,15 @@ export const removeStudentV2 = onCall(async (request) => {
 export const listStudentPinsV2 = onCall(async (request) => {
   assertV2Invocation('listStudentPinsV2')
   return listStudentPinsV2CallableHandler(
+    request.data,
+    request,
+    { firestore: getFirestore() },
+  )
+})
+
+export const submitStudentTransactionV2 = onCall(async (request) => {
+  assertV2Invocation('submitStudentTransactionV2')
+  return submitStudentTransactionV2CallableHandler(
     request.data,
     request,
     { firestore: getFirestore() },

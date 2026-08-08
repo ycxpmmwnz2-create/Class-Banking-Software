@@ -427,6 +427,7 @@ if (testMode === 'gate-off') {
         'createStudentV2',
         'removeStudentV2',
         'listStudentPinsV2',
+        'submitStudentTransactionV2',
       ]) {
         let error = null
         try {
@@ -470,6 +471,7 @@ if (testMode === 'gate-off') {
         'createStudentV2',
         'removeStudentV2',
         'listStudentPinsV2',
+        'submitStudentTransactionV2',
       ]) {
         await expectCallableError(
           () => httpsCallable(functions, name)({}),
@@ -647,7 +649,7 @@ if (testMode === 'gate-on') {
     '  try { await imported.studentPinLoginV2.run({ data: {} }); invocation = { succeeded: true } }',
     '  catch (error) { invocation = { succeeded: false, code: error?.code || null, message: String(error?.message || error) } }',
     '}',
-    "console.log('GUARD_RESULT ' + JSON.stringify({ threw, apps: getApps().length, message, invocation, warningCategories, reviewedRelease: imported?.REVIEWED_V2_FUNCTIONS_RELEASE_ID || null, releaseParamAvailable: Boolean(imported?.MULTI_TEACHER_V2_RELEASE_ID), exportsAvailable: Boolean(imported?.studentPinLogin && imported?.studentPinLoginV2 && imported?.createTeacherInvitationV2 && imported?.revokeTeacherInvitationV2 && imported?.syncStudentProfilesV2) }))",
+    "console.log('GUARD_RESULT ' + JSON.stringify({ threw, apps: getApps().length, message, invocation, warningCategories, reviewedRelease: imported?.REVIEWED_V2_FUNCTIONS_RELEASE_ID || null, releaseParamAvailable: Boolean(imported?.MULTI_TEACHER_V2_RELEASE_ID), exportsAvailable: Boolean(imported?.studentPinLogin && imported?.studentPinLoginV2 && imported?.createTeacherInvitationV2 && imported?.revokeTeacherInvitationV2 && imported?.syncStudentProfilesV2 && imported?.submitStudentTransactionV2) }))",
     'process.exit(0)',
   ].join('\n')
 
@@ -810,12 +812,12 @@ if (testMode === 'gate-on') {
         assert.deepEqual(rejected.warningCategories, ['release-id-mismatch'])
         const accepted = runGuardProbe({
           ...production,
-          MULTI_TEACHER_V2_RELEASE_ID: 'staging-support-functions-v1',
+          MULTI_TEACHER_V2_RELEASE_ID: 'student-money-functions-v1',
           FORCE_POST_GATE_APP_GUARD: 'true',
           RUN_V2_PROBE: 'true',
         })
         assert.equal(accepted.threw, false)
-        assert.equal(accepted.reviewedRelease, 'staging-support-functions-v1')
+        assert.equal(accepted.reviewedRelease, 'student-money-functions-v1')
         assert.deepEqual(accepted.invocation, {
           succeeded: false,
           code: 'failed-precondition',
@@ -831,7 +833,7 @@ if (testMode === 'gate-on') {
           FIREBASE_AUTH_EMULATOR_HOST: undefined,
           FIREBASE_CONFIG: undefined,
           GCLOUD_PROJECT: 'morgan-bank',
-          MULTI_TEACHER_V2_RELEASE_ID: 'staging-support-functions-v1',
+          MULTI_TEACHER_V2_RELEASE_ID: 'student-money-functions-v1',
           MORGAN_BANK_DEPLOYMENT_TIER: undefined,
           FORCE_POST_GATE_APP_GUARD: 'true',
           RUN_V2_PROBE: 'true',
@@ -1498,6 +1500,113 @@ if (testMode === 'gate-on') {
 
     // -----------------------------------------------------------------------
     describe('C2. Fresh-classroom lifecycle seam', () => {
+      it('persists student Add and Subtract submissions so the owning teacher reads the pending credit', async () => {
+        const teacher = await onboardGoogleTeacher(
+          'student.money@school.org',
+          'Student Money Classroom',
+        )
+        const created = await httpsCallable(
+          teacher.functions,
+          'createStudentV2',
+        )({
+          name: 'Money Student',
+          startingBalance: 25,
+          pin: '2468',
+        })
+
+        const studentClient = createTestClientApp()
+        const login = await httpsCallable(
+          studentClient.functions,
+          'studentPinLoginV2',
+        )({
+          classroomCode: teacher.studentLoginCode,
+          loginId: created.data.loginId,
+          pin: '2468',
+        })
+        await signInWithCustomToken(studentClient.auth, login.data.token)
+
+        const addPayload = {
+          transactionId: 1101,
+          type: 'Add',
+          amount: 10,
+          reason: 'Homework',
+        }
+        const add = await httpsCallable(
+          studentClient.functions,
+          'submitStudentTransactionV2',
+        )(addPayload)
+        assert.equal(add.data.balance, 25)
+        assert.deepEqual(add.data.transaction, {
+          id: 1101,
+          date: add.data.transaction.date,
+          studentId: 1,
+          studentName: 'Money Student',
+          type: 'Add',
+          amount: 10,
+          reason: 'Homework',
+          memo: '',
+          category: '',
+          status: 'Pending',
+          source: 'Student',
+        })
+        assert.equal(Number.isNaN(Date.parse(add.data.transaction.date)), false)
+
+        const transactionPath =
+          `classrooms/${teacher.classroomId}/transactions/${addPayload.transactionId}`
+        const teacherRead = await getDoc(doc(teacher.firestore, transactionPath))
+        assert.equal(teacherRead.exists(), true)
+        assert.deepEqual(teacherRead.data(), add.data.transaction)
+
+        const exactReplay = await httpsCallable(
+          studentClient.functions,
+          'submitStudentTransactionV2',
+        )(addPayload)
+        assert.deepEqual(exactReplay.data, add.data)
+
+        const studentPath = `classrooms/${teacher.classroomId}/students/1`
+        const afterAdd = await getDoc(doc(studentClient.firestore, studentPath))
+        assert.equal(afterAdd.data().balance, 25)
+        assert.deepEqual(afterAdd.data().transactions, [add.data.transaction])
+
+        const subtract = await httpsCallable(
+          studentClient.functions,
+          'submitStudentTransactionV2',
+        )({
+          transactionId: 1102,
+          type: 'Subtract',
+          amount: 4,
+          reason: 'Rent',
+        })
+        assert.equal(subtract.data.balance, 21)
+        assert.equal(subtract.data.transaction.status, 'Approved')
+        assert.equal(subtract.data.transaction.source, 'Student')
+        const afterSubtract = await getDoc(doc(studentClient.firestore, studentPath))
+        assert.equal(afterSubtract.data().balance, 21)
+        assert.deepEqual(
+          afterSubtract.data().transactions.map(transaction => transaction.id),
+          [1102, 1101],
+        )
+
+        await expectCallableError(
+          () => httpsCallable(
+            studentClient.functions,
+            'submitStudentTransactionV2',
+          )({
+            transactionId: 1103,
+            type: 'Add',
+            amount: 1,
+            reason: 'Homework',
+            classroomId: teacher.classroomId,
+          }),
+          'invalid-argument',
+          'The request was invalid.',
+        )
+        assert.equal(
+          (await db.doc(`classrooms/${teacher.classroomId}/transactions/1103`).get()).exists,
+          false,
+        )
+      })
+
       it('onboards, creates, authenticates, persists money data, isolates, and removes without legacy seeding', async () => {
         const teacherA = await onboardGoogleTeacher(
           'fresh.a@school.org',

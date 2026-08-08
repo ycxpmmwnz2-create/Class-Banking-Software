@@ -297,8 +297,8 @@ export function createStudentDataLoader({ db, session, firestore, defaultSetting
 /**
  * Build the production `V2_TENANT_DATA_SAVE_ADAPTER`.
  *
- * The aggregate is decomposed by path and applied through one bounded atomic batch. The
- * classroom root receives only `settings`, `lastBackupAt`, and a server-side
+ * The aggregate is decomposed by path and applied through one bounded Firestore
+ * transaction. The classroom root receives only `settings`, `lastBackupAt`, and a server-side
  * `updatedAt`; students receive only their exact five-field body; transactions
  * and login history are written at canonical deterministic IDs so a retry is
  * idempotent rather than duplicating records.
@@ -312,7 +312,7 @@ export function createTenantDataSaver({
   session,
   firestore,
   previousRef = null,
-  // Firestore caps a WriteBatch at 500 operations; 400 leaves headroom and is
+  // Firestore caps an atomic commit at 500 operations; 400 leaves headroom and is
   // also the maximum logical mutation size. A logical balance/history change
   // must never be split across commits.
   maxBatchSize = 400,
@@ -320,7 +320,7 @@ export function createTenantDataSaver({
   nowFn = () => new Date().toISOString()
 }) {
   const doc = requireFunction(firestore?.doc, "doc");
-  const writeBatch = requireFunction(firestore?.writeBatch, "writeBatch");
+  const runTransaction = requireFunction(firestore?.runTransaction, "runTransaction");
 
   return async function saveTenantClassroomData(data, capturedIdentity) {
     // The orchestrator captured the identity BEFORE it awaited. Honor that
@@ -344,6 +344,40 @@ export function createTenantDataSaver({
       previous,
       maxWrites
     });
+
+    // The baseline for the concurrency check must be the DOCUMENT the last
+    // accepted save wrote, not the aggregate it was derived from. Those differ:
+    // a student body's `transactions` mirror is re-derived here from the
+    // authoritative top-level ledger, while no teacher code path updates the
+    // aggregate's per-student copy. Comparing the stored document against the
+    // raw aggregate student therefore reports the projection's own intended
+    // correction as a concurrent change, and every teacher action following a
+    // transaction edit fails once and has to be redone. Re-decomposing the
+    // baseline through the same function yields the exact bodies that save
+    // persisted. Only students and the ledger they mirror are fed in, so this
+    // derivation cannot fail on a part of the baseline it does not read, and
+    // `maxWrites` is lifted because it is a derivation, not a write plan — the
+    // real plan above is still budget-checked.
+    const baselineStudentBodies = new Map();
+    const baselineTransactionBodies = new Map();
+    if (previous) {
+      const baselinePlan = decomposeClassroomMutation({
+        classroomId,
+        data: {
+          students: Array.isArray(previous.students) ? previous.students : [],
+          transactions: Array.isArray(previous.transactions) ? previous.transactions : [],
+          loginHistory: []
+        },
+        previous: null,
+        maxWrites: Number.MAX_SAFE_INTEGER
+      });
+      for (const write of baselinePlan.students) {
+        baselineStudentBodies.set(write.id, write.body);
+      }
+      for (const write of baselinePlan.transactions) {
+        baselineTransactionBodies.set(write.id, write.body);
+      }
+    }
 
     const operations = [];
     if (plan.root) {
@@ -389,26 +423,166 @@ export function createTenantDataSaver({
       );
     }
 
-    // Re-check immediately before the first commit. Everything above is
-    // synchronous, so this closes the window opened by the awaits the caller
-    // performed before invoking the adapter.
+    // Re-check immediately before entering the transaction. The callback also
+    // checks again after its reads because Firestore may retry it.
     assertIdentityUnchanged(session, captured);
 
-    const batch = writeBatch(db);
-    for (const operation of operations) {
-      const reference = doc(db, operation.path);
-      if (operation.kind === "delete") {
-        requireFunction(batch.delete?.bind(batch), "batch.delete")(reference);
-      } else {
-        requireFunction(batch.set?.bind(batch), "batch.set")(reference, operation.body, {
-          merge: operation.merge === true
-        });
+    await runTransaction(db, async transaction => {
+      const read = async write => {
+        const snapshot = await requireFunction(
+          transaction.get?.bind(transaction),
+          "transaction.get"
+        )(doc(db, write.path));
+        return { write, current: readSnapshotData(snapshot) };
+      };
+      // Every read completes before the first write, as a Firestore transaction
+      // requires. Students and the ledger are read together for that reason.
+      const [studentChecks, transactionChecks] = await Promise.all([
+        Promise.all(plan.students.map(read)),
+        Promise.all(plan.transactions.map(read))
+      ]);
+
+      const abortOnConcurrentChange = () => {
+        throw new TenantDataServiceError(
+          "concurrent-classroom-change",
+          "The classroom changed after it was loaded."
+        );
+      };
+
+      // A student callable can commit while the teacher holds an older aggregate.
+      // Compare every student this save would overwrite against the document
+      // body the last accepted save actually persisted. With no baseline entry
+      // at all — a student some other writer created, which this teacher has no
+      // confirmed prior state for — only an already-identical body is safe.
+      // Any difference aborts the whole logical mutation before a write.
+      for (const { write, current } of studentChecks) {
+        const expectedCurrent = baselineStudentBodies.get(write.id) || write.body;
+        if (!studentBodyEqual(current, expectedCurrent)) abortOnConcurrentChange();
       }
-    }
-    await requireFunction(batch.commit?.bind(batch), "batch.commit")();
+
+      // The ledger needs the same protection, and checking only students does
+      // not provide it. Transaction ids come from the submitting client's
+      // `Date.now()`, so a student's committed record and a later teacher record
+      // for a DIFFERENT student can collide on id. The teacher's student
+      // document then passes its own check while this overwrite replaces the
+      // student's ledger record — leaving that student's mirror pointing at a
+      // record the ledger no longer contains, which is exactly the divergence
+      // that locks the teacher out of every subsequent load.
+      for (const { write, current } of transactionChecks) {
+        const baseline = baselineTransactionBodies.get(write.id);
+        if (baseline === undefined) {
+          // A record this teacher has no confirmed prior state for. Absent is
+          // the expected case; an identical body is an accepted retry.
+          if (current !== null && !exactValueEqual(current, write.body)) {
+            abortOnConcurrentChange();
+          }
+        } else if (!exactValueEqual(current, baseline)) {
+          abortOnConcurrentChange();
+        }
+      }
+
+      assertIdentityUnchanged(session, captured);
+
+      for (const operation of operations) {
+        const reference = doc(db, operation.path);
+        if (operation.kind === "delete") {
+          requireFunction(transaction.delete?.bind(transaction), "transaction.delete")(
+            reference
+          );
+        } else {
+          requireFunction(transaction.set?.bind(transaction), "transaction.set")(
+            reference,
+            operation.body,
+            { merge: operation.merge === true }
+          );
+        }
+      }
+    });
 
     return { written: operations.length, batches: 1, skipped: false };
   };
+}
+
+/**
+ * Compare a stored student document against the body it is expected to hold.
+ *
+ * Every field is exact except the position of entries within the `transactions`
+ * mirror, which is compared as an id-keyed collection. Order is deliberately
+ * not part of the equality: the stored mirror keeps whatever order the writer
+ * used — the student callable prepends its new record — while the baseline is
+ * re-derived from the loader's id-descending ledger. A record whose id is lower
+ * than one already stored therefore leaves the two permanently ordered
+ * differently, and an order-sensitive comparison reads that as a concurrent
+ * change on every save from then on, with no second writer and no way out.
+ *
+ * Nothing is lost by ignoring position here. A real concurrent write adds,
+ * removes, or alters a record, and each of those still fails this comparison.
+ */
+function studentBodyEqual(current, expected) {
+  if (!isPlainRecord(current) || !isPlainRecord(expected)) {
+    return exactValueEqual(current, expected);
+  }
+  const currentKeys = Object.keys(current).sort();
+  const expectedKeys = Object.keys(expected).sort();
+  if (currentKeys.length !== expectedKeys.length ||
+      !currentKeys.every((key, index) => key === expectedKeys[index])) {
+    return false;
+  }
+  for (const key of currentKeys) {
+    if (key === "transactions") {
+      if (!mirrorEqual(current.transactions, expected.transactions)) return false;
+      continue;
+    }
+    if (!exactValueEqual(current[key], expected[key])) return false;
+  }
+  return true;
+}
+
+function mirrorEqual(current, expected) {
+  if (!Array.isArray(current) || !Array.isArray(expected)) {
+    return exactValueEqual(current, expected);
+  }
+  if (current.length !== expected.length) return false;
+  const expectedById = new Map();
+  for (const entry of expected) {
+    // An entry without a usable id cannot be matched by identity, so fall back
+    // to the strict positional comparison rather than guessing.
+    if (!isPlainRecord(entry) || entry.id === undefined) return exactValueEqual(current, expected);
+    if (expectedById.has(String(entry.id))) return exactValueEqual(current, expected);
+    expectedById.set(String(entry.id), entry);
+  }
+  for (const entry of current) {
+    if (!isPlainRecord(entry) || entry.id === undefined) return false;
+    const match = expectedById.get(String(entry.id));
+    if (!match || !exactValueEqual(entry, match)) return false;
+  }
+  return true;
+}
+
+function isPlainRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function exactValueEqual(left, right) {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+    return left.every((value, index) => exactValueEqual(value, right[index]));
+  }
+  if (
+    typeof left !== "object" || left === null ||
+    typeof right !== "object" || right === null
+  ) {
+    return false;
+  }
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) =>
+      key === rightKeys[index] && exactValueEqual(left[key], right[key])
+    );
 }
 
 function readSnapshotData(snapshot) {

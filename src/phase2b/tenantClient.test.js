@@ -6,6 +6,7 @@ import { TenantSession, SESSION_STATES } from "./tenantSession.js";
 import {
   mapSafeClientError,
   mapSafeInvitationAdminError,
+  mapSafeStudentTransactionError,
   normalizeFirebaseErrorCode,
   orchestrateProductionLogout,
   orchestrateStudentLogin,
@@ -18,6 +19,7 @@ import {
   orchestrateAuthLogsFetch,
   orchestrateStudentPinReset,
   orchestrateStudentPinDirectoryFetch,
+  orchestrateStudentTransaction,
   reconcileStudentPinDirectory,
   validateStudentPinDirectoryResponse,
   orchestrateBulkOperation,
@@ -38,6 +40,25 @@ function createMockStorage() {
     clear: () => store.clear(),
     store
   };
+}
+
+function createReadyStudentSession({
+  uid = "student-uid",
+  classroomId = "room_1",
+  studentId = "7"
+} = {}) {
+  const session = new TenantSession();
+  session.transitionTo(SESSION_STATES.AUTHENTICATING);
+  session.transitionTo(SESSION_STATES.RESOLVING);
+  session.transitionTo(SESSION_STATES.ACTIVE, {
+    uid,
+    role: "student",
+    classroomId,
+    studentId
+  });
+  session.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+  session.transitionTo(SESSION_STATES.READY);
+  return session;
 }
 
 const INDEX_HTML_PATH = fileURLToPath(new URL("../../index.html", import.meta.url));
@@ -101,6 +122,164 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       mapSafeInvitationAdminError(precond),
       "This invitation cannot be changed automatically."
     );
+    assert.equal(
+      mapSafeStudentTransactionError({ code: "functions/not-found" }),
+      "Your student account is not available."
+    );
+    assert.equal(
+      mapSafeStudentTransactionError(precond),
+      "This transaction cannot be completed right now. Refresh and try again."
+    );
+  });
+
+  test("student transaction orchestration sends the exact V2 payload and accepts only bound server state", async () => {
+    const session = createReadyStudentSession();
+    const payload = {
+      transactionId: 1700000000000,
+      type: "Add",
+      amount: 5,
+      reason: "Homework"
+    };
+    const calls = [];
+    const response = {
+      transaction: {
+        id: payload.transactionId,
+        date: "2026-08-08T18:00:00.000Z",
+        studentId: 7,
+        studentName: "Ada Student",
+        type: "Add",
+        amount: 5,
+        reason: "Homework",
+        memo: "",
+        category: "",
+        status: "Pending",
+        source: "Student"
+      },
+      balance: 20
+    };
+    const result = await orchestrateStudentTransaction(
+      session,
+      async (name, sent) => {
+        calls.push({ name, payload: { ...sent } });
+        return { data: response };
+      },
+      payload
+    );
+    assert.deepEqual(calls, [{ name: "submitStudentTransactionV2", payload }]);
+    assert.deepEqual(result, { executed: true, result: response });
+  });
+
+  test("student transaction orchestration rejects malformed or identity-mismatched responses", async () => {
+    const payload = {
+      transactionId: 1700000000000,
+      type: "Subtract",
+      amount: 2,
+      reason: "Rent"
+    };
+    const validTransaction = {
+      id: payload.transactionId,
+      date: "2026-08-08T18:00:00.000Z",
+      studentId: 7,
+      studentName: "Ada Student",
+      type: "Subtract",
+      amount: 2,
+      reason: "Rent",
+      memo: "",
+      category: "",
+      status: "Approved",
+      source: "Student"
+    };
+    const malformed = [
+      { transaction: validTransaction },
+      { transaction: { ...validTransaction, studentId: 8 }, balance: 18 },
+      { transaction: { ...validTransaction, status: "Pending" }, balance: 18 },
+      { transaction: { ...validTransaction, source: "Teacher" }, balance: 18 },
+      { transaction: { ...validTransaction, pin: "1234" }, balance: 18 },
+      { transaction: validTransaction, balance: Number.NaN }
+    ];
+    for (const response of malformed) {
+      const result = await orchestrateStudentTransaction(
+        createReadyStudentSession(),
+        async () => ({ data: response }),
+        payload
+      );
+      assert.equal(result.executed, false);
+      assert.equal(result.reason, "malformed-student-transaction-response");
+      assert.equal(result.error, "An unexpected internal error occurred.");
+    }
+  });
+
+  test("student transaction failures and stale completions cannot create client success", async () => {
+    const payload = {
+      transactionId: 1700000000000,
+      type: "Add",
+      amount: 5,
+      reason: "Homework"
+    };
+    const failed = await orchestrateStudentTransaction(
+      createReadyStudentSession(),
+      async () => {
+        const error = new Error("private server detail");
+        error.code = "functions/failed-precondition";
+        throw error;
+      },
+      payload
+    );
+    assert.deepEqual(failed, {
+      executed: false,
+      reason: "student-transaction-failed",
+      error: "This transaction cannot be completed right now. Refresh and try again.",
+      rawCode: "failed-precondition"
+    });
+
+    const staleSession = createReadyStudentSession();
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    const pending = orchestrateStudentTransaction(
+      staleSession,
+      async () => held,
+      payload
+    );
+    staleSession.invalidate("sign-out", { state: SESSION_STATES.SIGNED_OUT });
+    release({
+      data: {
+        transaction: {
+          id: payload.transactionId,
+          date: "2026-08-08T18:00:00.000Z",
+          studentId: 7,
+          studentName: "Ada Student",
+          type: "Add",
+          amount: 5,
+          reason: "Homework",
+          memo: "",
+          category: "",
+          status: "Pending",
+          source: "Student"
+        },
+        balance: 20
+      }
+    });
+    assert.deepEqual(await pending, { executed: false, reason: "stale-epoch-ignored" });
+  });
+
+  test("student transaction orchestration refuses non-student and unresolved sessions before calling", async () => {
+    let calls = 0;
+    const teacher = new TenantSession();
+    teacher.transitionTo(SESSION_STATES.AUTHENTICATING);
+    teacher.transitionTo(SESSION_STATES.RESOLVING);
+    teacher.transitionTo(SESSION_STATES.ACTIVE, {
+      uid: "teacher-uid", role: "teacher", classroomId: "room_1"
+    });
+    teacher.transitionTo(SESSION_STATES.CLASSROOM_LOADING);
+    teacher.transitionTo(SESSION_STATES.READY);
+    const result = await orchestrateStudentTransaction(
+      teacher,
+      async () => { calls += 1; },
+      { transactionId: 1, type: "Add", amount: 1, reason: "Homework" }
+    );
+    assert.equal(calls, 0);
+    assert.equal(result.executed, false);
+    assert.equal(result.reason, "student-transaction-not-ready");
   });
 
   test("platform-admin invitation orchestration sends only exact callable payloads", async () => {
@@ -381,6 +560,22 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.equal(keys.includes("mrMorganClassCashDataV5"), false, "Must NEVER write legacy mrMorganClassCashDataV5 key");
     assert.equal(keys.length, 1);
     assert.equal(keys[0], buildCacheKey(PROJECT_ID, "teacher_1", "room_1"));
+
+    storage.clear();
+    const conflict = new Error("private baseline details");
+    conflict.reason = "concurrent-classroom-change";
+    const conflictRes = await orchestrateClassroomDataSave(
+      session,
+      async () => { throw conflict; },
+      { students: [{ id: "s1" }] },
+      { storageAdapter: storage, projectId: PROJECT_ID }
+    );
+    assert.deepEqual(conflictRes, {
+      executed: false,
+      reason: "concurrent-classroom-change",
+      error: "Your classroom changed while you were working. Reload and try again."
+    });
+    assert.equal(storage.store.size, 0, "A conflicting save must not seed the cache");
   });
 
   test("2. WIRE REAL V2 SIGN-OUT: orchestrateProductionLogout purges cache, resets globals, and renders signed-out synchronously before signOut settles", async () => {
@@ -1656,6 +1851,60 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       assert.equal(/\bclassroomId\b/.test(payload), false, "V2 PIN payload must not contain classroomId");
       assert.match(payload, /studentId:/);
       assert.match(payload, /newPin/);
+    }
+  });
+
+  test("SOURCE GUARD: active V2 student money actions await only the server-authoritative transaction callable", () => {
+    const { source } = readV2Branches();
+    const moneyStart = source.indexOf("async function submitStudentMoneyV2");
+    const addStart = source.indexOf("async function submitStudentAddMoney");
+    const subtractStart = source.indexOf("async function submitStudentSubtractMoney");
+    const legacyModeStart = source.indexOf("function setStudentTransactionMode");
+    assert.notEqual(moneyStart, -1, "Expected the V2 student-money submission function");
+    assert.notEqual(addStart, -1, "Expected the active Add Money handler");
+    assert.notEqual(subtractStart, -1, "Expected the active Subtract Money handler");
+    assert.notEqual(legacyModeStart, -1, "Expected the boundary after the active handlers");
+
+    const moneySource = source.slice(moneyStart, addStart);
+    const addSource = source.slice(addStart, subtractStart);
+    const subtractSource = source.slice(subtractStart, legacyModeStart);
+
+    assert.match(moneySource, /await orchestrateStudentTransaction\(/);
+    assert.match(
+      moneySource,
+      /\{ transactionId: Date\.now\(\), type, amount, reason \}/,
+      "The client must send only the exact student transaction payload",
+    );
+    assert.match(
+      moneySource,
+      /retryPayload\.type === type[\s\S]*?retryPayload\.amount === amount[\s\S]*?retryPayload\.reason === reason/,
+      "An exact retry must reuse its original transaction ID after an ambiguous failure",
+    );
+    assert.match(moneySource, /studentMoneyRetryPayload = payload;/);
+    assert.match(
+      moneySource,
+      /result\.rawCode === "already-exists"\) studentMoneyRetryPayload = null;/,
+      "A definitive transaction-ID conflict must receive a fresh ID on the next attempt",
+    );
+    assert.match(
+      moneySource,
+      /studentMoneyRetryPayload = null;[\s\S]*?applyConfirmedStudentTransaction\(result\.result\)/,
+      "A confirmed submission must clear its retry key before updating client state",
+    );
+    assert.match(
+      moneySource,
+      /applyConfirmedStudentTransaction\(result\.result\)/,
+      "Client state may change only after a verified callable response",
+    );
+    assert.equal(/\bsaveData\s*\(/.test(moneySource), false);
+
+    for (const [handler, type] of [[addSource, "Add"], [subtractSource, "Subtract"]]) {
+      const v2Branch = handler.match(
+        /if \(IS_MULTI_TEACHER_V2_ENABLED\) \{[\s\S]*?await submitStudentMoneyV2\([\s\S]*?return;[\s\S]*?\}/,
+      )?.[0] ?? "";
+      assert.match(v2Branch, new RegExp(`await submitStudentMoneyV2\\("${type}"`));
+      assert.match(v2Branch, /return;/, "The V2 action must not fall through to the legacy write");
+      assert.equal(/\bsaveData\s*\(/.test(v2Branch), false);
     }
   });
 

@@ -50,7 +50,7 @@ const HARNESS_SPECIFIER = "/tests/browser/phase2b-browser-harness.js";
 // so the isolation assertions observe production decisions instead of harness
 // ones.
 export const FIRESTORE_SEAM_SOURCE =
-  "const V2_FIRESTORE_ADAPTERS = { doc, getDoc, collection, getDocs, writeBatch };";
+  "const V2_FIRESTORE_ADAPTERS = { doc, getDoc, collection, getDocs, runTransaction };";
 
 // Appended immediately after the seam line. Inert unless the harness installed a
 // wrapper, so the transform cannot change behavior on its own.

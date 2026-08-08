@@ -592,6 +592,30 @@ describe('Phase 3 student-identity source contract', () => {
     )
   })
 
+  it('source contract: V2 save advances its baseline only from the attempted snapshot and reloads conflicts', () => {
+    const start = indexHtml.indexOf('async function saveData()')
+    const end = indexHtml.indexOf('\n    async function reloadV2ClassroomAfterSaveConflict()', start)
+    assert.notEqual(start, -1)
+    assert.ok(end > start)
+    const body = indexHtml.slice(start, end)
+
+    assert.match(body, /const attemptedData = JSON\.parse\(JSON\.stringify\(data\)\)/)
+    assert.match(
+      body,
+      /orchestrateClassroomDataSave\(v2TenantSession, v2SaveTenantData, attemptedData,/,
+    )
+    assert.match(body, /if \(result\.executed\) \{[\s\S]*?v2LastPersistedData = attemptedData/)
+    assert.match(
+      body,
+      /result\.reason === "concurrent-classroom-change"[\s\S]*?await reloadV2ClassroomAfterSaveConflict\(\)/,
+    )
+    assert.doesNotMatch(
+      body,
+      /if \(result\.executed\) \{[\s\S]*?v2LastPersistedData = data/,
+      'an overlapping UI mutation must not become the baseline of an earlier save',
+    )
+  })
+
   it('source contract: V2 destructive controls fail closed before confirmation or persistence', () => {
     for (const [functionName, unavailableMessage] of [
       ['clearTransactions', 'Clearing transaction history is unavailable in this version.'],

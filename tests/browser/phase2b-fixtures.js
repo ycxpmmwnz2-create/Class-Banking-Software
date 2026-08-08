@@ -273,6 +273,15 @@ async function seedTenantDocs(db, tenant, uid) {
     // Required by resolveTeacherTenantV2 in canonical display form.
     studentLoginCode: tenant.studentLoginCode,
     schemaVersion: 1,
+    // Teacher onboarding initializes this counter, so a real classroom always
+    // has one; seeding students directly does not. Without it createStudentV2
+    // fails closed on "nextStudentNumber is missing", which made the whole
+    // student-creation path unreachable from the browser suite. It must clear
+    // every seeded student id in this tenant.
+    nextStudentNumber: Math.max(
+      Number(tenant.studentId),
+      Number(tenant.sharedStudentId)
+    ) + 1,
     marker: tenant.classroomMarker,
     settings: { ...COMPLETE_SETTINGS, label: tenant.classroomMarker },
     lastBackupAt: null,

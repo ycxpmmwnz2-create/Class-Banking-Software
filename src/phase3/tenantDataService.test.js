@@ -8,16 +8,16 @@ import {
   createTenantDataLoader,
   createTenantDataSaver,
 } from './tenantDataService.js'
-import { TenantProjectionError } from './tenantDataProjection.js'
+import { projectClassroomData, TenantProjectionError } from './tenantDataProjection.js'
 
 const CLASSROOM = 'classroom-alpha'
 const TEACHER_UID = 'teacher-uid-1'
 
 /**
  * A Firestore double with genuine semantics for the surface this service uses:
- * paths are resolved from strings, batches buffer until commit, and a rejected
- * commit leaves the store untouched. Nothing here echoes an input back — the
- * store is real state the assertions read afterwards.
+ * paths are resolved from strings, transactions buffer until commit, and a
+ * rejected commit leaves the store untouched. Nothing here echoes an input
+ * back — the store is real state the assertions read afterwards.
  */
 function createFirestoreDouble(seed = {}) {
   const store = new Map(Object.entries(seed))
@@ -38,31 +38,39 @@ function createFirestoreDouble(seed = {}) {
         .map(([path, body]) => ({ id: path.slice(prefix.length), data: () => body }))
       return { docs }
     },
-    writeBatch: () => {
+    runTransaction: async (_db, callback) => {
       const buffered = []
-      return {
+      let wrote = false
+      const transaction = {
+        async get(ref) {
+          if (wrote) throw new Error('read after write')
+          const body = store.get(ref.path)
+          return { exists: () => body !== undefined, data: () => body }
+        },
         set(ref, body, options) {
+          wrote = true
           buffered.push({ kind: 'set', path: ref.path, body, options })
         },
         delete(ref) {
+          wrote = true
           buffered.push({ kind: 'delete', path: ref.path })
         },
-        async commit() {
-          if (failNextCommit) {
-            const error = failNextCommit
-            failNextCommit = null
-            // Buffered writes are discarded, exactly as a real rejected commit.
-            throw error
-          }
-          for (const op of buffered) {
-            if (op.kind === 'delete') store.delete(op.path)
-            else if (op.options?.merge === true) {
-              store.set(op.path, { ...(store.get(op.path) || {}), ...op.body })
-            } else store.set(op.path, op.body)
-          }
-          commits.push(buffered)
-        },
       }
+      const result = await callback(transaction)
+      if (failNextCommit) {
+        const error = failNextCommit
+        failNextCommit = null
+        // Buffered writes are discarded, exactly as a real rejected commit.
+        throw error
+      }
+      for (const op of buffered) {
+        if (op.kind === 'delete') store.delete(op.path)
+        else if (op.options?.merge === true) {
+          store.set(op.path, { ...(store.get(op.path) || {}), ...op.body })
+        } else store.set(op.path, op.body)
+      }
+      commits.push(buffered)
+      return result
     },
   }
 
@@ -450,17 +458,44 @@ describe('Phase 3 tenant data service — saver', () => {
     }
   }
 
+  function persistedDataStore(data = baseData(), rootOverrides = {}) {
+    const store = {
+      [`classrooms/${CLASSROOM}`]: {
+        settings: data.settings,
+        lastBackupAt: data.lastBackupAt,
+        ...rootOverrides,
+      },
+    }
+    for (const entry of data.students) {
+      store[`classrooms/${CLASSROOM}/students/${entry.id}`] = entry
+    }
+    for (const entry of data.transactions) {
+      store[`classrooms/${CLASSROOM}/transactions/${entry.id}`] = entry
+    }
+    for (const entry of data.loginHistory) {
+      store[`classrooms/${CLASSROOM}/loginHistory/${entry.id}`] = entry
+    }
+    return store
+  }
+
   it('writes each document at its canonical path, overwriting all but the root', async () => {
-    const double = createFirestoreDouble({})
+    const previous = baseData()
+    const double = createFirestoreDouble(persistedDataStore(previous))
     const session = createActiveSession()
     const save = createTenantDataSaver({
       db: {},
       session,
       firestore: double.firestore,
+      previousRef: () => previous,
       nowFn: () => '2026-01-01T00:00:00.000Z',
     })
+    const next = baseData({
+      students: [student({ balance: 11, transactions: [transaction()] })],
+      transactions: [transaction({ status: 'Denied' })],
+      settings: { requireTeacherApproval: false },
+    })
 
-    const result = await save(baseData(), session.captureIdentity())
+    const result = await save(next, session.captureIdentity())
 
     assert.equal(result.batches, 1)
     assert.equal(double.store.get(`classrooms/${CLASSROOM}/students/1`).name, 'Ada')
@@ -484,13 +519,20 @@ describe('Phase 3 tenant data service — saver', () => {
   // rules layer runs against injected primitives; the Item 10 browser suite
   // caught it.
   it('merges the classroom root so server-owned tenant fields survive', async () => {
-    const double = createFirestoreDouble({
-      [`classrooms/${CLASSROOM}`]: { ownerUid: TEACHER_UID, status: 'active' },
-    })
+    const previous = baseData()
+    const double = createFirestoreDouble(persistedDataStore(previous, {
+      ownerUid: TEACHER_UID,
+      status: 'active',
+    }))
     const session = createActiveSession()
-    const save = createTenantDataSaver({ db: {}, session, firestore: double.firestore })
+    const save = createTenantDataSaver({
+      db: {}, session, firestore: double.firestore, previousRef: () => previous,
+    })
 
-    await save(baseData(), session.captureIdentity())
+    await save(
+      baseData({ settings: { requireTeacherApproval: false } }),
+      session.captureIdentity(),
+    )
 
     const rootOps = double.commits
       .flat()
@@ -519,23 +561,31 @@ describe('Phase 3 tenant data service — saver', () => {
   })
 
   it('writes a student body with exactly the five contract fields', async () => {
-    const double = createFirestoreDouble({})
+    const previous = baseData()
+    const double = createFirestoreDouble(persistedDataStore(previous))
     const session = createActiveSession()
-    const save = createTenantDataSaver({ db: {}, session, firestore: double.firestore })
+    const save = createTenantDataSaver({
+      db: {}, session, firestore: double.firestore, previousRef: () => previous,
+    })
 
-    await save(baseData(), session.captureIdentity())
+    await save(
+      baseData({ students: [student({ balance: 11, transactions: [transaction()] })] }),
+      session.captureIdentity(),
+    )
 
     const written = double.store.get(`classrooms/${CLASSROOM}/students/1`)
     assert.deepEqual(Object.keys(written).sort(), ['balance', 'frozen', 'id', 'name', 'transactions'])
   })
 
   it('writes a classroom root limited to settings, lastBackupAt, and updatedAt', async () => {
-    const double = createFirestoreDouble({})
+    const previous = baseData()
+    const double = createFirestoreDouble(persistedDataStore(previous))
     const session = createActiveSession()
     const save = createTenantDataSaver({
       db: {},
       session,
       firestore: double.firestore,
+      previousRef: () => previous,
       nowFn: () => '2026-01-01T00:00:00.000Z',
     })
 
@@ -563,11 +613,17 @@ describe('Phase 3 tenant data service — saver', () => {
   })
 
   it('never writes a credential path', async () => {
-    const double = createFirestoreDouble({})
+    const previous = baseData()
+    const double = createFirestoreDouble(persistedDataStore(previous))
     const session = createActiveSession()
-    const save = createTenantDataSaver({ db: {}, session, firestore: double.firestore })
+    const save = createTenantDataSaver({
+      db: {}, session, firestore: double.firestore, previousRef: () => previous,
+    })
 
-    await save(baseData(), session.captureIdentity())
+    await save(
+      baseData({ students: [student({ balance: 11, transactions: [transaction()] })] }),
+      session.captureIdentity(),
+    )
 
     const paths = double.commits.flat().map(op => op.path)
     assert.ok(paths.length > 0)
@@ -576,8 +632,13 @@ describe('Phase 3 tenant data service — saver', () => {
   })
 
   it('never deletes a student document', async () => {
-    const previous = baseData({ students: [student({ id: 1 }), student({ id: 2, name: 'Bea' })] })
-    const double = createFirestoreDouble({})
+    const previous = baseData({
+      students: [
+        student({ id: 1, transactions: [transaction()] }),
+        student({ id: 2, name: 'Bea' }),
+      ],
+    })
+    const double = createFirestoreDouble(persistedDataStore(previous))
     const session = createActiveSession()
     const save = createTenantDataSaver({
       db: {},
@@ -586,7 +647,13 @@ describe('Phase 3 tenant data service — saver', () => {
       previousRef: () => previous,
     })
 
-    await save(baseData({ students: [student({ id: 1 })] }), session.captureIdentity())
+    await save(
+      baseData({
+        students: [student({ id: 1, transactions: [transaction()] })],
+        settings: { requireTeacherApproval: false },
+      }),
+      session.captureIdentity(),
+    )
 
     const deletes = double.commits.flat().filter(op => op.kind === 'delete')
     assert.ok(deletes.every(op => !op.path.includes('/students/')))
@@ -654,15 +721,243 @@ describe('Phase 3 tenant data service — saver', () => {
   })
 
   it('is idempotent across a retry because record ids are deterministic', async () => {
-    const double = createFirestoreDouble({})
+    let previous = baseData()
+    const double = createFirestoreDouble(persistedDataStore(previous))
     const session = createActiveSession()
-    const save = createTenantDataSaver({ db: {}, session, firestore: double.firestore })
+    const save = createTenantDataSaver({
+      db: {}, session, firestore: double.firestore, previousRef: () => previous,
+    })
+    const next = baseData({
+      students: [student({ balance: 11, transactions: [transaction()] })],
+    })
 
-    await save(baseData(), session.captureIdentity())
+    await save(next, session.captureIdentity())
     const afterFirst = double.store.size
-    await save(baseData(), session.captureIdentity())
+    previous = next
+    await save(next, session.captureIdentity())
 
     assert.equal(double.store.size, afterFirst, 'a retry must overwrite, never duplicate')
+  })
+
+  it('aborts a stale teacher save before it can overwrite a newer student transaction', async () => {
+    const pendingAdd = transaction({ status: 'Pending', source: 'Student' })
+    const previous = baseData({
+      students: [student({ balance: 25, transactions: [pendingAdd] })],
+      transactions: [pendingAdd],
+    })
+    const submittedSubtract = transaction({
+      id: 1700000000002,
+      date: '1/1/2026, 9:10:00 AM',
+      type: 'Subtract',
+      amount: 4,
+      reason: 'Rent',
+      status: 'Approved',
+      source: 'Student',
+    })
+    const liveStudent = student({
+      balance: 21,
+      transactions: [submittedSubtract, pendingAdd],
+    })
+    const liveStore = persistedDataStore(previous)
+    liveStore[`classrooms/${CLASSROOM}/students/1`] = liveStudent
+    liveStore[`classrooms/${CLASSROOM}/transactions/${submittedSubtract.id}`] = submittedSubtract
+    const double = createFirestoreDouble(liveStore)
+    const before = JSON.parse(JSON.stringify(Object.fromEntries(double.store)))
+    const session = createActiveSession()
+    const save = createTenantDataSaver({
+      db: {}, session, firestore: double.firestore, previousRef: () => previous,
+    })
+    const staleFreeze = baseData({
+      students: [student({ balance: 25, frozen: true, transactions: [pendingAdd] })],
+      transactions: [pendingAdd],
+    })
+
+    await assert.rejects(
+      () => save(staleFreeze, session.captureIdentity()),
+      error => error instanceof TenantDataServiceError &&
+        error.reason === 'concurrent-classroom-change',
+    )
+
+    assert.equal(double.commits.length, 0)
+    assert.deepEqual(Object.fromEntries(double.store), before)
+    const reloaded = projectClassroomData({
+      classroomId: CLASSROOM,
+      root: double.store.get(`classrooms/${CLASSROOM}`),
+      students: [double.store.get(`classrooms/${CLASSROOM}/students/1`)],
+      transactions: [
+        double.store.get(`classrooms/${CLASSROOM}/transactions/${submittedSubtract.id}`),
+        double.store.get(`classrooms/${CLASSROOM}/transactions/${pendingAdd.id}`),
+      ],
+      loginHistory: [],
+    })
+    assert.equal(reloaded.students[0].balance, 21)
+    assert.deepEqual(reloaded.students[0].transactions.map(entry => entry.id), [
+      submittedSubtract.id,
+      pendingAdd.id,
+    ])
+  })
+
+  // Regression: the concurrency guard originally read only student documents,
+  // so it could not see a collision in the ledger. Transaction ids come from
+  // the submitting client's Date.now() (index.html:2866), which means a
+  // student's committed record and a later teacher record for a DIFFERENT
+  // student can share an id. The teacher's own student document then passes its
+  // check while the overwrite replaces the student's ledger record, leaving
+  // that student's mirror pointing at a record the ledger no longer holds —
+  // the same divergence that locks the teacher out of every later load.
+  it('aborts a stale teacher save whose transaction id collides with a student record', async () => {
+    const COLLIDING_ID = 1700000000000
+    const studentSubmission = transaction({
+      id: COLLIDING_ID, studentId: 1, studentName: 'Ada', type: 'Subtract',
+      amount: 4, reason: 'Rent', status: 'Approved', source: 'Student',
+    })
+    // The teacher's tab loaded before the submission and knows none of it.
+    const previous = baseData({
+      students: [
+        student({ id: 1, transactions: [] }),
+        student({ id: 2, name: 'Grace', balance: 30, transactions: [] }),
+      ],
+      transactions: [],
+    })
+    const liveStore = persistedDataStore(previous)
+    liveStore[`classrooms/${CLASSROOM}/students/1`] =
+      student({ id: 1, balance: 6, transactions: [studentSubmission] })
+    liveStore[`classrooms/${CLASSROOM}/transactions/${COLLIDING_ID}`] = studentSubmission
+    const double = createFirestoreDouble(liveStore)
+    const before = JSON.parse(JSON.stringify(Object.fromEntries(double.store)))
+    const session = createActiveSession()
+    const save = createTenantDataSaver({
+      db: {}, session, firestore: double.firestore, previousRef: () => previous,
+    })
+
+    // Quick Cash for the OTHER student. Nothing about student 2's own document
+    // changed underneath the teacher, so only the ledger check can catch this.
+    const collidingGrant = transaction({
+      id: COLLIDING_ID, studentId: 2, studentName: 'Grace', type: 'Add',
+      amount: 5, reason: 'Quick Cash', source: 'Teacher',
+    })
+    const staleGrant = baseData({
+      students: [
+        student({ id: 1, transactions: [] }),
+        student({ id: 2, name: 'Grace', balance: 35, transactions: [] }),
+      ],
+      transactions: [collidingGrant],
+    })
+
+    await assert.rejects(
+      () => save(staleGrant, session.captureIdentity()),
+      error => error instanceof TenantDataServiceError &&
+        error.reason === 'concurrent-classroom-change',
+    )
+
+    assert.equal(double.commits.length, 0)
+    assert.deepEqual(Object.fromEntries(double.store), before)
+
+    // The ledger record and the student's mirror must still describe the same
+    // transaction, or the next load throws and the teacher cannot recover.
+    const reloaded = projectClassroomData({
+      classroomId: CLASSROOM,
+      root: double.store.get(`classrooms/${CLASSROOM}`),
+      students: [
+        double.store.get(`classrooms/${CLASSROOM}/students/1`),
+        double.store.get(`classrooms/${CLASSROOM}/students/2`),
+      ],
+      transactions: [double.store.get(`classrooms/${CLASSROOM}/transactions/${COLLIDING_ID}`)],
+      loginHistory: [],
+    })
+    assert.equal(reloaded.transactions[0].source, 'Student')
+    assert.equal(reloaded.students[0].transactions[0].studentName, 'Ada')
+  })
+
+  // Regression: the stored mirror keeps the order its writer used — the student
+  // callable prepends — while the baseline is re-derived from the loader's
+  // id-descending ledger. A record whose id is below one already stored leaves
+  // the two permanently ordered differently, and an order-sensitive comparison
+  // then read that as a concurrent change on every save from then on, with no
+  // second writer and no way out.
+  it('accepts a save when the stored mirror is not in ledger order', async () => {
+    const LOW = 1700000000000
+    const HIGH = 9007199254740000
+    const low = transaction({ id: LOW, source: 'Teacher' })
+    const high = transaction({ id: HIGH, source: 'Student' })
+    const seeded = baseData({
+      students: [student({ transactions: [low, high] })],
+      transactions: [high, low],
+    })
+    const double = createFirestoreDouble(persistedDataStore(seeded))
+    const session = createActiveSession()
+    const load = createTenantDataLoader({ db: {}, session, firestore: double.firestore })
+    let previous = null
+    const save = createTenantDataSaver({
+      db: {}, session, firestore: double.firestore, previousRef: () => previous,
+    })
+
+    const data = await load({ classroomId: CLASSROOM })
+    previous = JSON.parse(JSON.stringify(data))
+    assert.deepEqual(
+      data.students[0].transactions.map(entry => entry.id),
+      [LOW, HIGH],
+      'the stored mirror keeps write order',
+    )
+    assert.deepEqual(
+      data.transactions.map(entry => entry.id),
+      [HIGH, LOW],
+      'the loader sorts only the top-level ledger',
+    )
+
+    const next = JSON.parse(JSON.stringify(data))
+    next.students[0].frozen = true
+    await save(next, session.captureIdentity())
+
+    assert.equal(double.store.get(`classrooms/${CLASSROOM}/students/1`).frozen, true)
+  })
+
+  // Regression: the concurrency guard above compared the stored student
+  // document against the raw aggregate student in the baseline. Those are not
+  // the same thing — the stored body's `transactions` mirror is re-derived from
+  // the authoritative top-level ledger, and no teacher code path updates the
+  // aggregate's per-student copy (index.html mutates only `data.transactions`).
+  // So the first save wrote an Approved mirror, the client's baseline still
+  // said Pending, and the teacher's very next action on that student aborted as
+  // a "concurrent" change with no second writer anywhere. Approve-then-anything
+  // is the ordinary workflow, so this fired constantly.
+  it('accepts a second teacher save after the first changed a transaction status', async () => {
+    const pendingAdd = transaction({ status: 'Pending', source: 'Student' })
+    let previous = baseData({
+      students: [student({ balance: 25, transactions: [pendingAdd] })],
+      transactions: [pendingAdd],
+    })
+    const double = createFirestoreDouble(persistedDataStore(previous))
+    const session = createActiveSession()
+    const save = createTenantDataSaver({
+      db: {}, session, firestore: double.firestore, previousRef: () => previous,
+    })
+
+    // Approve: the ledger and the balance move; the mirror is left stale, as
+    // the real teacher UI leaves it.
+    const approved = transaction({ status: 'Approved', source: 'Student' })
+    const afterApprove = baseData({
+      students: [student({ balance: 30, transactions: [pendingAdd] })],
+      transactions: [approved],
+    })
+    await save(afterApprove, session.captureIdentity())
+    previous = JSON.parse(JSON.stringify(afterApprove))
+
+    assert.deepEqual(
+      double.store.get(`classrooms/${CLASSROOM}/students/1`).transactions,
+      [approved],
+      'the persisted mirror is re-derived from the ledger, not copied from the aggregate',
+    )
+
+    // Freeze the same student. Nothing else has written.
+    const afterFreeze = baseData({
+      students: [student({ balance: 30, frozen: true, transactions: [pendingAdd] })],
+      transactions: [approved],
+    })
+    await save(afterFreeze, session.captureIdentity())
+
+    assert.equal(double.store.get(`classrooms/${CLASSROOM}/students/1`).frozen, true)
+    assert.equal(double.commits.length, 2)
   })
 
   it('refuses to write under a stale identity captured before the tenant changed', async () => {
@@ -680,7 +975,7 @@ describe('Phase 3 tenant data service — saver', () => {
     assert.equal(double.commits.length, 0)
   })
 
-  it('requires the teacher role before constructing any write batch', async () => {
+  it('requires the teacher role before constructing any transaction', async () => {
     const double = createFirestoreDouble({})
     const session = createActiveSession()
     session.role = 'student'
@@ -713,20 +1008,29 @@ describe('Phase 3 tenant data service — saver', () => {
   })
 
   it('propagates a rejected commit without seeding partial state', async () => {
-    const double = createFirestoreDouble({})
+    const previous = baseData()
+    const double = createFirestoreDouble(persistedDataStore(previous))
     const session = createActiveSession()
-    const save = createTenantDataSaver({ db: {}, session, firestore: double.firestore })
+    const save = createTenantDataSaver({
+      db: {}, session, firestore: double.firestore, previousRef: () => previous,
+    })
     const failure = new Error('permission denied')
     failure.code = 'permission-denied'
     double.failNextCommitWith(failure)
 
-    await assert.rejects(() => save(baseData(), session.captureIdentity()), /permission denied/)
-    assert.equal(double.store.size, 0)
+    await assert.rejects(
+      () => save(
+        baseData({ students: [student({ balance: 11, transactions: [transaction()] })] }),
+        session.captureIdentity(),
+      ),
+      /permission denied/,
+    )
+    assert.deepEqual(Object.fromEntries(double.store), persistedDataStore(previous))
   })
 
-  it('bounds the whole mutation separately from the per-batch limit', async () => {
+  it('bounds the whole mutation separately from the atomic commit limit', async () => {
     // The configured logical ceiling may be stricter than Firestore's atomic
-    // batch ceiling; either limit must refuse before the first commit.
+    // commit ceiling; either limit must refuse before the first commit.
     const many = Array.from({ length: 9 }, (_, i) => transaction({ id: 1700000000000 + i }))
     const double = createFirestoreDouble({})
     const session = createActiveSession()
@@ -746,7 +1050,7 @@ describe('Phase 3 tenant data service — saver', () => {
     assert.equal(double.commits.length, 0, 'an over-budget mutation must write nothing')
   })
 
-  it('defaults the logical mutation ceiling to one atomic batch', async () => {
+  it('defaults the logical mutation ceiling to one atomic commit', async () => {
     const many = Array.from({ length: 450 }, (_, i) => transaction({ id: 1700000000000 + i }))
     const double = createFirestoreDouble({})
     const session = createActiveSession()

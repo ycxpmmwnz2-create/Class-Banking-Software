@@ -438,9 +438,9 @@ describe('Phase 3 Item 10 final rules', () => {
   })
 
   test('students retain exact self-read and receive no list, cross-student, or write permission', async () => {
-    for (const [room, ownId, otherRoom, otherId] of [
-      [A_ROOM, A_STUDENT, B_ROOM, B_STUDENT],
-      [B_ROOM, B_STUDENT, A_ROOM, A_STUDENT],
+    for (const [room, ownId, otherRoom, otherId, existingTx, marker] of [
+      [A_ROOM, A_STUDENT, B_ROOM, B_STUDENT, A_TX, 'A'],
+      [B_ROOM, B_STUDENT, A_ROOM, A_STUDENT, B_TX, 'B'],
     ]) {
       const db = student(`auth-${room}`, room, ownId)
       const ownPath = `classrooms/${room}/students/${ownId}`
@@ -450,6 +450,12 @@ describe('Phase 3 Item 10 final rules', () => {
       await assertFails(db.doc(ownPath).delete())
       await assertFails(db.doc(`classrooms/${otherRoom}/students/${otherId}`).get())
       await assertFails(db.doc(`classrooms/${room}`).get())
+      await assertFails(db.doc(`classrooms/${room}/transactions/9901`).set(
+        transactionBody('9901', ownId, marker),
+      ))
+      await assertFails(
+        db.doc(`classrooms/${room}/transactions/${existingTx}`).update({ status: 'Approved' }),
+      )
     }
   })
 

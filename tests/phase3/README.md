@@ -763,9 +763,17 @@ document IDs onto one student.
 
 The service suite proves tenant/identity/role resolution and mismatch refusal,
 document-path/body identity agreement, the staleness re-check before the atomic
-commit, the single-batch logical-mutation bound, and the read-set boundaries: it reads and writes only under
+commit, the single-commit logical-mutation bound, and the read-set boundaries: it reads and writes only under
 `classrooms/{resolvedClassroomId}/…`, never touches `studentCredentials` in either
 shape, and never creates or deletes a student document.
+
+Teacher saves use a Firestore transaction to compare every student document they
+would overwrite against the last server-confirmed aggregate. A newer student
+callable submission therefore aborts the stale teacher save before any write;
+the client reloads the current classroom and asks the teacher to retry. The unit
+suite pins the no-write conflict result and projection integrity, while the
+two-session browser regression proves the student balance and ledger survive a
+stale Freeze action and the refreshed teacher action can then be retried.
 
 **Defects the suites caught during development and review.** Fixed and pinned by
 regression tests: stale-vs-resolve ordering reported `unresolved-tenant` and
@@ -919,6 +927,31 @@ legacy login, PIN reset, bootstrap, and aggregate sync cannot read or write whil
 the gate is enabled. The corresponding gate-off suite proves the legacy exports
 remain compatible. These are emulator observations only—no production function,
 rule, gate parameter, or Hosting release was changed.
+
+## Student money callable regression evidence
+
+`functions/phase3/studentMoney.test.js` proves exact request and response
+contracts, claim-derived identity, active reciprocal ownership, settings and
+frozen-account enforcement, reason allowlists, balance checks, atomic Add and
+Subtract behavior, exact-retry idempotency, transaction-ID conflict refusal,
+positive safe-integer whole-dollar amounts, and redacted callable errors. The
+Phase 2B client suite proves the production page awaits only
+`submitStudentTransactionV2`, rejects malformed or stale responses, and cannot
+fall through to the teacher-only legacy save path.
+
+The gate-on Functions emulator suite authenticates a real student custom token,
+submits an Add request, reads the resulting `Pending` ledger document through
+the owning teacher's Firestore client, retries without duplication, and submits
+an immediately approved Subtract transaction. The shared Chromium and WebKit
+browser suite drives the real student forms and then signs in as the teacher to
+verify the pending Add row and Approve control are visible. It also holds a
+teacher tab stale across a student submission, proves the stale teacher save is
+aborted and reloaded without losing the balance or ledger entry, and verifies
+the callable's canonical ISO timestamp is displayed in the browser's locale
+format. Existing final-rules tests continue to deny direct student writes; the
+rules artifact is unchanged.
+These are local demo-project emulator observations only and do not deploy,
+commit, push, or access staging or production data.
 
 ## Commit 6 — student lifecycle evidence
 

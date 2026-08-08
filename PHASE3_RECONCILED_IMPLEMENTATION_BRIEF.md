@@ -810,6 +810,8 @@ functions/phase3/
   reverify.js
   studentLifecycle.js
   studentLifecycle.test.js
+  studentMoney.js
+  studentMoney.test.js
 
 src/phase3/
   tenantDataProjection.js

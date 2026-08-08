@@ -156,9 +156,7 @@ function installHarness() {
   // (teacher profile, classroom resolution) through the same primitives, and
   // counting or barriering those would make `loadAdapterCalls` mean something
   // different from "the V2 data service ran".
-  const CLASSROOM_ROOT = /^classrooms\/[^/]+$/;
   const CLASSROOM_SCOPED = /^classrooms\/[^/]+\/(students|transactions|loginHistory)$/;
-  const CLASSROOM_SCOPED_DOC = /^classrooms\/[^/]+\/(students|transactions|loginHistory)\/[^/]+$/;
   const STUDENT_SELF_DOC = /^classrooms\/[^/]+\/students\/[^/]+$/;
 
   const refPath = (ref) => (typeof ref?.path === "string" ? ref.path : "");
@@ -185,7 +183,7 @@ function installHarness() {
       getDoc: incoming.getDoc,
       collection: incoming.collection,
       getDocs: incoming.getDocs,
-      writeBatch: incoming.writeBatch
+      runTransaction: incoming.runTransaction
     };
 
     record("firestore:wrapped", null);
@@ -269,70 +267,50 @@ function installHarness() {
       return snapshot;
     };
 
-    // The save barrier gates the COMMIT, not batch construction. The service
-    // re-validates the captured identity immediately before its single atomic
-    // commit, so parking here exercises the production stale-write
-    // refusal rather than bypassing it.
-    const wrappedWriteBatch = (handle) => {
-      const batch = primitives.writeBatch(handle);
-      let touchesClassroom = false;
+    // The save barrier gates the completion of the transaction callback after
+    // its real reads and buffered writes. A concurrent emulator write released
+    // while held forces the SDK to retry the genuine production callback, which
+    // is how the stale-baseline refusal is exercised without fabricating state.
+    const wrappedRunTransaction = async (handle, updateFunction, ...rest) => {
       let counted = false;
+      try {
+        const result = await primitives.runTransaction(handle, async transaction => {
+          // A classroom mutation is one logical, atomic save; count it once even
+          // when Firestore reruns the callback after observing contention.
+          if (!counted) {
+            counted = true;
+            obs.counters.saveAdapterCalls++;
+            record("saveAdapter:start", null);
+          }
 
-      const originalSet = batch.set.bind(batch);
-      const originalDelete = batch.delete.bind(batch);
-      const originalCommit = batch.commit.bind(batch);
+          const callbackResult = await updateFunction(transaction);
+          await gate("classroomSave");
+          return callbackResult;
+        }, ...rest);
 
-      const noteRef = (ref) => {
-        const path = refPath(ref);
-        // Either the classroom root doc, or a doc inside one of the three scoped
-        // collections.
-        if (CLASSROOM_ROOT.test(path) || CLASSROOM_SCOPED_DOC.test(path)) {
-          touchesClassroom = true;
-        }
-      };
-
-      batch.set = (ref, ...rest) => {
-        noteRef(ref);
-        return originalSet(ref, ...rest);
-      };
-      batch.delete = (ref, ...rest) => {
-        noteRef(ref);
-        return originalDelete(ref, ...rest);
-      };
-      batch.commit = async () => {
-        if (!touchesClassroom) return originalCommit();
-
-        // A classroom mutation is one logical, atomic save; count it once.
+        record("saveAdapter:done", null);
+        return result;
+      } catch (error) {
         if (!counted) {
           counted = true;
           obs.counters.saveAdapterCalls++;
           record("saveAdapter:start", null);
         }
-
-        await gate("classroomSave");
-        try {
-          const result = await originalCommit();
-          record("saveAdapter:done", null);
-          return result;
-        } catch (error) {
-          // Recorded so a rejected commit is diagnosable. A save that fails is a
-          // real outcome the specs may assert on; swallowing it here would make
-          // a rules denial look like a hang.
-          record("saveAdapter:failed", {
-            code: error?.code || null,
-            message: String(error?.message || error).slice(0, 200)
-          });
-          throw error;
-        }
-      };
-
-      return batch;
+        // Recorded so a rejected transaction is diagnosable. A save that fails
+        // is a real outcome the specs may assert on; swallowing it here would
+        // make a rules denial or concurrency refusal look like a hang.
+        record("saveAdapter:failed", {
+          code: error?.code || error?.reason || null,
+          message: String(error?.message || error).slice(0, 200)
+        });
+        throw error;
+      }
     };
 
     return {
       getDoc: wrappedGetDoc,
       getDocs: wrappedGetDocs,
-      writeBatch: wrappedWriteBatch
+      runTransaction: wrappedRunTransaction
     };
   };
 

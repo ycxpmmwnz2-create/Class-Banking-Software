@@ -197,6 +197,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
       studentClassroomCodeDraft: "AAAA-2345",
       studentLoginIdDraft: "draft_123",
       studentLoginPending: true,
+      studentMoneySubmissionPending: true,
       studentAuthLogs: [{ time: 100 }],
       studentAuthLogsLoading: true,
       studentAuthLogsError: "Error log",
@@ -223,6 +224,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     assert.equal(globalState.studentClassroomCodeDraft, "");
     assert.equal(globalState.studentLoginIdDraft, "");
     assert.equal(globalState.studentLoginPending, false);
+    assert.equal(globalState.studentMoneySubmissionPending, false);
     assert.deepEqual(globalState.studentAuthLogs, []);
     assert.equal(globalState.studentAuthLogsLoading, false);
     assert.equal(globalState.studentAuthLogsError, "");
@@ -259,7 +261,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     // clears but the default-state factory owns as a timer handle.
     const resetFields = Object.keys(createDefaultGlobalState());
     assert.equal(resetFields.includes("messageTimeout"), true);
-    assert.equal(resetFields.length, 22, "Field contract changed: update the reset and the production adapter together");
+    assert.equal(resetFields.length, 23, "Field contract changed: update the reset and the production adapter together");
 
     // Prove the reset actually writes each field, using a probe object that
     // records writes, so the contract is behavioural and not just a key list.
@@ -295,10 +297,11 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     const resetFnSource = indexHtml.slice(resetFnStart, indexHtml.indexOf("\n    }", resetFnStart));
     assert.match(resetFnSource, /resetGlobalApplicationState\(windowAppGlobals, cloneDefault\);/);
     assert.match(resetFnSource, /v2IsOffline = false;/, "The offline badge must not survive a tenant switch");
+    assert.match(resetFnSource, /studentMoneyRetryPayload = null;/, "A student transaction retry key must not survive a session switch");
     assert.match(resetFnSource, /profileLoginIdStatus = "Checking\.\.\.";/, "A previous tenant's profile login ID must not survive a tenant switch");
   });
 
-  test("resetGlobalApplicationState correctly resets complete windowAppGlobals getter/setter proxy adapter backing all 22 application variables", () => {
+  test("resetGlobalApplicationState correctly resets complete windowAppGlobals getter/setter proxy adapter backing all 23 application variables", () => {
     let data = { students: [{ id: 1, name: "Student 1" }] };
     let screen = "roster";
     let loginTab = "student";
@@ -310,6 +313,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     let studentClassroomCodeDraft = "AAAA-2345";
     let studentLoginIdDraft = "draft";
     let studentLoginPending = true;
+    let studentMoneySubmissionPending = true;
     let studentAuthLogs = [{ id: 1 }];
     let studentAuthLogsLoading = true;
     let studentAuthLogsError = "Err";
@@ -334,6 +338,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
       get studentClassroomCodeDraft() { return studentClassroomCodeDraft; }, set studentClassroomCodeDraft(val) { studentClassroomCodeDraft = val; },
       get studentLoginIdDraft() { return studentLoginIdDraft; }, set studentLoginIdDraft(val) { studentLoginIdDraft = val; },
       get studentLoginPending() { return studentLoginPending; }, set studentLoginPending(val) { studentLoginPending = val; },
+      get studentMoneySubmissionPending() { return studentMoneySubmissionPending; }, set studentMoneySubmissionPending(val) { studentMoneySubmissionPending = val; },
       get studentAuthLogs() { return studentAuthLogs; }, set studentAuthLogs(val) { studentAuthLogs = val; },
       get studentAuthLogsLoading() { return studentAuthLogsLoading; }, set studentAuthLogsLoading(val) { studentAuthLogsLoading = val; },
       get studentAuthLogsError() { return studentAuthLogsError; }, set studentAuthLogsError(val) { studentAuthLogsError = val; },
@@ -359,6 +364,7 @@ describe("TenantSession State Machine and Epoch Isolation", () => {
     assert.equal(studentClassroomCodeDraft, "");
     assert.equal(studentLoginIdDraft, "");
     assert.equal(studentLoginPending, false);
+    assert.equal(studentMoneySubmissionPending, false);
     assert.deepEqual(studentAuthLogs, []);
     assert.equal(studentAuthLogsLoading, false);
     assert.equal(studentAuthLogsError, "");

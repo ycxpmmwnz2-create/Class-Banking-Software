@@ -7,12 +7,13 @@
 - Teacher-only browser functions are guarded with `requireTeacher()`.
 - Student PIN login uses a callable Cloud Function, bcrypt hashes, temporary
   lockout, and server-side authentication logs.
+- Student Add and Subtract submissions use a server-authoritative callable;
+  direct student writes to student and transaction documents remain denied.
 - Only the test student is provisioned; the real roster is not migrated yet.
 
 ## Remaining Risk
 Real student credentials still need to be provisioned and linked to
-student-specific profile data before Chromebook use. Student transaction writes
-also need a server-controlled path.
+student-specific profile data before Chromebook use.
 
 ## Target Student Login Architecture
 Student enters login ID + PIN.
@@ -135,10 +136,32 @@ screen. The existing server-side bcrypt verification, consecutive-failure
 counter, and temporary lockout are the mitigations. "Use a different student"
 clears the locator and is student-operable.
 
+## Student Money Submission Path
+
+`submitStudentTransactionV2` accepts exactly `transactionId`, `type`, `amount`,
+and `reason`; `amount` must be a positive safe integer number of whole dollars.
+It derives the classroom and student exclusively from the signed
+student's server-minted Auth claims, validates the active reciprocal classroom
+foundation, student document, classroom request settings, frozen state, allowed
+reason, and available balance, and then commits the classroom ledger record and
+student mirror atomically.
+
+Add Money submissions are stored as `Pending` without changing the approved
+balance. Subtract Money submissions are stored as `Approved` and decrement the
+balance in the same transaction. An exact retry returns the already-stored
+result; a reused transaction ID with different data fails closed. The browser
+updates its displayed state and reports success only after validating the
+callable response. Firestore rules still deny every direct student transaction
+or student-document write. Teacher aggregate saves transactionally compare each
+student record they would overwrite with the last server-confirmed teacher
+baseline, so a submission from another session cannot be silently replaced by a
+stale teacher save. A conflict writes nothing, reloads the classroom, and asks
+the teacher to retry. Callable ISO timestamps are formatted locally for display
+without changing their stored canonical value.
+
 ## Required Future Work
 - Provision production credentials when the real roster is available.
 - Split and migrate real student data into safer Firestore collections.
-- Route student money requests through Cloud Functions.
 - Add App Check before real student rollout.
 - Test rules before Chromebook use.
 

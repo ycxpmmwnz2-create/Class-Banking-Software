@@ -1017,6 +1017,9 @@ describe('Phase 3 release-order source contract', () => {
       'inventory.js', 'inventory.test.js',
       'preflight.js', 'write.js', 'reverify.js',
       'studentLifecycle.js', 'studentLifecycle.test.js',
+      // Approved student-money regression fix. Student writes remain denied by
+      // rules; this paired module owns the claim-derived, atomic callable path.
+      'studentMoney.js', 'studentMoney.test.js',
       // The production-read safety correction: the operator-only reviewed
       // checkout proof, split out of productionEnvironment.js so the deployed
       // Functions graph carries no subprocess capability.
@@ -1086,6 +1089,7 @@ describe('Phase 3 release-order source contract', () => {
       'productionWriter.js', 'productionWriter.test.js',
       'write.js', 'reverify.js',
       'studentLifecycle.js', 'studentLifecycle.test.js',
+      'studentMoney.js', 'studentMoney.test.js',
       'productionInventory.js', 'productionInventory.test.js',
       'inventory.js', 'inventory.test.js',
       'reviewedCheckout.js', 'reviewedCheckout.test.js',
@@ -1253,6 +1257,10 @@ describe('Phase 3 release-order source contract', () => {
     assert.ok(
       visited.has('phase3/studentLifecycle.js'),
       'the walk must reach the deployed Phase 3 callables',
+    )
+    assert.ok(
+      visited.has('phase3/studentMoney.js'),
+      'the walk must reach the deployed student-money callable',
     )
     assert.ok(
       !visited.has(OPERATOR_ONLY),

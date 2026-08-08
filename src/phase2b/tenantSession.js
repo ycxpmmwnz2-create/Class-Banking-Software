@@ -75,6 +75,7 @@ export function createDefaultGlobalState() {
     studentClassroomCodeDraft: "",
     studentLoginIdDraft: "",
     studentLoginPending: false,
+    studentMoneySubmissionPending: false,
     studentAuthLogs: [],
     studentAuthLogsLoading: false,
     studentAuthLogsError: "",
@@ -108,6 +109,7 @@ export function resetGlobalApplicationState(stateObj, defaultDataFn = null) {
   stateObj.studentClassroomCodeDraft = defaults.studentClassroomCodeDraft;
   stateObj.studentLoginIdDraft = defaults.studentLoginIdDraft;
   stateObj.studentLoginPending = defaults.studentLoginPending;
+  stateObj.studentMoneySubmissionPending = defaults.studentMoneySubmissionPending;
   stateObj.studentAuthLogs = defaults.studentAuthLogs;
   stateObj.studentAuthLogsLoading = defaults.studentAuthLogsLoading;
   stateObj.studentAuthLogsError = defaults.studentAuthLogsError;

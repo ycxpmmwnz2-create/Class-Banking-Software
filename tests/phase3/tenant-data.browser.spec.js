@@ -393,6 +393,163 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     expect(await page.evaluate(() => document.body.innerText)).not.toContain(TENANT_A.studentMarker)
   })
 
+  test('student money submissions persist through the V2 callable and appear in the owning teacher UI', async ({ page }) => {
+    const seeded = getSeeded()
+    await gotoApp(page)
+    await activateThroughProductionUi(page, TENANT_A, '2468')
+    await submitStudentLogin(page, {
+      classroomCode: TENANT_A.studentLoginCode,
+      loginId: SHARED_LOGIN_ID,
+      pin: '2468',
+    })
+    await expect.poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBe(
+      seeded.credentials.aSharedCredential.authUid,
+    )
+    await waitForQuiescence(page)
+
+    await page.locator('#studentAddReason').selectOption({ label: 'Homework' })
+    await page.locator('#studentAddAmount').fill('3')
+    await page.getByRole('button', { name: 'Submit Add Money', exact: true }).click()
+    await expect(page.getByText('Add Money submitted for teacher approval.', { exact: true }))
+      .toBeVisible()
+    await expect(page.locator('.pending-balance').first()).toHaveText(
+      'Pending Credit/Debit Change: +$3',
+    )
+
+    await page.locator('#studentSubtractReason').selectOption({ label: 'Rent' })
+    await page.locator('#studentSubtractAmount').fill('2')
+    await page.getByRole('button', { name: 'Submit Subtract Money', exact: true }).click()
+    await expect(page.getByText(
+      'Subtract Money submitted. Money has been subtracted.',
+      { exact: true },
+    )).toBeVisible()
+    await expect(page.locator('.big-balance')).toHaveText('$3')
+    await expect(
+      page.locator('.student-transaction-title').filter({ hasText: /^Homework$/ }),
+    ).toBeVisible()
+    await expect(
+      page.locator('.student-transaction-title').filter({ hasText: /^Rent$/ }),
+    ).toBeVisible()
+
+    await logout(page)
+    await signInTeacher(page, TENANT_A)
+    await waitForQuiescence(page)
+    await page.evaluate(() => window.setScreen('approvals'))
+
+    const pendingCreditRow = page.locator('tr').filter({ hasText: 'Homework' })
+    await expect(pendingCreditRow).toHaveCount(1)
+    await expect(pendingCreditRow.getByRole('cell', { name: 'Shared Name', exact: true }))
+      .toBeVisible()
+    await expect(pendingCreditRow.getByRole('cell', { name: 'Add', exact: true })).toBeVisible()
+    await expect(pendingCreditRow.getByRole('cell', { name: '$3', exact: true })).toBeVisible()
+    await expect(pendingCreditRow.getByRole('cell', { name: 'Student', exact: true }))
+      .toBeVisible()
+    await expect(pendingCreditRow.getByRole('cell', { name: 'Pending', exact: true }))
+      .toBeVisible()
+    await expect(pendingCreditRow.getByRole('button', { name: 'Approve', exact: true }))
+      .toBeVisible()
+
+    await page.evaluate(() => window.setScreen('teacher'))
+    const approvedSubtractRow = page.locator('tr').filter({ hasText: 'Rent' })
+    await expect(approvedSubtractRow).toHaveCount(1)
+    await expect(approvedSubtractRow.getByRole('cell', { name: 'Subtract', exact: true }))
+      .toBeVisible()
+    await expect(approvedSubtractRow.getByRole('cell', { name: 'Approved', exact: true }))
+      .toBeVisible()
+  })
+
+  test('a teacher tab loaded before a student submission aborts its stale save and reloads safely', async ({ page, browser }) => {
+    await gotoApp(page)
+    const studentContext = await browser.newContext({
+      baseURL: new URL(page.url()).origin,
+    })
+    const studentPage = await studentContext.newPage()
+    try {
+      await gotoApp(studentPage)
+      await activateThroughProductionUi(studentPage, TENANT_A, '2468')
+
+      // Establish the teacher aggregate first. It must remain loaded and stale
+      // while the isolated student context commits a newer student document.
+      await signInTeacher(page, TENANT_A)
+      await waitForQuiescence(page)
+
+      await submitStudentLogin(studentPage, {
+        classroomCode: TENANT_A.studentLoginCode,
+        loginId: SHARED_LOGIN_ID,
+        pin: '2468',
+      })
+      await expect(studentPage.locator('.big-balance')).toBeVisible()
+      // The seeded classroom intentionally narrows student subtraction reasons
+      // to Rent. Use the allowed reason and distinguish this $1 request from the
+      // earlier $2 Rent regression by amount.
+      await studentPage.locator('#studentSubtractReason').selectOption({ label: 'Rent' })
+      await studentPage.locator('#studentSubtractAmount').fill('1')
+      await studentPage.getByRole('button', { name: 'Submit Subtract Money', exact: true }).click()
+      await expect(studentPage.getByText(
+        'Subtract Money submitted. Money has been subtracted.',
+        { exact: true },
+      )).toBeVisible()
+      const confirmedBalance = Number(
+        (await studentPage.locator('.big-balance').innerText()).replace(/[$,]/g, ''),
+      )
+      const submittedCard = studentPage.locator('.student-transaction-card')
+        .filter({ hasText: 'Rent' })
+        .filter({ hasText: '-$1' })
+        .first()
+      await expect(submittedCard).toBeVisible()
+      expect(await submittedCard.locator('.student-transaction-meta').first().innerText())
+        .not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
+
+      // Freeze is an ordinary teacher save that touches the stale student body.
+      // It must write nothing, reload the server-confirmed submission, and ask
+      // for a retry rather than claiming that the stale mutation succeeded.
+      await page.evaluate(studentId => {
+        window.confirm = () => true
+        window.setScreen('roster')
+        window.toggleFreezeStudent(Number(studentId))
+      }, TENANT_A.sharedStudentId)
+      await expect(page.getByText(
+        'Your classroom changed while you were working. The latest data was reloaded; please try again.',
+        { exact: true },
+      )).toBeVisible()
+
+      const rosterRow = page.locator('[data-roster-student-name="shared name"]')
+      await expect(rosterRow.locator(`#balance-${TENANT_A.sharedStudentId}`))
+        .toHaveValue(String(confirmedBalance))
+      await expect(rosterRow.getByText('Status: Active', { exact: true })).toBeVisible()
+
+      await page.evaluate(() => window.setScreen('teacher'))
+      const submittedRow = page.locator('tr')
+        .filter({ hasText: 'Rent' })
+        .filter({ hasText: '$1' })
+        .first()
+      await expect(submittedRow.getByRole('cell', { name: 'Subtract', exact: true }))
+        .toBeVisible()
+      await expect(submittedRow.getByRole('cell', { name: 'Approved', exact: true }))
+        .toBeVisible()
+
+      // The refreshed baseline is usable: the same teacher action now commits,
+      // and a second action restores the fixture to Active for later tests.
+      await page.evaluate(studentId => {
+        window.setScreen('roster')
+        window.toggleFreezeStudent(Number(studentId))
+      }, TENANT_A.sharedStudentId)
+      await expect(rosterRow.getByText('Status: Frozen', { exact: true })).toBeVisible()
+      await waitForQuiescence(page)
+      await page.evaluate(studentId => window.toggleFreezeStudent(Number(studentId)), TENANT_A.sharedStudentId)
+      await expect(rosterRow.getByText('Status: Active', { exact: true })).toBeVisible()
+      await waitForQuiescence(page)
+
+      await page.reload()
+      await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain('Shared Name')
+      await page.evaluate(() => window.setScreen('roster'))
+      await expect(page.locator(`#balance-${TENANT_A.sharedStudentId}`))
+        .toHaveValue(String(confirmedBalance))
+    } finally {
+      await studentContext.close()
+    }
+  })
+
   test('student login succeeds when remembering the login locator is unavailable', async ({ page }) => {
     await page.addInitScript(() => {
       const originalSetItem = Storage.prototype.setItem
@@ -605,6 +762,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
 
   test('Credentials shows a current PIN that never reaches the roster, browser storage, cache, or another tenant', async ({ page }) => {
     await gotoApp(page)
+    const tenantAUniquePin = '7316'
 
     // Open Credentials and wait for its on-demand directory read. Earlier cases
     // may already have assigned this student a PIN, so this test establishes its
@@ -623,9 +781,11 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
 
     // One real reset through the production Credentials UI and callable makes
     // the value visible immediately; no reload or second fetch is required.
-    page.once('dialog', dialog => dialog.accept('8642'))
+    page.once('dialog', dialog => dialog.accept(tenantAUniquePin))
     await credentialRow.getByRole('button', { name: /Reset PIN|Activate \/ Set PIN/ }).click()
-    await expect(page.locator(`#credentialPin-${TENANT_A.sharedStudentId}`)).toHaveText('8642')
+    await expect(page.locator(`#credentialPin-${TENANT_A.sharedStudentId}`)).toHaveText(
+      tenantAUniquePin,
+    )
     await expect(credentialRow.getByText('Active', { exact: true })).toBeVisible()
 
     // Moving the display means the roster has no PIN value even after the
@@ -633,14 +793,16 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await page.evaluate(() => window.setScreen('roster'))
     await expect(page.locator(`#rosterPin-${TENANT_A.sharedStudentId}`)).toHaveCount(0)
     await expect(page.locator(`#credentialPin-${TENANT_A.sharedStudentId}`)).toHaveCount(0)
-    expect(await page.evaluate(() => document.body.innerText)).not.toContain('8642')
+    expect(await page.evaluate(() => document.body.innerText)).not.toContain(tenantAUniquePin)
 
     // The server-backed value is still present after a fresh teacher session.
     await logout(page)
     await signInTeacher(page, TENANT_A)
     await waitForQuiescence(page)
     await page.evaluate(() => window.setScreen('credentials'))
-    await expect(page.locator(`#credentialPin-${TENANT_A.sharedStudentId}`)).toHaveText('8642')
+    await expect(page.locator(`#credentialPin-${TENANT_A.sharedStudentId}`)).toHaveText(
+      tenantAUniquePin,
+    )
     await expect(credentialRow.getByText('Active', { exact: true })).toBeVisible()
 
     // The displayed PIN must live only in the page. Every persisted surface stays
@@ -649,7 +811,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
       ...Object.keys(localStorage).map(key => `${key}=${localStorage.getItem(key)}`),
       ...Object.keys(sessionStorage).map(key => `${key}=${sessionStorage.getItem(key)}`),
     ])
-    expect(persisted.join('\n')).not.toContain('8642')
+    expect(persisted.join('\n')).not.toContain(tenantAUniquePin)
 
     // The decisive check that the PIN never entered the aggregate: perform a real
     // save while the PINs are loaded, then inspect the tenant cache envelope the
@@ -674,7 +836,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
       .filter(key => key.endsWith(':data:v1'))
       .map(key => window.__PHASE2B_TEST__.localGet(key))
       .join('\n'))
-    expect(cached).not.toContain('8642')
+    expect(cached).not.toContain(tenantAUniquePin)
     expect(cached).toContain('PIN_DIRECTORY_SAVE')
     expect(await page.evaluate(() => window.__PHASE2B_TEST__.lastError())).toBeNull()
 
@@ -685,7 +847,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await page.evaluate(() => window.setScreen('credentials'))
     await expect(page.locator(`#credentialPinCell-${TENANT_B.sharedStudentId}`)).toBeVisible()
     await expect(page.locator(`#rosterPin-${TENANT_A.sharedStudentId}`)).toHaveCount(0)
-    expect(await page.evaluate(() => document.body.innerText)).not.toContain('8642')
+    expect(await page.evaluate(() => document.body.innerText)).not.toContain(tenantAUniquePin)
   })
 
   test('Phase 3 V2 destructive controls are absent and direct invocation is inert', async ({ page }) => {
@@ -777,5 +939,69 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     )).toBeGreaterThan(savesBefore)
     await waitForQuiescence(page)
     expect(await page.evaluate(() => window.__PHASE2B_TEST__.lastError())).toBeNull()
+  })
+
+  // Regression for the concurrent-save guard's two false positives. Both are
+  // ordinary single-teacher sequences with no second writer anywhere, and both
+  // aborted as "concurrent" changes:
+  //
+  //  1. A student created server-side is in the aggregate but not in the save
+  //     baseline, so the guard compared the stored document against the body it
+  //     was about to write — add a student, give them money, and the save died.
+  //  2. A save re-derives each student's transaction mirror from the ledger,
+  //     while no teacher code path updates the aggregate's copy. So the write
+  //     moved the stored mirror forward and left the baseline behind it, and
+  //     the next action on that student died.
+  //
+  // The Quick Cash pair below hits (1) then (2) in that order. Placed last
+  // because it adds and removes a roster student in the shared tenant.
+  test('consecutive teacher saves commit after a server-created student and a mirror change', async ({ page }) => {
+    await gotoApp(page)
+    await signInTeacher(page, TENANT_A)
+    await waitForQuiescence(page)
+
+    await page.evaluate(() => {
+      window.setScreen('roster')
+      document.getElementById('newStudentName').value = 'Baseline Probe'
+      document.getElementById('newStudentPin').value = '5192'
+      document.getElementById('newStudentBalance').value = '0'
+      return window.addStudent()
+    })
+    await expect.poll(() => page.evaluate(() => document.body.innerText))
+      .toContain('Baseline Probe added.')
+
+    const probeId = await page.evaluate(() => {
+      const row = document.querySelector('[data-roster-student-name="baseline probe"]')
+      if (!row) throw new Error('the created student did not render on the roster')
+      const input = row.querySelector('input[id^="balance-"]')
+      return Number(input.id.slice('balance-'.length))
+    })
+
+    // Two Quick Cash grants, back to back, on the student that was just created.
+    for (let grant = 0; grant < 2; grant += 1) {
+      await page.evaluate(id => {
+        window.setScreen('teacher')
+        document.getElementById('quickStudent').value = String(id)
+        window.quickCash('Add', 5)
+      }, probeId)
+      await waitForQuiescence(page)
+      await expect(page.getByText(
+        'Your classroom changed while you were working. The latest data was reloaded; please try again.',
+        { exact: true },
+      )).toHaveCount(0)
+    }
+    expect(await page.evaluate(() => window.__PHASE2B_TEST__.lastError())).toBeNull()
+
+    // Both grants must actually be on the server, not just in the open tab.
+    await gotoApp(page)
+    await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain('Baseline Probe')
+    await waitForQuiescence(page)
+    await page.evaluate(() => window.setScreen('roster'))
+    await expect(page.locator(`#balance-${probeId}`)).toHaveValue('10')
+
+    page.once('dialog', dialog => dialog.accept())
+    await page.evaluate(id => window.removeStudent(Number(id)), probeId)
+    await expect.poll(() => page.evaluate(() => document.body.innerText))
+      .toContain('Baseline Probe removed.')
   })
 }
