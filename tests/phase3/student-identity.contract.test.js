@@ -415,6 +415,14 @@ describe('Phase 3 student-identity source contract', () => {
       /currentPin = IS_MULTI_TEACHER_V2_ENABLED\s*\? credentialStudentPin\(student\.id\)/,
       'Credentials must resolve each V2 PIN through the tenant-stamped reader',
     )
+    const currentPinIndex = credentialsMarkup.indexOf('${currentPin ? `')
+    const pinLoadingIndex = credentialsMarkup.indexOf('v2StudentPinsLoading ? `')
+    assert.notEqual(currentPinIndex, -1, 'Credentials must render an available current PIN')
+    assert.notEqual(pinLoadingIndex, -1, 'Credentials must retain its unknown-PIN loading state')
+    assert.ok(
+      currentPinIndex < pinLoadingIndex,
+      'a successful reset must remain immediately visible while an older directory request is loading',
+    )
 
     const rosterStart = indexHtml.indexOf('if (screen === "roster" && isTeacher) {')
     const profileStart = indexHtml.indexOf('if (screen === "studentProfile" && isTeacher) {', rosterStart)
@@ -452,7 +460,11 @@ describe('Phase 3 student-identity source contract', () => {
       matchingLines(/let v2StudentPins = new Map\(\);/).length > 0,
       'V2 PINs must live in a view-only in-memory map',
     )
-    for (const line of matchingLines(/v2StudentPins/)) {
+    assert.ok(
+      matchingLines(/let v2StudentPinOverrides = new Map\(\);/).length > 0,
+      'successful reset overrides must also remain view-only and in memory',
+    )
+    for (const line of matchingLines(/v2StudentPins|v2StudentPinOverrides/)) {
       assert.doesNotMatch(
         lines[line - 1],
         /data\.students|\.pin\s*=[^=]|writeTeacherCache|localStorage|sessionStorage|projectBackupExport/,
@@ -483,33 +495,49 @@ describe('Phase 3 student-identity source contract', () => {
     )
     const stampLine = matchingLines(/v2StudentPinsIdentity = captured;/)
     assert.equal(stampLine.length, 2, 'fetch and successful reset each stamp the PIN map')
-    const fetchStampLines = stampLine.filter(line => /v2StudentPins = new Map\(res\.pins/.test(
+    const fetchStampLines = stampLine.filter(line => /v2StudentPins = reconciled\.pins/.test(
       contextAt(line, 2, 0),
     ))
     assert.equal(fetchStampLines.length, 1, 'exactly one stamp belongs to a directory response')
     assert.match(
       contextAt(fetchStampLines[0], 2, 0),
-      /v2StudentPins = new Map\(res\.pins/,
+      /v2StudentPins = reconciled\.pins/,
       'the identity stamp must be set together with the PINs it describes',
     )
     assert.match(
       indexHtml,
       /const requestVersion = \+\+v2StudentPinsRequestVersion;[^]*requestVersion !== v2StudentPinsRequestVersion/,
-      'a directory response must be rejected after a newer reset invalidates its request version',
+      'a directory response must be rejected after a newer request or tenant reset invalidates it',
+    )
+    assert.match(
+      indexHtml,
+      /const requestResetVersion = v2StudentPinsResetVersion;[^]*reconcileStudentPinDirectory\(\{[^]*pendingResets: v2StudentPinOverrides,[^]*requestResetVersion,[^]*requestIdentity: captured,[^]*currentIdentity: v2TenantSession\.captureIdentity\(\)/,
+      'a directory response must reconcile only same-tenant resets completed after it began',
     )
     const resetMemoryStart = indexHtml.indexOf('function rememberResetStudentPin(')
     assert.notEqual(resetMemoryStart, -1, 'the successful-reset memory update must exist')
     const resetMemoryEnd = indexHtml.indexOf('\n    }', resetMemoryStart)
     const resetMemoryBody = indexHtml.slice(resetMemoryStart, resetMemoryEnd)
     assert.match(resetMemoryBody, /validateCapturedIdentity\(captured\)/)
-    assert.match(resetMemoryBody, /v2StudentPinsRequestVersion \+= 1;/)
-    assert.match(resetMemoryBody, /nextPins\.set\(String\(studentId\), pin\);/)
+    assert.match(resetMemoryBody, /const resetVersion = \+\+v2StudentPinsResetVersion;/)
+    assert.match(resetMemoryBody, /nextOverrides\.set\(studentKey, \{[^]*identity: \{ \.\.\.captured \}/)
+    assert.match(resetMemoryBody, /nextPins\.set\(studentKey, pin\);/)
     assert.match(resetMemoryBody, /v2StudentPinsIdentity = captured;/)
+    assert.doesNotMatch(
+      resetMemoryBody,
+      /v2StudentPinsRequestVersion|v2StudentPinsLoading\s*=\s*false/,
+      'a reset must not discard or pretend to complete an older full-directory request',
+    )
     assert.doesNotMatch(
       resetMemoryBody,
       /data\.|localStorage|sessionStorage|writeTeacherCache|saveData/,
       'a newly reset PIN must update only the tenant-stamped in-memory view',
     )
+    const resetAllStart = indexHtml.indexOf('function resetAllGlobalState() {')
+    const onboardingStart = indexHtml.indexOf('async function submitV2Onboarding()', resetAllStart)
+    const resetAllBody = indexHtml.slice(resetAllStart, onboardingStart)
+    assert.match(resetAllBody, /v2StudentPinOverrides = new Map\(\);/)
+    assert.match(resetAllBody, /v2StudentPinsRequestVersion \+= 1;/)
 
     // The roster PIN input is not merely hidden: updateStudent must not read it
     // in V2, or the Save button would throw on a missing element.

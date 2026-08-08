@@ -607,6 +607,77 @@ export function validateStudentPinDirectoryResponse(response) {
   return pins;
 }
 
+function isTeacherPinDirectoryIdentity(identity) {
+  return exactObject(identity, ["uid", "role", "classroomId", "studentId", "epoch"]) &&
+    typeof identity.uid === "string" && identity.uid.length > 0 &&
+    identity.role === "teacher" &&
+    isCanonicalClassroomId(identity.classroomId) &&
+    identity.studentId === null &&
+    Number.isSafeInteger(identity.epoch) && identity.epoch >= 0;
+}
+
+function sameTeacherPinDirectoryIdentity(left, right) {
+  return isTeacherPinDirectoryIdentity(left) &&
+    isTeacherPinDirectoryIdentity(right) &&
+    left.uid === right.uid &&
+    left.role === right.role &&
+    left.classroomId === right.classroomId &&
+    left.studentId === right.studentId &&
+    left.epoch === right.epoch;
+}
+
+/**
+ * Reconciles a directory response with successful resets that completed after
+ * that request began.
+ *
+ * The callable response is authoritative for everything visible when the
+ * request started. A later successful reset is newer than that snapshot, so its
+ * submitted PIN remains an in-memory override until a subsequent request begins
+ * after the reset and can authoritatively confirm it. Tenant identity is part of
+ * the reconciliation input because student IDs restart in every classroom.
+ */
+export function reconcileStudentPinDirectory({
+  directoryPins,
+  pendingResets,
+  requestResetVersion,
+  requestIdentity,
+  currentIdentity
+}) {
+  if (!sameTeacherPinDirectoryIdentity(requestIdentity, currentIdentity)) return null;
+  if (!Number.isSafeInteger(requestResetVersion) || requestResetVersion < 0) return null;
+  if (!(pendingResets instanceof Map)) return null;
+
+  const validatedPins = validateStudentPinDirectoryResponse({ pins: directoryPins });
+  if (validatedPins === null) return null;
+
+  const pins = new Map(validatedPins.map(entry => [entry.studentId, entry.pin]));
+  const remainingResets = new Map();
+
+  for (const [studentId, reset] of pendingResets) {
+    if (typeof studentId !== "string" || !/^[1-9][0-9]{0,17}$/.test(studentId)) return null;
+    if (!exactObject(reset, ["pin", "version", "identity"]) ||
+        typeof reset.pin !== "string" || !/^[0-9]{4}$/.test(reset.pin) ||
+        !Number.isSafeInteger(reset.version) || reset.version < 1 ||
+        !isTeacherPinDirectoryIdentity(reset.identity)) {
+      return null;
+    }
+
+    // A reset retained from another identity can never override this tenant's
+    // response, even when both classrooms use the same student ID.
+    if (!sameTeacherPinDirectoryIdentity(reset.identity, currentIdentity)) continue;
+    if (reset.version <= requestResetVersion) continue;
+
+    pins.set(studentId, reset.pin);
+    remainingResets.set(studentId, {
+      pin: reset.pin,
+      version: reset.version,
+      identity: { ...reset.identity }
+    });
+  }
+
+  return { pins, pendingResets: remainingResets };
+}
+
 export async function orchestrateStudentPinDirectoryFetch(session, fetchFn) {
   const captured = session.captureIdentity();
   let response;

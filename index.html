@@ -880,7 +880,7 @@ import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, writeB
 import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
-import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateStudentPinDirectoryFetch, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
+import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateStudentPinDirectoryFetch, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, reconcileStudentPinDirectory, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
 import { formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
@@ -983,9 +983,12 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let v2StudentPins = new Map();
     let v2StudentPinsLoading = false;
     let v2StudentPinsError = "";
-    // Invalidates an older same-tenant directory fetch when a successful PIN
-    // reset supplies a newer value before that fetch completes.
+    // Invalidates directory requests only when a newer request or a tenant reset
+    // supersedes them. Successful resets instead remain same-tenant in-memory
+    // overrides so an older response can contribute the other students' PINs.
     let v2StudentPinsRequestVersion = 0;
+    let v2StudentPinsResetVersion = 0;
+    let v2StudentPinOverrides = new Map();
     // The tenant identity the loaded PINs were fetched for. Clearing the map on
     // reset is not sufficient on its own: setScreen renders BEFORE the fetch
     // starts, so a map that outlived a classroom switch would paint the previous
@@ -1300,22 +1303,26 @@ function toggleStudentDropdown() {
      * Loads the teacher's own classroom PINs for the Credentials screen.
      *
      * Teacher-gated and epoch-guarded like every other V2 read. A failure leaves
-     * the screen showing "Unavailable" rather than a stale or foreign PIN: the
-     * map is cleared before the call so a previous tenant's values can never be
-     * displayed on this screen while the fetch is in flight.
+     * unknown values showing "Unavailable" rather than a stale or foreign PIN.
+     * A same-tenant value may remain visible during refresh, but an unstamped or
+     * invalidated map is cleared before the call.
      */
     async function loadStudentPinDirectory() {
       if (!IS_MULTI_TEACHER_V2_ENABLED || !requireTeacher()) return;
       if (v2StudentPinsLoading) return;
 
+      const captured = v2TenantSession.captureIdentity();
+      const requestResetVersion = v2StudentPinsResetVersion;
       v2StudentPinsLoading = true;
       v2StudentPinsError = "";
-      v2StudentPins = new Map();
-      v2StudentPinsIdentity = null;
+      if (!v2StudentPinsIdentity ||
+          !v2TenantSession.validateCapturedIdentity(v2StudentPinsIdentity)) {
+        v2StudentPins = new Map();
+        v2StudentPinsIdentity = null;
+      }
       const requestVersion = ++v2StudentPinsRequestVersion;
       render();
 
-      const captured = v2TenantSession.captureIdentity();
       const fetchFn = async () => {
         const callable = httpsCallable(functions, "listStudentPinsV2");
         return await callable({});
@@ -1325,11 +1332,31 @@ function toggleStudentDropdown() {
       if (requestVersion !== v2StudentPinsRequestVersion) return;
 
       if (res.executed) {
-        v2StudentPins = new Map(res.pins.map(entry => [entry.studentId, entry.pin]));
+        const reconciled = reconcileStudentPinDirectory({
+          directoryPins: res.pins,
+          pendingResets: v2StudentPinOverrides,
+          requestResetVersion,
+          requestIdentity: captured,
+          currentIdentity: v2TenantSession.captureIdentity()
+        });
+        if (!reconciled) {
+          v2StudentPins = new Map();
+          v2StudentPinOverrides = new Map();
+          v2StudentPinsIdentity = null;
+          v2StudentPinsError = "Could not load student PINs.";
+          v2StudentPinsLoading = false;
+          render();
+          return;
+        }
+        v2StudentPins = reconciled.pins;
+        v2StudentPinOverrides = reconciled.pendingResets;
         v2StudentPinsIdentity = captured;
       } else if (res.reason !== "stale-epoch-ignored") {
-        v2StudentPins = new Map();
-        v2StudentPinsIdentity = null;
+        if (!v2StudentPinsIdentity ||
+            !v2TenantSession.validateCapturedIdentity(v2StudentPinsIdentity)) {
+          v2StudentPins = new Map();
+          v2StudentPinsIdentity = null;
+        }
         v2StudentPinsError = res.error || "Could not load student PINs.";
       }
       v2StudentPinsLoading = false;
@@ -1347,20 +1374,27 @@ function toggleStudentDropdown() {
     }
 
     // A successful reset is newer than any PIN-directory request that was
-    // already in flight. Record the submitted value only in the tenant-stamped
-    // in-memory view and invalidate that older response so it cannot overwrite
-    // the newly confirmed PIN.
+    // already in flight. Record the submitted value only in tenant-stamped
+    // memory. The reset revision lets the older response restore other students
+    // while this exact value wins reconciliation.
     function rememberResetStudentPin(captured, studentId, pin) {
       if (!v2TenantSession.validateCapturedIdentity(captured)) return;
-      v2StudentPinsRequestVersion += 1;
+      const resetVersion = ++v2StudentPinsResetVersion;
+      const studentKey = String(studentId);
+      const nextOverrides = new Map(v2StudentPinOverrides);
+      nextOverrides.set(studentKey, {
+        pin,
+        version: resetVersion,
+        identity: { ...captured }
+      });
       const nextPins = v2StudentPinsIdentity &&
         v2TenantSession.validateCapturedIdentity(v2StudentPinsIdentity)
         ? new Map(v2StudentPins)
         : new Map();
-      nextPins.set(String(studentId), pin);
+      nextPins.set(studentKey, pin);
+      v2StudentPinOverrides = nextOverrides;
       v2StudentPins = nextPins;
       v2StudentPinsIdentity = captured;
-      v2StudentPinsLoading = false;
       v2StudentPinsError = "";
     }
 
@@ -3850,12 +3884,12 @@ ${transactionTarget !== "whole" ? `
                         <td><code>${escapeHtml(loginId)}</code></td>
                         ${IS_MULTI_TEACHER_V2_ENABLED ? `
                         <td id="credentialPinCell-${student.id}" class="credential-pin-column">
-                          ${v2StudentPinsLoading ? `
+                          ${currentPin ? `
+                            <span id="credentialPin-${student.id}" class="credential-pin">${escapeHtml(currentPin)}</span>
+                          ` : v2StudentPinsLoading ? `
                             <span class="small-note">Loading...</span>
                           ` : v2StudentPinsError ? `
                             <span class="small-note">Unavailable</span>
-                          ` : currentPin ? `
-                            <span id="credentialPin-${student.id}" class="credential-pin">${escapeHtml(currentPin)}</span>
                           ` : `
                             <span class="small-note">Not set. Reset to create one.</span>
                           `}
@@ -4109,10 +4143,12 @@ if (screen === "editSettingsLists" && isTeacher) {
       // Plaintext PINs belong to exactly one tenant. They must not survive a
       // classroom switch, an invalidation, or a sign-out for even one render.
       v2StudentPins = new Map();
+      v2StudentPinOverrides = new Map();
       v2StudentPinsIdentity = null;
       v2StudentPinsLoading = false;
       v2StudentPinsError = "";
       v2StudentPinsRequestVersion += 1;
+      v2StudentPinsResetVersion += 1;
       // The persisted-data baseline belongs to the outgoing tenant. Keeping it
       // would let the next tenant's first save diff against a foreign
       // classroom and skip documents it must write.

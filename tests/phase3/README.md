@@ -844,6 +844,18 @@ classroom's unique PIN even if that tenant has its own value. Verified
 non-vacuous by mutation: merging the PIN into the aggregate student record fails
 the cache-envelope assertion.
 
+The deterministic reconciliation cases in `src/phase2b/tenantClient.test.js`
+cover the async ordering that the end-to-end case deliberately does not leave to
+network timing: a directory request begins, multiple successful same-tenant
+resets receive newer completion revisions, and the older response then supplies
+an untouched classmate plus stale values for the reset students. The helper must
+retain the classmate, apply both newer reset values, and retire those temporary
+overrides after a later authoritative request. A colliding student ID from a
+different teacher/epoch is rejected both as a stale response and as a foreign
+override. `student-identity.contract.test.js` separately pins that the production
+Credentials path calls this helper, keeps the request loading for untouched rows,
+shows a newly confirmed PIN immediately, and clears both maps on tenant reset.
+
 The browser fixtures deliberately give both tenants the same student ID, matching
 the production allocation pattern where IDs restart within each classroom. That
 runtime case proves a tenant switch cannot display the outgoing classroom's PIN.

@@ -18,6 +18,7 @@ import {
   orchestrateAuthLogsFetch,
   orchestrateStudentPinReset,
   orchestrateStudentPinDirectoryFetch,
+  reconcileStudentPinDirectory,
   validateStudentPinDirectoryResponse,
   orchestrateBulkOperation,
   orchestrateCreateStudent,
@@ -628,6 +629,109 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       [],
       "an empty classroom is a valid response, not a failure"
     );
+  });
+
+  test("an older PIN directory response keeps classmates while later same-tenant resets win", () => {
+    const teacherA = {
+      uid: "teacher_a",
+      role: "teacher",
+      classroomId: "room_a",
+      studentId: null,
+      epoch: 7
+    };
+
+    // The request begins at reset revision 3. Two real reset completions are
+    // then represented by revisions 4 and 5 before the older directory response
+    // lands with the reset students' previous PINs.
+    const pendingResets = new Map([
+      ["12", { pin: "8642", version: 4, identity: teacherA }],
+      ["13", { pin: "9753", version: 5, identity: teacherA }]
+    ]);
+    const reconciled = reconcileStudentPinDirectory({
+      directoryPins: [
+        { studentId: "11", pin: "2468" },
+        { studentId: "12", pin: "1357" },
+        { studentId: "13", pin: "1111" }
+      ],
+      pendingResets,
+      requestResetVersion: 3,
+      requestIdentity: teacherA,
+      currentIdentity: { ...teacherA }
+    });
+
+    assert.ok(reconciled, "the same-tenant response must reconcile");
+    assert.deepEqual(
+      [...reconciled.pins],
+      [["11", "2468"], ["12", "8642"], ["13", "9753"]],
+      "the untouched classmate survives while both post-request resets override old values"
+    );
+    assert.deepEqual(
+      [...reconciled.pendingResets.keys()],
+      ["12", "13"],
+      "post-request resets remain pending until a later authoritative request"
+    );
+
+    // A later request starts after both resets. Its response is authoritative and
+    // retires the temporary overrides instead of masking a future server change.
+    const confirmed = reconcileStudentPinDirectory({
+      directoryPins: [
+        { studentId: "11", pin: "2468" },
+        { studentId: "12", pin: "8642" },
+        { studentId: "13", pin: "9753" }
+      ],
+      pendingResets: reconciled.pendingResets,
+      requestResetVersion: 5,
+      requestIdentity: teacherA,
+      currentIdentity: { ...teacherA }
+    });
+    assert.deepEqual([...confirmed.pins], [["11", "2468"], ["12", "8642"], ["13", "9753"]]);
+    assert.equal(confirmed.pendingResets.size, 0);
+  });
+
+  test("PIN directory reconciliation rejects stale identity and ignores colliding foreign overrides", () => {
+    const teacherA = {
+      uid: "teacher_a",
+      role: "teacher",
+      classroomId: "room_a",
+      studentId: null,
+      epoch: 7
+    };
+    const teacherB = {
+      uid: "teacher_b",
+      role: "teacher",
+      classroomId: "room_b",
+      studentId: null,
+      epoch: 8
+    };
+    const collidingForeignReset = new Map([
+      ["12", { pin: "8642", version: 4, identity: teacherA }]
+    ]);
+
+    assert.equal(
+      reconcileStudentPinDirectory({
+        directoryPins: [{ studentId: "12", pin: "2468" }],
+        pendingResets: collidingForeignReset,
+        requestResetVersion: 3,
+        requestIdentity: teacherA,
+        currentIdentity: teacherB
+      }),
+      null,
+      "teacher A's response must fail closed after the session switches to B"
+    );
+
+    const teacherBResult = reconcileStudentPinDirectory({
+      directoryPins: [{ studentId: "12", pin: "2468" }],
+      pendingResets: collidingForeignReset,
+      requestResetVersion: 3,
+      requestIdentity: teacherB,
+      currentIdentity: { ...teacherB }
+    });
+    assert.deepEqual(
+      [...teacherBResult.pins],
+      [["12", "2468"]],
+      "a colliding student ID cannot carry teacher A's reset into teacher B's directory"
+    );
+    assert.equal(teacherBResult.pendingResets.size, 0);
   });
 
   test("a PIN directory response that lands after a tenant switch is discarded before it can be rendered", async () => {
