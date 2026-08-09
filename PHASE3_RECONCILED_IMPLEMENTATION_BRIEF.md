@@ -676,7 +676,7 @@ deployment, real-student, or second-teacher authority.
    fresh-classroom Auth/Functions/Firestore seam and final-rules orphan denial.
 3. Record the exact reviewed commit, V2 Functions artifact, gate-on Hosting
    artifact, final-rules hash, and the code-pinned Functions release ID
-   `phase3-commit8-functions-v1`. Verify Role B remains uncreated and unbound.
+   `student-money-functions-v3`. Verify Role B remains uncreated and unbound.
 4. Under separate deployment authorization, deploy the reviewed V2 Functions
    with `MULTI_TEACHER_V2_ENABLED=false`. No V2 callable may succeed yet.
 5. Deploy and independently verify the checksum-pinned final rules. Do not
@@ -686,7 +686,7 @@ deployment, real-student, or second-teacher authority.
    foundation, and deny legacy blobs, phantom-parent legacy mirrors,
    credentials, control documents, and cross-tenant access.
 7. Configure `MULTI_TEACHER_V2_RELEASE_ID` to exactly
-   `phase3-commit8-functions-v1`, set `MULTI_TEACHER_V2_ENABLED=true`, and apply
+   `student-money-functions-v3`, set `MULTI_TEACHER_V2_ENABLED=true`, and apply
    the parameter change to the same reviewed Functions artifact. Independently
    verify both deployed values and one generic fail-closed negative probe before
    continuing.

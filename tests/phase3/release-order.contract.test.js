@@ -22,6 +22,10 @@ const runbook = readFileSync(
   new URL('../../PHASE3_RELEASE_RUNBOOK.md', import.meta.url),
   'utf8',
 )
+const functionsIndex = readFileSync(
+  new URL('../../functions/index.js', import.meta.url),
+  'utf8',
+)
 const architecture = readFileSync(
   new URL('../../MULTI_TEACHER_ARCHITECTURE_PLAN.md', import.meta.url),
   'utf8',
@@ -131,6 +135,14 @@ function runbookReleaseSteps() {
   const steps = parseNumberedSteps(section.split('\n## Abort criteria')[0])
   assert.equal(steps.length, 12, 'the runbook must retain all 12 clean-start steps')
   return steps
+}
+
+function reviewedV2FunctionsReleaseId() {
+  const matches = [...functionsIndex.matchAll(
+    /export const REVIEWED_V2_FUNCTIONS_RELEASE_ID\s*=\s*(['"])([a-z0-9]+(?:-[a-z0-9]+)*)\1/g,
+  )]
+  assert.equal(matches.length, 1, 'Functions must export one canonical reviewed V2 release ID')
+  return matches[0][2]
 }
 
 function runbookAbortCriteria() {
@@ -499,6 +511,24 @@ function assertOrderedMarkers(source, markers, description) {
 }
 
 describe('Phase 3 release-order source contract', () => {
+  it('boundary: production documents bind the exact code-pinned V2 Functions release ID', () => {
+    const releaseId = reviewedV2FunctionsReleaseId()
+    for (const [label, steps] of [
+      ['brief', releaseOrderingSteps()],
+      ['runbook', runbookReleaseSteps()],
+    ]) {
+      const documentedIds = [steps[2].text, steps[6].text]
+        .flatMap(text => [...text.matchAll(
+          /\b(?:phase3|student-money)-[a-z0-9]+(?:-[a-z0-9]+)*\b/g,
+        )].map(match => match[0]))
+      assert.deepEqual(
+        documentedIds,
+        [releaseId, releaseId],
+        `${label} must bind and configure only the code-pinned V2 Functions release ID`,
+      )
+    }
+  })
+
   it('source contract: gate-off Functions precede final rules, then gate enable, then gate-on Hosting', () => {
     const steps = releaseOrderingSteps()
     const functionsGateOff = stepIndex(

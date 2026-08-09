@@ -397,7 +397,7 @@ The following is an operator checklist, not permission to execute it.
    Record only non-secret checksums, counts, and verdicts.
 3. Bind the release record to that exact commit, the reviewed Functions
    artifact, the reviewed gate-on Hosting artifact, final-rules hash, and
-   `REVIEWED_V2_FUNCTIONS_RELEASE_ID = "phase3-commit8-functions-v1"`. Verify
+   `REVIEWED_V2_FUNCTIONS_RELEASE_ID = "student-money-functions-v3"`. Verify
    Role B remains uncreated and unbound.
 4. Under separate deployment authorization, deploy the reviewed V2 Functions
    with `MULTI_TEACHER_V2_ENABLED=false`. Verify every V2 callable fails closed
@@ -412,7 +412,7 @@ The following is an operator checklist, not permission to execute it.
    throttles, unresolved logs, V1 blobs, flat logs, and phantom-parent legacy
    mirrors. Any mismatch aborts before activation.
 7. Configure `MULTI_TEACHER_V2_RELEASE_ID` to exactly
-   `phase3-commit8-functions-v1` and set `MULTI_TEACHER_V2_ENABLED=true`. Apply
+   `student-money-functions-v3` and set `MULTI_TEACHER_V2_ENABLED=true`. Apply
    those deploy-time parameters to the same reviewed Functions source and
    independently verify both values. A wrong or blank release ID must keep
    every V2 invocation closed.
