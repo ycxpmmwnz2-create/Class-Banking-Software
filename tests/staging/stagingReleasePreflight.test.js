@@ -33,7 +33,7 @@ describe("staging release preflight", () => {
     assert.deepEqual(result, {
       deploymentTier: "staging",
       projectId: "morgan-bank-staging-test",
-      releaseId: "student-money-functions-v1",
+      releaseId: "student-money-functions-v2",
       rulesFile: "firestore.phase3.final.rules"
     });
     assert.ok(Object.isFrozen(result));

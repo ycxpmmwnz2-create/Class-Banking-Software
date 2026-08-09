@@ -1,8 +1,17 @@
 import { HttpsError } from 'firebase-functions/v2/https'
 
 import { FIRESTORE_COLLECTIONS, TEACHER_STATUS } from '../phase1/firestoreSchema.js'
-import { validateCanonicalDocumentId } from '../phase2b/identityNormalization.js'
+import {
+  hashSha256,
+  validateCanonicalDocumentId,
+} from '../phase2b/identityNormalization.js'
 import { deriveDeterministicStudentAuthUid } from '../phase2b/scopedCredentialProjection.js'
+import { studentLoginThrottlePath } from '../phase2b/studentCredentialPaths.js'
+
+const MAX_STUDENT_TRANSACTION_MIRROR_LENGTH = 1000
+const STUDENT_MONEY_THROTTLE_WINDOW_MS = 5 * 60 * 1000
+const MAX_STUDENT_MONEY_SUBMISSIONS_PER_WINDOW = 10
+const STUDENT_MONEY_THROTTLE_NAMESPACE = 'student-money-submission'
 
 const DEFAULT_STUDENT_MONEY_SETTINGS = Object.freeze({
   studentRequestsEnabled: true,
@@ -314,9 +323,8 @@ function sameTransaction(left, right) {
   return TRANSACTION_KEYS.every(key => left[key] === right[key])
 }
 
-function buildTransaction(request, student, now) {
-  const timestamp = now()
-  if (!Number.isFinite(timestamp)) {
+function buildTransaction(request, student, timestamp) {
+  if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
     throw new StudentMoneyError('internal', 'Server clock is unavailable.')
   }
   const date = new Date(timestamp)
@@ -336,6 +344,35 @@ function buildTransaction(request, student, now) {
     status: request.type === 'Add' ? 'Pending' : 'Approved',
     source: 'Student',
   })
+}
+
+function studentMoneyThrottleRef(firestore, identity) {
+  const digest = hashSha256(
+    `${STUDENT_MONEY_THROTTLE_NAMESPACE}\0${identity.classroomId}\0${identity.studentId}`,
+  )
+  return firestore.doc(studentLoginThrottlePath(digest))
+}
+
+function requireThrottleWindow(snapshot, submissionTime) {
+  if (!snapshotExists(snapshot)) return []
+  const data = snapshot.data?.() ?? null
+  if (
+    !hasExactKeys(data, ['attempts', 'updatedAt']) ||
+    !Array.isArray(data.attempts) ||
+    data.attempts.length > MAX_STUDENT_MONEY_SUBMISSIONS_PER_WINDOW ||
+    !Number.isSafeInteger(data.updatedAt) ||
+    data.updatedAt < 0 ||
+    data.attempts.some(attempt =>
+      !Number.isSafeInteger(attempt) || attempt < 0 || attempt > submissionTime)
+  ) {
+    throw new StudentMoneyError(
+      'failed-precondition',
+      'Student submission throttle is malformed.',
+    )
+  }
+  return data.attempts.filter(
+    attempt => submissionTime - attempt < STUDENT_MONEY_THROTTLE_WINDOW_MS,
+  )
 }
 
 export async function submitStudentTransactionV2Service(
@@ -359,6 +396,18 @@ export async function submitStudentTransactionV2Service(
   const transactionRef = firestore.doc(
     `${FIRESTORE_COLLECTIONS.CLASSROOMS}/${identity.classroomId}/transactions/${validated.transactionId}`,
   )
+  const throttleRef = studentMoneyThrottleRef(firestore, identity)
+  let submissionTime = null
+
+  function resolveSubmissionTime() {
+    if (submissionTime !== null) return submissionTime
+    const candidate = now()
+    if (!Number.isSafeInteger(candidate) || candidate < 0) {
+      throw new StudentMoneyError('internal', 'Server clock is unavailable.')
+    }
+    submissionTime = candidate
+    return submissionTime
+  }
 
   return firestore.runTransaction(async transaction => {
     // The owner UID lives on the classroom root, so that read must occur first.
@@ -378,6 +427,7 @@ export async function submitStudentTransactionV2Service(
     const teacherSnapshot = await transaction.get(teacherRef)
     const studentSnapshot = await transaction.get(studentRef)
     const existingTransactionSnapshot = await transaction.get(transactionRef)
+    const throttleSnapshot = await transaction.get(throttleRef)
 
     const classroom = requireFoundation(classroomSnapshot, teacherSnapshot, identity)
     const student = requireStudentDocument(studentSnapshot, identity)
@@ -405,12 +455,27 @@ export async function submitStudentTransactionV2Service(
         'Student mirror contains a transaction missing from the classroom ledger.',
       )
     }
+    if (student.transactions.length >= MAX_STUDENT_TRANSACTION_MIRROR_LENGTH) {
+      throw new StudentMoneyError(
+        'resource-exhausted',
+        'Student transaction mirror has reached its fixed limit.',
+      )
+    }
     requireTransactionEnabled(classroom, student, validated)
     if (validated.type === 'Subtract' && validated.amount > student.balance) {
       throw new StudentMoneyError('failed-precondition', 'Student balance is insufficient.')
     }
 
-    const newTransaction = buildTransaction(validated, student, now)
+    const currentSubmissionTime = resolveSubmissionTime()
+    const attemptsInWindow = requireThrottleWindow(throttleSnapshot, currentSubmissionTime)
+    if (attemptsInWindow.length >= MAX_STUDENT_MONEY_SUBMISSIONS_PER_WINDOW) {
+      throw new StudentMoneyError(
+        'resource-exhausted',
+        'Student submission throttle has been reached.',
+      )
+    }
+
+    const newTransaction = buildTransaction(validated, student, currentSubmissionTime)
     const balance = validated.type === 'Subtract'
       ? student.balance - validated.amount
       : student.balance
@@ -422,6 +487,10 @@ export async function submitStudentTransactionV2Service(
     transaction.update(studentRef, {
       balance,
       transactions: [newTransaction, ...student.transactions],
+    })
+    transaction.set(throttleRef, {
+      attempts: [...attemptsInWindow, currentSubmissionTime],
+      updatedAt: currentSubmissionTime,
     })
     return Object.freeze({ transaction: newTransaction, balance })
   })

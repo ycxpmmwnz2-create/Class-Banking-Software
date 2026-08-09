@@ -302,6 +302,10 @@ function throttleDigest(canonicalCode, canonicalLoginId) {
   return sha256Hex(`${canonicalCode}\0${canonicalLoginId}`)
 }
 
+function studentMoneyThrottleDigest(classroomId, studentId) {
+  return sha256Hex(`student-money-submission\0${classroomId}\0${studentId}`)
+}
+
 // ---------------------------------------------------------------------------
 // Identity helpers — real Auth emulator identities only.
 // ---------------------------------------------------------------------------
@@ -812,12 +816,12 @@ if (testMode === 'gate-on') {
         assert.deepEqual(rejected.warningCategories, ['release-id-mismatch'])
         const accepted = runGuardProbe({
           ...production,
-          MULTI_TEACHER_V2_RELEASE_ID: 'student-money-functions-v1',
+          MULTI_TEACHER_V2_RELEASE_ID: 'student-money-functions-v2',
           FORCE_POST_GATE_APP_GUARD: 'true',
           RUN_V2_PROBE: 'true',
         })
         assert.equal(accepted.threw, false)
-        assert.equal(accepted.reviewedRelease, 'student-money-functions-v1')
+        assert.equal(accepted.reviewedRelease, 'student-money-functions-v2')
         assert.deepEqual(accepted.invocation, {
           succeeded: false,
           code: 'failed-precondition',
@@ -833,7 +837,7 @@ if (testMode === 'gate-on') {
           FIREBASE_AUTH_EMULATOR_HOST: undefined,
           FIREBASE_CONFIG: undefined,
           GCLOUD_PROJECT: 'morgan-bank',
-          MULTI_TEACHER_V2_RELEASE_ID: 'student-money-functions-v1',
+          MULTI_TEACHER_V2_RELEASE_ID: 'student-money-functions-v2',
           MORGAN_BANK_DEPLOYMENT_TIER: undefined,
           FORCE_POST_GATE_APP_GUARD: 'true',
           RUN_V2_PROBE: 'true',
@@ -1605,6 +1609,54 @@ if (testMode === 'gate-on') {
           (await db.doc(`classrooms/${teacher.classroomId}/transactions/1103`).get()).exists,
           false,
         )
+
+        for (let transactionId = 1104; transactionId <= 1111; transactionId += 1) {
+          const withinWindow = await httpsCallable(
+            studentClient.functions,
+            'submitStudentTransactionV2',
+          )({
+            transactionId,
+            type: 'Add',
+            amount: 1,
+            reason: 'Homework',
+          })
+          assert.equal(withinWindow.data.transaction.id, transactionId)
+        }
+
+        const replayAtThrottle = await httpsCallable(
+          studentClient.functions,
+          'submitStudentTransactionV2',
+        )(addPayload)
+        assert.deepEqual(replayAtThrottle.data.transaction, add.data.transaction)
+        assert.equal(replayAtThrottle.data.balance, 21)
+
+        const moneyThrottle = await db
+          .collection('studentLoginThrottle')
+          .doc(studentMoneyThrottleDigest(teacher.classroomId, '1'))
+          .get()
+        assert.equal(moneyThrottle.exists, true)
+        assert.equal(moneyThrottle.data().attempts.length, 10)
+
+        await expectCallableError(
+          () => httpsCallable(
+            studentClient.functions,
+            'submitStudentTransactionV2',
+          )({
+            transactionId: 1112,
+            type: 'Add',
+            amount: 1,
+            reason: 'Homework',
+          }),
+          'resource-exhausted',
+          'The request could not be completed. Please try again later.',
+        )
+        assert.equal(
+          (await db.doc(`classrooms/${teacher.classroomId}/transactions/1112`).get()).exists,
+          false,
+        )
+        const afterThrottle = await getDoc(doc(studentClient.firestore, studentPath))
+        assert.equal(afterThrottle.data().transactions.length, 10)
+        assert.equal(moneyThrottle.data().attempts.length, 10)
       })
 
       it('onboards, creates, authenticates, persists money data, isolates, and removes without legacy seeding', async () => {

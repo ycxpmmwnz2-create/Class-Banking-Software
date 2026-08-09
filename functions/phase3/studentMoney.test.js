@@ -60,6 +60,11 @@ function createMockFirestore(initialDocs = {}, { abortAttempts = 0 } = {}) {
             operations.push({ kind: 'update', path: ref.path })
             writes.push({ kind: 'update', path: ref.path, data: clone(data) })
           },
+          set(ref, data) {
+            wrote = true
+            operations.push({ kind: 'set', path: ref.path })
+            writes.push({ kind: 'set', path: ref.path, data: clone(data) })
+          },
         }
         const result = await callback(transaction)
         attempts.push(operations)
@@ -68,9 +73,11 @@ function createMockFirestore(initialDocs = {}, { abortAttempts = 0 } = {}) {
           if (write.kind === 'create') {
             if (store.has(write.path)) throw new Error(`ALREADY_EXISTS: ${write.path}`)
             store.set(write.path, write.data)
-          } else {
+          } else if (write.kind === 'update') {
             if (!store.has(write.path)) throw new Error(`NOT_FOUND: ${write.path}`)
             store.set(write.path, { ...store.get(write.path), ...write.data })
+          } else {
+            store.set(write.path, write.data)
           }
         }
         return result
@@ -126,6 +133,13 @@ function transaction(overrides = {}) {
     source: 'Student',
     ...overrides,
   }
+}
+
+function transactionHistory(count, startId = 1600000000000) {
+  return Array.from({ length: count }, (_, index) => transaction({
+    id: startId + index,
+    date: new Date(Date.parse('2026-01-01T00:00:00.000Z') + index).toISOString(),
+  }))
 }
 
 test('Add creates one pending ledger record and exact student mirror without changing balance', async () => {
@@ -195,6 +209,100 @@ test('an exact retry is idempotent and an already-processed Add returns its curr
   )
   assert.deepEqual(result, { transaction: approved, balance: 25 })
   assert.equal(firestore.attempts[0].some(operation => operation.kind !== 'read'), false)
+})
+
+test('student submissions stop at the fixed mirror boundary while exact retries remain available', async () => {
+  const existing = transactionHistory(999)
+  const firestore = createMockFirestore(foundation({ student: { transactions: existing } }))
+  const boundaryId = 1700000000100
+  const boundaryTime = Date.parse('2026-08-08T18:02:00.000Z')
+
+  const accepted = await submitStudentTransactionV2Service(
+    { transactionId: boundaryId, type: 'Add', amount: 1, reason: 'Homework' },
+    { firestore, auth: studentAuth, now: () => boundaryTime },
+  )
+  assert.equal(accepted.transaction.id, boundaryId)
+  assert.equal(
+    firestore.store.get(`classrooms/${CLASSROOM_ID}/students/${STUDENT_ID}`).transactions.length,
+    1000,
+  )
+
+  const storeAtLimit = clone(Object.fromEntries(firestore.store))
+  await assert.rejects(
+    submitStudentTransactionV2Service(
+      { transactionId: boundaryId + 1, type: 'Add', amount: 1, reason: 'Homework' },
+      { firestore, auth: studentAuth, now: () => boundaryTime + 1 },
+    ),
+    error => error instanceof StudentMoneyError && error.code === 'resource-exhausted',
+  )
+  assert.deepEqual(Object.fromEntries(firestore.store), storeAtLimit)
+
+  const replay = await submitStudentTransactionV2Service(
+    { transactionId: boundaryId, type: 'Add', amount: 1, reason: 'Homework' },
+    { firestore, auth: studentAuth, now: () => { throw new Error('replay must not use the clock') } },
+  )
+  assert.deepEqual(replay, accepted)
+})
+
+test('student submissions use a bounded per-student rolling throttle window', async () => {
+  const firestore = createMockFirestore(foundation())
+  const windowStart = Date.parse('2026-08-08T18:10:00.000Z')
+
+  for (let index = 0; index < 10; index += 1) {
+    const id = 1700000000200 + index
+    const result = await submitStudentTransactionV2Service(
+      { transactionId: id, type: 'Add', amount: 1, reason: 'Homework' },
+      { firestore, auth: studentAuth, now: () => windowStart + index * 1000 },
+    )
+    assert.equal(result.transaction.id, id)
+  }
+
+  const throttleEntries = [...firestore.store.entries()]
+    .filter(([path]) => path.startsWith('studentLoginThrottle/'))
+  assert.equal(throttleEntries.length, 1)
+  assert.equal(throttleEntries[0][1].attempts.length, 10)
+  assert.equal(throttleEntries[0][0].includes(CLASSROOM_ID), false)
+  assert.match(throttleEntries[0][0], /^studentLoginThrottle\/[a-f0-9]{64}$/)
+  const primaryThrottlePath = throttleEntries[0][0]
+
+  const storeAtThrottle = clone(Object.fromEntries(firestore.store))
+  await assert.rejects(
+    submitStudentTransactionV2Service(
+      { transactionId: 1700000000210, type: 'Add', amount: 1, reason: 'Homework' },
+      { firestore, auth: studentAuth, now: () => windowStart + 10_000 },
+    ),
+    error => error instanceof StudentMoneyError && error.code === 'resource-exhausted',
+  )
+  assert.deepEqual(Object.fromEntries(firestore.store), storeAtThrottle)
+
+  const otherStudentId = '8'
+  const otherStudentAuth = {
+    uid: deriveDeterministicStudentAuthUid(CLASSROOM_ID, otherStudentId),
+    token: { role: 'student', classroomId: CLASSROOM_ID, studentId: otherStudentId },
+  }
+  firestore.store.set(`classrooms/${CLASSROOM_ID}/students/${otherStudentId}`, {
+    id: Number(otherStudentId),
+    name: 'Grace Student',
+    balance: 20,
+    frozen: false,
+    transactions: [],
+  })
+  const otherStudentResult = await submitStudentTransactionV2Service(
+    { transactionId: 1700000000300, type: 'Add', amount: 1, reason: 'Homework' },
+    { firestore, auth: otherStudentAuth, now: () => windowStart + 11_000 },
+  )
+  assert.equal(otherStudentResult.transaction.studentId, Number(otherStudentId))
+  assert.equal(
+    [...firestore.store.keys()].filter(path => path.startsWith('studentLoginThrottle/')).length,
+    2,
+  )
+
+  const afterWindow = await submitStudentTransactionV2Service(
+    { transactionId: 1700000000211, type: 'Add', amount: 1, reason: 'Homework' },
+    { firestore, auth: studentAuth, now: () => windowStart + 6 * 60 * 1000 },
+  )
+  assert.equal(afterWindow.transaction.id, 1700000000211)
+  assert.equal(firestore.store.get(primaryThrottlePath).attempts.length, 1)
 })
 
 test('malformed requests and forged student identities fail before Firestore access', async () => {

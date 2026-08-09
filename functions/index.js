@@ -50,7 +50,7 @@ export const MORGAN_BANK_STAGING_PROJECT_ID = defineString('MORGAN_BANK_STAGING_
 // This identifier is part of the reviewed Functions artifact. Production V2
 // invocations require the separately configured release parameter to match it
 // exactly; emulator invocations have no deployed release and therefore do not.
-export const REVIEWED_V2_FUNCTIONS_RELEASE_ID = 'student-money-functions-v1'
+export const REVIEWED_V2_FUNCTIONS_RELEASE_ID = 'student-money-functions-v2'
 
 /**
  * Module loading is deliberately unconditional. Section 6 requires discovery

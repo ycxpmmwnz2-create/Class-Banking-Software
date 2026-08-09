@@ -934,7 +934,9 @@ rule, gate parameter, or Hosting release was changed.
 contracts, claim-derived identity, active reciprocal ownership, settings and
 frozen-account enforcement, reason allowlists, balance checks, atomic Add and
 Subtract behavior, exact-retry idempotency, transaction-ID conflict refusal,
-positive safe-integer whole-dollar amounts, and redacted callable errors. The
+positive safe-integer whole-dollar amounts, a fixed 1,000-entry mirror boundary,
+a per-student 10-submission rolling five-minute throttle, exact-retry availability
+at both limits, cross-student throttle isolation, and redacted callable errors. The
 Phase 2B client suite proves the production page awaits only
 `submitStudentTransactionV2`, rejects malformed or stale responses, and cannot
 fall through to the teacher-only legacy save path.
@@ -952,6 +954,12 @@ format. Existing final-rules tests continue to deny direct student writes; the
 rules artifact is unchanged.
 These are local demo-project emulator observations only and do not deploy,
 commit, push, or access staging or production data.
+
+The student loader still receives page-default categories. Until a separately
+reviewed correction propagates resolved classroom category settings, V2 student
+money is not rollout-eligible for classrooms with customized Add or Subtract
+categories. The current mismatch fails closed rather than authorizing a removed
+or unknown category.
 
 ## Commit 6 — student lifecycle evidence
 

@@ -157,7 +157,24 @@ student record they would overwrite with the last server-confirmed teacher
 baseline, so a submission from another session cannot be silently replaced by a
 stale teacher save. A conflict writes nothing, reloads the classroom, and asks
 the teacher to retry. Callable ISO timestamps are formatted locally for display
-without changing their stored canonical value.
+without changing their stored canonical value. New student submissions stop at
+a fixed 1,000-entry mirror boundary and are limited to 10 successful submissions
+per student in a rolling five-minute window. The bounded throttle record uses a
+one-way, namespace-separated digest in the existing server-only throttle
+collection and is updated atomically with the ledger and mirror. Exact retries
+do not consume another throttle slot and remain available at both limits.
+
+`studentRequestsEnabled` is intentionally the master Add/Subtract switch in both
+the legacy and V2 presentation paths. This explicitly accepts the legacy
+gate-off behavior change identified during detailed review: a disabled master
+switch hides and blocks both forms even if a per-type switch remains enabled.
+
+Known rollout limitation: the student loader still receives page-default
+categories rather than the resolved classroom's customized categories. V2
+student money must remain disabled for any classroom using customized Add or
+Subtract categories until that settings propagation receives its own reviewed
+correction. The current mismatch fails closed; it is not an authorization
+bypass.
 
 ## Required Future Work
 - Provision production credentials when the real roster is available.
