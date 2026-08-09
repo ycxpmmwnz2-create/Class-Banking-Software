@@ -347,8 +347,13 @@ function buildTransaction(request, student, timestamp) {
 }
 
 function studentMoneyThrottleRef(firestore, identity) {
+  // Login throttle preimages always contain a literal NUL separator between
+  // attacker-controlled code and login-ID strings. Hash the classroom first,
+  // then use a NUL-free money preimage so the shared collection's keyspaces
+  // are structurally disjoint even when login normalization falls back raw.
+  const classroomDigest = hashSha256(identity.classroomId)
   const digest = hashSha256(
-    `${STUDENT_MONEY_THROTTLE_NAMESPACE}\0${identity.classroomId}\0${identity.studentId}`,
+    `${STUDENT_MONEY_THROTTLE_NAMESPACE}:${classroomDigest}:${identity.studentId}`,
   )
   return firestore.doc(studentLoginThrottlePath(digest))
 }

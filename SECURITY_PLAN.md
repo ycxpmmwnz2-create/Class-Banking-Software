@@ -160,9 +160,12 @@ the teacher to retry. Callable ISO timestamps are formatted locally for display
 without changing their stored canonical value. New student submissions stop at
 a fixed 1,000-entry mirror boundary and are limited to 10 successful submissions
 per student in a rolling five-minute window. The bounded throttle record uses a
-one-way, namespace-separated digest in the existing server-only throttle
-collection and is updated atomically with the ledger and mirror. Exact retries
-do not consume another throttle slot and remain available at both limits.
+one-way digest in the existing server-only throttle collection and is updated
+atomically with the ledger and mirror. Its preimage hashes the classroom ID and
+contains no NUL byte, while every login-throttle preimage contains a mandatory
+NUL separator; malformed unauthenticated login inputs therefore cannot target a
+student's money bucket. Exact retries do not consume another throttle slot and
+remain available at both limits.
 
 `studentRequestsEnabled` is intentionally the master Add/Subtract switch in both
 the legacy and V2 presentation paths. This explicitly accepts the legacy

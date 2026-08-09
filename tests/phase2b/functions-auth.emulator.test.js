@@ -303,7 +303,7 @@ function throttleDigest(canonicalCode, canonicalLoginId) {
 }
 
 function studentMoneyThrottleDigest(classroomId, studentId) {
-  return sha256Hex(`student-money-submission\0${classroomId}\0${studentId}`)
+  return sha256Hex(`student-money-submission:${sha256Hex(classroomId)}:${studentId}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -816,12 +816,12 @@ if (testMode === 'gate-on') {
         assert.deepEqual(rejected.warningCategories, ['release-id-mismatch'])
         const accepted = runGuardProbe({
           ...production,
-          MULTI_TEACHER_V2_RELEASE_ID: 'student-money-functions-v2',
+          MULTI_TEACHER_V2_RELEASE_ID: 'student-money-functions-v3',
           FORCE_POST_GATE_APP_GUARD: 'true',
           RUN_V2_PROBE: 'true',
         })
         assert.equal(accepted.threw, false)
-        assert.equal(accepted.reviewedRelease, 'student-money-functions-v2')
+        assert.equal(accepted.reviewedRelease, 'student-money-functions-v3')
         assert.deepEqual(accepted.invocation, {
           succeeded: false,
           code: 'failed-precondition',
@@ -837,7 +837,7 @@ if (testMode === 'gate-on') {
           FIREBASE_AUTH_EMULATOR_HOST: undefined,
           FIREBASE_CONFIG: undefined,
           GCLOUD_PROJECT: 'morgan-bank',
-          MULTI_TEACHER_V2_RELEASE_ID: 'student-money-functions-v2',
+          MULTI_TEACHER_V2_RELEASE_ID: 'student-money-functions-v3',
           MORGAN_BANK_DEPLOYMENT_TIER: undefined,
           FORCE_POST_GATE_APP_GUARD: 'true',
           RUN_V2_PROBE: 'true',
@@ -1529,6 +1529,41 @@ if (testMode === 'gate-on') {
         })
         await signInWithCustomToken(studentClient.auth, login.data.token)
 
+        const studentId = String(created.data.student.id)
+        const attackerCode = 'student-money-submission'
+        const attackerLoginId = `${teacher.classroomId}\0${studentId}`
+        const attackerDigest = throttleDigest(attackerCode, attackerLoginId)
+        const moneyDigest = studentMoneyThrottleDigest(teacher.classroomId, studentId)
+        assert.notEqual(
+          attackerDigest,
+          moneyDigest,
+          'login and money throttle keyspaces must be structurally disjoint',
+        )
+
+        const attackerClient = createTestClientApp()
+        const attackerLogin = httpsCallable(attackerClient.functions, 'studentPinLoginV2')
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          await expectCallableError(
+            () => attackerLogin({
+              classroomCode: attackerCode,
+              loginId: attackerLoginId,
+              pin: '0000',
+            }),
+            'unauthenticated',
+          )
+        }
+        const attackerBucket = await db
+          .collection('studentLoginThrottle')
+          .doc(attackerDigest)
+          .get()
+        assert.equal(attackerBucket.exists, true)
+        assert.equal(attackerBucket.data().attempts.length, 10)
+        assert.equal(
+          (await db.collection('studentLoginThrottle').doc(moneyDigest).get()).exists,
+          false,
+          'login attempts must not pre-fill the student money bucket',
+        )
+
         const addPayload = {
           transactionId: 1101,
           type: 'Add',
@@ -1632,7 +1667,7 @@ if (testMode === 'gate-on') {
 
         const moneyThrottle = await db
           .collection('studentLoginThrottle')
-          .doc(studentMoneyThrottleDigest(teacher.classroomId, '1'))
+          .doc(moneyDigest)
           .get()
         assert.equal(moneyThrottle.exists, true)
         assert.equal(moneyThrottle.data().attempts.length, 10)

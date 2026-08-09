@@ -936,7 +936,8 @@ frozen-account enforcement, reason allowlists, balance checks, atomic Add and
 Subtract behavior, exact-retry idempotency, transaction-ID conflict refusal,
 positive safe-integer whole-dollar amounts, a fixed 1,000-entry mirror boundary,
 a per-student 10-submission rolling five-minute throttle, exact-retry availability
-at both limits, cross-student throttle isolation, and redacted callable errors. The
+at both limits, cross-student throttle isolation, disjoint login/money throttle
+preimages even for raw malformed login inputs, and redacted callable errors. The
 Phase 2B client suite proves the production page awaits only
 `submitStudentTransactionV2`, rejects malformed or stale responses, and cannot
 fall through to the teacher-only legacy save path.
@@ -944,7 +945,10 @@ fall through to the teacher-only legacy save path.
 The gate-on Functions emulator suite authenticates a real student custom token,
 submits an Add request, reads the resulting `Pending` ledger document through
 the owning teacher's Firestore client, retries without duplication, and submits
-an immediately approved Subtract transaction. The shared Chromium and WebKit
+an immediately approved Subtract transaction. It also fills the exact
+unauthenticated malformed-login bucket that previously collided with a target
+student's money bucket, proves the money bucket remains absent, and then proves
+the student's legitimate submission still succeeds. The shared Chromium and WebKit
 browser suite drives the real student forms and then signs in as the teacher to
 verify the pending Add row and Approve control are visible. It also holds a
 teacher tab stale across a student submission, proves the stale teacher save is

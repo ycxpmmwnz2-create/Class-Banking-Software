@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { hashSha256 } from '../phase2b/identityNormalization.js'
 import { deriveDeterministicStudentAuthUid } from '../phase2b/scopedCredentialProjection.js'
 import {
   StudentMoneyError,
@@ -303,6 +304,29 @@ test('student submissions use a bounded per-student rolling throttle window', as
   )
   assert.equal(afterWindow.transaction.id, 1700000000211)
   assert.equal(firestore.store.get(primaryThrottlePath).attempts.length, 1)
+})
+
+test('student money throttle keys cannot be targeted through the login throttle preimage', async () => {
+  const firestore = createMockFirestore(foundation())
+  await submitStudentTransactionV2Service(
+    { transactionId: 1700000000400, type: 'Add', amount: 1, reason: 'Homework' },
+    {
+      firestore,
+      auth: studentAuth,
+      now: () => Date.parse('2026-08-08T18:20:00.000Z'),
+    },
+  )
+
+  const [moneyThrottlePath] = [...firestore.store.keys()]
+    .filter(path => path.startsWith('studentLoginThrottle/'))
+  const attackerLoginDigest = hashSha256(
+    `student-money-submission\0${CLASSROOM_ID}\0${STUDENT_ID}`,
+  )
+
+  assert.notEqual(
+    moneyThrottlePath,
+    `studentLoginThrottle/${attackerLoginDigest}`,
+  )
 })
 
 test('malformed requests and forged student identities fail before Firestore access', async () => {

@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 
 import { resolveFirebaseBuildConfiguration } from "../src/firebase/firebaseConfig.js";
 
-export const STAGING_REVIEWED_FUNCTIONS_RELEASE_ID = "student-money-functions-v2";
+export const STAGING_REVIEWED_FUNCTIONS_RELEASE_ID = "student-money-functions-v3";
 
 const PROJECT_ID_PATTERN = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 const PROJECT_ROUTING_VARIABLES = Object.freeze([

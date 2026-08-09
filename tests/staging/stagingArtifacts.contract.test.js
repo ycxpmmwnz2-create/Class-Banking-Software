@@ -58,7 +58,7 @@ describe("staging deployment artifacts", () => {
     );
     assert.match(
       source,
-      /REVIEWED_V2_FUNCTIONS_RELEASE_ID = 'student-money-functions-v2'/
+      /REVIEWED_V2_FUNCTIONS_RELEASE_ID = 'student-money-functions-v3'/
     );
     assert.match(source, /deploymentTier: MORGAN_BANK_DEPLOYMENT_TIER\.value\(\)/);
     assert.match(source, /stagingProjectId: MORGAN_BANK_STAGING_PROJECT_ID\.value\(\)/);

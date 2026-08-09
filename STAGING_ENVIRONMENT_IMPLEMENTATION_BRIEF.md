@@ -118,7 +118,7 @@ An unknown project with absent or mismatched staging inputs remains
 The reviewed Functions identity for this source becomes:
 
 ```text
-student-money-functions-v2
+student-money-functions-v3
 ```
 
 ## Deployment-artifact contract
