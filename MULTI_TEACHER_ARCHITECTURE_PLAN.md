@@ -54,12 +54,11 @@ holds; it extends it into a concrete, phased implementation plan.
 
 ### Structural note
 
-The application as checked in on this branch is **not** the React/Vite
-scaffold implied by `package.json`. `src/App.jsx` is empty and `src/main.jsx`
-is an unused scaffold entry (it is not loaded by `index.html`). The entire
-client — UI, state, routing, auth, and every
-Firestore read/write the browser performs — is one inline
-`<script type="module">` block inside the 3,031-line **`index.html`**, using hand-rolled
+The application as checked in on this branch is **not** a React application.
+The unused React/Vite scaffold and its package dependencies have been removed.
+The entire client — UI, state, routing, auth, and every Firestore read/write
+the browser performs — is one inline `<script type="module">` block inside
+**`index.html`**, using hand-rolled
 global state and `innerHTML` rendering (no React, no router). Server-side
 logic lives in `functions/`. This matters a great deal for the migration:
 there is no component tree, no context/provider pattern, and no URL-based
@@ -1979,13 +1978,11 @@ a second, informal path to production:
   guards (e.g., "refuses to run without `FIRESTORE_EMULATOR_HOST`," "rejects
   a missing required flag").
 
-**`functions/scripts/listAuthUsers.js`** uses the same cached-refresh-token/
-temp-ADC pattern as `checkStudent.js` today. It is explicitly kept **outside
-Phase 2A scope** (it lists Auth users, which has nothing to do with a
-Firestore-only migration), but is recorded here as a **later
-security-cleanup candidate** for whenever Auth-related work is actually
-undertaken (Phase 2B or later), precisely because it shares the same
-credential-handling pattern being removed from the other three scripts.
+**Historical note:** `functions/scripts/listAuthUsers.js` used the same
+cached-refresh-token/temp-ADC pattern as `checkStudent.js`. It remained outside
+Phase 2A scope because it listed Auth users rather than Firestore data. The
+unused script was later removed during security cleanup so it could no longer
+materialize a Firebase CLI refresh token inside the repository.
 
 #### Rules-baseline section (corrected)
 

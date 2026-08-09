@@ -11,7 +11,6 @@
 // affect a normal dev or production build.
 
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
 
 export const PHASE2B_BROWSER_PORT = 5273;
 export const PHASE2B_BROWSER_GATE_OFF = process.env.PHASE2B_BROWSER_GATE_MODE === "off";
@@ -95,7 +94,6 @@ export function applyFirestoreSeamRewrite(html) {
 export default defineConfig({
   root: process.cwd(),
   plugins: [
-    react(),
     {
       name: "phase2b-browser-harness-injector",
       // MUST be `pre`. Vite's main HTML transform hoists index.html's inline
