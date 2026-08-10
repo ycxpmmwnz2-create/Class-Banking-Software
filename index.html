@@ -4,6 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <title>Mr. Morgan's Class Cash</title>
 
   <style>
@@ -55,15 +56,39 @@
       margin: 0 auto;
     }
 
+    .staging-deployment-banner {
+      position: sticky;
+      top: 0;
+      z-index: 10000;
+      width: min(1400px, 100%);
+      margin: 0 auto 16px;
+      border: 3px solid #6f240f;
+      border-radius: 12px;
+      background: #ffcf70;
+      color: #421305;
+      padding: 12px 18px;
+      text-align: center;
+      font-size: clamp(16px, 2vw, 21px);
+      font-weight: 950;
+      letter-spacing: 0.04em;
+      box-shadow: 0 8px 22px rgba(66, 19, 5, 0.24);
+    }
+
+    .staging-deployment-banner[hidden] { display: none; }
+
     .hero {
       background: linear-gradient(135deg, rgba(94, 199, 194, 0.96), rgba(199, 233, 249, 0.94));
       border: 1px solid rgba(255, 255, 255, 0.65);
       border-radius: var(--radius-lg);
-      padding: 26px;
+      padding: 20px 24px;
       box-shadow: var(--shadow);
       margin-bottom: 18px;
       position: relative;
       overflow: hidden;
+      display: grid;
+      grid-template-columns: 160px minmax(0, 1fr);
+      gap: 22px;
+      align-items: center;
     }
 
     .hero::after {
@@ -80,25 +105,29 @@
     .hero-content {
       position: relative;
       z-index: 1;
-      display: grid;
-      grid-template-columns: 1.2fr auto;
-      gap: 20px;
-      align-items: center;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      align-items: flex-start;
     }
 
     .center-logo-wrap {
       display: flex;
       justify-content: center;
       align-items: center;
-      margin-bottom: 18px;
+      margin: 0;
+      position: relative;
+      z-index: 1;
     }
 
     .center-logo {
-      width: min(360px, 82vw);
+      width: 160px;
+      max-width: 100%;
       height: auto;
       display: block;
       opacity: 0.96;
-      border-radius: 18px;
+      border-radius: 16px;
     }
 
 
@@ -112,14 +141,47 @@
     }
 
     .hero-badge {
-      background: rgba(255, 255, 255, 0.62);
-      border: 1px solid rgba(255, 255, 255, 0.72);
-      border-radius: 999px;
-      padding: 12px 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      max-width: 100%;
       font-weight: 900;
       color: var(--teal-dark);
-      box-shadow: var(--shadow-soft);
-      white-space: nowrap;
+    }
+
+    .hero-meta-item {
+      min-width: 0;
+      max-width: 100%;
+      background: rgba(255, 255, 255, 0.62);
+      border: 1px solid rgba(255, 255, 255, 0.76);
+      border-radius: 12px;
+      padding: 8px 11px;
+      box-shadow: 0 5px 14px rgba(30, 80, 89, 0.1);
+      font-size: 14px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+
+    .classroom-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      letter-spacing: 0.06em;
+      -webkit-user-select: all;
+      user-select: all;
+    }
+
+    .credential-pin {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      -webkit-user-select: all;
+      user-select: all;
+    }
+
+    /* Credentials are intentionally screen-only. A browser print must not put
+       every student's current PIN on paper. */
+    @media print {
+      .credential-pin-column { display: none !important; }
     }
 
     .message {
@@ -218,6 +280,38 @@
       box-shadow: 0 3px 10px rgba(18, 50, 58, 0.05);
       font-size: 15px;
       line-height: 1.25;
+    }
+
+    .student-login-info {
+      border: 2px solid rgba(36, 148, 144, 0.42);
+      margin-bottom: 12px;
+    }
+
+    .student-login-info h2 {
+      margin-bottom: 8px;
+    }
+
+    .student-login-info-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    .student-login-info-code {
+      display: inline-block;
+      padding: 10px 14px;
+      border: 1px solid rgba(36, 148, 144, 0.35);
+      border-radius: var(--radius-sm);
+      background: white;
+      color: var(--teal-dark);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 24px;
+      font-weight: 950;
+      letter-spacing: 0.08em;
+      -webkit-user-select: all;
+      user-select: all;
     }
 
     .grid {
@@ -507,6 +601,11 @@
       color: #14532d;
     }
 
+    .student-money-card .purchase-note {
+      line-height: 1.2;
+      min-height: calc(4 * 1.2em + 30px);
+    }
+
     .backup-reminder {
       background-color: #fffbeb;
       color: #78350f;
@@ -547,6 +646,10 @@
       border-radius: 18px;
       margin-bottom: 10px;
       background: rgba(211, 238, 233, 0.96);
+    }
+
+    .roster-row.v2-roster-row {
+      grid-template-columns: 1.2fr 0.7fr auto;
     }
     
     .roster-row input {
@@ -643,8 +746,13 @@
       .dashboard-insights .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .grid { grid-template-columns: minmax(0, 1fr); }
       .wide-grid { grid-template-columns: 1fr; }
-      .hero-content { grid-template-columns: 1fr; }
-      .roster-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .hero {
+        grid-template-columns: 130px minmax(0, 1fr);
+        gap: 18px;
+      }
+      .center-logo { width: 130px; }
+      .roster-row,
+      .roster-row.v2-roster-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .roster-row .no-print {
         grid-column: 1 / -1;
         display: flex;
@@ -671,13 +779,19 @@
         padding: 16px;
         margin-bottom: 12px;
         border-radius: 20px;
+        display: block;
       }
-      .hero-content { gap: 12px; }
-      .hero-badge {
-        white-space: normal;
+      .hero-content {
+        gap: 12px;
+        align-items: center;
         text-align: center;
       }
-      .center-logo { width: min(300px, 86vw); }
+      .hero-badge {
+        justify-content: center;
+      }
+      .hero-meta-item { text-align: left; }
+      .center-logo-wrap { margin-bottom: 12px; }
+      .center-logo { width: min(150px, 48vw); }
       .brand-mark { width: 40px; height: 40px; }
       .brand-name { font-size: 18px; }
       .button-bar {
@@ -705,6 +819,12 @@
       .dashboard-insights .stats { grid-template-columns: 1fr; }
       .dashboard-insights { padding: 12px; }
       .dashboard-insights .stat-box { min-height: 48px; }
+      .student-login-info-row { align-items: stretch; }
+      .student-login-info-code {
+        width: 100%;
+        text-align: center;
+      }
+      .student-login-info-row button { width: 100%; }
       .quick-cash-grid {
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 8px;
@@ -714,7 +834,8 @@
         padding: 12px 4px;
         font-size: 19px;
       }
-      .roster-row {
+      .roster-row,
+      .roster-row.v2-roster-row {
         grid-template-columns: minmax(0, 1fr);
         gap: 6px;
         padding: 10px;
@@ -748,12 +869,24 @@
   </style>
 </head>
 <body>
+  <div id="stagingDeploymentBanner" class="staging-deployment-banner" role="status" hidden>
+    TEST VERSION - USE FAKE DATA ONLY
+  </div>
   <div id="app"></div>
   <script type="module">
-import { auth, db, functions } from "./src/firebase/firebase.js";
-import { browserSessionPersistence, GoogleAuthProvider, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
-import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc } from "firebase/firestore";
+import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured } from "./src/firebase/firebase.js";
+import { browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider, inMemoryPersistence, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, runTransaction, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
+import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
+import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
+import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateStudentPinDirectoryFetch, orchestrateStudentTransaction, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, reconcileStudentPinDirectory, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
+import { formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
+import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
+import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
+import { sanitizeLegacyBackup } from "./src/legacy/backupImport.js";
+
+const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED === "true";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
     const defaultSettings = {
@@ -812,19 +945,93 @@ import { httpsCallable } from "firebase/functions";
     let loggedInStudentId = null;
     let teacherProfileStudentId = null;
     let message = "";
+    let studentClassroomCodeDraft = "";
     let studentLoginIdDraft = "";
+    // The validated signed-out login locator for this browser, or null. It holds
+    // only the two non-secret fields a returning student would otherwise retype:
+    // the classroom code and the canonical login ID the server already issued.
+    // Never a PIN, custom token, ID token, Auth UID, student name, student
+    // document, credential document, balance, transaction, or tenant data.
+    let studentLoginLocator = null;
     let studentLoginPending = false;
     let studentAuthLogs = [];
     let studentAuthLogsLoading = false;
     let studentAuthLogsError = "";
     let studentPinResetPending = false;
+    // The only plaintext PIN retained after a reset is the exact value the
+    // teacher just submitted, and only while that same student profile remains
+    // open. It is never added to application data, storage, exports, logs, or a
+    // callable response.
+    let temporaryProfileStudentPin = null;
+    let bulkOperationPending = false;
+    let studentLifecyclePending = false;
+    let studentMoneySubmissionPending = false;
+    // Preserve only the latest failed in-memory attempt so an ambiguous network
+    // failure can be retried with the same server-idempotency key. It is never
+    // persisted and is cleared on success or any session reset.
+    let studentMoneyRetryPayload = null;
+    let isPlatformAdmin = false;
+    let teacherInvitationPending = false;
+    let teacherInvitationEmailDraft = "";
+    let teacherInvitationExpiryHours = 48;
+    // View-only record of which students this session has just issued a PIN
+    // for. It is deliberately NOT stored on the student object: Section 4
+    // forbids credential-activation state in any write payload or cache
+    // envelope, and the student document contract is exactly five fields.
+    // Server-authoritative activation state is not exposed to clients at all.
+    const v2ActivatedStudentIds = new Set();
+    // Current student PINs for the signed-in teacher's own classroom, keyed by
+    // student ID. Fetched on demand for Credentials and held ONLY in memory: the
+    // PIN is deliberately never merged into `data`, so it cannot reach the tenant
+    // cache, a backup export, localStorage, or a saved write payload, all of
+    // which remain PIN-free by contract. Cleared with the rest of the tenant view
+    // state, or a previous teacher's PINs could survive a classroom switch.
+    let v2StudentPins = new Map();
+    let v2StudentPinsLoading = false;
+    let v2StudentPinsError = "";
+    // Invalidates directory requests only when a newer request or a tenant reset
+    // supersedes them. Successful resets instead remain same-tenant in-memory
+    // overrides so an older response can contribute the other students' PINs.
+    let v2StudentPinsRequestVersion = 0;
+    let v2StudentPinsResetVersion = 0;
+    let v2StudentPinOverrides = new Map();
+    // The tenant identity the loaded PINs were fetched for. Clearing the map on
+    // reset is not sufficient on its own: setScreen renders BEFORE the fetch
+    // starts, so a map that outlived a classroom switch would paint the previous
+    // teacher's PINs for one frame. Student IDs restart at 1 in every classroom,
+    // so those keys collide across tenants and the wrong child's PIN would show.
+    // This stamp makes that structurally impossible rather than ordering-dependent.
+    let v2StudentPinsIdentity = null;
+    let resolvedClassroom = null;
+    let resolvedTeacher = null;
+    let v2IsOffline = false;
 
     function requireTeacher() {
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        return v2TenantSession.requireTeacher(auth.currentUser?.uid);
+      }
       const hasTeacherAccess = isTeacher && auth.currentUser?.uid === TEACHER_UID;
       if (!hasTeacherAccess) {
         console.warn("Teacher authentication required.");
       }
       return hasTeacherAccess;
+    }
+
+    // Phase 1B: additive wiring for the new teachers/classrooms foundation.
+    // Only the existing authorized teacher may provision. The client has no
+    // read access to the new `teachers` collection (no Firestore rule grants
+    // it, and rules are not being changed in this phase), so the existence
+    // check and the provisioning itself both happen server-side inside the
+    // idempotent ensureTeacherClassroom callable. Nothing here affects
+    // morganBank/classroomData, `data`, `screen`, or `message`.
+    async function ensureTeacherClassroomProfile(uid) {
+      if (uid !== TEACHER_UID) return;
+      try {
+        const ensureTeacherClassroom = httpsCallable(functions, "ensureTeacherClassroom");
+        await ensureTeacherClassroom();
+      } catch (error) {
+        console.error("Teacher/classroom provisioning check failed:", error);
+      }
     }
 
     function cloneDefault() {
@@ -882,18 +1089,74 @@ import { httpsCallable } from "firebase/functions";
       }
     }
 
-  async function saveData() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    async function saveData() {
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        if (typeof v2SaveTenantData !== "function") {
+          console.error("The V2 tenant data service is required in V2 mode.");
+          return { executed: false, reason: "missing-v2-save-adapter" };
+        }
+        // Snapshot the exact attempted state. Callers historically do not await
+        // saveData(), so a later UI mutation must not be mistaken for the state
+        // this particular server commit accepted.
+        const attemptedData = JSON.parse(JSON.stringify(data));
+        const result = await orchestrateClassroomDataSave(v2TenantSession, v2SaveTenantData, attemptedData, { storageAdapter: localStorage, projectId: v2TenantSession.projectId });
+        if (result.executed) {
+          // Only a server-accepted write may advance the diff baseline. A
+          // failed save must leave it alone, or the next save would skip the
+          // documents this one never persisted.
+          v2LastPersistedData = attemptedData;
+        } else if (result.reason === "concurrent-classroom-change") {
+          await reloadV2ClassroomAfterSaveConflict();
+        } else if (!result.reason?.startsWith("stale-epoch-ignored")) {
+          message = result.error || "The classroom change could not be saved.";
+          render();
+        }
+        return result;
+      }
 
-  try {
-    await setDoc(doc(db, "morganBank", "classroomData"), data);
-  } catch (error) {
-    console.error("Firestore save failed:", error);
-  }
-}
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+
+      try {
+        await setDoc(doc(db, "morganBank", "classroomData"), data);
+      } catch (error) {
+        console.error("Firestore save failed:", error);
+      }
+    }
+
+    async function reloadV2ClassroomAfterSaveConflict() {
+      const captured = v2TenantSession.captureIdentity();
+      try {
+        const loaded = await v2LoadTenantData({
+          uid: auth.currentUser?.uid,
+          classroomId: v2TenantSession.classroomId
+        });
+        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+        data = loaded;
+        v2LastPersistedData = JSON.parse(JSON.stringify(loaded));
+        v2IsOffline = false;
+        writeTeacherCache(
+          localStorage,
+          v2TenantSession,
+          v2TenantSession.projectId,
+          loaded,
+          captured
+        );
+        message = "Your classroom changed while you were working. The latest data was reloaded; please try again.";
+      } catch {
+        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+        message = "Your classroom changed while you were working. Refresh the page before trying again.";
+      }
+      render();
+    }
 
     function dollars(amount) {
       return "$" + Number(amount || 0).toLocaleString();
+    }
+
+    function displayTransactionDate(value) {
+      const raw = typeof value === "string" ? value : "";
+      const parsed = new Date(raw);
+      return Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleString();
     }
 
     function backupText() {
@@ -1035,6 +1298,37 @@ function toggleStudentDropdown() {
       studentAuthLogsError = "";
       render();
 
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        if (!v2TenantSession.requireTeacher(auth.currentUser?.uid)) {
+          return;
+        }
+        const classroomId = v2TenantSession.classroomId;
+        if (!classroomId) return;
+
+        const captured = v2TenantSession.captureIdentity();
+        const fetchFn = async () => {
+          const snapshot = await getDocs(query(
+            collection(db, "studentAuthLogs", classroomId, "logs"),
+            orderBy("timestamp", "desc"),
+            limit(25)
+          ));
+          return snapshot.docs.map(logDocument => logDocument.data());
+        };
+        const applyFn = (logs) => {
+          studentAuthLogs = logs;
+        };
+        const res = await orchestrateAuthLogsFetch(v2TenantSession, fetchFn, applyFn);
+        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+
+        if (!res.executed) {
+          studentAuthLogs = [];
+          studentAuthLogsError = res.error || "Could not load student auth logs.";
+        }
+        studentAuthLogsLoading = false;
+        render();
+        return;
+      }
+
       try {
         const snapshot = await getDocs(query(
           collection(db, "studentAuthLogs"),
@@ -1052,13 +1346,103 @@ function toggleStudentDropdown() {
       }
     }
 
-    function studentAuthLogTimestamp(timestamp) {
-      const date = typeof timestamp?.toDate === "function"
-        ? timestamp.toDate()
-        : null;
-      return date && !Number.isNaN(date.getTime())
-        ? date.toLocaleString()
-        : "Unknown";
+    /**
+     * Loads the teacher's own classroom PINs for the Credentials screen.
+     *
+     * Teacher-gated and epoch-guarded like every other V2 read. A failure leaves
+     * unknown values showing "Unavailable" rather than a stale or foreign PIN.
+     * A same-tenant value may remain visible during refresh, but an unstamped or
+     * invalidated map is cleared before the call.
+     */
+    async function loadStudentPinDirectory() {
+      if (!IS_MULTI_TEACHER_V2_ENABLED || !requireTeacher()) return;
+      if (v2StudentPinsLoading) return;
+
+      const captured = v2TenantSession.captureIdentity();
+      const requestResetVersion = v2StudentPinsResetVersion;
+      v2StudentPinsLoading = true;
+      v2StudentPinsError = "";
+      if (!v2StudentPinsIdentity ||
+          !v2TenantSession.validateCapturedIdentity(v2StudentPinsIdentity)) {
+        v2StudentPins = new Map();
+        v2StudentPinsIdentity = null;
+      }
+      const requestVersion = ++v2StudentPinsRequestVersion;
+      render();
+
+      const fetchFn = async () => {
+        const callable = httpsCallable(functions, "listStudentPinsV2");
+        return await callable({});
+      };
+      const res = await orchestrateStudentPinDirectoryFetch(v2TenantSession, fetchFn);
+      if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+      if (requestVersion !== v2StudentPinsRequestVersion) return;
+
+      if (res.executed) {
+        const reconciled = reconcileStudentPinDirectory({
+          directoryPins: res.pins,
+          pendingResets: v2StudentPinOverrides,
+          requestResetVersion,
+          requestIdentity: captured,
+          currentIdentity: v2TenantSession.captureIdentity()
+        });
+        if (!reconciled) {
+          v2StudentPins = new Map();
+          v2StudentPinOverrides = new Map();
+          v2StudentPinsIdentity = null;
+          v2StudentPinsError = "Could not load student PINs.";
+          v2StudentPinsLoading = false;
+          render();
+          return;
+        }
+        v2StudentPins = reconciled.pins;
+        v2StudentPinOverrides = reconciled.pendingResets;
+        v2StudentPinsIdentity = captured;
+      } else if (res.reason !== "stale-epoch-ignored") {
+        if (!v2StudentPinsIdentity ||
+            !v2TenantSession.validateCapturedIdentity(v2StudentPinsIdentity)) {
+          v2StudentPins = new Map();
+          v2StudentPinsIdentity = null;
+        }
+        v2StudentPinsError = res.error || "Could not load student PINs.";
+      }
+      v2StudentPinsLoading = false;
+      render();
+    }
+
+    // Credentials renders one cell per student from this. Absent means the student
+    // predates the PIN directory and needs one reset before their PIN is stored.
+    // The identity check is the load-bearing part: a PIN may be rendered only
+    // while the session is still the exact tenant it was fetched for.
+    function credentialStudentPin(studentId) {
+      if (!v2StudentPinsIdentity) return "";
+      if (!v2TenantSession.validateCapturedIdentity(v2StudentPinsIdentity)) return "";
+      return v2StudentPins.get(String(studentId)) || "";
+    }
+
+    // A successful reset is newer than any PIN-directory request that was
+    // already in flight. Record the submitted value only in tenant-stamped
+    // memory. The reset revision lets the older response restore other students
+    // while this exact value wins reconciliation.
+    function rememberResetStudentPin(captured, studentId, pin) {
+      if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+      const resetVersion = ++v2StudentPinsResetVersion;
+      const studentKey = String(studentId);
+      const nextOverrides = new Map(v2StudentPinOverrides);
+      nextOverrides.set(studentKey, {
+        pin,
+        version: resetVersion,
+        identity: { ...captured }
+      });
+      const nextPins = v2StudentPinsIdentity &&
+        v2TenantSession.validateCapturedIdentity(v2StudentPinsIdentity)
+        ? new Map(v2StudentPins)
+        : new Map();
+      nextPins.set(studentKey, pin);
+      v2StudentPinOverrides = nextOverrides;
+      v2StudentPins = nextPins;
+      v2StudentPinsIdentity = captured;
+      v2StudentPinsError = "";
     }
 
     function studentAuthLogTable() {
@@ -1076,11 +1460,10 @@ function toggleStudentDropdown() {
 
       const rows = studentAuthLogs.map(log => `
         <tr>
-          <td>${escapeHtml(studentAuthLogTimestamp(log.timestamp))}</td>
-          <td>${escapeHtml(log.loginId || "Unknown")}</td>
-          <td>${log.success === true ? "Success" : "Failure"}</td>
-          <td>${escapeHtml(log.reason || "Unknown")}</td>
-          <td>${escapeHtml(log.studentId || "—")}</td>
+          <td>${escapeHtml(formatStudentAuthLogTimestamp(log.timestamp))}</td>
+          <td>${escapeHtml(studentAuthLogStudentLabel(log, data.students))}</td>
+          <td>${escapeHtml(studentAuthLogResultLabel(log.success))}</td>
+          <td>${escapeHtml(studentAuthLogOutcomeLabel(log))}</td>
         </tr>
       `).join("");
 
@@ -1088,11 +1471,10 @@ function toggleStudentDropdown() {
         <table>
           <thead>
             <tr>
-              <th>Timestamp</th>
-              <th>Login ID</th>
+              <th>Time</th>
+              <th>Student</th>
               <th>Result</th>
-              <th>Reason</th>
-              <th>Student ID</th>
+              <th>Details</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -1100,37 +1482,70 @@ function toggleStudentDropdown() {
       `;
     }
 
+    function clearTemporaryProfileStudentPin() {
+      temporaryProfileStudentPin = null;
+    }
+
     function setScreen(newScreen) {
+      if (newScreen !== "studentProfile") clearTemporaryProfileStudentPin();
       screen = newScreen;
       render();
+      // Fetched only when Credentials is actually opened, so a teacher who never
+      // visits it never pulls plaintext PINs into the page at all.
+      if (newScreen === "credentials" && IS_MULTI_TEACHER_V2_ENABLED && isTeacher) {
+        loadStudentPinDirectory();
+      }
     }
 
     let profileLoginIdStatus = "Checking...";
 
+    function updateProfileLoginIdStatus(studentId, status) {
+      if (screen !== "studentProfile" || teacherProfileStudentId !== studentId) return;
+      profileLoginIdStatus = status;
+      const statusElement = document.getElementById("profileLoginIdStatus");
+      if (statusElement) statusElement.textContent = profileLoginIdStatus;
+    }
+
     async function viewStudentProfile(studentId) {
       if (!requireTeacher()) return;
-      teacherProfileStudentId = Number(studentId);
+      const nextStudentId = Number(studentId);
+      if (teacherProfileStudentId !== nextStudentId) {
+        clearTemporaryProfileStudentPin();
+      }
+      teacherProfileStudentId = nextStudentId;
       profileLoginIdStatus = "Checking...";
       screen = "studentProfile";
       render();
 
       const student = data.students.find(s => s.id === teacherProfileStudentId);
       if (student) {
+        const captured = IS_MULTI_TEACHER_V2_ENABLED ? v2TenantSession.captureIdentity() : null;
+        // V2 never falls back to the hardcoded legacy classroom: an absent
+        // resolved classroom ID is a fail-closed condition, not a default.
+        if (IS_MULTI_TEACHER_V2_ENABLED && !v2TenantSession.classroomId) {
+          updateProfileLoginIdStatus(student.id, "Classroom not resolved.");
+          return;
+        }
+        const classroomId = IS_MULTI_TEACHER_V2_ENABLED ? v2TenantSession.classroomId : "morgan";
+        let resolvedLoginIdStatus;
         try {
-          const snapshot = await getDoc(doc(db, "classrooms", "morgan", "students", String(student.id)));
+          const snapshot = await getDoc(doc(db, "classrooms", classroomId, "students", String(student.id)));
+          if (IS_MULTI_TEACHER_V2_ENABLED && !v2TenantSession.validateCapturedIdentity(captured)) return;
           if (snapshot.exists()) {
             const studentName = typeof student.name === "string" ? student.name : "Student";
-            profileLoginIdStatus = studentName.trim().replaceAll(' ', '-').toLowerCase();
+            resolvedLoginIdStatus = studentName.trim().replaceAll(' ', '-').toLowerCase();
           } else {
-            profileLoginIdStatus = "Login ID not created yet.";
+            resolvedLoginIdStatus = "Login ID not created yet.";
           }
         } catch (error) {
+          if (IS_MULTI_TEACHER_V2_ENABLED && !v2TenantSession.validateCapturedIdentity(captured)) return;
           console.error("Failed to check profile sync status:", error);
-          profileLoginIdStatus = "Error checking ID.";
+          resolvedLoginIdStatus = "Error checking ID.";
         }
-        if (screen === "studentProfile" && teacherProfileStudentId === student.id) {
-          render();
-        }
+        // Only this status changed. Re-rendering the whole profile here would
+        // replace the PIN input and discard a value the teacher started typing
+        // while the auxiliary Firestore read was in flight.
+        updateProfileLoginIdStatus(student.id, resolvedLoginIdStatus);
       }
     }
 
@@ -1141,6 +1556,7 @@ function toggleStudentDropdown() {
         item => item.id === teacherProfileStudentId
       );
       const newPin = document.getElementById("profileNewStudentPin")?.value ?? "";
+      clearTemporaryProfileStudentPin();
 
       if (!student) {
         message = "This student is no longer on the roster.";
@@ -1158,6 +1574,43 @@ function toggleStudentDropdown() {
       message = "Resetting student PIN...";
       render();
 
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        const captured = v2TenantSession.captureIdentity();
+        const resetFn = async (p) => {
+          const resetStudentPin = httpsCallable(functions, "resetStudentPinV2");
+          return await resetStudentPin(p);
+        };
+        const payload = {
+          studentId: String(student.id),
+          newPin
+        };
+        const res = await orchestrateStudentPinReset(v2TenantSession, resetFn, payload);
+        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+
+        if (res.executed) {
+          // View-only. The PIN reset is already durable server-side; the
+          // student document itself carries no activation state, so there is
+          // nothing to persist here.
+          v2ActivatedStudentIds.add(String(student.id));
+          rememberResetStudentPin(captured, student.id, newPin);
+          if (v2TenantSession.validateCapturedIdentity(captured)) {
+            message = `PIN reset successfully for ${student.name}.`;
+            if (screen === "studentProfile" && teacherProfileStudentId === student.id) {
+              temporaryProfileStudentPin = { studentId: student.id, pin: newPin };
+            }
+            studentPinResetPending = false;
+            render();
+          }
+        } else {
+          if (v2TenantSession.validateCapturedIdentity(captured)) {
+            message = res.error || "Could not reset the student PIN.";
+            studentPinResetPending = false;
+            render();
+          }
+        }
+        return;
+      }
+
       try {
         const resetStudentPin = httpsCallable(functions, "resetStudentPin");
         await resetStudentPin({
@@ -1168,6 +1621,9 @@ function toggleStudentDropdown() {
         student.credentialActive = true;
         saveData();
         message = `PIN reset successfully for ${student.name}.`;
+        if (screen === "studentProfile" && teacherProfileStudentId === student.id) {
+          temporaryProfileStudentPin = { studentId: student.id, pin: newPin };
+        }
       } catch (error) {
         console.error("Student PIN reset failed:", error);
         message = error.code === "functions/not-found"
@@ -1296,7 +1752,7 @@ function toggleStudentDropdown() {
 
     async function loginTeacherWithGoogle() {
       try {
-        await setPersistence(auth, browserSessionPersistence);
+        await setPersistence(auth, browserLocalPersistence);
         const provider = new GoogleAuthProvider();
         provider.setCustomParameters({
           prompt: "select_account"
@@ -1337,9 +1793,27 @@ function toggleStudentDropdown() {
     async function loginStudent() {
       if (studentLoginPending) return;
 
-      const loginId = document.getElementById("studentLoginId").value.trim();
-      const pin = document.getElementById("studentPin").value;
+      // A returning student in PIN-only mode has no classroom-code or login-ID
+      // input to read, so the already validated locator supplies both non-secret
+      // fields. The submitted payload stays identical to the full form's.
+      const rememberedLocator = IS_MULTI_TEACHER_V2_ENABLED ? studentLoginLocator : null;
+      const classroomCode = rememberedLocator
+        ? rememberedLocator.classroomCode
+        : IS_MULTI_TEACHER_V2_ENABLED
+          ? document.getElementById("studentClassroomCode")?.value.trim() || ""
+          : "";
+      const loginId = rememberedLocator
+        ? rememberedLocator.loginId
+        : document.getElementById("studentLoginId")?.value.trim() || "";
+      const pin = document.getElementById("studentPin")?.value || "";
+      studentClassroomCodeDraft = classroomCode;
       studentLoginIdDraft = loginId;
+
+      if (IS_MULTI_TEACHER_V2_ENABLED && !classroomCode) {
+        message = "Enter your classroom code.";
+        render();
+        return;
+      }
 
       if (!loginId) {
         message = "Enter your student login ID.";
@@ -1358,6 +1832,40 @@ function toggleStudentDropdown() {
       render();
 
       try {
+        if (IS_MULTI_TEACHER_V2_ENABLED) {
+          const callableAdapter = async (name, payload) => {
+            const callable = httpsCallable(functions, name);
+            return await callable(payload);
+          };
+          const signInAdapter = async (token) => {
+            await setPersistence(auth, browserSessionPersistence);
+            return signInWithCustomToken(auth, token);
+          };
+          const result = await orchestrateStudentLogin(
+            v2TenantSession,
+            callableAdapter,
+            signInAdapter,
+            { classroomCode, loginId, pin }
+          );
+          if (!result.executed) {
+            if (result.reason === "stale-epoch-ignored") return;
+            message = result.rawCode === "unauthenticated"
+              ? "Wrong classroom code, student login ID, or PIN."
+              : "Student login is unavailable. Please try again.";
+            return;
+          }
+          rememberStudentLoginLocator(classroomCode, loginId);
+          // Re-read rather than trusting the write: if storage was unavailable the
+          // locator stays null and the next visit simply asks for the full form
+          // again. A successful login is never made conditional on storage.
+          studentLoginLocator = readStudentLoginLocator();
+          studentClassroomCodeDraft = studentLoginLocator
+            ? studentLoginLocator.classroomCode
+            : readRememberedStudentClassroomCode();
+          studentLoginIdDraft = "";
+          return;
+        }
+
         const studentPinLogin = httpsCallable(functions, "studentPinLogin");
         const response = await studentPinLogin({ loginId, pin });
 
@@ -1365,10 +1873,13 @@ function toggleStudentDropdown() {
           throw new Error("The login service did not return a token.");
         }
 
+        await setPersistence(auth, browserSessionPersistence);
         await signInWithCustomToken(auth, response.data.token);
         studentLoginIdDraft = "";
       } catch (error) {
-        console.error("Student sign-in failed:", error);
+        if (!IS_MULTI_TEACHER_V2_ENABLED) {
+          console.error("Student sign-in failed:", error);
+        }
         message = error.code === "functions/unauthenticated"
           ? "Wrong student login ID or PIN."
           : "Student login is unavailable. Please try again.";
@@ -1381,6 +1892,30 @@ function toggleStudentDropdown() {
     }
 
     async function logout() {
+      clearTemporaryProfileStudentPin();
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        const logoutQuarantineInstalled = v2MultiTabInvalidator.quarantineUid(
+          auth.currentUser?.uid || v2TenantSession.uid
+        );
+        const result = await orchestrateProductionLogout(
+          v2TenantSession,
+          {
+            signOut: () => terminateDurableAuthSession({
+              setMemoryPersistence: () => setPersistence(auth, inMemoryPersistence),
+              signOut: () => signOut(auth)
+            })
+          },
+          render
+        );
+        if (result.warning) {
+          message = logoutQuarantineInstalled
+            ? "Morgan Bank cleared this page, but Firebase could not confirm a complete sign-out. Close every Morgan Bank tab, reopen the site, and choose Log Out again if your account returns."
+            : "Morgan Bank cleared this page, but the browser could not preserve its logout guard and Firebase could not confirm sign-out. Close every Morgan Bank tab and browser window before reopening the site. If your account returns, choose Log Out again.";
+          render();
+        }
+        return;
+      }
+
       if (auth.currentUser) {
         try {
           await signOut(auth);
@@ -1701,8 +2236,8 @@ const targetStudents = transactionTarget === "whole"
       render();
     }
 
-    function addStudent() {
-      if (!requireTeacher()) return;
+    async function addStudent() {
+      if (!requireTeacher() || studentLifecyclePending) return;
       const name = document.getElementById("newStudentName").value.trim();
       const pin = document.getElementById("newStudentPin").value.trim();
       const balanceInput = document.getElementById("newStudentBalance").value;
@@ -1718,8 +2253,56 @@ const targetStudents = transactionTarget === "whole"
         return;
       }
 
+      if (IS_MULTI_TEACHER_V2_ENABLED && !/^[0-9]{4}$/.test(pin)) {
+        showMessage("PIN must be exactly 4 digits.");
+        return;
+      }
+
       if (data.students.some(student => student.name.toLowerCase() === name.toLowerCase())) {
         showMessage("That student name is already on the roster.");
+        return;
+      }
+
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        if (!Number.isFinite(startingBalance)) {
+          showMessage("Enter a valid starting balance.");
+          return;
+        }
+        studentLifecyclePending = true;
+        message = `Adding ${name}...`;
+        render();
+        const captured = v2TenantSession.captureIdentity();
+        const callableAdapter = async (functionName, payload) => {
+          const callable = httpsCallable(functions, functionName);
+          return await callable(payload);
+        };
+        const result = await orchestrateCreateStudent(v2TenantSession, callableAdapter, {
+          name,
+          startingBalance,
+          pin
+        });
+        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+        if (result.executed) {
+          // The callable intentionally returns only the four public fields.
+          // The aggregate/persisted student contract adds the required
+          // transaction mirror, which starts empty for a newly-created student.
+          data.students.push({ ...result.result.student, transactions: [] });
+          // The server just committed that exact body, so it belongs in the
+          // save baseline too — as its own object, never a shared reference.
+          // Without it the next save has no baseline entry for this student and
+          // compares the stored document against the body it is about to write,
+          // so adding a student and then giving them money before the next save
+          // aborts as a "concurrent" change that never happened.
+          if (v2LastPersistedData && Array.isArray(v2LastPersistedData.students)) {
+            v2LastPersistedData.students.push({ ...result.result.student, transactions: [] });
+          }
+          v2ActivatedStudentIds.add(String(result.result.student.id));
+          message = `${result.result.student.name} added. Login ID: ${result.result.loginId}.`;
+        } else {
+          message = result.error || "The student could not be added.";
+        }
+        studentLifecyclePending = false;
+        render();
         return;
       }
 
@@ -1753,6 +2336,37 @@ const targetStudents = transactionTarget === "whole"
       message = `Activating account for ${student.name}...`;
       render();
 
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        const captured = v2TenantSession.captureIdentity();
+        const resetFn = async (p) => {
+          const resetStudentPin = httpsCallable(functions, "resetStudentPinV2");
+          return await resetStudentPin(p);
+        };
+        const payload = {
+          studentId: String(student.id),
+          newPin
+        };
+        const res = await orchestrateStudentPinReset(v2TenantSession, resetFn, payload);
+        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+
+        if (res.executed) {
+          v2ActivatedStudentIds.add(String(student.id));
+          rememberResetStudentPin(captured, student.id, newPin);
+          if (v2TenantSession.validateCapturedIdentity(captured)) {
+            message = `Account activated for ${student.name}.`;
+            render();
+          }
+        } else {
+          if (v2TenantSession.validateCapturedIdentity(captured)) {
+            message = res.error
+              ? `Failed to activate ${student.name}: ${res.error}`
+              : `Failed to activate ${student.name}.`;
+            render();
+          }
+        }
+        return;
+      }
+
       try {
         const resetStudentPin = httpsCallable(functions, "resetStudentPin");
         await resetStudentPin({
@@ -1771,8 +2385,8 @@ const targetStudents = transactionTarget === "whole"
     }
 
     async function bulkActivateStudents() {
-      if (!requireTeacher()) return;
-      const checkboxes = document.querySelectorAll(".bulk-activate-check:checked");
+      if (!requireTeacher() || bulkOperationPending) return;
+      const checkboxes = Array.from(document.querySelectorAll(".bulk-activate-check:checked"));
       if (checkboxes.length === 0) {
         alert("Please select at least one inactive student.");
         return;
@@ -1784,8 +2398,61 @@ const targetStudents = transactionTarget === "whole"
         return;
       }
 
+      bulkOperationPending = true;
       message = `Activating ${checkboxes.length} accounts...`;
       render();
+
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        const captured = v2TenantSession.captureIdentity();
+        const bulkFn = async (p, cap) => {
+          const resetStudentPin = httpsCallable(functions, "resetStudentPinV2");
+          const successfulStudentIds = [];
+          let failCount = 0;
+          for (const cb of p.checkboxes) {
+            if (!v2TenantSession.validateCapturedIdentity(cap)) break;
+            const studentId = cb.value;
+            const student = data.students.find(s => String(s.id) === studentId);
+            if (student) {
+              try {
+                await resetStudentPin({
+                  studentId: String(student.id),
+                  newPin: p.newPin
+                });
+                if (v2TenantSession.validateCapturedIdentity(cap)) {
+                  successfulStudentIds.push(String(student.id));
+                }
+              } catch (error) {
+                console.error("Failed to activate student", student.name, error);
+                failCount++;
+              }
+            }
+          }
+          return { successfulStudentIds, failCount };
+        };
+
+        const res = await orchestrateBulkOperation(v2TenantSession, bulkFn, { checkboxes, newPin });
+        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+
+        if (res.executed && res.result) {
+          const { successfulStudentIds, failCount } = res.result;
+          for (const sId of successfulStudentIds) {
+            v2ActivatedStudentIds.add(sId);
+            rememberResetStudentPin(captured, sId, newPin);
+          }
+          if (v2TenantSession.validateCapturedIdentity(captured)) {
+            message = `Bulk activation complete. ${successfulStudentIds.length} succeeded, ${failCount} failed.`;
+            bulkOperationPending = false;
+            render();
+          }
+        } else {
+          if (v2TenantSession.validateCapturedIdentity(captured)) {
+            message = res.error || "Bulk activation cancelled or session invalidated.";
+            bulkOperationPending = false;
+            render();
+          }
+        }
+        return;
+      }
 
       const resetStudentPin = httpsCallable(functions, "resetStudentPin");
       let successCount = 0;
@@ -1815,11 +2482,41 @@ const targetStudents = transactionTarget === "whole"
       render();
     }
 
-    function toggleStudentFrozen(studentId) {
+    function updateStudent(studentId) {
       if (!requireTeacher()) return;
       const name = document.getElementById("name-" + studentId).value.trim();
-      const pin = document.getElementById("pin-" + studentId).value.trim();
       const balance = Number(document.getElementById("balance-" + studentId).value);
+
+      // V2 renders no roster PIN input, so there is no PIN to read or write
+      // here. PIN changes go only through resetStudentPinV2.
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        if (!name) {
+          showMessage("Student name cannot be blank.");
+          return;
+        }
+
+        data.students = data.students.map(student => {
+          if (student.id !== studentId) return student;
+          return {
+            ...student,
+            name,
+            balance: Number.isFinite(balance) ? balance : 0,
+            frozen: Boolean(student.frozen)
+          };
+        });
+
+        data.transactions = data.transactions.map(transaction => {
+          if (transaction.studentId !== studentId) return transaction;
+          return { ...transaction, studentName: name };
+        });
+
+        saveData();
+        message = "Student updated.";
+        render();
+        return;
+      }
+
+      const pin = document.getElementById("pin-" + studentId).value.trim();
 
       if (!name || !pin) {
         showMessage("Student name and PIN cannot be blank.");
@@ -1847,13 +2544,38 @@ const targetStudents = transactionTarget === "whole"
       render();
     }
 
-    function removeStudent(studentId) {
-      if (!requireTeacher()) return;
+    async function removeStudent(studentId) {
+      if (!requireTeacher() || studentLifecyclePending) return;
       const student = data.students.find(s => s.id === studentId);
       if (!student) return;
 
       const confirmed = confirm("Remove " + student.name + "? This removes the student from the roster but keeps old transaction records.");
       if (!confirmed) return;
+
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        studentLifecyclePending = true;
+        message = `Removing ${student.name}...`;
+        render();
+        const captured = v2TenantSession.captureIdentity();
+        const callableAdapter = async (functionName, payload) => {
+          const callable = httpsCallable(functions, functionName);
+          return await callable(payload);
+        };
+        const result = await orchestrateRemoveStudent(v2TenantSession, callableAdapter, {
+          studentId: String(student.id)
+        });
+        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+        if (result.executed) {
+          data.students = data.students.filter(item => item.id !== studentId);
+          if (loggedInStudentId === studentId) loggedInStudentId = null;
+          message = student.name + " removed.";
+        } else {
+          message = result.error || "The student could not be removed.";
+        }
+        studentLifecyclePending = false;
+        render();
+        return;
+      }
 
       data.students = data.students.filter(student => student.id !== studentId);
       if (loggedInStudentId === studentId) loggedInStudentId = null;
@@ -1931,6 +2653,10 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
 
     function clearTransactions() {
       if (!requireTeacher()) return;
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        showMessage("Clearing transaction history is unavailable in this version.");
+        return;
+      }
       const confirmed = confirm("Clear all transaction history? Balances will stay the same.");
       if (!confirmed) return;
       data.transactions = [];
@@ -1951,6 +2677,10 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
 
     function resetEverything() {
       if (!requireTeacher()) return;
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        showMessage("Reset Everything is unavailable in this version.");
+        return;
+      }
       const confirmed = confirm("Reset EVERYTHING? This will erase students, balances, PINs, settings, and transactions from this browser.");
       if (!confirmed) return;
       data = cloneDefault();
@@ -1968,13 +2698,26 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
       data.lastBackupAt = new Date().toISOString();
       saveData();
 
-      const backup = {
-        students: data.students,
-        transactions: data.transactions,
-        loginHistory: data.loginHistory || [],
-        settings: data.settings,
-        exportedAt: data.lastBackupAt
-      };
+      let backup;
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        // Section 4: V2 backups are PIN-free. projectBackupExport throws rather
+        // than stripping, so a credential field aborts the export instead of
+        // being written to a file the teacher then shares.
+        try {
+          backup = projectBackupExport({ data, exportedAt: data.lastBackupAt });
+        } catch {
+          showMessage("The backup could not be exported.");
+          return;
+        }
+      } else {
+        backup = {
+          students: data.students,
+          transactions: data.transactions,
+          loginHistory: data.loginHistory || [],
+          settings: data.settings,
+          exportedAt: data.lastBackupAt
+        };
+      }
 
       const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -1987,6 +2730,17 @@ link.click();
       }
     function importBackup(event) {
       if (!requireTeacher()) return;
+
+      // Section 4: V2 backup import is disabled for the initial cutover because
+      // a client-side import cannot atomically allocate server-owned student
+      // numbers and credentials. The retained rollback path is schema-validated
+      // below; re-enabling V2 still requires a separately tested import service.
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        event.target.value = "";
+        showMessage("Backup import is unavailable in this version.");
+        return;
+      }
+
       const file = event.target.files[0];
       if (!file) return;
 
@@ -1996,18 +2750,10 @@ link.click();
 
         try {
           const imported = JSON.parse(e.target.result);
-          if (!Array.isArray(imported.students) || !Array.isArray(imported.transactions)) {
-            alert("That backup file does not look right.");
-            return;
-          }
-
-          data = normalizeData({
-            students: imported.students,
-            transactions: imported.transactions,
-            loginHistory: imported.loginHistory || data.loginHistory || [],
-            settings: imported.settings || data.settings,
-            lastBackupAt: imported.exportedAt || new Date().toISOString()
-          });
+          data = normalizeData(sanitizeLegacyBackup(imported, {
+            fallbackLoginHistory: data.loginHistory || [],
+            fallbackSettings: data.settings
+          }));
         saveData();
         showMessage("Backup imported.");
         } catch {
@@ -2076,7 +2822,77 @@ link.click();
         .join("");
     }
 
-    function submitStudentAddMoney() {
+    function applyConfirmedStudentTransaction(result) {
+      const transaction = result.transaction;
+      data.transactions = [
+        transaction,
+        ...data.transactions.filter(item => item.id !== transaction.id)
+      ];
+      data.students = data.students.map(student => {
+        if (student.id !== transaction.studentId) return student;
+        const transactions = Array.isArray(student.transactions)
+          ? student.transactions
+          : [];
+        return {
+          ...student,
+          balance: result.balance,
+          transactions: [
+            transaction,
+            ...transactions.filter(item => item.id !== transaction.id)
+          ]
+        };
+      });
+    }
+
+    async function submitStudentMoneyV2(type, amount, reason) {
+      if (studentMoneySubmissionPending) return;
+      studentMoneySubmissionPending = true;
+      message = type === "Add" ? "Submitting Add Money request..." : "Submitting payment...";
+      render();
+
+      const callableAdapter = async (functionName, payload) => {
+        const callable = httpsCallable(functions, functionName);
+        return await callable(payload);
+      };
+      const retryPayload = studentMoneyRetryPayload;
+      const payload = retryPayload &&
+        retryPayload.type === type &&
+        retryPayload.amount === amount &&
+        retryPayload.reason === reason
+        ? retryPayload
+        : Object.freeze({ transactionId: Date.now(), type, amount, reason });
+      studentMoneyRetryPayload = payload;
+      const result = await orchestrateStudentTransaction(
+        v2TenantSession,
+        callableAdapter,
+        payload
+      );
+      if (result.reason === "stale-epoch-ignored") return;
+
+      studentMoneySubmissionPending = false;
+      if (!result.executed) {
+        // An ID collision is definitive, not an ambiguous network outcome.
+        // Discard it so the next otherwise-identical submission gets a fresh ID.
+        if (result.rawCode === "already-exists") studentMoneyRetryPayload = null;
+        message = result.error || "The transaction could not be completed.";
+        render();
+        return;
+      }
+
+      studentMoneyRetryPayload = null;
+      applyConfirmedStudentTransaction(result.result);
+      if (type === "Add") {
+        const status = result.result.transaction.status;
+        message = status === "Pending"
+          ? "Add Money submitted for teacher approval."
+          : `This Add Money request is already ${status.toLowerCase()}.`;
+      } else {
+        message = "Subtract Money submitted. Money has been subtracted.";
+      }
+      render();
+    }
+
+    async function submitStudentAddMoney() {
       const student = currentStudent();
       if (!student) return;
 
@@ -2085,7 +2901,7 @@ link.click();
         return;
       }
 
-      if (!data.settings.studentAddRequestsEnabled) {
+      if (!data.settings.studentRequestsEnabled || !data.settings.studentAddRequestsEnabled) {
         showMessage("Add Money is currently turned off.");
         return;
       }
@@ -2095,6 +2911,11 @@ link.click();
 
       if (!amount || amount <= 0) {
         showMessage("Enter an amount greater than 0.");
+        return;
+      }
+
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        await submitStudentMoneyV2("Add", amount, reason);
         return;
       }
 
@@ -2118,7 +2939,7 @@ link.click();
       render();
     }
 
-    function submitStudentSubtractMoney() {
+    async function submitStudentSubtractMoney() {
       const student = currentStudent();
       if (!student) return;
 
@@ -2127,7 +2948,7 @@ link.click();
         return;
       }
 
-      if (!data.settings.studentSubtractRequestsEnabled) {
+      if (!data.settings.studentRequestsEnabled || !data.settings.studentSubtractRequestsEnabled) {
         showMessage("Subtract Money is currently turned off.");
         return;
       }
@@ -2142,6 +2963,11 @@ link.click();
 
       if (amount > Number(student.balance)) {
         showMessage("That amount is more than your approved balance.");
+        return;
+      }
+
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        await submitStudentMoneyV2("Subtract", amount, reason);
         return;
       }
 
@@ -2195,7 +3021,7 @@ link.click();
 
       const rows = transactions.map(transaction => `
         <tr>
-          <td>${escapeHtml(transaction.date || "")}</td>
+          <td>${escapeHtml(displayTransactionDate(transaction.date))}</td>
           <td>${escapeHtml(transaction.studentName)}</td>
           <td>${escapeHtml(transaction.type)}</td>
           <td>${dollars(transaction.amount)}</td>
@@ -2247,7 +3073,7 @@ link.click();
                 <div class="student-transaction-amount">${transaction.type === "Add" ? "+" : "-"}${dollars(transaction.amount)}</div>
               </div>
               <div class="student-transaction-meta">
-                ${escapeHtml(transaction.type)} · ${escapeHtml(transaction.date || "")}
+                ${escapeHtml(transaction.type)} · ${escapeHtml(displayTransactionDate(transaction.date))}
                 <span class="status-pill">${escapeHtml(transaction.status)}</span>
               </div>
               ${transaction.memo ? `<div class="student-transaction-meta">Memo: ${escapeHtml(transaction.memo)}</div>` : ""}
@@ -2257,7 +3083,346 @@ link.click();
       `;
     }
 
+    // The authoritatively resolved teacher identity must be visible in the
+    // READY teacher UI, not merely stored on the session, so an operator can
+    // always tell which tenant the screen belongs to.
+    function resolvedTeacherLabel() {
+      const teacher = resolvedTeacher || v2TenantSession?.teacher || null;
+      if (!teacher) return "";
+      const label = teacher.displayName || teacher.email || teacher.uid || "";
+      return typeof label === "string" ? label : "";
+    }
+
+    // Classroom IDs remain part of the tenant session for authorization and
+    // scoped data paths, but they are internal identifiers rather than useful
+    // header text. Render only an authoritatively resolved classroom name.
+    function resolvedClassroomHeaderLabel() {
+      const classroom = resolvedClassroom || v2TenantSession?.classroom || null;
+      const label = classroom?.name;
+      return typeof label === "string" ? label : "";
+    }
+
+    // The resolved classroom code is a student-facing locator, not a classroom
+    // identity. Show it only in the ready V2 teacher UI, where the matching
+    // classroom has already been resolved and ownership-checked by the server.
+    function resolvedStudentLoginCode() {
+      if (!IS_MULTI_TEACHER_V2_ENABLED || !isTeacher) return "";
+      const classroom = resolvedClassroom || v2TenantSession?.classroom || null;
+      const code = classroom?.studentLoginCode;
+      return typeof code === "string" ? code : "";
+    }
+
+    function formatRememberedStudentClassroomCode(rawCode) {
+      if (typeof rawCode !== "string") return "";
+      const canonical = rawCode.trim().toUpperCase().replace(/[-\s]/g, "");
+      if (!/^[2-9A-HJ-NP-Z]{8}$/.test(canonical)) return "";
+      return `${canonical.slice(0, 4)}-${canonical.slice(4)}`;
+    }
+
+    // The superseded one-field convenience. Still read so a browser that only
+    // ever stored a classroom code keeps that prefill until its next successful
+    // login upgrades it to the combined locator. Nothing writes this key anymore.
+    function readRememberedStudentClassroomCode() {
+      if (!IS_MULTI_TEACHER_V2_ENABLED) return "";
+      try {
+        return formatRememberedStudentClassroomCode(
+          localStorage.getItem(V2_STUDENT_CLASSROOM_CODE_STORAGE_KEY)
+        );
+      } catch {
+        return "";
+      }
+    }
+
+    // The canonical classroom-scoped login ID grammar the server allocates and
+    // enforces: lowercase ASCII alphanumerics with single interior hyphens, 1-64
+    // characters, no leading or trailing hyphen. This mirrors
+    // normalizeStudentLoginId in functions/phase2b/identityNormalization.js and
+    // the callable-response guard in src/phase2b/tenantClient.js. A stored value
+    // is rejected rather than repaired: the browser must never assemble a login
+    // identity the server did not issue.
+    function canonicalStudentLoginId(rawLoginId) {
+      if (typeof rawLoginId !== "string") return "";
+      const canonical = rawLoginId
+        .trim()
+        .replace(/[A-Z]/g, char => String.fromCharCode(char.charCodeAt(0) + 32));
+      if (canonical.length < 1 || canonical.length > 64) return "";
+      if (!/^[a-z0-9-]+$/.test(canonical)) return "";
+      if (canonical.startsWith("-") || canonical.endsWith("-")) return "";
+      if (canonical.includes("--")) return "";
+      return canonical;
+    }
+
+    // Exactly these two non-secret fields, so a returning student normally types
+    // only the PIN. Any other shape is treated as corrupt.
+    const V2_STUDENT_LOGIN_LOCATOR_FIELDS = ["classroomCode", "loginId"];
+
+    function parseStudentLoginLocator(rawRecord) {
+      if (typeof rawRecord !== "string" || !rawRecord) return null;
+      let parsed;
+      try {
+        parsed = JSON.parse(rawRecord);
+      } catch {
+        return null;
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      // An exact key set, so a record carrying a smuggled PIN, token, UID, or any
+      // other extra field is refused outright instead of being partially trusted.
+      if (Object.keys(parsed).length !== V2_STUDENT_LOGIN_LOCATOR_FIELDS.length) return null;
+      for (const field of V2_STUDENT_LOGIN_LOCATOR_FIELDS) {
+        if (!Object.prototype.hasOwnProperty.call(parsed, field)) return null;
+        if (typeof parsed[field] !== "string") return null;
+      }
+      // Compare against the canonical forms rather than accepting whatever
+      // normalization would produce: a padded, lowercase, or otherwise
+      // noncanonical record was not written by this feature and must not be used
+      // to build a login payload. Both canonicalizers return "" for a value they
+      // reject, so each result must also be non-empty — otherwise a record whose
+      // fields are already blank would compare equal to its own rejection and be
+      // admitted as a valid locator.
+      const classroomCode = formatRememberedStudentClassroomCode(parsed.classroomCode);
+      const loginId = canonicalStudentLoginId(parsed.loginId);
+      if (!classroomCode || classroomCode !== parsed.classroomCode) return null;
+      if (!loginId || loginId !== parsed.loginId) return null;
+      return { classroomCode, loginId };
+    }
+
+    function readStudentLoginLocator() {
+      if (!IS_MULTI_TEACHER_V2_ENABLED) return null;
+      let stored;
+      try {
+        stored = localStorage.getItem(V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY);
+      } catch {
+        return null;
+      }
+      if (stored === null) return null;
+      const locator = parseStudentLoginLocator(stored);
+      if (!locator) {
+        // A malformed record can never become a login payload. Drop it so the
+        // full form returns instead of re-reading the same corruption forever.
+        try {
+          localStorage.removeItem(V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY);
+        } catch {
+          // Best effort only; the full form is already the safe outcome.
+        }
+        return null;
+      }
+      return locator;
+    }
+
+    function rememberStudentLoginLocator(rawCode, rawLoginId) {
+      if (!IS_MULTI_TEACHER_V2_ENABLED) return false;
+      const classroomCode = formatRememberedStudentClassroomCode(rawCode);
+      const loginId = canonicalStudentLoginId(rawLoginId);
+      if (!classroomCode || !loginId) return false;
+      try {
+        localStorage.setItem(
+          V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY,
+          JSON.stringify({ classroomCode, loginId })
+        );
+      } catch {
+        // Storage may be unavailable or ephemeral in private browsing. A
+        // successful student sign-in must never fail because preference storage
+        // is unavailable.
+        return false;
+      }
+      // Only after the combined locator is durably written does the superseded
+      // classroom-code-only key go away, so a failed upgrade still leaves the
+      // older one-field convenience intact.
+      try {
+        localStorage.removeItem(V2_STUDENT_CLASSROOM_CODE_STORAGE_KEY);
+      } catch {
+        // A surviving legacy key is harmless: the locator takes precedence on read.
+      }
+      return true;
+    }
+
+    // Synchronous and local by contract: switching students forgets the locator
+    // and restores the full form without signing anyone out, calling Firebase, or
+    // disturbing any other stored teacher or student data.
+    function useDifferentStudent() {
+      if (studentLoginPending) return;
+      const rememberedCode = studentLoginLocator ? studentLoginLocator.classroomCode : "";
+      studentLoginLocator = null;
+      studentLoginIdDraft = "";
+      try {
+        localStorage.removeItem(V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY);
+      } catch {
+        // The in-memory locator is already cleared and the full form is showing.
+      }
+      // The classroom code is a shared, non-secret room locator, so the usual
+      // shared-device case ("same classroom, different student") keeps it in the
+      // in-memory form draft only. Nothing new is persisted: the durable locator
+      // is already gone, and the full form still requires all three values.
+      studentClassroomCodeDraft = rememberedCode || readRememberedStudentClassroomCode();
+      render();
+    }
+
+    function legacyCopyText(text) {
+      const input = document.createElement("textarea");
+      input.value = text;
+      input.setAttribute("readonly", "");
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.select();
+      input.setSelectionRange(0, input.value.length);
+      let copied = false;
+      try {
+        copied = document.execCommand("copy") === true;
+      } catch {
+        copied = false;
+      }
+      input.remove();
+      return copied;
+    }
+
+    async function copyTextWithFallback(text) {
+      let copied = false;
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        }
+      } catch {
+        copied = false;
+      }
+
+      return copied || legacyCopyText(text);
+    }
+
+    function toggleProfileNewStudentPinVisibility() {
+      if (!requireTeacher() || screen !== "studentProfile") return;
+      const input = document.getElementById("profileNewStudentPin");
+      const button = document.getElementById("profileNewStudentPinVisibilityButton");
+      if (!input || !button) return;
+
+      const reveal = input.type === "password";
+      input.type = reveal ? "text" : "password";
+      button.textContent = reveal ? "Hide PIN" : "Show PIN";
+      input.focus({ preventScroll: true });
+    }
+
+    async function copyProfileNewStudentPin() {
+      if (!requireTeacher() || screen !== "studentProfile") return;
+      const studentId = teacherProfileStudentId;
+      const pin = document.getElementById("profileNewStudentPin")?.value ?? "";
+      const status = document.getElementById("profileNewStudentPinCopyStatus");
+      if (!/^\d{4}$/.test(pin)) {
+        if (status) status.textContent = "Enter a 4-digit PIN before copying.";
+        return;
+      }
+
+      const copied = await copyTextWithFallback(pin);
+      if (screen !== "studentProfile" || teacherProfileStudentId !== studentId) return;
+      const currentStatus = document.getElementById("profileNewStudentPinCopyStatus");
+      if (currentStatus) {
+        currentStatus.textContent = copied
+          ? "New PIN copied."
+          : "Could not copy the new PIN. Show it and copy it manually.";
+      }
+    }
+
+    async function copyTemporaryProfileStudentPin() {
+      if (!requireTeacher() || screen !== "studentProfile") return;
+      const temporaryPin = temporaryProfileStudentPin;
+      if (!temporaryPin || temporaryPin.studentId !== teacherProfileStudentId) return;
+
+      const copied = await copyTextWithFallback(temporaryPin.pin);
+      if (
+        temporaryProfileStudentPin !== temporaryPin
+        || screen !== "studentProfile"
+        || teacherProfileStudentId !== temporaryPin.studentId
+      ) return;
+      const status = document.getElementById("temporaryProfileStudentPinCopyStatus");
+      if (status) {
+        status.textContent = copied
+          ? "New PIN copied."
+          : "Could not copy the new PIN. Select it and copy it manually.";
+      }
+    }
+
+    function dismissTemporaryProfileStudentPin() {
+      if (!requireTeacher() || screen !== "studentProfile") return;
+      const banner = document.getElementById("temporaryProfileStudentPin");
+      clearTemporaryProfileStudentPin();
+      if (banner) banner.remove();
+    }
+
+    async function copyStudentClassroomCode() {
+      if (!requireTeacher()) return;
+      const code = resolvedStudentLoginCode();
+      if (!code) {
+        showMessage("The classroom code is not available yet.");
+        return;
+      }
+
+      const copied = await copyTextWithFallback(code);
+      showMessage(copied
+        ? "Classroom code copied."
+        : "Could not copy the classroom code. Select the code and copy it manually.");
+    }
+
     function render() {
+      if (screen !== "studentProfile" || !isTeacher) {
+        clearTemporaryProfileStudentPin();
+      }
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        const state = v2TenantSession.getState();
+        if (state === SESSION_STATES.AUTHENTICATING) {
+          document.getElementById("app").innerHTML = `<div class="card hero"><h2>Authenticating...</h2><p class="tagline">Verifying tenant credentials...</p></div>`;
+          return;
+        }
+        if (state === SESSION_STATES.RESOLVING) {
+          document.getElementById("app").innerHTML = `<div class="card hero"><h2>Resolving Tenant...</h2><p class="tagline">Connecting to classroom tenant...</p></div>`;
+          return;
+        }
+        if (state === SESSION_STATES.ONBOARDING_REQUIRED || state === SESSION_STATES.ONBOARDING) {
+          const isSubmitting = state === SESSION_STATES.ONBOARDING;
+          document.getElementById("app").innerHTML = `
+            <div class="card soft-card" style="max-width: 500px; margin: 40px auto;">
+              <h2>Classroom Onboarding Required</h2>
+              <p class="small-note">Please enter a name for your new classroom tenant to complete setup.</p>
+              ${message ? `<div class="message">${escapeHtml(message)}</div>` : ""}
+              <label for="v2ClassroomName">Classroom Name</label>
+              <input id="v2ClassroomName" placeholder="e.g. Room 101 Bank" ${isSubmitting ? "disabled" : ""} />
+              <div style="display: flex; gap: 10px; margin-top: 14px;">
+                <button class="primary" onclick="submitV2Onboarding()" ${isSubmitting ? "disabled" : ""}>
+                  ${isSubmitting ? "Creating Classroom..." : "Create Classroom"}
+                </button>
+                <button onclick="logout()">Sign Out</button>
+              </div>
+            </div>
+          `;
+          return;
+        }
+        if (state === SESSION_STATES.CLASSROOM_LOADING) {
+          document.getElementById("app").innerHTML = `<div class="card hero"><h2>Loading Classroom Data...</h2><p class="tagline">Fetching classroom roster and transactions...</p></div>`;
+          return;
+        }
+        if (state === SESSION_STATES.DENIED_OR_INCONSISTENT) {
+          document.getElementById("app").innerHTML = `
+            <div class="card danger" style="max-width: 500px; margin: 40px auto; background: #fee2e2; color: #991b1b;">
+              <h2>Access Denied or Tenant Inconsistent</h2>
+              <p>${escapeHtml(v2TenantSession.errorMessage || "Your account is not authorized or is in an inconsistent state.")}</p>
+              <button class="primary" onclick="logout()" style="margin-top: 14px;">Sign Out</button>
+            </div>
+          `;
+          return;
+        }
+        if (state === SESSION_STATES.READY) {
+          isTeacher = v2TenantSession.role === "teacher";
+          resolvedClassroom = v2TenantSession.classroom;
+          resolvedTeacher = v2TenantSession.teacher;
+          if (v2TenantSession.role === "student") {
+            loggedInStudentId = Number(v2TenantSession.studentId);
+            loginTab = "student";
+            if (screen === "login") screen = "student";
+          } else if (screen === "login") {
+            screen = "teacher";
+          }
+        }
+      }
+
       const student = currentStudent();
       const totalCash = data.students.reduce((total, student) => total + Number(student.balance || 0), 0);
       const pendingTransactions = data.transactions.filter(transaction => transaction.status === "Pending");
@@ -2281,14 +3446,14 @@ link.click();
       let html = `
         <section class="hero">
           <div class="center-logo-wrap">
-            <img class="center-logo" src="data:image/webp;base64,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" alt="Morgan Bank logo">
+            <img class="center-logo" src="data:image/webp;base64,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" alt="Morgan Bank logo">
           </div>
           <div class="hero-content">
             <div>
               <h1>Mr. Morgan's Class Cash</h1>
               <p class="tagline">Classroom Banking Platform · Positive Vibes Only</p>
             </div>
-            <div class="hero-badge">Fast, Simple and Student Friendly</div>
+            ${resolvedClassroomHeaderLabel() ? `<div class="hero-badge"><span class="hero-meta-item">Classroom: ${escapeHtml(resolvedClassroomHeaderLabel())}</span>${resolvedStudentLoginCode() ? `<span class="hero-meta-item">Classroom code: <span class="classroom-code">${escapeHtml(resolvedStudentLoginCode())}</span></span>` : ""}${resolvedTeacherLabel() ? `<span class="hero-meta-item">Teacher: ${escapeHtml(resolvedTeacherLabel())}</span>` : ""}${v2IsOffline ? '<span class="hero-meta-item offline-badge" style="background: #f59e0b; color: white;">Offline view</span>' : ""}</div>` : '<div class="hero-badge"><span class="hero-meta-item">Fast, Simple and Student Friendly</span></div>'}
           </div>
         </section>
 
@@ -2302,6 +3467,7 @@ link.click();
             ${isTeacher ? `<button onclick="setScreen('roster')">Roster</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('settings')">Settings</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('credentials')">Credentials</button>` : ""}
+            ${isTeacher && isPlatformAdmin ? `<button onclick="setScreen('teacherInvitations')">Teacher Invitations</button>` : ""}
             ${isTeacher ? `<button onclick="openStudentAuthLogs()">Student Auth Logs</button>` : ""}
             
             <button onclick="logout()">Log Out</button>
@@ -2339,11 +3505,26 @@ link.click();
             ` : `
               <h2>Student Login</h2>
               ${message ? `<div class="backup-reminder" role="status" aria-live="polite">${escapeHtml(message)}</div>` : ""}
-              <label for="studentLoginId">Student login ID</label>
-              <input id="studentLoginId" value="${escapeHtml(studentLoginIdDraft)}" placeholder="Student login ID" autocomplete="username" autocapitalize="none" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
-              <label for="studentPin">PIN / password</label>
-              <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
-              <button class="primary" onclick="loginStudent()" ${studentLoginPending ? "disabled" : ""}>${studentLoginPending ? "Signing in..." : "Login as Student"}</button>
+              ${IS_MULTI_TEACHER_V2_ENABLED && studentLoginLocator ? `
+                <p id="rememberedStudentIdentity">Signing in as <strong>${escapeHtml(studentLoginLocator.loginId)}</strong></p>
+                <p class="small-note">Classroom code: <span id="rememberedStudentClassroomCode" class="classroom-code">${escapeHtml(studentLoginLocator.classroomCode)}</span></p>
+                <label for="studentPin">PIN / password</label>
+                <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
+                <button class="primary" onclick="loginStudent()" ${studentLoginPending ? "disabled" : ""}>${studentLoginPending ? "Signing in..." : "Login as Student"}</button>
+                <button type="button" class="link-button" id="useDifferentStudent" onclick="useDifferentStudent()" ${studentLoginPending ? "disabled" : ""}>Use a different student</button>
+                <p class="small-note">This browser remembers only the classroom code and student login ID above. Your PIN is never saved.</p>
+              ` : `
+                ${IS_MULTI_TEACHER_V2_ENABLED ? `
+                  <label for="studentClassroomCode">Classroom code</label>
+                  <input id="studentClassroomCode" value="${escapeHtml(studentClassroomCodeDraft)}" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
+                  <p class="small-note">After a successful login, this browser remembers only the classroom code and student login ID, so next time you sign in with just your PIN. Your PIN is never saved. Private browsing forgets both when the private window closes.</p>
+                ` : ""}
+                <label for="studentLoginId">Student login ID</label>
+                <input id="studentLoginId" value="${escapeHtml(studentLoginIdDraft)}" placeholder="Student login ID" autocomplete="username" autocapitalize="none" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
+                <label for="studentPin">PIN / password</label>
+                <input id="studentPin" type="password" placeholder="PIN / password" autocomplete="current-password" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
+                <button class="primary" onclick="loginStudent()" ${studentLoginPending ? "disabled" : ""}>${studentLoginPending ? "Signing in..." : "Login as Student"}</button>
+              `}
             `}
           </div>
         `;
@@ -2351,6 +3532,18 @@ link.click();
 
       if (screen === "teacher" && isTeacher) {
         html += `
+          ${resolvedStudentLoginCode() ? `
+          <div class="card no-print student-login-info">
+            <h2>Student Login Information</h2>
+            <p>Share this classroom code with your students. After a successful login, Morgan Bank can remember the code and that student's login ID on that browser, so the student signs in with just a PIN next time. PINs are never saved.</p>
+            <div class="student-login-info-row">
+              <span>Classroom code:</span>
+              <span id="teacherStudentClassroomCode" class="student-login-info-code">${escapeHtml(resolvedStudentLoginCode())}</span>
+              <button type="button" class="primary" onclick="copyStudentClassroomCode()" aria-label="Copy classroom code">Copy code</button>
+            </div>
+          </div>
+          ` : ""}
+
           <div class="card no-print dashboard-insights">
             <h2>Dashboard Insights</h2>
             <div class="stats">
@@ -2537,15 +3730,19 @@ ${transactionTarget !== "whole" ? `
               <h2 style="margin-top: 24px;">Backup</h2>
               <div class="backup-reminder">${escapeHtml(backupText())}</div>
               <button onclick="exportBackup()">Export Backup</button>
-              <button onclick="printRoster()">Print Roster/PIN List</button>
+              <button onclick="printRoster()">${IS_MULTI_TEACHER_V2_ENABLED ? "Print Roster" : "Print Roster/PIN List"}</button>
+              ${IS_MULTI_TEACHER_V2_ENABLED ? `
+              <p class="small-note" style="margin-top: 12px;">Backup import is unavailable in this version.</p>
+              ` : `
               <label for="backupFile" style="margin-top: 12px;">Import Backup</label>
               <input id="backupFile" type="file" accept=".json" onchange="importBackup(event)" />
+              `}
               <p class="small-note">This version saves to this browser using localStorage. Export a backup after adding students or making big balance changes.</p>
             </div>
 
             <div class="card">
               <div class="print-only">
-                <h1>Mr. Morgan's Class Cash — Roster/PIN List</h1>
+                <h1>Mr. Morgan's Class Cash — ${IS_MULTI_TEACHER_V2_ENABLED ? "Roster" : "Roster/PIN List"}</h1>
                 <p>Generated from the classroom banking app.</p>
               </div>
               <h2>Roster</h2>
@@ -2556,15 +3753,17 @@ ${transactionTarget !== "whole" ? `
               ${data.students.length === 0 ? `
                 <div class="empty">No students yet. Add your first student on the left.</div>
               ` : data.students.map(student => `
-                <div class="roster-row" data-roster-student-name="${escapeHtml(student.name.toLowerCase())}">
+                <div class="roster-row${IS_MULTI_TEACHER_V2_ENABLED ? " v2-roster-row" : ""}" data-roster-student-name="${escapeHtml(student.name.toLowerCase())}">
                   <div>
                     <label for="name-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Student Name</label>
                     <input id="name-${student.id}" value="${escapeHtml(student.name)}" />
                   </div>
+                  ${IS_MULTI_TEACHER_V2_ENABLED ? "" : `
                   <div>
                     <label for="pin-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">PIN</label>
                     <input id="pin-${student.id}" value="${escapeHtml(student.pin)}" />
                   </div>
+                  `}
                   <div>
                     <label for="balance-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Balance</label>
                     <input id="balance-${student.id}" type="number" value="${student.balance}" />
@@ -2613,8 +3812,10 @@ ${transactionTarget !== "whole" ? `
             <div class="balance-card" style="margin-top: 14px;">
               <h2>${escapeHtml(profileStudent.name)}</h2>
               <div class="big-balance">${dollars(profileStudent.balance)}</div>
-              <p><strong>Login ID:</strong> ${escapeHtml(profileLoginIdStatus)}</p>
-              <p><strong>PIN:</strong> ${escapeHtml(profileStudent.pin)}</p>
+              <p><strong>Login ID:</strong> <span id="profileLoginIdStatus">${escapeHtml(profileLoginIdStatus)}</span></p>
+              ${IS_MULTI_TEACHER_V2_ENABLED
+                ? ``
+                : `<p><strong>PIN:</strong> ${escapeHtml(profileStudent.pin)}</p>`}
               <p><strong>Status:</strong> ${profileStudent.frozen ? "Frozen" : "Active"}</p>
 
               <div class="lock-note no-print" style="margin-top: 16px;">
@@ -2622,9 +3823,23 @@ ${transactionTarget !== "whole" ? `
                 <p class="small-note">Enter a new 4-digit PIN for this student's secure login.</p>
                 <label for="profileNewStudentPin">New PIN</label>
                 <input id="profileNewStudentPin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" ${studentPinResetPending ? "disabled" : ""} />
+                <button type="button" id="profileNewStudentPinVisibilityButton" onclick="toggleProfileNewStudentPinVisibility()" aria-controls="profileNewStudentPin" ${studentPinResetPending ? "disabled" : ""}>Show PIN</button>
+                <button type="button" onclick="copyProfileNewStudentPin()" ${studentPinResetPending ? "disabled" : ""}>Copy typed PIN</button>
+                <p id="profileNewStudentPinCopyStatus" class="small-note" role="status" aria-live="polite"></p>
                 <button class="primary" onclick="resetProfileStudentPin()" ${studentPinResetPending ? "disabled" : ""}>
                   ${studentPinResetPending ? "Resetting..." : "Reset PIN"}
                 </button>
+                ${temporaryProfileStudentPin?.studentId === profileStudent.id ? `
+                  <div id="temporaryProfileStudentPin" class="backup-reminder" style="margin-top: 14px;" role="status" aria-live="polite">
+                    <strong>PIN reset complete.</strong>
+                    <p>Give this new PIN to ${escapeHtml(profileStudent.name)}:</p>
+                    <p><strong id="temporaryProfileStudentPinValue">${escapeHtml(temporaryProfileStudentPin.pin)}</strong></p>
+                    <button type="button" onclick="copyTemporaryProfileStudentPin()">Copy PIN for student</button>
+                    <button type="button" onclick="dismissTemporaryProfileStudentPin()">Done — hide PIN</button>
+                    <p id="temporaryProfileStudentPinCopyStatus" class="small-note"></p>
+                    <p class="small-note">This PIN disappears when you leave this profile or reload the page.</p>
+                  </div>
+                ` : ""}
               </div>
             </div>
 
@@ -2637,7 +3852,7 @@ ${transactionTarget !== "whole" ? `
               ${mostRecentTransaction ? `
                 <div class="stat-box">
                   Most Recent: ${escapeHtml(mostRecentTransaction.type)} ${dollars(mostRecentTransaction.amount)}
-                  <div class="small-note">${escapeHtml(mostRecentTransaction.date || "")}</div>
+                  <div class="small-note">${escapeHtml(displayTransactionDate(mostRecentTransaction.date))}</div>
                 </div>
               ` : ""}
             </div>
@@ -2696,12 +3911,12 @@ ${transactionTarget !== "whole" ? `
 
 <h3>General Transaction Reasons</h3>
 <div class="small-note">
-  Current reasons: ${data.settings.reasons.join(", ")}
+  Current reasons: ${escapeHtml(data.settings.reasons.join(", "))}
 </div>
 
 <h3>Purchase Choices</h3>
 <div class="small-note">
-  Current purchase choices: ${data.settings.purchaseCategories.join(", ")}
+  Current purchase choices: ${escapeHtml(data.settings.purchaseCategories.join(", "))}
 </div>
 <button class="primary" onclick="setScreen('editSettingsLists')">Manage Lists</button>
 
@@ -2714,8 +3929,12 @@ ${transactionTarget !== "whole" ? `
               <h2>Backup and Reset Tools</h2>
               <div class="backup-reminder">${escapeHtml(backupText())}</div>
               <button onclick="exportBackup()">Export Backup</button>
+              ${IS_MULTI_TEACHER_V2_ENABLED ? `
+              <p class="small-note" style="margin-top: 12px;">Backup import is unavailable in this version.</p>
+              ` : `
               <label for="backupFileSettings" style="margin-top: 12px;">Import Backup</label>
               <input id="backupFileSettings" type="file" accept=".json" onchange="importBackup(event)" />
+              `}
 
               <h3>Student Login History</h3>
               <div class="lock-note">Choose a student to see their last 20 login attempts, including successful logins, failed PIN attempts, and frozen account blocks.</div>
@@ -2735,9 +3954,15 @@ ${transactionTarget !== "whole" ? `
               <button onclick="clearLoginHistory()">Clear All Login History</button>
 
               <h3>Cleanup</h3>
+              ${IS_MULTI_TEACHER_V2_ENABLED ? `
+              <p class="small-note">Transaction-history clearing and full classroom reset are unavailable in this version because student and transaction deletion must be completed by a separately reviewed server workflow.</p>
+              ` : `
               <button onclick="clearTransactions()">Clear Transaction History</button>
+              `}
               <button onclick="resetBalancesToZero()">Reset All Balances to $0</button>
+              ${IS_MULTI_TEACHER_V2_ENABLED ? "" : `
               <button class="danger" onclick="resetEverything()">Reset Everything</button>
+              `}
 
               <p class="small-note">
                 Teacher settings are only visible after teacher login. This is still a classroom app structure, not bank-level security.
@@ -2752,6 +3977,9 @@ ${transactionTarget !== "whole" ? `
           <div class="grid">
             <div class="card">
               <h2>Student Credentials</h2>
+              ${IS_MULTI_TEACHER_V2_ENABLED ? `
+              <p class="small-note">Current PINs are shown only on this teacher screen and are never saved in this browser or included in backups.</p>
+              ` : ""}
 
               <div class="bulk-activate-controls" style="margin-bottom: 16px; padding: 12px; background: rgba(0,0,0,0.05); border-radius: 8px;">
                 <label for="bulkActivatePin" style="font-weight: bold; margin-right: 8px;">Bulk Set PIN:</label>
@@ -2765,6 +3993,7 @@ ${transactionTarget !== "whole" ? `
                     <th style="width: 40px;"></th>
                     <th>Student Name</th>
                     <th>Login ID</th>
+                    ${IS_MULTI_TEACHER_V2_ENABLED ? `<th class="credential-pin-column">PIN</th>` : ""}
                     <th>Status</th>
                     <th>Action</th>
                   </tr>
@@ -2772,14 +4001,32 @@ ${transactionTarget !== "whole" ? `
                 <tbody>
                   ${data.students.map(student => {
                     const loginId = typeof student.name === "string" ? student.name.trim().replaceAll(' ', '-').toLowerCase() : "student";
-                    const isActive = student.credentialActive === true;
+                    const currentPin = IS_MULTI_TEACHER_V2_ENABLED
+                      ? credentialStudentPin(student.id)
+                      : "";
+                    const isActive = IS_MULTI_TEACHER_V2_ENABLED
+                      ? v2ActivatedStudentIds.has(String(student.id)) || Boolean(currentPin)
+                      : student.credentialActive === true;
                     return `
-                      <tr>
+                      <tr data-credential-student-id="${student.id}">
                         <td>
                           <input type="checkbox" class="bulk-activate-check" value="${student.id}" style="width:16px; height:16px; cursor:pointer;" />
                         </td>
                         <td>${escapeHtml(student.name)}</td>
                         <td><code>${escapeHtml(loginId)}</code></td>
+                        ${IS_MULTI_TEACHER_V2_ENABLED ? `
+                        <td id="credentialPinCell-${student.id}" class="credential-pin-column">
+                          ${currentPin ? `
+                            <span id="credentialPin-${student.id}" class="credential-pin">${escapeHtml(currentPin)}</span>
+                          ` : v2StudentPinsLoading ? `
+                            <span class="small-note">Loading...</span>
+                          ` : v2StudentPinsError ? `
+                            <span class="small-note">Unavailable</span>
+                          ` : `
+                            <span class="small-note">Not set. Reset to create one.</span>
+                          `}
+                        </td>
+                        ` : ""}
                         <td>
                           <span style="color: ${isActive ? 'green' : 'red'}; font-weight: bold;">
                             ${isActive ? "Active" : "Inactive"}
@@ -2799,11 +4046,65 @@ ${transactionTarget !== "whole" ? `
           </div>
         `;
       }
+
+      if (screen === "teacherInvitations" && isTeacher && isPlatformAdmin) {
+        html += `
+          <div class="card soft-card" style="max-width: 680px; margin: 0 auto;">
+            <h2>Teacher Invitations</h2>
+            <p class="small-note">
+              Invite a teacher using the exact email address on their Google account.
+              After signing in, they will create their own isolated classroom.
+            </p>
+
+            <label for="teacherInvitationEmail">Teacher Google email</label>
+            <input
+              id="teacherInvitationEmail"
+              type="email"
+              value="${escapeHtml(teacherInvitationEmailDraft)}"
+              placeholder="teacher@school.org"
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              ${teacherInvitationPending ? "disabled" : ""}
+            />
+
+            <label for="teacherInvitationExpiryHours">Invitation expires after</label>
+            <select id="teacherInvitationExpiryHours" ${teacherInvitationPending ? "disabled" : ""}>
+              ${[
+                [24, "24 hours"],
+                [48, "48 hours"],
+                [72, "72 hours"],
+                [168, "7 days"]
+              ].map(([hours, label]) => `
+                <option value="${hours}" ${teacherInvitationExpiryHours === hours ? "selected" : ""}>${label}</option>
+              `).join("")}
+            </select>
+
+            <div style="display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap;">
+              <button
+                class="primary"
+                onclick="manageTeacherInvitation('create')"
+                ${teacherInvitationPending ? "disabled" : ""}
+              >${teacherInvitationPending ? "Working..." : "Create Invitation"}</button>
+              <button
+                onclick="manageTeacherInvitation('revoke')"
+                ${teacherInvitationPending ? "disabled" : ""}
+              >Revoke Invitation</button>
+            </div>
+
+            <p class="small-note" style="margin-top: 16px;">
+              Invitations do not send email automatically. Tell the teacher to open Morgan Bank
+              and choose Continue with Google before the invitation expires.
+            </p>
+          </div>
+        `;
+      }
       if (screen === "studentAuthLogs" && isTeacher) {
         html += `
           <div class="card">
             <h2>Student Auth Logs</h2>
             <p class="small-note">Most recent 25 server-recorded student login attempts.</p>
+            <p class="small-note">Login IDs and PINs are not stored in this log.</p>
             ${studentAuthLogTable()}
             <button onclick="openStudentAuthLogs()" ${studentAuthLogsLoading ? "disabled" : ""}>Refresh</button>
           </div>
@@ -2853,11 +4154,11 @@ if (screen === "editSettingsLists" && isTeacher) {
               </div>
 
               <div class="grid">
-                <div class="card soft-card">
+                <div class="card soft-card student-money-card">
                   <h2>Add Money</h2>
                   ${student.frozen ? `
                     <div class="empty">This account is frozen. Add Money is not available.</div>
-                  ` : !data.settings.studentAddRequestsEnabled ? `
+                  ` : !data.settings.studentRequestsEnabled || !data.settings.studentAddRequestsEnabled ? `
                     <div class="empty">Add Money is currently turned off.</div>
                   ` : `
                     <div class="purchase-note">Use this when you earned money. Mr. Morgan will approve it before it is added.</div>
@@ -2868,15 +4169,15 @@ if (screen === "editSettingsLists" && isTeacher) {
                     <label for="studentAddAmount">Amount</label>
                     <input id="studentAddAmount" type="number" min="1" value="1" />
 
-                    <button class="primary" onclick="submitStudentAddMoney()">Submit Add Money</button>
+                    <button class="primary" onclick="submitStudentAddMoney()" ${studentMoneySubmissionPending ? "disabled" : ""}>${studentMoneySubmissionPending ? "Submitting..." : "Submit Add Money"}</button>
                   `}
                 </div>
 
-                <div class="card soft-card">
+                <div class="card soft-card student-money-card">
                   <h2>Subtract Money</h2>
                   ${student.frozen ? `
                     <div class="empty">This account is frozen. Subtract Money is not available.</div>
-                  ` : !data.settings.studentSubtractRequestsEnabled ? `
+                  ` : !data.settings.studentRequestsEnabled || !data.settings.studentSubtractRequestsEnabled ? `
                     <div class="empty">Subtract Money is currently turned off.</div>
                   ` : `
                     <div class="purchase-note">Use this when you are paying money. It comes out of your balance right away.</div>
@@ -2887,7 +4188,7 @@ if (screen === "editSettingsLists" && isTeacher) {
                     <label for="studentSubtractAmount">Amount</label>
                     <input id="studentSubtractAmount" type="number" min="1" value="1" />
 
-                    <button class="primary" onclick="submitStudentSubtractMoney()">Submit Subtract Money</button>
+                    <button class="primary" onclick="submitStudentSubtractMoney()" ${studentMoneySubmissionPending ? "disabled" : ""}>${studentMoneySubmissionPending ? "Submitting..." : "Submit Subtract Money"}</button>
                   `}
                 </div>
               </div>
@@ -2904,9 +4205,380 @@ if (screen === "editSettingsLists" && isTeacher) {
       document.getElementById("app").innerHTML = html;
     }
 
-    let authStateVersion = 0;
+    const windowAppGlobals = {
+      get data() { return data; },
+      set data(val) { data = val; },
+      get screen() { return screen; },
+      set screen(val) { screen = val; },
+      get loginTab() { return loginTab; },
+      set loginTab(val) { loginTab = val; },
+      get showTeacherPasswordLogin() { return showTeacherPasswordLogin; },
+      set showTeacherPasswordLogin(val) { showTeacherPasswordLogin = val; },
+      get isTeacher() { return isTeacher; },
+      set isTeacher(val) { isTeacher = val; },
+      get loggedInStudentId() { return loggedInStudentId; },
+      set loggedInStudentId(val) { loggedInStudentId = val; },
+      get teacherProfileStudentId() { return teacherProfileStudentId; },
+      set teacherProfileStudentId(val) { teacherProfileStudentId = val; },
+      get message() { return message; },
+      set message(val) { message = val; },
+      get studentClassroomCodeDraft() { return studentClassroomCodeDraft; },
+      set studentClassroomCodeDraft(val) { studentClassroomCodeDraft = val; },
+      get studentLoginIdDraft() { return studentLoginIdDraft; },
+      set studentLoginIdDraft(val) { studentLoginIdDraft = val; },
+      get studentLoginPending() { return studentLoginPending; },
+      set studentLoginPending(val) { studentLoginPending = val; },
+      get studentMoneySubmissionPending() { return studentMoneySubmissionPending; },
+      set studentMoneySubmissionPending(val) { studentMoneySubmissionPending = val; },
+      get studentAuthLogs() { return studentAuthLogs; },
+      set studentAuthLogs(val) { studentAuthLogs = val; },
+      get studentAuthLogsLoading() { return studentAuthLogsLoading; },
+      set studentAuthLogsLoading(val) { studentAuthLogsLoading = val; },
+      get studentAuthLogsError() { return studentAuthLogsError; },
+      set studentAuthLogsError(val) { studentAuthLogsError = val; },
+      get studentPinResetPending() { return studentPinResetPending; },
+      set studentPinResetPending(val) { studentPinResetPending = val; },
+      get bulkOperationPending() { return bulkOperationPending; },
+      set bulkOperationPending(val) { bulkOperationPending = val; },
+      get studentLifecyclePending() { return studentLifecyclePending; },
+      set studentLifecyclePending(val) { studentLifecyclePending = val; },
+      get messageTimeout() { return messageTimeout; },
+      set messageTimeout(val) { messageTimeout = val; },
+      get resolvedClassroom() { return resolvedClassroom; },
+      set resolvedClassroom(val) { resolvedClassroom = val; },
+      get resolvedTeacher() { return resolvedTeacher; },
+      set resolvedTeacher(val) { resolvedTeacher = val; },
+      get transactionTarget() { return transactionTarget; },
+      set transactionTarget(val) { transactionTarget = val; },
+      get teacherTransactionFilter() { return teacherTransactionFilter; },
+      set teacherTransactionFilter(val) { teacherTransactionFilter = val; }
+    };
+
+    function resetAllGlobalState() {
+      resetGlobalApplicationState(windowAppGlobals, cloneDefault);
+      // The remembered login locator is intentionally separate from tenant data.
+      // Rehydrate it after the shared reset so an ordinary logout keeps the next
+      // daily student login fast, while retaining no PIN, token, Auth UID, student
+      // name, or student record.
+      studentLoginLocator = readStudentLoginLocator();
+      studentClassroomCodeDraft = studentLoginLocator
+        ? studentLoginLocator.classroomCode
+        : readRememberedStudentClassroomCode();
+      // Render-affecting V2 view state that is not part of the shared legacy
+      // global contract must be cleared by the same synchronous reset, or a
+      // previous tenant's offline badge / profile login ID can survive a switch.
+      v2IsOffline = false;
+      isPlatformAdmin = false;
+      teacherInvitationPending = false;
+      teacherInvitationEmailDraft = "";
+      teacherInvitationExpiryHours = 48;
+      studentMoneyRetryPayload = null;
+      profileLoginIdStatus = "Checking...";
+      clearTemporaryProfileStudentPin();
+      // Plaintext PINs belong to exactly one tenant. They must not survive a
+      // classroom switch, an invalidation, or a sign-out for even one render.
+      v2StudentPins = new Map();
+      v2StudentPinOverrides = new Map();
+      v2StudentPinsIdentity = null;
+      v2StudentPinsLoading = false;
+      v2StudentPinsError = "";
+      v2StudentPinsRequestVersion += 1;
+      v2StudentPinsResetVersion += 1;
+      // The persisted-data baseline belongs to the outgoing tenant. Keeping it
+      // would let the next tenant's first save diff against a foreign
+      // classroom and skip documents it must write.
+      v2LastPersistedData = null;
+      // Activation hints are per-session and per-tenant; a new tenant's roster
+      // must not inherit the previous teacher's "Active" badges.
+      v2ActivatedStudentIds.clear();
+    }
+
+    async function submitV2Onboarding() {
+      const classroomName = document.getElementById("v2ClassroomName")?.value || "";
+      if (!classroomName.trim()) {
+        message = "Please enter a valid classroom name.";
+        render();
+        return;
+      }
+      message = "Creating classroom...";
+      render();
+      const callAdapter = async (name, payload) => {
+        const callable = httpsCallable(functions, name);
+        return await callable(payload);
+      };
+      const res = await orchestrateTeacherOnboarding(v2TenantSession, callAdapter, { classroomName });
+      if (res.success && v2TenantSession.getState() === SESSION_STATES.ACTIVE) {
+        const loadNetworkFn = async () => {
+          const loaded = await v2LoadTenantData({
+            uid: auth.currentUser?.uid,
+            classroomId: v2TenantSession.classroomId
+          });
+          v2LastPersistedData = JSON.parse(JSON.stringify(loaded));
+          return loaded;
+        };
+        const loadResult = await loadClassroomDataWithCacheFallback(v2TenantSession, {
+          loadNetworkFn,
+          storageAdapter: localStorage,
+          projectId: v2TenantSession.projectId
+        });
+        if (
+          loadResult.executed &&
+          v2TenantSession.getState() === SESSION_STATES.READY
+        ) {
+          if (loadResult.data) data = loadResult.data;
+          v2IsOffline = Boolean(loadResult.isOffline);
+          message = res.created ? "Classroom created." : "Classroom ready.";
+        }
+      }
+      if (message === "Creating classroom...") {
+        message = res.error || "Classroom setup did not complete. Please try again.";
+      }
+      render();
+    }
+
+    async function manageTeacherInvitation(action) {
+      if (
+        !IS_MULTI_TEACHER_V2_ENABLED ||
+        !requireTeacher() ||
+        !isPlatformAdmin ||
+        teacherInvitationPending ||
+        (action !== "create" && action !== "revoke")
+      ) {
+        return;
+      }
+
+      const emailInput = document.getElementById("teacherInvitationEmail");
+      const expiryInput = document.getElementById("teacherInvitationExpiryHours");
+      const email = typeof emailInput?.value === "string" ? emailInput.value.trim() : "";
+      const expiresInHours = Number(expiryInput?.value);
+
+      if (!email) {
+        message = "Enter the teacher's Google email address.";
+        render();
+        return;
+      }
+      if (
+        action === "create" &&
+        (!Number.isInteger(expiresInHours) || expiresInHours < 1 || expiresInHours > 168)
+      ) {
+        message = "Choose an invitation expiration between 1 and 168 hours.";
+        render();
+        return;
+      }
+
+      teacherInvitationEmailDraft = email;
+      if (Number.isInteger(expiresInHours)) {
+        teacherInvitationExpiryHours = expiresInHours;
+      }
+      teacherInvitationPending = true;
+      message = action === "create" ? "Creating invitation..." : "Revoking invitation...";
+      render();
+
+      const callAdapter = async (name, payload) => {
+        const callable = httpsCallable(functions, name);
+        return await callable(payload);
+      };
+      const payload = action === "create"
+        ? { email, expiresInHours: teacherInvitationExpiryHours }
+        : { email };
+      const result = await orchestrateTeacherInvitationAdmin(
+        v2TenantSession,
+        callAdapter,
+        action,
+        payload
+      );
+
+      if (result.reason === "stale-epoch-ignored") return;
+
+      teacherInvitationPending = false;
+      if (!result.executed) {
+        message = result.error || "The invitation could not be changed.";
+      } else if (action === "create") {
+        message = result.result.created
+          ? "Invitation created. The teacher can now sign in with Google."
+          : "An active invitation already exists. Its expiration was not changed.";
+      } else if (result.result.status === "not-found") {
+        message = "No invitation was found for that email address.";
+      } else {
+        message = result.result.revoked
+          ? "Invitation revoked."
+          : "The invitation was already revoked.";
+      }
+      render();
+    }
+
+    // The emulator connection may re-initialize the Firebase app under a demo
+    // project ID, so it MUST run before the active project ID is derived and
+    // before TenantSession is constructed. Otherwise V2 cache keys and envelope
+    // validation would be built from the production project ID while the data
+    // came from the emulator.
+    connectPhase2bEmulatorsIfConfigured();
+
+    // Single source of truth for the V2 cache namespace: the project ID of the
+    // Firebase app actually in use. Production/default resolves to
+    // "morgan-bank"; the browser emulator harness resolves to its demo project.
+    const V2_ACTIVE_PROJECT_ID = app.options.projectId;
+    const V2_STUDENT_CLASSROOM_CODE_STORAGE_KEY =
+      `morganBank:v2:${V2_ACTIVE_PROJECT_ID}:student-login:classroom-code:v1`;
+    // The combined locator that supersedes the classroom-code-only key. One
+    // atomic, versioned, project-scoped record instead of two independent keys, so
+    // a returning student's remembered code and login ID can never disagree.
+    const V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY =
+      `morganBank:v2:${V2_ACTIVE_PROJECT_ID}:student-login:locator:v1`;
+
+    studentLoginLocator = readStudentLoginLocator();
+    studentClassroomCodeDraft = studentLoginLocator
+      ? studentLoginLocator.classroomCode
+      : readRememberedStudentClassroomCode();
+
+    const v2TenantSession = new TenantSession({
+      storageAdapter: localStorage,
+      cacheModule: { purgeTenantCache, purgeLegacyCache, buildCacheKey },
+      projectId: V2_ACTIVE_PROJECT_ID,
+      onResetGlobals: resetAllGlobalState,
+      onStateChange: () => render(),
+      authAdapter: { signOut: () => signOut(auth) }
+    });
+
+    // Phase 3 Commit 7: the production V2 data layer. Before this, the client
+    // read both data adapters off global window hooks that only the Item 10
+    // browser harness ever defined, so V2 mode had no data layer at all.
+    // These are constructed unconditionally but only ever invoked on the V2
+    // path, so the default-off build is unaffected.
+    const V2_FIRESTORE_ADAPTERS = { doc, getDoc, collection, getDocs, runTransaction };
+
+    // The last aggregate the server accepted. The saver diffs against it so an
+    // ordinary edit writes only the documents that changed instead of the whole
+    // classroom. Cleared on tenant invalidation with the rest of the view state.
+    let v2LastPersistedData = null;
+
+    const v2LoadTenantData = createTenantDataLoader({
+      db,
+      session: v2TenantSession,
+      firestore: V2_FIRESTORE_ADAPTERS,
+      defaultSettings
+    });
+
+    const v2LoadStudentData = createStudentDataLoader({
+      db,
+      session: v2TenantSession,
+      firestore: V2_FIRESTORE_ADAPTERS,
+      defaultSettings
+    });
+
+    const v2SaveTenantData = createTenantDataSaver({
+      db,
+      session: v2TenantSession,
+      firestore: V2_FIRESTORE_ADAPTERS,
+      previousRef: () => v2LastPersistedData
+    });
+
+    // Keep the default-off build inert: constructing MultiTabInvalidator would
+    // open a real BroadcastChannel even before start() installs listeners.
+    const v2MultiTabInvalidator = IS_MULTI_TEACHER_V2_ENABLED
+      ? new MultiTabInvalidator(v2TenantSession, {
+          storageAdapter: localStorage,
+          windowAdapter: typeof window !== "undefined" ? window : null,
+          onInvalidated: () => render(),
+          // Per-tab quarantine transport. Survives a same-tab refresh, which is
+          // what stops a pre-Auth or sign-out-rejected invalidation from being
+          // lost and letting the old teacher resolve.
+          sessionStorageAdapter: typeof sessionStorage !== "undefined" ? sessionStorage : null,
+          // Ends THIS tab's Firebase Auth session after the cross-tab purge, so
+          // a refresh cannot re-resolve the invalidated teacher. Separate from
+          // authAdapter above because it must not trigger a rebroadcast.
+          localAuthAdapter: {
+            currentUid: () => auth.currentUser?.uid || null,
+            signOut: () => terminateDurableAuthSession({
+              setMemoryPersistence: () => setPersistence(auth, inMemoryPersistence),
+              signOut: () => signOut(auth)
+            })
+          }
+        })
+      : null;
+    v2TenantSession.multiTabInvalidator = v2MultiTabInvalidator;
+
+    if (IS_MULTI_TEACHER_V2_ENABLED) {
+      v2MultiTabInvalidator.start();
+      if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+        window.addEventListener("pagehide", () => v2MultiTabInvalidator.destroy());
+        window.addEventListener("beforeunload", () => v2MultiTabInvalidator.destroy());
+      }
+    }
+
+    let authObservedGeneration = 0;
+
     onAuthStateChanged(auth, async user => {
-      const currentAuthStateVersion = ++authStateVersion;
+      const currentAuthGeneration = ++authObservedGeneration;
+
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        // Synchronously invalidate previous tenant and render blocking state BEFORE token lookup
+        v2TenantSession.invalidate("auth-observer-change", {
+          uid: user?.uid || null,
+          state: user ? SESSION_STATES.AUTHENTICATING : SESSION_STATES.SIGNED_OUT
+        });
+
+        // A cross-tab invalidation may have arrived before this observer ever
+        // established an identity, or its local sign-out may have rejected, or
+        // the tab may have been refreshed in between. Apply the quarantine here,
+        // BEFORE any token lookup or classroom data resolution, so the
+        // invalidated teacher can never be rendered.
+        if (v2MultiTabInvalidator.consumeQuarantineForObservedUid(user?.uid || null)) {
+          render();
+          return;
+        }
+
+        let tokenResult = null;
+        if (user) {
+          try {
+            tokenResult = await user.getIdTokenResult();
+          } catch {
+            tokenResult = { claims: {} };
+          }
+        }
+        if (currentAuthGeneration !== authObservedGeneration) return;
+
+        const callAdapter = async (name, payload) => {
+          const callable = httpsCallable(functions, name);
+          return await callable(payload);
+        };
+        const loadNetworkFn = async () => {
+          const loaded = await v2LoadTenantData({
+            uid: user?.uid,
+            classroomId: v2TenantSession.classroomId
+          });
+          v2LastPersistedData = JSON.parse(JSON.stringify(loaded));
+          return loaded;
+        };
+        // Previously omitted, which made handleAuthTransition fail every V2
+        // student with "student-access-unavailable". A signed-in student reads
+        // exactly their own document; no roster, no history, no credentials.
+        const loadStudentNetworkFn = async (claims) => v2LoadStudentData(claims);
+
+        const res = await handleAuthTransition(v2TenantSession, user, tokenResult, {
+          callAdapter,
+          loadNetworkFn,
+          loadStudentNetworkFn,
+          storageAdapter: localStorage,
+          projectId: v2TenantSession.projectId
+        });
+
+        if (currentAuthGeneration !== authObservedGeneration) return;
+
+        // handleAuthTransition intentionally performs a second tenant
+        // invalidation, which resets all outgoing render state. Apply this
+        // signed-token capability only after that reset has completed so the
+        // current administrator's control is not accidentally erased.
+        isPlatformAdmin = user?.uid === TEACHER_UID || tokenResult?.claims?.platformAdmin === true;
+
+        if (res.executed && res.data) {
+          data = res.data;
+          v2IsOffline = Boolean(res.isOffline);
+        }
+        render();
+        return;
+      }
+
       const isAuthenticatedTeacher = user?.uid === TEACHER_UID;
       isTeacher = false;
       loggedInStudentId = null;
@@ -2916,15 +4588,18 @@ if (screen === "editSettingsLists" && isTeacher) {
 
       if (isAuthenticatedTeacher) {
         const loadedData = await loadData();
-        if (currentAuthStateVersion !== authStateVersion) return;
+        if (currentAuthGeneration !== authObservedGeneration) return;
 
         data = loadedData;
         isTeacher = true;
         screen = "teacher";
         message = "Teacher dashboard unlocked.";
+        void ensureTeacherClassroomProfile(user.uid);
       } else if (user) {
         try {
           const tokenResult = await user.getIdTokenResult();
+          if (currentAuthGeneration !== authObservedGeneration) return;
+
           const { role, classroomId, studentId } = tokenResult.claims;
           const isSecureStudent = role === "student"
             && classroomId === "morgan"
@@ -2939,7 +4614,7 @@ if (screen === "editSettingsLists" && isTeacher) {
           const studentSnapshot = await getDoc(
             doc(db, "classrooms", classroomId, "students", studentId)
           );
-          if (currentAuthStateVersion !== authStateVersion) return;
+          if (currentAuthGeneration !== authObservedGeneration) return;
 
           if (!studentSnapshot.exists()) {
             message = "Your student account is not available. Please see Mr. Morgan.";
@@ -2970,12 +4645,20 @@ window.loginTeacherWithGoogle = loginTeacherWithGoogle;
 window.linkGoogleAccount = linkGoogleAccount;
 window.handleLoginEnter = handleLoginEnter;
 window.loginStudent = loginStudent;
+window.useDifferentStudent = useDifferentStudent;
+window.copyStudentClassroomCode = copyStudentClassroomCode;
+window.toggleProfileNewStudentPinVisibility = toggleProfileNewStudentPinVisibility;
+window.copyProfileNewStudentPin = copyProfileNewStudentPin;
+window.copyTemporaryProfileStudentPin = copyTemporaryProfileStudentPin;
+window.dismissTemporaryProfileStudentPin = dismissTemporaryProfileStudentPin;
 window.openStudentAuthLogs = openStudentAuthLogs;
 window.setScreen = setScreen;
 window.viewStudentProfile = viewStudentProfile;
 window.resetProfileStudentPin = resetProfileStudentPin;
 window.activateStudent = activateStudent;
 window.bulkActivateStudents = bulkActivateStudents;
+window.submitV2Onboarding = submitV2Onboarding;
+window.manageTeacherInvitation = manageTeacherInvitation;
 window.render = render;
 window.addStudent = addStudent;
 window.removeStudent = removeStudent;

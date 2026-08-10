@@ -1,0 +1,424 @@
+// Baseline tests for the CURRENT checked-in (v1.1) firestore.rules.
+//
+// These tests intentionally exercise today's authorization model exactly as
+// checked in — a single hardcoded teacher UID and a flat, non-classroom-scoped
+// studentAuthLogs collection — so that any future rules change (Phase 2+)
+// can be diffed against a known-good baseline. Nothing here changes rules
+// behavior; it only pins it down with automated coverage that didn't exist
+// before.
+//
+// Run via `npm run test:rules` from the repo root, which wraps the
+// Firestore emulator (`firebase emulators:exec`) around `node --test`.
+
+import { readFileSync } from 'node:fs'
+import { after, before, describe, test } from 'node:test'
+
+import {
+  assertFails,
+  assertSucceeds,
+  initializeTestEnvironment,
+} from '@firebase/rules-unit-testing'
+
+const TEACHER_UID = 'YkYUzIzy0aW7roolM1VaLcIJPuN2'
+const OTHER_AUTHENTICATED_UID = 'some-other-authenticated-uid'
+const CLASSROOM_ID = 'morgan'
+const STUDENT_ID = '1'
+const OTHER_STUDENT_ID = '2'
+const OTHER_CLASSROOM_ID = 'other-classroom'
+const GENERATED_CLASSROOM_ID = 'phase1-generated-classroom'
+
+let testEnv
+
+before(async () => {
+  testEnv = await initializeTestEnvironment({
+    projectId: 'morgan-bank-rules-test',
+    firestore: {
+      rules: readFileSync('firestore.rules', 'utf8'),
+      host: '127.0.0.1',
+      port: 8080,
+    },
+  })
+})
+
+after(async () => {
+  await testEnv?.cleanup()
+})
+
+async function seedBaselineData() {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore()
+    await db.doc('morganBank/classroomData').set({
+      students: [{ id: STUDENT_ID, name: 'Test Student', balance: 10 }],
+      transactions: [],
+      loginHistory: [],
+      settings: {},
+    })
+    await db
+      .doc(`classrooms/${CLASSROOM_ID}/students/${STUDENT_ID}`)
+      .set({ id: STUDENT_ID, name: 'Test Student', balance: 10, frozen: false, transactions: [] })
+    await db
+      .doc(`classrooms/${CLASSROOM_ID}/students/${OTHER_STUDENT_ID}`)
+      .set({ id: OTHER_STUDENT_ID, name: 'Other Student', balance: 5, frozen: false, transactions: [] })
+    await db
+      .doc(`classrooms/${OTHER_CLASSROOM_ID}/students/${STUDENT_ID}`)
+      .set({ id: STUDENT_ID, name: 'Different Classroom Student', balance: 0, frozen: false, transactions: [] })
+    await db.doc('studentAuthLogs/log-1').set({
+      loginId: 'test-student',
+      success: true,
+      timestamp: Date.now(),
+    })
+    await db.doc('studentCredentials/test-student').set({
+      schemaVersion: 1,
+      authUid: 'student-auth-uid',
+      classroomId: CLASSROOM_ID,
+      studentId: STUDENT_ID,
+      pinHash: 'not-a-real-hash',
+      active: true,
+      failedAttempts: 0,
+      lockedUntil: null,
+    })
+    await db.doc(`teachers/${TEACHER_UID}`).set({
+      uid: TEACHER_UID,
+      classroomId: GENERATED_CLASSROOM_ID,
+      status: 'active',
+    })
+    await db.doc(`classrooms/${GENERATED_CLASSROOM_ID}`).set({
+      ownerUid: TEACHER_UID,
+      name: 'Phase 1 Classroom',
+      version: 1,
+      settings: {},
+    })
+  })
+}
+
+test('seed baseline fixture data (bypassing rules)', seedBaselineData)
+
+describe('Teacher (existing hardcoded TEACHER_UID)', () => {
+  test('can read morganBank/classroomData', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertSucceeds(db.doc('morganBank/classroomData').get())
+  })
+
+  test('can write morganBank/classroomData', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertSucceeds(
+      db.doc('morganBank/classroomData').set(
+        { students: [], transactions: [], loginHistory: [], settings: {} },
+        { merge: true },
+      ),
+    )
+  })
+
+  test('can read the classroom student mirror document', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertSucceeds(
+      db.doc(`classrooms/${CLASSROOM_ID}/students/${STUDENT_ID}`).get(),
+    )
+  })
+
+  test('can write the classroom student mirror document', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertSucceeds(
+      db
+        .doc(`classrooms/${CLASSROOM_ID}/students/${STUDENT_ID}`)
+        .set({ id: STUDENT_ID, name: 'Test Student', balance: 15, frozen: false, transactions: [] }),
+    )
+  })
+
+  test('can read studentAuthLogs', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertSucceeds(db.doc('studentAuthLogs/log-1').get())
+  })
+
+  // KNOWN EXPOSURE, pinned deliberately rather than left as an assumption.
+  //
+  // The teacher-visible PIN directory at classrooms/{id}/studentPins/{studentId}
+  // relies on Firestore's default deny to stay server-only. That holds under the
+  // three Phase 3 rulesets, which enumerate their classroom subcollections. It
+  // does NOT hold here: this legacy ruleset has a recursive
+  // match /classrooms/{document=**} granting the hard-coded teacher UID read and
+  // write beneath /classrooms, which reaches the directory.
+  //
+  // An explicit `allow read, write: if false` would NOT close it — Firestore
+  // rules are a permissive union, so any matching allow wins and a narrower deny
+  // is ignored. Closing it means narrowing the recursive legacy rule, a change to
+  // the live V1 ruleset that is out of scope for the PIN feature.
+  //
+  // The operative control is release ordering (brief decision 8: final rules
+  // deploy before the V2 server gate), so no document can exist here while this
+  // ruleset is live. These assertions state the current truth so that narrowing
+  // the recursive rule later fails loudly and forces the dependency to be
+  // rechecked — including the comment in functions/phase3/studentPinDirectory.js.
+  test('legacy recursive classrooms rule still reaches the V2 student PIN directory', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertSucceeds(db.doc(`classrooms/${CLASSROOM_ID}/studentPins/${STUDENT_ID}`).get())
+    // The write side is the more damaging half: it could make a displayed PIN
+    // disagree with the bcrypt hash that actually authenticates.
+    await assertSucceeds(
+      db
+        .doc(`classrooms/${CLASSROOM_ID}/studentPins/${STUDENT_ID}`)
+        .set({ studentId: STUDENT_ID, pin: '0000', updatedAt: 1 }),
+    )
+  })
+
+  test('no other identity reaches the V2 student PIN directory under the legacy ruleset', async () => {
+    // The exposure above is scoped to the one hard-coded teacher UID. Confirm it
+    // does not extend to students, other authenticated users, or anonymous callers.
+    for (const db of [
+      testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore(),
+      testEnv.unauthenticatedContext().firestore(),
+    ]) {
+      await assertFails(db.doc(`classrooms/${CLASSROOM_ID}/studentPins/${STUDENT_ID}`).get())
+      await assertFails(
+        db.doc(`classrooms/${CLASSROOM_ID}/studentPins/${STUDENT_ID}`).set({ pin: '9999' }),
+      )
+    }
+  })
+
+  test('cannot read the Phase 1 teacher document', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertFails(db.doc(`teachers/${TEACHER_UID}`).get())
+  })
+
+  test('cannot write the Phase 1 teacher document', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertFails(
+      db.doc(`teachers/${TEACHER_UID}`).set({ status: 'active' }, { merge: true }),
+    )
+  })
+
+  test('can read the generated Phase 1 classroom root', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertSucceeds(db.doc(`classrooms/${GENERATED_CLASSROOM_ID}`).get())
+  })
+
+  test('can write the generated Phase 1 classroom root', async () => {
+    const db = testEnv.authenticatedContext(TEACHER_UID).firestore()
+    await assertSucceeds(
+      db.doc(`classrooms/${GENERATED_CLASSROOM_ID}`).set(
+        { settings: { currencyName: 'Class Cash' } },
+        { merge: true },
+      ),
+    )
+  })
+})
+
+describe('Unauthorized authenticated user (not the teacher, not a student token)', () => {
+  test('cannot read morganBank/classroomData', async () => {
+    const db = testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore()
+    await assertFails(db.doc('morganBank/classroomData').get())
+  })
+
+  test('cannot write morganBank/classroomData', async () => {
+    const db = testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore()
+    await assertFails(
+      db.doc('morganBank/classroomData').set({ students: [] }, { merge: true }),
+    )
+  })
+
+  test('cannot read classrooms data', async () => {
+    const db = testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore()
+    await assertFails(
+      db.doc(`classrooms/${CLASSROOM_ID}/students/${STUDENT_ID}`).get(),
+    )
+  })
+
+  test('cannot write classrooms data', async () => {
+    const db = testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore()
+    await assertFails(
+      db
+        .doc(`classrooms/${CLASSROOM_ID}/students/${STUDENT_ID}`)
+        .set({ id: STUDENT_ID, name: 'Hacked', balance: 999999, frozen: false, transactions: [] }),
+    )
+  })
+
+  test('cannot read studentAuthLogs', async () => {
+    const db = testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore()
+    await assertFails(db.doc('studentAuthLogs/log-1').get())
+  })
+
+  test('cannot read studentCredentials', async () => {
+    const db = testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore()
+    await assertFails(db.doc('studentCredentials/test-student').get())
+  })
+
+  test('cannot read or write the Phase 1 teacher document', async () => {
+    const db = testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore()
+    const teacher = db.doc(`teachers/${TEACHER_UID}`)
+    await assertFails(teacher.get())
+    await assertFails(teacher.set({ status: 'active' }, { merge: true }))
+  })
+
+  test('cannot read or write the generated Phase 1 classroom root', async () => {
+    const db = testEnv.authenticatedContext(OTHER_AUTHENTICATED_UID).firestore()
+    const classroom = db.doc(`classrooms/${GENERATED_CLASSROOM_ID}`)
+    await assertFails(classroom.get())
+    await assertFails(classroom.set({ settings: {} }, { merge: true }))
+  })
+})
+
+describe('Student (custom-token claims: role/classroomId/studentId)', () => {
+  function studentContext(uid, claims) {
+    return testEnv.authenticatedContext(uid, claims).firestore()
+  }
+
+  test('can read only their own student document when claims match', async () => {
+    const db = studentContext('student-auth-uid', {
+      role: 'student',
+      classroomId: CLASSROOM_ID,
+      studentId: STUDENT_ID,
+    })
+    await assertSucceeds(
+      db.doc(`classrooms/${CLASSROOM_ID}/students/${STUDENT_ID}`).get(),
+    )
+  })
+
+  test('cannot read another student\'s document in the same classroom', async () => {
+    const db = studentContext('student-auth-uid', {
+      role: 'student',
+      classroomId: CLASSROOM_ID,
+      studentId: STUDENT_ID,
+    })
+    await assertFails(
+      db.doc(`classrooms/${CLASSROOM_ID}/students/${OTHER_STUDENT_ID}`).get(),
+    )
+  })
+
+  test('cannot read a same-numbered student document in another classroom', async () => {
+    const db = studentContext('student-auth-uid', {
+      role: 'student',
+      classroomId: CLASSROOM_ID,
+      studentId: STUDENT_ID,
+    })
+    await assertFails(
+      db.doc(`classrooms/${OTHER_CLASSROOM_ID}/students/${STUDENT_ID}`).get(),
+    )
+  })
+
+  test('cannot write their own student profile document', async () => {
+    const db = studentContext('student-auth-uid', {
+      role: 'student',
+      classroomId: CLASSROOM_ID,
+      studentId: STUDENT_ID,
+    })
+    await assertFails(
+      db
+        .doc(`classrooms/${CLASSROOM_ID}/students/${STUDENT_ID}`)
+        .set({ id: STUDENT_ID, name: 'Test Student', balance: 999999, frozen: false, transactions: [] }),
+    )
+  })
+
+  test('cannot read teacher-only classroom-level data', async () => {
+    const db = studentContext('student-auth-uid', {
+      role: 'student',
+      classroomId: CLASSROOM_ID,
+      studentId: STUDENT_ID,
+    })
+    // The classroom document itself (parent of the students subcollection)
+    // is only readable by isTeacher() under current rules.
+    await assertFails(db.doc(`classrooms/${CLASSROOM_ID}`).get())
+  })
+
+  test('cannot read morganBank/classroomData', async () => {
+    const db = studentContext('student-auth-uid', {
+      role: 'student',
+      classroomId: CLASSROOM_ID,
+      studentId: STUDENT_ID,
+    })
+    await assertFails(db.doc('morganBank/classroomData').get())
+  })
+
+  test('cannot read studentAuthLogs', async () => {
+    const db = studentContext('student-auth-uid', {
+      role: 'student',
+      classroomId: CLASSROOM_ID,
+      studentId: STUDENT_ID,
+    })
+    await assertFails(db.doc('studentAuthLogs/log-1').get())
+  })
+
+  test('cannot read studentCredentials', async () => {
+    const db = studentContext('student-auth-uid', {
+      role: 'student',
+      classroomId: CLASSROOM_ID,
+      studentId: STUDENT_ID,
+    })
+    await assertFails(db.doc('studentCredentials/test-student').get())
+  })
+
+  test('cannot read or write the Phase 1 teacher document', async () => {
+    const db = studentContext('student-auth-uid', {
+      role: 'student',
+      classroomId: GENERATED_CLASSROOM_ID,
+      studentId: STUDENT_ID,
+    })
+    const teacher = db.doc(`teachers/${TEACHER_UID}`)
+    await assertFails(teacher.get())
+    await assertFails(teacher.set({ status: 'active' }, { merge: true }))
+  })
+
+  test('cannot read or write the generated Phase 1 classroom root', async () => {
+    const db = studentContext('student-auth-uid', {
+      role: 'student',
+      classroomId: GENERATED_CLASSROOM_ID,
+      studentId: STUDENT_ID,
+    })
+    const classroom = db.doc(`classrooms/${GENERATED_CLASSROOM_ID}`)
+    await assertFails(classroom.get())
+    await assertFails(classroom.set({ settings: {} }, { merge: true }))
+  })
+})
+
+describe('Unauthenticated user', () => {
+  test('cannot read morganBank/classroomData', async () => {
+    const db = testEnv.unauthenticatedContext().firestore()
+    await assertFails(db.doc('morganBank/classroomData').get())
+  })
+
+  test('cannot write morganBank/classroomData', async () => {
+    const db = testEnv.unauthenticatedContext().firestore()
+    await assertFails(
+      db.doc('morganBank/classroomData').set({ students: [] }, { merge: true }),
+    )
+  })
+
+  test('cannot read classrooms data', async () => {
+    const db = testEnv.unauthenticatedContext().firestore()
+    await assertFails(
+      db.doc(`classrooms/${CLASSROOM_ID}/students/${STUDENT_ID}`).get(),
+    )
+  })
+
+  test('cannot write classrooms data', async () => {
+    const db = testEnv.unauthenticatedContext().firestore()
+    await assertFails(
+      db
+        .doc(`classrooms/${CLASSROOM_ID}/students/${STUDENT_ID}`)
+        .set({ id: STUDENT_ID, name: 'Hacked', balance: 999999, frozen: false, transactions: [] }),
+    )
+  })
+
+  test('cannot read studentAuthLogs', async () => {
+    const db = testEnv.unauthenticatedContext().firestore()
+    await assertFails(db.doc('studentAuthLogs/log-1').get())
+  })
+
+  test('cannot read studentCredentials', async () => {
+    const db = testEnv.unauthenticatedContext().firestore()
+    await assertFails(db.doc('studentCredentials/test-student').get())
+  })
+
+  test('cannot read or write the Phase 1 teacher document', async () => {
+    const db = testEnv.unauthenticatedContext().firestore()
+    const teacher = db.doc(`teachers/${TEACHER_UID}`)
+    await assertFails(teacher.get())
+    await assertFails(teacher.set({ status: 'active' }, { merge: true }))
+  })
+
+  test('cannot read or write the generated Phase 1 classroom root', async () => {
+    const db = testEnv.unauthenticatedContext().firestore()
+    const classroom = db.doc(`classrooms/${GENERATED_CLASSROOM_ID}`)
+    await assertFails(classroom.get())
+    await assertFails(classroom.set({ settings: {} }, { merge: true }))
+  })
+})

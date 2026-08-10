@@ -2,31 +2,35 @@
 
 ## Purpose
 
-Grok is the repository's independent third reviewer when an additional review
-is useful. Grok review is intentionally manual: there is no GitHub Actions
-reviewer, no unattended model invocation, and no repository-stored xAI or model
-API credential.
+Grok is the repository's final independent 5,000-foot reviewer after the Codex
+implementation and Claude detailed-review cycle closes. Grok review is
+intentionally manual: there is no GitHub Actions reviewer, no unattended model
+invocation, and no repository-stored xAI or model API credential.
 
 The normal handoff is:
 
-1. Codex identifies the narrow commit or commit range that needs review.
-2. Codex gives Andrew a complete copy/paste prompt using the template below.
-3. Andrew pastes the prompt into the Grok app, where Grok may use Andrew's
+1. Codex implements and self-verifies the approved item.
+2. Claude performs the required detailed technical review, and Codex and Claude
+   close any focused correction cycle.
+3. Codex identifies the bounded, Claude-reviewed range for final review.
+4. Codex gives Andrew a complete copy/paste prompt using the template below.
+5. Andrew pastes the prompt into the Grok app, where Grok may use Andrew's
    authenticated GitHub connector to read the repository.
-4. Andrew returns Grok's complete response to Codex.
-5. Codex validates each finding against the actual repository and relevant
+6. Andrew returns Grok's complete response to Codex.
+7. Codex validates each finding against the actual repository and relevant
    tests. A model verdict is evidence to investigate, not authority to change
    code.
-6. Codex explains accepted and rejected findings and obtains Andrew's
+8. Codex explains accepted and rejected findings and obtains Andrew's
    confirmation before editing, committing, pushing, merging, deploying, or
    changing external state.
 
 ## When to request Grok review
 
-Use a Grok handoff for:
+After Claude's detailed review closes, use a Grok handoff for:
 
 - a material implementation item that has reached review quality;
-- a focused correction delta after a concrete finding;
+- a focused correction delta after Codex corrects a concrete finding and
+  Claude completes detailed delta review;
 - authentication, authorization, tenant-isolation, credentials, Firestore
   rules, migration, reconciliation, destructive-write, rollback, or release
   gate changes;
@@ -73,9 +77,10 @@ Every handoff must name:
 - forbidden actions; and
 - required verdict and finding format.
 
-For a correction, review the correction delta plus only the affected
-integration points. Reopen a cumulative review only if the correction changes
-architecture or reveals that the prior boundary was wrong.
+For a correction, Grok reviews the Claude-cleared correction delta plus only the
+affected high-level integration boundary. Reopen a cumulative review only if
+the correction changes architecture or reveals that the prior boundary was
+wrong.
 
 ## Copy/paste template
 
@@ -152,7 +157,9 @@ including the verdict, findings, and evidence. Codex then:
 3. rejects speculative or out-of-scope findings with concrete evidence;
 4. proposes the smallest correction for accepted findings;
 5. asks Andrew to confirm before making changes; and
-6. records the final disposition and verification results in the handoff or PR.
+6. sends the completed correction through Claude's detailed delta review;
+7. returns the affected high-level boundary to Grok when needed; and
+8. records the final disposition and verification results in the handoff or PR.
 
 Do not rerun an unchanged review merely to seek a different verdict. Narrow or
 clarify the handoff only when the first response missed the requested scope or

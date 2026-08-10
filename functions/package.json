@@ -9,10 +9,7 @@
   "scripts": {
     "lint": "eslint .",
     "test": "node --test",
-    "seed:test-student": "node scripts/seedTestStudent.js",
-    "serve": "firebase emulators:start --only functions",
-    "deploy": "firebase deploy --only functions",
-    "logs": "firebase functions:log"
+    "seed:test-student": "node scripts/seedTestStudent.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

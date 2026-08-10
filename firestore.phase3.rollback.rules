@@ -1,0 +1,98 @@
+rules_version = '2';
+
+// PHASE 3 ROLLBACK-SAFE RULES — CANDIDATE DEPLOYMENT ARTIFACT, NOT CURRENT
+// RULES.
+//
+// Installed only after the recorded default-off Hosting artifact is restored
+// and the V2 server gate is disabled. It restores the narrow legacy browser
+// contract without ever restoring the recursive classrooms/** baseline that
+// would expose scoped credentials left in Firestore.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isLegacyTeacher() {
+      return isSignedIn()
+        && request.auth.uid == "YkYUzIzy0aW7roolM1VaLcIJPuN2";
+    }
+
+    function isLegacyStudent(studentId) {
+      return isSignedIn()
+        && request.auth.token.role == "student"
+        && request.auth.token.classroomId == "morgan"
+        && request.auth.token.studentId == studentId;
+    }
+
+    // Ownership records remain server-managed and unused by the default-off
+    // client. Rollback never grants a browser control over them.
+    match /teachers/{teacherUid} {
+      allow read, write: if false;
+    }
+
+    match /classrooms/{classroomId} {
+      allow read, write: if false;
+
+      match /students/{studentId} {
+        allow read, write: if false;
+      }
+
+      match /transactions/{transactionId} {
+        allow read, write: if false;
+      }
+
+      match /loginHistory/{entryId} {
+        allow read, write: if false;
+      }
+
+      // Scoped credentials remain after migration and are always server-only.
+      match /studentCredentials/{loginId} {
+        allow read, write: if false;
+      }
+    }
+
+    // The default-off teacher profile screen performs one exact read of the
+    // legacy mirror. Legacy student tokens retain only exact self-read.
+    match /classrooms/morgan/students/{studentId} {
+      allow get: if isLegacyTeacher() || isLegacyStudent(studentId);
+      allow list, create, update, delete: if false;
+    }
+
+    // Scoped V2 authentication logs are retained but not exposed by the
+    // default-off client. The flat shape below is the only rollback read path.
+    match /studentAuthLogs/{classroomId}/logs/{logId} {
+      allow read, write: if false;
+    }
+
+    match /studentAuthLogs/{logId} {
+      allow get, list: if isLegacyTeacher();
+      allow create, update, delete: if false;
+    }
+
+    match /studentCredentials/{loginId} {
+      allow read, write: if false;
+    }
+
+    match /teacherInvitations/{inviteId} {
+      allow read, write: if false;
+    }
+
+    match /classroomLoginCodes/{codeId} {
+      allow read, write: if false;
+    }
+
+    match /studentLoginThrottle/{throttleId} {
+      allow read, write: if false;
+    }
+
+    match /studentAuthUnresolvedLogs/{logId} {
+      allow read, write: if false;
+    }
+
+    match /morganBank/{document=**} {
+      allow read, write: if isLegacyTeacher();
+    }
+  }
+}

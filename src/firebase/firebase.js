@@ -1,21 +1,104 @@
 import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
-import { getFunctions } from "firebase/functions";
+import { getAuth, connectAuthEmulator } from "firebase/auth";
+import { getFirestore, initializeFirestore, connectFirestoreEmulator } from "firebase/firestore";
+import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
+import { resolveFirebaseBuildConfiguration } from "./firebaseConfig.js";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyC-96VLdKfwtQ-WaFT6BA2q1WLnk8hDe1A",
-  authDomain: "morgan-bank.firebaseapp.com",
-  projectId: "morgan-bank",
-  storageBucket: "morgan-bank.firebasestorage.app",
-  messagingSenderId: "242031426628",
-  appId: "1:242031426628:web:5caa4640a7eb7e3576d011",
-  measurementId: "G-FG1ZHTHF7G"
-};
+const firebaseBuildEnvironment = import.meta.env || {};
+const resolvedFirebaseBuild = resolveFirebaseBuildConfiguration(firebaseBuildEnvironment);
+const firebaseConfig = resolvedFirebaseBuild.firebaseConfig;
 
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const functions = getFunctions(app);
+export const firebaseDeploymentTier = resolvedFirebaseBuild.tier;
+export const isStagingDeployment = resolvedFirebaseBuild.isStaging;
 
-export { auth, db, functions };
+if (isStagingDeployment && typeof document !== "undefined") {
+  const stagingDeploymentBanner = document.getElementById("stagingDeploymentBanner");
+  if (!stagingDeploymentBanner) {
+    throw new Error("The staging deployment warning is missing.");
+  }
+  stagingDeploymentBanner.hidden = false;
+}
+
+let app = initializeApp(firebaseConfig);
+let auth = getAuth(app);
+let db = getFirestore(app);
+let functions = getFunctions(app);
+let isEmulatorConnected = false;
+let connectedEmulatorConfig = null;
+
+export function isPortValid(port) {
+  if (typeof port !== "number" || !Number.isInteger(port)) return false;
+  return port > 0 && port <= 65535;
+}
+
+export function connectPhase2bEmulatorsIfConfigured(testConfig = null) {
+  const config = testConfig || (typeof window !== "undefined" && window.PHASE2B_EMULATOR_TEST_CONFIG);
+  if (!config || !config.enabled) return { connected: false, reason: "disabled" };
+
+  const projectId = config.projectId || "";
+  if (!projectId || typeof projectId !== "string" || !projectId.startsWith("demo-")) {
+    throw new Error("Emulator connection requires an explicit demo- project ID.");
+  }
+
+  const host = config.host || "";
+  if (host !== "127.0.0.1" && host !== "localhost") {
+    throw new Error("Emulator connection must use loopback host.");
+  }
+
+  if (!isPortValid(config.authPort)) {
+    throw new Error(`Invalid Auth emulator port: ${config.authPort}`);
+  }
+  if (!isPortValid(config.firestorePort)) {
+    throw new Error(`Invalid Firestore emulator port: ${config.firestorePort}`);
+  }
+  if (!isPortValid(config.functionsPort)) {
+    throw new Error(`Invalid Functions emulator port: ${config.functionsPort}`);
+  }
+  if (config.forceLongPolling !== undefined && typeof config.forceLongPolling !== "boolean") {
+    throw new Error("Emulator forceLongPolling must be a boolean when provided.");
+  }
+
+  const forceLongPolling = config.forceLongPolling === true;
+
+  if (isEmulatorConnected) {
+    if (
+      connectedEmulatorConfig.projectId !== projectId ||
+      connectedEmulatorConfig.host !== host ||
+      connectedEmulatorConfig.authPort !== config.authPort ||
+      connectedEmulatorConfig.firestorePort !== config.firestorePort ||
+      connectedEmulatorConfig.functionsPort !== config.functionsPort ||
+      connectedEmulatorConfig.forceLongPolling !== forceLongPolling
+    ) {
+      throw new Error("Conflicting emulator configuration.");
+    }
+    return { connected: true, reason: "already-connected", app, auth, db, functions };
+  }
+
+  if (app.options.projectId !== projectId) {
+    const demoConfig = { ...firebaseConfig, projectId };
+    app = initializeApp(demoConfig, "phase2b-emulator-app");
+    auth = getAuth(app);
+    db = forceLongPolling
+      ? initializeFirestore(app, { experimentalForceLongPolling: true })
+      : getFirestore(app);
+    functions = getFunctions(app);
+  }
+
+  connectAuthEmulator(auth, `http://${host}:${config.authPort}`, { disableWarnings: true });
+  connectFirestoreEmulator(db, host, config.firestorePort);
+  connectFunctionsEmulator(functions, host, config.functionsPort);
+
+  isEmulatorConnected = true;
+  connectedEmulatorConfig = {
+    projectId,
+    host,
+    authPort: config.authPort,
+    firestorePort: config.firestorePort,
+    functionsPort: config.functionsPort,
+    forceLongPolling
+  };
+
+  return { connected: true, app, auth, db, functions };
+}
+
+export { app, auth, db, functions };

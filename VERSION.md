@@ -23,7 +23,7 @@ Released: July 2026
 - Transaction history
 - CSV export
 - Student credential management
-- PIN hashing and lockout protection
+- PIN hashing and layered login throttling
 - Security audit completed
 - Production deployment completed
 

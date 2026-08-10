@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
+/.firebase/
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +23,12 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+functions/phase2/.state/
+functions/phase3/.state/
+
+# Playwright (Item 10 browser isolation suite)
+test-results
+playwright-report
+blob-report
+playwright/.cache

@@ -1,0 +1,127 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { expect, test } from "@playwright/test";
+import { initializeTestEnvironment } from "@firebase/rules-unit-testing";
+
+const GATE_OFF_PROJECT_ID = "demo-morgan-bank-phase2b-server-off-test";
+const EMULATOR_HOST = "127.0.0.1";
+const AUTH_PORT = 9099;
+const FIRESTORE_PORT = 8080;
+const LOGIN_ID = "legacy-browser-student";
+const PIN = "2468";
+const AUTH_UID = "legacy-browser-auth-uid";
+const STUDENT_ID = "legacy-browser-student-id";
+const STUDENT_NAME = "Legacy Browser Student";
+
+const functionsRequire = createRequire(
+  new URL("../../functions/package.json", import.meta.url)
+);
+const bcrypt = functionsRequire("bcryptjs");
+
+test.skip(
+  process.env.PHASE2B_BROWSER_GATE_MODE !== "off",
+  "Runs only through the isolated gate-off student-persistence command."
+);
+
+let testEnv = null;
+
+test.beforeAll(async () => {
+  testEnv = await initializeTestEnvironment({
+    projectId: GATE_OFF_PROJECT_ID,
+    firestore: {
+      rules: readFileSync("firestore.phase2b.proposed.rules", "utf8"),
+      host: EMULATOR_HOST,
+      port: FIRESTORE_PORT
+    }
+  });
+  await testEnv.clearFirestore();
+  await fetch(
+    `http://${EMULATOR_HOST}:${AUTH_PORT}/emulator/v1/projects/${GATE_OFF_PROJECT_ID}/accounts`,
+    { method: "DELETE" }
+  );
+
+  const pinHash = await bcrypt.hash(PIN, 4);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.doc(`studentCredentials/${LOGIN_ID}`).set({
+      schemaVersion: 1,
+      loginId: LOGIN_ID,
+      pinHash,
+      authUid: AUTH_UID,
+      classroomId: "morgan",
+      studentId: STUDENT_ID,
+      active: true,
+      failedAttempts: 0,
+      lockedUntil: null
+    });
+    await db.doc(`classrooms/morgan/students/${STUDENT_ID}`).set({
+      id: STUDENT_ID,
+      name: STUDENT_NAME,
+      balance: 8,
+      frozen: false,
+      transactions: []
+    });
+  });
+});
+
+test.afterAll(async () => {
+  await testEnv?.cleanup();
+  testEnv = null;
+});
+
+async function gotoReadyApp(page) {
+  await page.goto("/");
+  await expect
+    .poll(() => page.evaluate(() => ({
+      appReady: typeof window.loginStudent === "function",
+      harnessReady: window.__PHASE2B_TEST__?.ready === true,
+      projectId: window.__PHASE2B_TEST__?.projectId?.() || null
+    })))
+    .toEqual({
+      appReady: true,
+      harnessReady: true,
+      projectId: GATE_OFF_PROJECT_ID
+    });
+}
+
+test("the real default-off student form stays session-only after its tab closes", async ({ context }) => {
+  const initialPage = await context.newPage();
+  await gotoReadyApp(initialPage);
+
+  await initialPage.getByRole("button", { name: "Student Login", exact: true }).click();
+  await expect(initialPage.locator("#studentClassroomCode")).toHaveCount(0);
+  await initialPage.locator("#studentLoginId").fill(LOGIN_ID);
+  await initialPage.locator("#studentPin").fill(PIN);
+  await initialPage.getByRole("button", { name: "Login as Student", exact: true }).click();
+
+  await expect
+    .poll(() => initialPage.evaluate(() => window.__PHASE2B_TEST__?.currentUid?.() || null))
+    .toBe(AUTH_UID);
+  await expect(
+    initialPage.getByRole("heading", { name: `${STUDENT_NAME}'s Account`, exact: true })
+  ).toBeVisible();
+
+  // The remembered-student convenience is V2-only. A default-off login must persist
+  // no login preference at all: no classroom code, and no login ID.
+  expect(
+    await initialPage.evaluate(() =>
+      Object.keys(localStorage).filter(key => key.includes(":student-login:")))
+  ).toEqual([]);
+  expect(
+    await initialPage.evaluate(() =>
+      Object.keys(localStorage).map(key => localStorage.getItem(key)).join("\n"))
+  ).not.toContain(LOGIN_ID);
+
+  await initialPage.close();
+
+  const reopenedPage = await context.newPage();
+  await gotoReadyApp(reopenedPage);
+  await expect
+    .poll(() => reopenedPage.evaluate(() => window.__PHASE2B_TEST__?.currentUid?.() || null))
+    .toBeNull();
+  await expect(reopenedPage.getByRole("button", { name: "Continue with Google" })).toBeVisible();
+  await expect(
+    reopenedPage.getByRole("heading", { name: `${STUDENT_NAME}'s Account`, exact: true })
+  ).toHaveCount(0);
+  await reopenedPage.close();
+});
