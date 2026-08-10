@@ -2322,13 +2322,18 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.notEqual(logoutStart, -1, "logout must remain present");
     assert.notEqual(logoutEnd, -1, "logout must have a bounded source block");
     const logoutBlock = source.slice(logoutStart, logoutEnd);
-    const quarantineAt = logoutBlock.indexOf("v2MultiTabInvalidator.quarantineUid(");
+    const quarantineAt = logoutBlock.indexOf("const logoutQuarantineInstalled = v2MultiTabInvalidator.quarantineUid(");
     const orchestrateAt = logoutBlock.indexOf("orchestrateProductionLogout(");
 
     assert.ok(quarantineAt >= 0, "V2 logout must durably quarantine the active UID");
     assert.ok(
       quarantineAt < orchestrateAt,
       "quarantine must be recorded before cleanup or Firebase sign-out can fail"
+    );
+    assert.match(
+      logoutBlock,
+      /result\.warning[\s\S]*logoutQuarantineInstalled[\s\S]*could not preserve its logout guard/,
+      "a combined quarantine-write and Firebase-termination failure must be reported explicitly"
     );
   });
 

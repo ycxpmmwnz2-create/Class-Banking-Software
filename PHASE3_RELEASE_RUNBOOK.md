@@ -506,6 +506,14 @@ fresh teacher foundation before claiming containment. Once real students or
 independent teachers exist, this rollback is insufficient and a newly reviewed
 continuity and containment plan is required before rollout.
 
+Separately, a future break-glass recovery that explicitly deploys the
+checksum-pinned rollback rules is not the clean-start rollback above and needs
+its own authorization and review. Deploying the checksum-pinned rollback rules
+does not immediately invalidate an already-issued student ID token. Refresh
+token revocation prevents renewal, but the rollback rules can retain exact
+student self-read until natural token expiry. Treat those student sessions as
+live until expiry rather than assuming that a PIN reset alone contains them.
+
 ## Evidence record
 
 Use an append-only operator record with monotonically increasing sequence,

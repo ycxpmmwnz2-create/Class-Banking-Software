@@ -1134,6 +1134,30 @@ describe("TenantCache Module Specifications", () => {
     assert.equal(readPendingInvalidation(quarantine), null);
   });
 
+  test("an explicit logout reports when its durable quarantine could not be stored", () => {
+    const storage = createMockStorage();
+    const quarantine = {
+      getItem: () => null,
+      setItem: () => { throw new Error("session storage unavailable"); },
+      removeItem: () => {}
+    };
+    const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      sessionStorageAdapter: quarantine,
+      localAuthAdapter: { signOut: () => Promise.reject(new Error("network down")) }
+    });
+
+    assert.equal(
+      invalidator.quarantineUid("teacher_a"),
+      false,
+      "the caller must not be told a durable quarantine exists when storage rejected it"
+    );
+    assert.equal(readPendingInvalidation(quarantine), null);
+  });
+
   test("the quarantine is cleared only once the Auth observer confirms a signed-out state", () => {
     const storage = createMockStorage();
     const quarantine = createMockStorage();

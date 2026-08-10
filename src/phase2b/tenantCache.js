@@ -325,11 +325,13 @@ export function readPendingInvalidation(sessionStorageAdapter) {
 }
 
 export function writePendingInvalidation(sessionStorageAdapter, entry) {
-  if (!sessionStorageAdapter || typeof sessionStorageAdapter.setItem !== "function") return;
+  if (!sessionStorageAdapter || typeof sessionStorageAdapter.setItem !== "function") return false;
   try {
     sessionStorageAdapter.setItem(PENDING_INVALIDATION_KEY, JSON.stringify(entry));
+    return true;
   } catch (err) {
     console.error("Pending invalidation quarantine write failed:", err);
+    return false;
   }
 }
 
@@ -338,19 +340,21 @@ export function writePendingInvalidation(sessionStorageAdapter, entry) {
 // fallback cannot grow the set. Once generic, the quarantine stays generic —
 // it already blocks everything, so a digest adds nothing.
 export function addPendingDigest(sessionStorageAdapter, uidDigest) {
-  if (typeof uidDigest !== "string" || !/^sha256_[0-9a-f]{64}$/.test(uidDigest)) return;
+  if (typeof uidDigest !== "string" || !/^sha256_[0-9a-f]{64}$/.test(uidDigest)) return false;
 
   const existing = readPendingInvalidation(sessionStorageAdapter);
-  if (existing && existing.scope === "generic") return;
+  if (existing && existing.scope === "generic") return true;
 
   const next = new Set(existing && existing.scope === "digest" ? existing.uidDigests : []);
   next.add(uidDigest);
 
   if (next.size > MAX_PENDING_DIGESTS) {
-    writePendingInvalidation(sessionStorageAdapter, { scope: "generic" });
-    return;
+    return writePendingInvalidation(sessionStorageAdapter, { scope: "generic" });
   }
-  writePendingInvalidation(sessionStorageAdapter, { scope: "digest", uidDigests: [...next] });
+  return writePendingInvalidation(
+    sessionStorageAdapter,
+    { scope: "digest", uidDigests: [...next] }
+  );
 }
 
 // Removes one consumed digest, clearing the marker entirely once empty.
@@ -446,11 +450,9 @@ export class MultiTabInvalidator {
   quarantineUid(uid) {
     const digest = computeSha256Digest(uid)
     if (!digest) {
-      writePendingInvalidation(this.sessionStorageAdapter, { scope: "generic" })
-      return false
+      return writePendingInvalidation(this.sessionStorageAdapter, { scope: "generic" })
     }
-    addPendingDigest(this.sessionStorageAdapter, digest)
-    return true
+    return addPendingDigest(this.sessionStorageAdapter, digest)
   }
 
   destroy() {

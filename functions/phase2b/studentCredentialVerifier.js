@@ -40,7 +40,6 @@ export const STUDENT_LOGIN_OUTCOMES = Object.freeze({
   INVALID_CODE_OR_LOGIN: 'invalid_code_or_login',
   THROTTLED: 'throttled',
   INVALID_CREDENTIALS: 'invalid_credentials',
-  LOCKED: 'locked',
   SUCCESS: 'success',
 })
 

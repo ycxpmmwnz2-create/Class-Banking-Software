@@ -1894,7 +1894,9 @@ function toggleStudentDropdown() {
     async function logout() {
       clearTemporaryProfileStudentPin();
       if (IS_MULTI_TEACHER_V2_ENABLED) {
-        v2MultiTabInvalidator.quarantineUid(auth.currentUser?.uid || v2TenantSession.uid);
+        const logoutQuarantineInstalled = v2MultiTabInvalidator.quarantineUid(
+          auth.currentUser?.uid || v2TenantSession.uid
+        );
         const result = await orchestrateProductionLogout(
           v2TenantSession,
           {
@@ -1906,7 +1908,9 @@ function toggleStudentDropdown() {
           render
         );
         if (result.warning) {
-          message = "Morgan Bank cleared this page, but Firebase could not confirm a complete sign-out. Close every Morgan Bank tab, reopen the site, and choose Log Out again if your account returns.";
+          message = logoutQuarantineInstalled
+            ? "Morgan Bank cleared this page, but Firebase could not confirm a complete sign-out. Close every Morgan Bank tab, reopen the site, and choose Log Out again if your account returns."
+            : "Morgan Bank cleared this page, but the browser could not preserve its logout guard and Firebase could not confirm sign-out. Close every Morgan Bank tab and browser window before reopening the site. If your account returns, choose Log Out again.";
           render();
         }
         return;

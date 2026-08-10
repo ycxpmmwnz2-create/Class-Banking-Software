@@ -766,6 +766,10 @@ describe('Phase 3 release-order source contract', () => {
     assert.match(runbook, /Never deploy the\s+recursive baseline, bridge, or rollback-safe rules/i)
     assert.match(runbook, /Never record credential contents, private keys,\s+access\/refresh tokens, PINs/i)
     assert.match(runbook, /Disabling the Functions gate does not revoke an already authenticated teacher's\s+direct Firestore permission/i)
+    assert.match(
+      runbook,
+      /deploying the checksum-pinned rollback rules\s+does not immediately invalidate an already-issued student ID token[\s\S]*natural token expiry/i,
+    )
   })
 
   it('boundary: the founding invitation must remain time-bounded and end consumed', () => {
