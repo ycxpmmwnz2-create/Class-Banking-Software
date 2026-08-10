@@ -179,18 +179,7 @@ describe('Phase 3 student-identity source contract', () => {
     )
   })
 
-  /**
-   * PINNED DEFECT. importBackup accepts arbitrary student objects from a user
-   * file and reaches persistence through normalizeData without validating `id`.
-   * This is why Section 4 disables V2 backup import for the initial cutover and
-   * why Section 5's watermark must scan production-wide historical IDs. When
-   * Commit 7 addresses it, this assertion is expected to be updated in that
-   * commit — not silently deleted.
-   */
-  it('source contract: V2 disables backup import before it can reach normalizeData', () => {
-    // Section 4: V2 backup import is disabled for the initial cutover. The
-    // underlying defect below is unchanged and still pinned; Commit 7 closes it
-    // for V2 by refusing the entry point, not by validating imported IDs.
+  it('source contract: V2 disables backup import and rollback sanitizes before normalizeData', () => {
     const importBackupLine = matchingLines(/function importBackup\(/)
     assert.equal(importBackupLine.length, 1)
 
@@ -212,17 +201,15 @@ describe('Phase 3 student-identity source contract', () => {
       'the V2 branch must never reach normalizeData',
     )
 
-    // Pinned defect, unchanged: normalizeData still spreads imported student
-    // objects and coerces only `frozen`, so an arbitrary `id` would survive
-    // into persistence. Only the default-off legacy path can still reach it.
-    const normalizeLine = matchingLines(/function normalizeData\(/)
-    assert.equal(normalizeLine.length, 1)
-    const normalizeBody = contextAt(normalizeLine[0], 0, 18)
-    assert.match(
-      normalizeBody,
-      /parsed\.students\.map\(student => \(\{ \.\.\.student, frozen: Boolean\(student\.frozen\) \}\)\)/,
-      'normalizeData still passes student ids through unvalidated (pinned defect)',
+    const sanitizerIndex = body.indexOf('sanitizeLegacyBackup(imported, {')
+    const normalizeIndex = body.indexOf('normalizeData(sanitizeLegacyBackup(')
+    assert.ok(
+      normalizeIndex > parseIndex &&
+        sanitizerIndex === normalizeIndex + 'normalizeData('.length,
+      'the rollback path must strictly sanitize the parsed backup before normalization',
     )
+    assert.match(body, /fallbackLoginHistory: data\.loginHistory \|\| \[\]/)
+    assert.match(body, /fallbackSettings: data\.settings/)
   })
 
   it('source contract: plaintext pin remains only in the preserved legacy roster branch', () => {

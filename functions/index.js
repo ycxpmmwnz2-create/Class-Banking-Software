@@ -116,7 +116,10 @@ export const studentPinLogin = onCall(async (request) => {
   assertLegacyCompatibility()
   const { loginId, pin } = request.data ?? {}
 
-  const student = await verifyStudentCredentials({ loginId, pin })
+  const student = await verifyStudentCredentials(
+    { loginId, pin },
+    { sourceKey: request.rawRequest?.ip || 'unknown-source' },
+  )
 
   if (!student) {
     throw new HttpsError('unauthenticated', 'Invalid student credentials.')
@@ -132,7 +135,10 @@ export const studentPinLogin = onCall(async (request) => {
 
 export const resetStudentPin = onCall(async (request) => {
   assertLegacyCompatibility()
-  return resetStudentPinForTeacher(request)
+  return resetStudentPinForTeacher(request, {
+    firestore: getFirestore(),
+    revokeRefreshTokens: uid => getAuth().revokeRefreshTokens(uid),
+  })
 })
 
 export const syncStudentProfiles = onDocumentWritten(
@@ -187,7 +193,11 @@ export const studentPinLoginV2 = onCall(async (request) => {
   return studentPinLoginV2CallableHandler(
     request.data,
     request,
-    { firestore: getFirestore(), auth: getAuth() },
+    {
+      firestore: getFirestore(),
+      auth: getAuth(),
+      sourceKey: request.rawRequest?.ip || 'unknown-source',
+    },
   )
 })
 
@@ -196,7 +206,7 @@ export const resetStudentPinV2 = onCall(async (request) => {
   return resetStudentPinV2CallableHandler(
     request.data,
     request,
-    { firestore: getFirestore() },
+    { firestore: getFirestore(), adminAuth: getAuth() },
   )
 })
 

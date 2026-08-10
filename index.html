@@ -884,6 +884,7 @@ import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogi
 import { formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
+import { sanitizeLegacyBackup } from "./src/legacy/backupImport.js";
 
 const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED === "true";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
@@ -1893,6 +1894,7 @@ function toggleStudentDropdown() {
     async function logout() {
       clearTemporaryProfileStudentPin();
       if (IS_MULTI_TEACHER_V2_ENABLED) {
+        v2MultiTabInvalidator.quarantineUid(auth.currentUser?.uid || v2TenantSession.uid);
         const result = await orchestrateProductionLogout(
           v2TenantSession,
           {
@@ -2725,11 +2727,10 @@ link.click();
     function importBackup(event) {
       if (!requireTeacher()) return;
 
-      // Section 4: V2 backup import is disabled for the initial cutover. An
-      // imported file carries arbitrary student IDs, which normalizeData does
-      // not validate; admitting them would collide with the server-managed
-      // nextStudentNumber and with credentials the import cannot allocate.
-      // Re-enabling requires a separately tested import service.
+      // Section 4: V2 backup import is disabled for the initial cutover because
+      // a client-side import cannot atomically allocate server-owned student
+      // numbers and credentials. The retained rollback path is schema-validated
+      // below; re-enabling V2 still requires a separately tested import service.
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         event.target.value = "";
         showMessage("Backup import is unavailable in this version.");
@@ -2745,18 +2746,10 @@ link.click();
 
         try {
           const imported = JSON.parse(e.target.result);
-          if (!Array.isArray(imported.students) || !Array.isArray(imported.transactions)) {
-            alert("That backup file does not look right.");
-            return;
-          }
-
-          data = normalizeData({
-            students: imported.students,
-            transactions: imported.transactions,
-            loginHistory: imported.loginHistory || data.loginHistory || [],
-            settings: imported.settings || data.settings,
-            lastBackupAt: imported.exportedAt || new Date().toISOString()
-          });
+          data = normalizeData(sanitizeLegacyBackup(imported, {
+            fallbackLoginHistory: data.loginHistory || [],
+            fallbackSettings: data.settings
+          }));
         saveData();
         showMessage("Backup imported.");
         } catch {
@@ -3914,12 +3907,12 @@ ${transactionTarget !== "whole" ? `
 
 <h3>General Transaction Reasons</h3>
 <div class="small-note">
-  Current reasons: ${data.settings.reasons.join(", ")}
+  Current reasons: ${escapeHtml(data.settings.reasons.join(", "))}
 </div>
 
 <h3>Purchase Choices</h3>
 <div class="small-note">
-  Current purchase choices: ${data.settings.purchaseCategories.join(", ")}
+  Current purchase choices: ${escapeHtml(data.settings.purchaseCategories.join(", "))}
 </div>
 <button class="primary" onclick="setScreen('editSettingsLists')">Manage Lists</button>
 

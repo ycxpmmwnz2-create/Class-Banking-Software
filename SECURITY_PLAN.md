@@ -5,8 +5,8 @@
 - Teacher access is tied to Andrew's Firebase UID.
 - Firestore classroom document is restricted to the teacher UID.
 - Teacher-only browser functions are guarded with `requireTeacher()`.
-- Student PIN login uses a callable Cloud Function, bcrypt hashes, temporary
-  lockout, and server-side authentication logs.
+- Student PIN login uses a callable Cloud Function, bcrypt hashes, bounded
+  identifier/source/global throttles, and server-side authentication logs.
 - Student Add and Subtract submissions use a server-authoritative callable;
   direct student writes to student and transaction documents remain denied.
 - Only the test student is provisioned; the real roster is not migrated yet.
@@ -38,11 +38,17 @@ server-only and contain:
   Authentication always verifies against this hash. A separate teacher-visible
   copy exists outside this document; see "Teacher-Visible Student PINs".
 - `active`: Whether the credential may authenticate.
-- `failedAttempts`: Current consecutive failed-login count.
-- `lockedUntil`: Firestore timestamp for temporary lockout, or `null`.
+- `failedAttempts`: Bounded consecutive-failure telemetry. It never blocks a
+  victim's correct PIN.
+- `lockedUntil`: Retained compatibility field. Active verification clears it
+  to `null`; attacker-controlled failures cannot create a victim lockout.
 - `createdAt`: Firestore timestamp for credential creation.
 - `updatedAt`: Firestore timestamp for the latest credential change.
-- `pinUpdatedAt`: Firestore timestamp for the latest PIN change.
+- `pinUpdatedAt`: Credential version for the latest PIN change. Migrated
+  Firestore Timestamps are normalized to epoch milliseconds when claims are
+  minted; active V2 resets store a strictly increasing epoch-millisecond value.
+  Final rules and student callables accept those two equivalent stored forms so
+  a reset invalidates the prior session without stranding a migrated account.
 
 Credential documents must not contain student names, balances, transactions, or
 plaintext PINs. Browser clients must not receive direct access to this
@@ -70,9 +76,9 @@ Controls:
 - **Server-only under the Phase 3 rulesets.** The path matches no rule in
   `firestore.phase3.final.rules`, `.bridge.rules`, or `.rollback.rules`, so
   Firestore's default deny makes it unreachable from every client identity there
-  — including the owning teacher. No pinned rules artifact was changed. The
-  final-rules test asserts that denial directly and that the path is absent from
-  the ruleset.
+  — including the owning teacher. The final-rules artifact is now repinned for
+  the separate session-version check, while this directory remains absent from
+  the ruleset. The final-rules test asserts that denial directly.
 
   **This is conditional, and the condition matters.** The legacy production
   ruleset `firestore.rules` has a recursive `match /classrooms/{document=**}`
@@ -132,9 +138,10 @@ session-only, so remembering the locator never keeps a student signed in.
 
 Residual risk: on a shared or unattended browser the locator narrows an attacker
 to guessing a 4-digit PIN against a login ID that is now visible on the sign-in
-screen. The existing server-side bcrypt verification, consecutive-failure
-counter, and temporary lockout are the mitigations. "Use a different student"
-clears the locator and is student-operable.
+screen. Server-side bcrypt verification plus bounded per-identifier,
+per-source, and global rolling-window throttles limit compute, writes, and
+logging without letting an attacker lock out a known student. "Use a different
+student" clears the locator and is student-operable.
 
 ## Student Money Submission Path
 

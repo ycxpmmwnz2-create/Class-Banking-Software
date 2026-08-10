@@ -45,6 +45,7 @@ export async function resetStudentPinForTeacher(
   const firestore = options.firestore ?? getFirestore()
   const hashPin = options.hashPin ?? bcrypt.hash
   const serverTimestamp = options.serverTimestamp ?? FieldValue.serverTimestamp
+  const revokeRefreshTokens = options.revokeRefreshTokens
   const credentialsSnapshot = await firestore
     .collection(STUDENT_CREDENTIAL_COLLECTION)
     .where('classroomId', '==', normalizedClassroomId)
@@ -65,6 +66,13 @@ export async function resetStudentPinForTeacher(
 
   const pinHash = await hashPin(newPin, BCRYPT_COST)
   const timestamp = serverTimestamp()
+  const credential = credentialsSnapshot.docs[0].data() ?? {}
+  if (typeof credential.authUid !== 'string' || !credential.authUid) {
+    throw new HttpsError('failed-precondition', 'Student credential identity is invalid.')
+  }
+  if (typeof revokeRefreshTokens !== 'function') {
+    throw new HttpsError('internal', 'Student session revocation is unavailable.')
+  }
 
   await credentialsSnapshot.docs[0].ref.update({
     pinHash,
@@ -74,6 +82,14 @@ export async function resetStudentPinForTeacher(
     lockedUntil: null,
     updatedAt: timestamp,
   })
+
+  try {
+    await revokeRefreshTokens(credential.authUid)
+  } catch (error) {
+    // A credential may be reset before its deterministic Auth UID has ever
+    // signed in. No Auth record means no refresh token exists to revoke.
+    if (error?.code !== 'auth/user-not-found') throw error
+  }
 
   return { success: true }
 }

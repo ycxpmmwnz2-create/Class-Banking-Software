@@ -35,7 +35,7 @@ const LOGIN_ID = 'rollback-student'
 
 const FINAL_RULES = Object.freeze({
   path: 'firestore.phase3.final.rules',
-  sha256: '1a5994098bd3041c578bb5578cd299fe24b12263ce390e65c4f21fb274849c71',
+  sha256: '1ed51ca745742cf2a76d910fc83b48df9300de1ddbcd2f438a050f748798f5bb',
 })
 const ROLLBACK_RULES = Object.freeze({
   path: 'firestore.phase3.rollback.rules',

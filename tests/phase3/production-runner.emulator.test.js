@@ -2242,13 +2242,19 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
       settings: { reasons: ['Quick Cash'] },
     })
     await firestore.doc('studentCredentials/ada').set({
+      schemaVersion: 1,
       loginId: 'ada', studentId: '1', classroomId: 'morgan', active: true,
+      authUid: 'legacy-student-1',
       pinHash: SEEDED_PIN_HASHES.ada,
       createdAt: new writerMod.Timestamp(1_690_000_000, 123_456_789),
+      pinUpdatedAt: new writerMod.Timestamp(1_690_000_000, 456_789_123),
     })
     await firestore.doc('studentCredentials/grace').set({
+      schemaVersion: 1,
       loginId: 'grace', studentId: '2', classroomId: 'morgan', active: true,
+      authUid: 'legacy-student-2',
       pinHash: SEEDED_PIN_HASHES.grace,
+      pinUpdatedAt: new writerMod.Timestamp(1_690_000_002, 123_456_789),
     })
     await firestore.collection('studentAuthLogs').add({
       studentId: '1', outcome: 'success',
@@ -2623,12 +2629,19 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
 
       const finalRules = await loadReleaseRules(
         'firestore.phase3.final.rules',
-        '1a5994098bd3041c578bb5578cd299fe24b12263ce390e65c4f21fb274849c71',
+        '1ed51ca745742cf2a76d910fc83b48df9300de1ddbcd2f438a050f748798f5bb',
       )
       const owner = finalRules.authenticatedContext(E2E_TEACHER_UID).firestore()
       const foreign = finalRules.authenticatedContext('foreign-teacher').firestore()
-      const student = finalRules.authenticatedContext('existing-student', {
+      const staleStudent = finalRules.authenticatedContext(scopedAda.data().authUid, {
         role: 'student', classroomId: E2E_CLASSROOM_ID, studentId: '1',
+      }).firestore()
+      const student = finalRules.authenticatedContext(scopedAda.data().authUid, {
+        role: 'student',
+        classroomId: E2E_CLASSROOM_ID,
+        studentId: '1',
+        loginId: 'ada',
+        credentialVersion: scopedAda.data().pinUpdatedAt.toMillis(),
       }).firestore()
       await assertSucceeds(owner.doc(`classrooms/${E2E_CLASSROOM_ID}`).get())
       await assertSucceeds(owner.doc(`classrooms/${E2E_CLASSROOM_ID}/students/1`).get())
@@ -2636,11 +2649,14 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
         `classrooms/${E2E_CLASSROOM_ID}/studentCredentials/ada`,
       ).get())
       await assertFails(foreign.doc(`classrooms/${E2E_CLASSROOM_ID}`).get())
+      await assertFails(staleStudent.doc(
+        `classrooms/${E2E_CLASSROOM_ID}/students/1`,
+      ).get())
       await assertSucceeds(student.doc(
         `classrooms/${E2E_CLASSROOM_ID}/students/1`,
       ).get())
       releaseLedger.append('final-rules-verified', {
-        rulesSha256: '1a5994098bd3041c578bb5578cd299fe24b12263ce390e65c4f21fb274849c71',
+        rulesSha256: '1ed51ca745742cf2a76d910fc83b48df9300de1ddbcd2f438a050f748798f5bb',
         sensitivePathDenied: true,
       })
       releaseLedger.append('release-id-gate-enabled', {

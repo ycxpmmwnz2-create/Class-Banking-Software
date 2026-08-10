@@ -187,36 +187,70 @@ export async function setCustomClaims(uid, claims) {
   }
 }
 
-// Creates a real Auth-emulator account and applies student custom claims, so
-// the student-session test does not use a teacher session mislabeled as one.
+// Creates the exact Auth-emulator identity bound to the server-owned scoped
+// credential. This keeps the browser harness on the same UID and
+// credential-version contract as a real studentPinLoginV2 custom token.
 export async function createStudentIdentity({ classroomId, studentId }) {
-  const requestedUid = `student-auth-${classroomId}-${studentId}`;
-  const res = await fetch(`${AUTH_BASE}/accounts:signUp?key=${API_KEY}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      email: `${requestedUid}@example.test`,
-      password: "test-password-student",
-      returnSecureToken: true
-    })
+  const credential = await waitForScopedCredential({ classroomId }, studentId);
+  const te = await env();
+  await te.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().doc(
+      `classrooms/${classroomId}/studentCredentials/${credential.id}`
+    ).update({ active: true });
   });
-  if (!res.ok) {
-    throw new Error(`fixtures: student signUp -> ${res.status}: ${await res.text()}`);
-  }
-  // Patch the identity allocated by the emulator, never the email label.
-  const created = await res.json();
-  const uid = created.localId;
-  if (typeof uid !== "string" || !uid) {
-    throw new Error("fixtures: student signUp returned no localId");
+  const uid = credential.authUid;
+  const credentialVersion = typeof credential.pinUpdatedAt?.toMillis === "function"
+    ? credential.pinUpdatedAt.toMillis()
+    : credential.pinUpdatedAt;
+  if (
+    typeof uid !== "string" ||
+    !uid ||
+    !Number.isSafeInteger(credentialVersion) ||
+    credentialVersion < 1
+  ) {
+    throw new Error("fixtures: scoped credential has no usable Auth identity version");
   }
 
-  // Apply the student claims the app's V2 path reads.
-  const claims = { role: "student", classroomId, studentId };
-  await setCustomClaims(uid, claims);
+  const email = `student-${classroomId}-${studentId}@example.test`;
+  const password = "test-password-student";
+  const claims = {
+    role: "student",
+    classroomId,
+    studentId,
+    loginId: credential.id,
+    credentialVersion
+  };
+  const res = await fetch(
+    `${AUTH_BASE}/projects/${PROJECT_ID}/accounts:batchCreate?key=${API_KEY}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer owner",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        users: [{
+          localId: uid,
+          email,
+          emailVerified: true,
+          rawPassword: password,
+          customAttributes: JSON.stringify(claims)
+        }]
+      })
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`fixtures: student import -> ${res.status}: ${await res.text()}`);
+  }
+  const imported = await res.json();
+  if (Array.isArray(imported.error) && imported.error.length > 0) {
+    throw new Error(`fixtures: student import failed: ${JSON.stringify(imported.error)}`);
+  }
+
   return {
     uid,
-    email: `${requestedUid}@example.test`,
-    password: "test-password-student",
+    email,
+    password,
     claims
   };
 }

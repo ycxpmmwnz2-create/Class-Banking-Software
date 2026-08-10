@@ -1106,6 +1106,34 @@ describe("TenantCache Module Specifications", () => {
     assert.equal(signOutCalls, 2, "Sign-out must be retried, not abandoned after one rejection");
   });
 
+  test("an explicit same-tab logout quarantines only its UID until Auth confirms sign-out", () => {
+    const storage = createMockStorage();
+    const quarantine = createMockStorage();
+    const session = readyTeacherSession("teacher_a", "room_a", { storageAdapter: storage });
+    let signOutCalls = 0;
+    const invalidator = new MultiTabInvalidator(session, {
+      channelAdapter: null,
+      storageAdapter: storage,
+      windowAdapter: null,
+      sessionStorageAdapter: quarantine,
+      localAuthAdapter: {
+        signOut: () => { signOutCalls++; return Promise.resolve(); }
+      }
+    });
+
+    assert.equal(invalidator.quarantineUid("teacher_a"), true);
+    const pending = readPendingInvalidation(quarantine);
+    assert.equal(isUidQuarantined(pending, "teacher_a"), true);
+    assert.equal(isUidQuarantined(pending, "teacher_b"), false);
+
+    assert.equal(invalidator.consumeQuarantineForObservedUid("teacher_a"), true);
+    assert.equal(signOutCalls, 1);
+    assert.notEqual(readPendingInvalidation(quarantine), null);
+
+    assert.equal(invalidator.consumeQuarantineForObservedUid(null), false);
+    assert.equal(readPendingInvalidation(quarantine), null);
+  });
+
   test("the quarantine is cleared only once the Auth observer confirms a signed-out state", () => {
     const storage = createMockStorage();
     const quarantine = createMockStorage();

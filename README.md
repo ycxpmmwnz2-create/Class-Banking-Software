@@ -39,7 +39,10 @@ Emulator scripts refuse to run when local Google Application Default Credentials
 
 ## Firebase safety
 
-`.firebaserc` defaults to the production project, `morgan-bank`. Do not infer deployment authority from permission to build, test, commit, or push.
+`.firebaserc` defaults to a nonexistent demo safety target so an unqualified
+Firebase command fails closed. Every real staging or production command must
+name its reviewed project explicitly. Do not infer deployment authority from
+permission to build, test, commit, or push.
 
 - Emulator commands must keep their explicit `demo-` project IDs.
 - The staging project is `morgan-bank-staging`. Because `.firebaserc` defines no staging alias, every staging Firebase command must explicitly pass `--project morgan-bank-staging` and use the reviewed staging configuration.

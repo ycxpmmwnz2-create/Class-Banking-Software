@@ -3,10 +3,14 @@ import { HttpsError } from 'firebase-functions/v2/https'
 import { FIRESTORE_COLLECTIONS, TEACHER_STATUS } from '../phase1/firestoreSchema.js'
 import {
   hashSha256,
+  normalizeStudentLoginId,
   validateCanonicalDocumentId,
 } from '../phase2b/identityNormalization.js'
 import { deriveDeterministicStudentAuthUid } from '../phase2b/scopedCredentialProjection.js'
-import { studentLoginThrottlePath } from '../phase2b/studentCredentialPaths.js'
+import {
+  studentCredentialPath,
+  studentLoginThrottlePath,
+} from '../phase2b/studentCredentialPaths.js'
 
 const MAX_STUDENT_TRANSACTION_MIRROR_LENGTH = 1000
 const STUDENT_MONEY_THROTTLE_WINDOW_MS = 5 * 60 * 1000
@@ -125,10 +129,20 @@ function validateStudentAuth(auth) {
     throw new StudentMoneyError('permission-denied', 'Student identity is malformed.')
   }
   const studentId = requireCanonicalPositiveId(token.studentId, 'studentId')
+  let loginId
+  try {
+    loginId = normalizeStudentLoginId(token.loginId)
+  } catch {
+    throw new StudentMoneyError('permission-denied', 'Student login identity is malformed.')
+  }
+  if (!Number.isSafeInteger(token.credentialVersion) || token.credentialVersion < 1) {
+    throw new StudentMoneyError('permission-denied', 'Student credential version is malformed.')
+  }
+  const credentialVersion = token.credentialVersion
   if (uid !== deriveDeterministicStudentAuthUid(classroomId, studentId)) {
     throw new StudentMoneyError('permission-denied', 'Student identity does not match claims.')
   }
-  return Object.freeze({ uid, classroomId, studentId })
+  return Object.freeze({ uid, classroomId, studentId, loginId, credentialVersion })
 }
 
 function validateRequest(request) {
@@ -157,6 +171,17 @@ function validateRequest(request) {
 
 function snapshotExists(snapshot) {
   return Boolean(snapshot && snapshot.exists === true)
+}
+
+function credentialVersionMillis(value) {
+  let candidate = value
+  try {
+    if (typeof value?.toMillis === 'function') candidate = value.toMillis()
+    else if (value instanceof Date) candidate = value.getTime()
+  } catch {
+    return 0
+  }
+  return Number.isSafeInteger(candidate) && candidate > 0 ? candidate : 0
 }
 
 function requireStudentDocument(snapshot, identity) {
@@ -402,6 +427,9 @@ export async function submitStudentTransactionV2Service(
     `${FIRESTORE_COLLECTIONS.CLASSROOMS}/${identity.classroomId}/transactions/${validated.transactionId}`,
   )
   const throttleRef = studentMoneyThrottleRef(firestore, identity)
+  const credentialRef = firestore.doc(
+    studentCredentialPath(identity.classroomId, identity.loginId),
+  )
   let submissionTime = null
 
   function resolveSubmissionTime() {
@@ -433,6 +461,23 @@ export async function submitStudentTransactionV2Service(
     const studentSnapshot = await transaction.get(studentRef)
     const existingTransactionSnapshot = await transaction.get(transactionRef)
     const throttleSnapshot = await transaction.get(throttleRef)
+    const credentialSnapshot = await transaction.get(credentialRef)
+
+    const credential = snapshotExists(credentialSnapshot)
+      ? (credentialSnapshot.data?.() ?? {})
+      : {}
+    if (
+      credential.active !== true ||
+      credential.classroomId !== identity.classroomId ||
+      credential.studentId !== identity.studentId ||
+      credential.authUid !== identity.uid ||
+      credentialVersionMillis(credential.pinUpdatedAt) !== identity.credentialVersion
+    ) {
+      throw new StudentMoneyError(
+        'permission-denied',
+        'Student session is no longer current.',
+      )
+    }
 
     const classroom = requireFoundation(classroomSnapshot, teacherSnapshot, identity)
     const student = requireStudentDocument(studentSnapshot, identity)

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "env VITE_MULTI_TEACHER_V2_ENABLED=true vite build",
+    "build:legacy-rollback": "env -u VITE_MULTI_TEACHER_V2_ENABLED vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "test:functions": "npm --prefix functions test",

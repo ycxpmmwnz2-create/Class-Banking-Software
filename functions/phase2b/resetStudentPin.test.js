@@ -302,6 +302,39 @@ test('Teacher A and B reset only their resolved tenant with bidirectional isolat
   )
 })
 
+test('PIN reset advances the credential version even when the clock millisecond repeats', async () => {
+  const firestore = createMockFirestore({
+    'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
+    'classrooms/classA': { ownerUid: 'teacherA' },
+    'classrooms/classA/students/stu1': { name: 'Alex' },
+    'classrooms/classA/studentCredentials/alex-smith': scopedCredential(
+      'classA',
+      'alex-smith',
+      'stu1',
+      { pinUpdatedAt: 1000 },
+    ),
+  })
+
+  await resetStudentPinV2(
+    { studentId: 'stu1', newPin: '5678' },
+    {
+      firestore,
+      auth: { uid: 'teacherA' },
+      hashPin: mockHashPin,
+      now: () => 1000,
+    },
+  )
+
+  assert.equal(
+    firestore.store.get('classrooms/classA/studentCredentials/alex-smith').pinUpdatedAt,
+    1001,
+  )
+  assert.equal(
+    firestore.store.get('classrooms/classA/studentPins/stu1').updatedAt,
+    1001,
+  )
+})
+
 test('production default hash uses bcrypt cost 12 and verifies the PIN', async () => {
   assert.equal(STUDENT_PIN_BCRYPT_COST, 12)
 
@@ -651,14 +684,38 @@ test('callable adapter maps every error category to a generic HttpsError', async
     'classrooms/classA/students/stu1': { name: 'Alex' },
     'classrooms/classA/studentCredentials/alex-smith': scopedCredential('classA', 'alex-smith', 'stu1'),
   }
+  const revokedAuthUids = []
+  const adminAuth = {
+    async revokeRefreshTokens(uid) {
+      revokedAuthUids.push(uid)
+    },
+  }
 
   // Successful call returns { success: true }
   const res = await resetStudentPinV2CallableHandler(
     { studentId: 'stu1', newPin: '1234' },
     { auth: { uid: 'teacherA' } },
-    { firestore: createMockFirestore(validDocs), hashPin: mockHashPin },
+    { firestore: createMockFirestore(validDocs), hashPin: mockHashPin, adminAuth },
   )
   assert.deepEqual(res, { success: true })
+  assert.deepEqual(revokedAuthUids, [deriveDeterministicStudentAuthUid('classA', 'stu1')])
+
+  const absentAuthUser = new Error('no Auth user exists yet')
+  absentAuthUser.code = 'auth/user-not-found'
+  const preLoginResult = await resetStudentPinV2CallableHandler(
+    { studentId: 'stu1', newPin: '1234' },
+    { auth: { uid: 'teacherA' } },
+    {
+      firestore: createMockFirestore(validDocs),
+      hashPin: mockHashPin,
+      adminAuth: {
+        async revokeRefreshTokens() {
+          throw absentAuthUser
+        },
+      },
+    },
+  )
+  assert.deepEqual(preLoginResult, { success: true })
 
   const cases = [
     {
@@ -773,6 +830,7 @@ test('callable adapter maps every error category to a generic HttpsError', async
         resetStudentPinV2CallableHandler(data, context, {
           firestore: createMockFirestore(docs),
           hashPin: mockHashPin,
+          adminAuth,
         }),
       (error) => {
         assert.equal(error.code, code, `${desc}: unexpected code ${error.code}`)
@@ -797,6 +855,7 @@ test('callable adapter maps every error category to a generic HttpsError', async
             },
           },
           hashPin: mockHashPin,
+          adminAuth,
         },
       ),
     (error) => {

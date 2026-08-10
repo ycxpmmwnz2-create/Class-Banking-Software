@@ -26,10 +26,11 @@ import { deriveDeterministicStudentAuthUid } from './scopedCredentialProjection.
 // wrong PIN for an existing credential.
 export const STUDENT_LOGIN_DUMMY_PIN_HASH =
   '$2b$12$tkuV.NIDy2kwjmeSTGNDruO5eIUvcNY3shJwjb9ijSRjCw5HgC4VW'
-const LOCKOUT_DURATION_MS = 5 * 60 * 1000
 const MAX_CREDENTIAL_FAILED_ATTEMPTS = 5
 const THROTTLE_WINDOW_MS = 5 * 60 * 1000
 const MAX_THROTTLE_ATTEMPTS = 10
+const MAX_SOURCE_ATTEMPTS = 30
+const MAX_GLOBAL_ATTEMPTS = 300
 const SUPPORTED_CREDENTIAL_SCHEMA_VERSION = 1
 
 const GENERIC_STUDENT_LOGIN_MESSAGE = 'Invalid student credentials.'
@@ -59,17 +60,15 @@ export async function defaultVerifyPin(submittedPin, storedHash) {
   }
 }
 
-function timestampMillis(value) {
-  if (typeof value?.toMillis === 'function') {
-    return value.toMillis()
+function credentialVersionMillis(value) {
+  let candidate = value
+  try {
+    if (typeof value?.toMillis === 'function') candidate = value.toMillis()
+    else if (value instanceof Date) candidate = value.getTime()
+  } catch {
+    return 0
   }
-  if (value instanceof Date) {
-    return value.getTime()
-  }
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value
-  }
-  return 0
+  return Number.isSafeInteger(candidate) && candidate > 0 ? candidate : 0
 }
 
 function validateRequestShape(request) {
@@ -84,7 +83,10 @@ function validateRequestShape(request) {
   if (
     typeof request.classroomCode !== 'string' ||
     typeof request.loginId !== 'string' ||
-    typeof request.pin !== 'string'
+    typeof request.pin !== 'string' ||
+    request.classroomCode.length > 16 ||
+    request.loginId.length > 64 ||
+    request.pin.length > 64
   ) {
     return false
   }
@@ -198,6 +200,9 @@ function isCredentialIdentityValid({
   if (typeof credData.pinHash !== 'string' || !credData.pinHash) {
     return false
   }
+  if (credentialVersionMillis(credData.pinUpdatedAt) < 1) {
+    return false
+  }
   return true
 }
 
@@ -209,6 +214,7 @@ export async function verifyStudentCredentialV2(
     now = Date.now,
     verifyPin = defaultVerifyPin,
     createCustomToken,
+    sourceKey = 'unknown-source',
   } = {},
 ) {
   if (!firestore || typeof firestore.runTransaction !== 'function') {
@@ -231,10 +237,12 @@ export async function verifyStudentCredentialV2(
   const shapeValid = validateRequestShape(request)
   const submittedPin = shapeValid ? request.pin : ''
 
-  const rawCode = typeof request?.classroomCode === 'string'
+  const rawCode = typeof request?.classroomCode === 'string' && request.classroomCode.length <= 16
     ? request.classroomCode
     : null
-  const rawLoginId = typeof request?.loginId === 'string' ? request.loginId : null
+  const rawLoginId = typeof request?.loginId === 'string' && request.loginId.length <= 64
+    ? request.loginId
+    : null
 
   // Normalization is attempted whenever the field is a string, independent of
   // the overall request shape, so a malformed request still lands in the same
@@ -266,6 +274,10 @@ export async function verifyStudentCredentialV2(
   const throttleLoginKey = canonicalLoginId ?? rawLoginId ?? ''
   const identifierDigest = hashSha256(`${throttleCodeKey}\0${throttleLoginKey}`)
   const throttleRef = firestore.doc(studentLoginThrottlePath(identifierDigest))
+  const sourceDigest = hashSha256(`student-login-source-v1\0${String(sourceKey).slice(0, 200)}`)
+  const globalDigest = hashSha256('student-login-global-v1')
+  const sourceThrottleRef = firestore.doc(studentLoginThrottlePath(sourceDigest))
+  const globalThrottleRef = firestore.doc(studentLoginThrottlePath(globalDigest))
 
   const result = await firestore.runTransaction(async (transaction) => {
     // ---------------------------------------------------------------------
@@ -273,6 +285,8 @@ export async function verifyStudentCredentialV2(
     // a write in the same transaction, so nothing below may write yet.
     // ---------------------------------------------------------------------
     const throttleSnap = await transaction.get(throttleRef)
+    const sourceThrottleSnap = await transaction.get(sourceThrottleRef)
+    const globalThrottleSnap = await transaction.get(globalThrottleRef)
     const throttleData = throttleSnap.exists ? (throttleSnap.data() ?? {}) : {}
     const recordedAttempts = Array.isArray(throttleData.attempts)
       ? throttleData.attempts
@@ -281,7 +295,24 @@ export async function verifyStudentCredentialV2(
       t => typeof t === 'number' && attemptTime - t < THROTTLE_WINDOW_MS,
     )
 
-    const resolved = shapeValid && canonicalCode && canonicalLoginId
+    const attemptsFor = snapshot => {
+      const body = snapshot.exists ? (snapshot.data() ?? {}) : {}
+      return (Array.isArray(body.attempts) ? body.attempts : []).filter(
+        t => typeof t === 'number' && attemptTime - t < THROTTLE_WINDOW_MS,
+      )
+    }
+    const sourceAttemptsInWindow = attemptsFor(sourceThrottleSnap)
+    const globalAttemptsInWindow = attemptsFor(globalThrottleSnap)
+    const sourceOrGlobalThrottled =
+      sourceAttemptsInWindow.length >= MAX_SOURCE_ATTEMPTS ||
+      globalAttemptsInWindow.length >= MAX_GLOBAL_ATTEMPTS
+    const identifierThrottled = attemptsInWindow.length >= MAX_THROTTLE_ATTEMPTS
+
+    // A victim's correct PIN must remain usable after an attacker fills only
+    // that login ID's bucket. Source/global circuit breakers still bound the
+    // extra lookup and bcrypt work, while malformed or unknown identities can
+    // be rejected without bcrypt once their identifier bucket is full.
+    const resolved = !sourceOrGlobalThrottled && shapeValid && canonicalCode && canonicalLoginId
       ? await resolveClassroomFromCode(transaction, firestore, canonicalCode)
       : null
     const classroomId = resolved?.classroomId ?? null
@@ -298,22 +329,25 @@ export async function verifyStudentCredentialV2(
     // Phase 2: decisions, including the single bcrypt comparison for a valid
     // credential. No Firestore read may occur past this point.
     // ---------------------------------------------------------------------
-    const isThrottled = attemptsInWindow.length >= MAX_THROTTLE_ATTEMPTS
-
     let outcome
     let credRefToUpdate = null
     let credUpdate = null
     let studentId = null
+    let credentialVersion = null
     let dummyCompareNeeded = true
 
-    if (isThrottled) {
+    if (sourceOrGlobalThrottled) {
       outcome = STUDENT_LOGIN_OUTCOMES.THROTTLED
+      dummyCompareNeeded = false
     } else if (!shapeValid) {
       outcome = STUDENT_LOGIN_OUTCOMES.MALFORMED_REQUEST
     } else if (normalizationFailed) {
       outcome = STUDENT_LOGIN_OUTCOMES.INVALID_CODE_OR_LOGIN
     } else if (!classroomId || !credSnap?.exists) {
-      outcome = STUDENT_LOGIN_OUTCOMES.INVALID_CREDENTIALS
+      outcome = identifierThrottled
+        ? STUDENT_LOGIN_OUTCOMES.THROTTLED
+        : STUDENT_LOGIN_OUTCOMES.INVALID_CREDENTIALS
+      dummyCompareNeeded = !identifierThrottled
     } else {
       const credData = credSnap.data() ?? {}
       studentId = optionalCanonicalId(credData.studentId, 'studentId')
@@ -329,45 +363,37 @@ export async function verifyStudentCredentialV2(
       ) {
         // studentId is only logged when the credential itself resolved a
         // canonical one; an unusable credential still logs nothing else.
-        outcome = STUDENT_LOGIN_OUTCOMES.INVALID_CREDENTIALS
+        outcome = identifierThrottled
+          ? STUDENT_LOGIN_OUTCOMES.THROTTLED
+          : STUDENT_LOGIN_OUTCOMES.INVALID_CREDENTIALS
+        dummyCompareNeeded = !identifierThrottled
       } else {
-        const lockedUntilMillis = timestampMillis(credData.lockedUntil)
-        const isLocked = lockedUntilMillis > attemptTime
-        const hasExpiredLock = lockedUntilMillis > 0 && !isLocked
+        credentialVersion = credentialVersionMillis(credData.pinUpdatedAt)
+        const pinMatches = await verifyPin(submittedPin, credData.pinHash)
+        dummyCompareNeeded = false
+        credRefToUpdate = credSnap.ref ?? firestore.doc(
+          studentCredentialPath(classroomId, canonicalLoginId),
+        )
 
-        if (isLocked) {
-          outcome = STUDENT_LOGIN_OUTCOMES.LOCKED
-        } else {
-          const pinMatches = await verifyPin(submittedPin, credData.pinHash)
-          dummyCompareNeeded = false
-          credRefToUpdate = credSnap.ref ?? firestore.doc(
-            studentCredentialPath(classroomId, canonicalLoginId),
-          )
-
-          if (pinMatches) {
-            outcome = STUDENT_LOGIN_OUTCOMES.SUCCESS
-            credUpdate = {
-              failedAttempts: 0,
-              lockedUntil: null,
-              updatedAt: attemptTime,
-            }
-          } else {
-            const previousAttempts = hasExpiredLock
-              ? 0
-              : (typeof credData.failedAttempts === 'number'
-                  ? credData.failedAttempts
-                  : 0)
-            const failedAttempts = previousAttempts + 1
-            const willLock = failedAttempts >= MAX_CREDENTIAL_FAILED_ATTEMPTS
-            credUpdate = {
-              failedAttempts,
-              lockedUntil: willLock ? attemptTime + LOCKOUT_DURATION_MS : null,
-              updatedAt: attemptTime,
-            }
-            outcome = willLock
-              ? STUDENT_LOGIN_OUTCOMES.LOCKED
-              : STUDENT_LOGIN_OUTCOMES.INVALID_CREDENTIALS
+        if (pinMatches) {
+          outcome = STUDENT_LOGIN_OUTCOMES.SUCCESS
+          credUpdate = {
+            failedAttempts: 0,
+            lockedUntil: null,
+            updatedAt: attemptTime,
           }
+        } else if (identifierThrottled) {
+          outcome = STUDENT_LOGIN_OUTCOMES.THROTTLED
+        } else {
+          const previousAttempts = typeof credData.failedAttempts === 'number'
+            ? credData.failedAttempts
+            : 0
+          credUpdate = {
+            failedAttempts: Math.min(previousAttempts + 1, MAX_CREDENTIAL_FAILED_ATTEMPTS),
+            lockedUntil: null,
+            updatedAt: attemptTime,
+          }
+          outcome = STUDENT_LOGIN_OUTCOMES.INVALID_CREDENTIALS
         }
       }
     }
@@ -375,10 +401,25 @@ export async function verifyStudentCredentialV2(
     // ---------------------------------------------------------------------
     // Phase 3: writes only.
     // ---------------------------------------------------------------------
-    if (!isThrottled) {
-      // Rejected attempts are deliberately not appended: the window stays a
-      // true rolling five minutes and the stored array cannot grow without
-      // bound under a flood.
+    const failedAttempt = outcome !== STUDENT_LOGIN_OUTCOMES.SUCCESS &&
+      outcome !== STUDENT_LOGIN_OUTCOMES.THROTTLED
+    const boundedThrottledFailure = outcome === STUDENT_LOGIN_OUTCOMES.THROTTLED &&
+      !sourceOrGlobalThrottled
+    if (!sourceOrGlobalThrottled && (failedAttempt || boundedThrottledFailure)) {
+      transaction.set(sourceThrottleRef, {
+        attempts: [...sourceAttemptsInWindow, attemptTime].slice(-MAX_SOURCE_ATTEMPTS),
+        updatedAt: attemptTime,
+      })
+      transaction.set(globalThrottleRef, {
+        attempts: [...globalAttemptsInWindow, attemptTime].slice(-MAX_GLOBAL_ATTEMPTS),
+        updatedAt: attemptTime,
+      })
+    }
+    if (outcome === STUDENT_LOGIN_OUTCOMES.SUCCESS) {
+      // A verified PIN clears only its own identifier bucket. It never erases
+      // source/global failure evidence and never consumes those budgets.
+      transaction.set(throttleRef, { attempts: [], updatedAt: attemptTime })
+    } else if (!identifierThrottled && !sourceOrGlobalThrottled) {
       transaction.set(throttleRef, {
         attempts: [...attemptsInWindow, attemptTime].slice(-MAX_THROTTLE_ATTEMPTS),
         updatedAt: attemptTime,
@@ -388,18 +429,20 @@ export async function verifyStudentCredentialV2(
     // Known-classroom attempts, throttled ones included, belong to that
     // tenant's scoped log; only genuinely unresolved codes use the
     // server-private unresolved collection.
-    const logCollectionPath = classroomId
-      ? studentAuthLogsCollectionPath(classroomId)
-      : studentAuthUnresolvedLogsCollectionPath()
-    const logRef = firestore.collection(logCollectionPath).doc()
+    if (outcome !== STUDENT_LOGIN_OUTCOMES.THROTTLED) {
+      const logCollectionPath = classroomId
+        ? studentAuthLogsCollectionPath(classroomId)
+        : studentAuthUnresolvedLogsCollectionPath()
+      const logRef = firestore.collection(logCollectionPath).doc()
 
-    transaction.set(logRef, {
-      outcome,
-      timestamp: attemptTime,
-      identifierDigest,
-      success: outcome === STUDENT_LOGIN_OUTCOMES.SUCCESS,
-      ...(studentId ? { studentId } : {}),
-    })
+      transaction.set(logRef, {
+        outcome,
+        timestamp: attemptTime,
+        identifierDigest,
+        success: outcome === STUDENT_LOGIN_OUTCOMES.SUCCESS,
+        ...(studentId ? { studentId } : {}),
+      })
+    }
 
     if (credRefToUpdate && credUpdate) {
       transaction.update(credRefToUpdate, credUpdate)
@@ -420,6 +463,8 @@ export async function verifyStudentCredentialV2(
         role: 'student',
         classroomId,
         studentId,
+        loginId: canonicalLoginId,
+        credentialVersion,
       }),
     })
   })
@@ -445,7 +490,7 @@ export async function verifyStudentCredentialV2(
  * Versioned callable adapter. Item 8 owns the gated `studentPinLoginV2`
  * export; this boundary only guarantees that a browser sees one generic
  * `HttpsError` for every failure category, so malformed codes, unknown
- * classrooms, wrong PINs, inactive records, lockouts, and throttling stay
+ * classrooms, wrong PINs, inactive records, and throttling stay
  * indistinguishable and nothing internal leaks.
  */
 export async function studentPinLoginV2CallableHandler(

@@ -53,6 +53,17 @@ export async function defaultHashPin(pin) {
   return await bcrypt.hash(pin, STUDENT_PIN_BCRYPT_COST)
 }
 
+function credentialVersionMillis(value) {
+  let candidate = value
+  try {
+    if (typeof value?.toMillis === 'function') candidate = value.toMillis()
+    else if (value instanceof Date) candidate = value.getTime()
+  } catch {
+    return 0
+  }
+  return Number.isSafeInteger(candidate) && candidate > 0 ? candidate : 0
+}
+
 function assertScopedCredentialIdentity({
   credDocSnap,
   credData,
@@ -139,6 +150,9 @@ export async function resetStudentPinV2(
   const tenant = await resolveActiveTeacherTenant({ firestore, auth })
   const classroomId = tenant.classroomId
   const attemptTime = now()
+  if (!Number.isSafeInteger(attemptTime) || attemptTime < 1) {
+    throw new ResetStudentPinError('internal', 'Server clock is unavailable.')
+  }
 
   // Hashing happens once, outside the transaction: a retried transaction
   // callback must not repeat an expensive bcrypt round, and the hash is never
@@ -172,6 +186,7 @@ export async function resetStudentPinV2(
 
     const credDocSnap = credQuerySnap.docs[0]
     const credRef = credDocSnap.ref
+    const credData = credDocSnap.data() ?? {}
 
     const studentDocRef = firestore
       .collection(STUDENT_CREDENTIAL_COLLECTIONS.CLASSROOMS)
@@ -189,17 +204,23 @@ export async function resetStudentPinV2(
 
     assertScopedCredentialIdentity({
       credDocSnap,
-      credData: credDocSnap.data() ?? {},
+      credData,
       classroomId,
       studentId: validStudentId,
+      authUid: credData.authUid,
     })
+    const priorCredentialVersion = credentialVersionMillis(credData.pinUpdatedAt)
+    if (priorCredentialVersion >= Number.MAX_SAFE_INTEGER) {
+      throw new ResetStudentPinError('failed-precondition', 'Credential version is exhausted.')
+    }
+    const pinUpdatedAt = Math.max(attemptTime, priorCredentialVersion + 1)
 
     // Update allowlist: PIN, activation, lockout, and timestamps only. Identity
     // and ownership fields are never rewritten by a reset.
     transaction.update(credRef, {
       pinHash,
       active: true,
-      pinUpdatedAt: attemptTime,
+      pinUpdatedAt,
       failedAttempts: 0,
       lockedUntil: null,
       updatedAt: attemptTime,
@@ -215,7 +236,7 @@ export async function resetStudentPinV2(
       buildStudentPinDocument({
         studentId: validStudentId,
         pin: request.newPin,
-        timestamp: attemptTime,
+        timestamp: pinUpdatedAt,
       }),
     )
 
@@ -223,6 +244,7 @@ export async function resetStudentPinV2(
       success: true,
       classroomId,
       studentId: validStudentId,
+      authUid: credData.authUid,
     })
   })
 }
@@ -253,6 +275,17 @@ function externalCodeFor(error) {
   return 'internal'
 }
 
+async function revokeStudentRefreshTokens(adminAuth, authUid) {
+  try {
+    await adminAuth.revokeRefreshTokens(authUid)
+  } catch (error) {
+    // A deterministic student UID has no Auth record until its first custom-
+    // token sign-in. In that state there is no refresh token to revoke, so the
+    // reset is already session-safe. Every other Auth failure remains fatal.
+    if (error?.code !== 'auth/user-not-found') throw error
+  }
+}
+
 /**
  * Versioned callable adapter. Item 8 owns the gated `resetStudentPinV2`
  * export; this boundary guarantees the browser only ever sees an allowlisted
@@ -265,7 +298,12 @@ export async function resetStudentPinV2CallableHandler(
 ) {
   const auth = context?.auth
   try {
+    if (!dependencies.adminAuth ||
+        typeof dependencies.adminAuth.revokeRefreshTokens !== 'function') {
+      throw new ResetStudentPinError('internal', 'Admin Auth revocation is unavailable.')
+    }
     const result = await resetStudentPinV2(data, { ...dependencies, auth })
+    await revokeStudentRefreshTokens(dependencies.adminAuth, result.authUid)
     return { success: result.success }
   } catch (error) {
     const code = externalCodeFor(error)

@@ -1530,7 +1530,7 @@ if (testMode === 'gate-on') {
         await signInWithCustomToken(studentClient.auth, login.data.token)
 
         const studentId = String(created.data.student.id)
-        const attackerCode = 'student-money-submission'
+        const attackerCode = 'moneyattack'
         const attackerLoginId = `${teacher.classroomId}\0${studentId}`
         const attackerDigest = throttleDigest(attackerCode, attackerLoginId)
         const moneyDigest = studentMoneyThrottleDigest(teacher.classroomId, studentId)
@@ -2194,7 +2194,12 @@ if (testMode === 'gate-on') {
         assert.equal(tokenResult.claims.studentId, 's-login-1')
         assert.equal(tokenResult.claims.authUid, undefined,
           'authUid is not part of the accepted claim set')
-        assert.equal(tokenResult.claims.loginId, undefined)
+        assert.equal(tokenResult.claims.loginId, loginId)
+        assert.equal(
+          tokenResult.claims.credentialVersion,
+          credAtMint.data().pinUpdatedAt,
+        )
+        assert.equal(Number.isSafeInteger(tokenResult.claims.credentialVersion), true)
         assert.equal(tokenResult.claims.pinHash, undefined)
       })
 
@@ -2253,33 +2258,32 @@ if (testMode === 'gate-on') {
         )
       })
 
-      it('locks a credential after five failures and keeps the response generic', async () => {
+      it('caps failure telemetry without locking out a victim who knows the PIN', async () => {
         const teacher = await onboardGoogleTeacher('lock@school.org', 'Lock Room')
         const loginId = await seedActivatedStudent(teacher, 's-lock', 'Locked Student', '4321')
         const student = createTestClientApp()
         const login = httpsCallable(student.functions, 'studentPinLoginV2')
 
-        for (let attempt = 1; attempt <= 5; attempt += 1) {
+        for (let attempt = 1; attempt <= 10; attempt += 1) {
           await expectCallableError(
             () => login({ classroomCode: teacher.studentLoginCode, loginId, pin: '0000' }),
             'unauthenticated',
             'Invalid student credentials.',
           )
           const snap = await credentialsRef(teacher.classroomId).doc(loginId).get()
-          assert.equal(snap.data().failedAttempts, attempt)
-          assert.equal(snap.data().lockedUntil === null, attempt < 5,
-            `lock must engage only on the fifth failure (attempt ${attempt})`)
+          assert.equal(snap.data().failedAttempts, Math.min(attempt, 5))
+          assert.equal(snap.data().lockedUntil, null)
         }
 
-        // The correct PIN is refused while locked, and the lock is not reset.
-        await expectCallableError(
-          () => login({ classroomCode: teacher.studentLoginCode, loginId, pin: '4321' }),
-          'unauthenticated',
-          'Invalid student credentials.',
-        )
-        const locked = await credentialsRef(teacher.classroomId).doc(loginId).get()
-        assert.equal(locked.data().failedAttempts, 5)
-        assert.ok(locked.data().lockedUntil > Date.now())
+        const recovered = await login({
+          classroomCode: teacher.studentLoginCode,
+          loginId,
+          pin: '4321',
+        })
+        assert.ok(recovered.data.token)
+        const credential = await credentialsRef(teacher.classroomId).doc(loginId).get()
+        assert.equal(credential.data().failedAttempts, 0)
+        assert.equal(credential.data().lockedUntil, null)
       })
 
       it('throttles the eleventh attempt in a rolling window for one identifier digest', async () => {
@@ -2315,7 +2319,8 @@ if (testMode === 'gate-on') {
         const throttled = await db
           .collection('studentAuthLogs').doc(teacher.classroomId).collection('logs')
           .where('outcome', '==', 'throttled').get()
-        assert.equal(throttled.size, 1)
+        assert.equal(throttled.size, 0,
+          'throttled requests must not amplify writes by creating more logs')
       })
 
       it('ignores throttle timestamps that fell out of the rolling window', async () => {
@@ -2338,8 +2343,8 @@ if (testMode === 'gate-on') {
         assert.ok(res.data.token, 'expired attempts must not throttle a valid login')
 
         const bucket = await db.collection('studentLoginThrottle').doc(digest).get()
-        assert.equal(bucket.data().attempts.length, 1,
-          'the rolling window must drop every expired timestamp')
+        assert.equal(bucket.data().attempts.length, 0,
+          'a successful login must clear every expired identifier timestamp')
       })
 
       it('funnels non-string code and login requests into one empty-identifier bucket', async () => {

@@ -10,7 +10,7 @@ const TEACHER_AUTH = {
 }
 const TIMESTAMP = { serverTimestamp: true }
 
-function firestoreWithCredentials(records = [{}]) {
+function firestoreWithCredentials(records = [{ authUid: 'student-auth-uid' }]) {
   const state = {
     filters: [],
     limit: null,
@@ -142,6 +142,7 @@ test('rejects duplicate student credentials', async () => {
 test('hashes the PIN at cost 12 and updates only PIN state', async () => {
   const testStore = firestoreWithCredentials()
   const hashCalls = []
+  const revokedAuthUids = []
 
   const result = await resetStudentPinForTeacher(request(), {
     firestore: testStore.firestore,
@@ -150,6 +151,9 @@ test('hashes the PIN at cost 12 and updates only PIN state', async () => {
       return bcrypt.hash(pin, cost)
     },
     serverTimestamp: () => TIMESTAMP,
+    async revokeRefreshTokens(uid) {
+      revokedAuthUids.push(uid)
+    },
   })
 
   assert.deepEqual(result, { success: true })
@@ -159,6 +163,7 @@ test('hashes the PIN at cost 12 and updates only PIN state', async () => {
   ])
   assert.equal(testStore.state.limit, 2)
   assert.deepEqual(hashCalls, [['7391', 12]])
+  assert.deepEqual(revokedAuthUids, ['student-auth-uid'])
   assert.equal(testStore.state.updates.length, 1)
 
   const updates = testStore.state.updates[0].updates
@@ -177,4 +182,22 @@ test('hashes the PIN at cost 12 and updates only PIN state', async () => {
   assert.equal(updates.lockedUntil, null)
   assert.equal(updates.pinUpdatedAt, TIMESTAMP)
   assert.equal(updates.updatedAt, TIMESTAMP)
+})
+
+test('reset succeeds before the deterministic student Auth user exists', async () => {
+  const testStore = firestoreWithCredentials()
+  const missingUser = new Error('no user')
+  missingUser.code = 'auth/user-not-found'
+
+  const result = await resetStudentPinForTeacher(request(), {
+    firestore: testStore.firestore,
+    hashPin: async () => 'new-hash',
+    serverTimestamp: () => TIMESTAMP,
+    async revokeRefreshTokens() {
+      throw missingUser
+    },
+  })
+
+  assert.deepEqual(result, { success: true })
+  assert.equal(testStore.state.updates.length, 1)
 })

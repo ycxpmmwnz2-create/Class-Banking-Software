@@ -20,6 +20,15 @@ const packageJson = JSON.parse(
   readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
 )
 const scripts = packageJson.scripts ?? {}
+const functionsPackageJson = JSON.parse(
+  readFileSync(new URL('../../functions/package.json', import.meta.url), 'utf8'),
+)
+const firebaseRc = JSON.parse(
+  readFileSync(new URL('../../.firebaserc', import.meta.url), 'utf8'),
+)
+const firebaseJson = JSON.parse(
+  readFileSync(new URL('../../firebase.json', import.meta.url), 'utf8'),
+)
 
 /** The marker that identifies a script as launching the Firebase emulators. */
 const EMULATOR_LAUNCH_MARKER = 'firebase emulators:exec'
@@ -233,6 +242,33 @@ describe('Phase 3 command-safety source contract', () => {
         !hasNonLoopbackHostMarker(script),
         `${name} must not reference a non-loopback host`,
       )
+    }
+  })
+
+  it('source contract: the ordinary build is V2 and rollback requires an explicit command', () => {
+    assert.equal(scripts.build, 'env VITE_MULTI_TEACHER_V2_ENABLED=true vite build')
+    assert.equal(
+      scripts['build:legacy-rollback'],
+      'env -u VITE_MULTI_TEACHER_V2_ENABLED vite build',
+    )
+    assert.equal(firebaseJson.firestore?.rules, 'firestore.phase3.final.rules')
+  })
+
+  it('source contract: unqualified Firebase commands cannot select a real project', () => {
+    const defaultProject = firebaseRc.projects?.default
+    assert.equal(typeof defaultProject, 'string')
+    assert.match(defaultProject, /^demo-/)
+    assert.notEqual(defaultProject, 'morgan-bank')
+    assert.notEqual(defaultProject, 'morgan-bank-staging')
+  })
+
+  it('source contract: the Functions package exposes no deployment shortcuts', () => {
+    const functionScripts = functionsPackageJson.scripts ?? {}
+    for (const forbidden of ['deploy', 'serve', 'logs']) {
+      assert.equal(functionScripts[forbidden], undefined)
+    }
+    for (const [name, script] of Object.entries(functionScripts)) {
+      assert.doesNotMatch(script, /\bfirebase\s+(deploy|serve|functions:log)\b/, name)
     }
   })
 

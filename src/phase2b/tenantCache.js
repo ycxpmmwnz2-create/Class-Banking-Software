@@ -439,6 +439,20 @@ export class MultiTabInvalidator {
     this.isSubscribed = true;
   }
 
+  // Records an explicit same-tab logout before Firebase persistence/sign-out
+  // begins. If both operations reject, a refresh must still block the old UID
+  // until the Auth observer confirms null. This uses the same bounded,
+  // per-tab quarantine as cross-tab invalidation without broadcasting.
+  quarantineUid(uid) {
+    const digest = computeSha256Digest(uid)
+    if (!digest) {
+      writePendingInvalidation(this.sessionStorageAdapter, { scope: "generic" })
+      return false
+    }
+    addPendingDigest(this.sessionStorageAdapter, digest)
+    return true
+  }
+
   destroy() {
     if (!this.isSubscribed) return;
     if (this.channelAdapter) {

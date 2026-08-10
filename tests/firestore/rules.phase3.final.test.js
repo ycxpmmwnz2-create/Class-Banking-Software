@@ -16,7 +16,7 @@ import {
 
 const FINAL_RULES_PATH = 'firestore.phase3.final.rules'
 const FINAL_RULES_SHA256 =
-  '1a5994098bd3041c578bb5578cd299fe24b12263ce390e65c4f21fb274849c71'
+  '1ed51ca745742cf2a76d910fc83b48df9300de1ddbcd2f438a050f748798f5bb'
 const PRODUCTION_RULES_SHA256 =
   '0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50'
 
@@ -135,9 +135,13 @@ async function seed() {
         historyBody(history, student, marker),
       )
       await db.doc(`classrooms/${room}/studentCredentials/${SHARED_LOGIN_ID}`).set({
+        loginId: SHARED_LOGIN_ID,
         classroomId: room,
         studentId: student,
+        authUid: `auth-${room}`,
+        active: true,
         pinHash: `${marker}-secret`,
+        pinUpdatedAt: 1000,
       })
       await db.doc(`studentAuthLogs/${room}/logs/log-${marker}`).set({ marker })
       await db.doc(`classrooms/${room}/private/internal-${marker}`).set({ marker })
@@ -197,11 +201,13 @@ function teacher(uid) {
   return testEnv.authenticatedContext(uid).firestore()
 }
 
-function student(uid, classroomId, studentId) {
+function student(uid, classroomId, studentId, credentialVersion = 1000) {
   return testEnv.authenticatedContext(uid, {
     role: 'student',
     classroomId,
     studentId,
+    loginId: SHARED_LOGIN_ID,
+    credentialVersion,
   }).firestore()
 }
 
@@ -470,6 +476,36 @@ describe('Phase 3 Item 10 final rules', () => {
     )
   })
 
+  test('a PIN reset immediately invalidates the prior student Firestore session', async () => {
+    const oldSession = student(`auth-${A_ROOM}`, A_ROOM, A_STUDENT)
+    const studentPath = `classrooms/${A_ROOM}/students/${A_STUDENT}`
+    await assertSucceeds(oldSession.doc(studentPath).get())
+
+    await testEnv.withSecurityRulesDisabled(async context => {
+      await context.firestore()
+        .doc(`classrooms/${A_ROOM}/studentCredentials/${SHARED_LOGIN_ID}`)
+        .update({ pinUpdatedAt: 2000 })
+    })
+
+    await assertFails(oldSession.doc(studentPath).get())
+    await assertSucceeds(
+      student(`auth-${A_ROOM}`, A_ROOM, A_STUDENT, 2000).doc(studentPath).get(),
+    )
+  })
+
+  test('a migrated Timestamp credential version matches the same millisecond claim', async () => {
+    await testEnv.withSecurityRulesDisabled(async context => {
+      await context.firestore()
+        .doc(`classrooms/${A_ROOM}/studentCredentials/${SHARED_LOGIN_ID}`)
+        .update({ pinUpdatedAt: new Date(1000) })
+    })
+
+    await assertSucceeds(
+      student(`auth-${A_ROOM}`, A_ROOM, A_STUDENT, 1000)
+        .doc(`classrooms/${A_ROOM}/students/${A_STUDENT}`).get(),
+    )
+  })
+
   test('disabled, missing, mismatched, and invalid foundations fail closed independently', async () => {
     await assertFails(teacher(DISABLED_UID).doc(`classrooms/${A_ROOM}`).get())
     await assertFails(teacher(DISABLED_UID).doc(`teachers/${DISABLED_UID}`).get())
@@ -482,7 +518,7 @@ describe('Phase 3 Item 10 final rules', () => {
   })
 
   test('an existing student token loses access when its reciprocal foundation is disabled or broken', async () => {
-    const existingStudent = student('student-a-auth', A_ROOM, A_STUDENT)
+    const existingStudent = student(`auth-${A_ROOM}`, A_ROOM, A_STUDENT)
 
     await testEnv.withSecurityRulesDisabled(async context => {
       await context.firestore().doc(`teachers/${A_UID}`).update({ status: 'disabled' })

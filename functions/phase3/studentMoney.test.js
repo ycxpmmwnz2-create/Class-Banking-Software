@@ -89,10 +89,18 @@ function createMockFirestore(initialDocs = {}, { abortAttempts = 0 } = {}) {
 
 const CLASSROOM_ID = 'class-a'
 const STUDENT_ID = '7'
+const STUDENT_LOGIN_ID = 'ada-student'
+const CREDENTIAL_VERSION = 1000
 const STUDENT_UID = deriveDeterministicStudentAuthUid(CLASSROOM_ID, STUDENT_ID)
 const studentAuth = Object.freeze({
   uid: STUDENT_UID,
-  token: Object.freeze({ role: 'student', classroomId: CLASSROOM_ID, studentId: STUDENT_ID }),
+  token: Object.freeze({
+    role: 'student',
+    classroomId: CLASSROOM_ID,
+    studentId: STUDENT_ID,
+    loginId: STUDENT_LOGIN_ID,
+    credentialVersion: CREDENTIAL_VERSION,
+  }),
 })
 
 function foundation(overrides = {}) {
@@ -115,6 +123,14 @@ function foundation(overrides = {}) {
       frozen: false,
       transactions: [],
       ...overrides.student,
+    },
+    [`classrooms/${CLASSROOM_ID}/studentCredentials/${STUDENT_LOGIN_ID}`]: {
+      active: true,
+      classroomId: CLASSROOM_ID,
+      studentId: STUDENT_ID,
+      authUid: STUDENT_UID,
+      pinUpdatedAt: CREDENTIAL_VERSION,
+      ...overrides.credential,
     },
   }
 }
@@ -279,7 +295,13 @@ test('student submissions use a bounded per-student rolling throttle window', as
   const otherStudentId = '8'
   const otherStudentAuth = {
     uid: deriveDeterministicStudentAuthUid(CLASSROOM_ID, otherStudentId),
-    token: { role: 'student', classroomId: CLASSROOM_ID, studentId: otherStudentId },
+    token: {
+      role: 'student',
+      classroomId: CLASSROOM_ID,
+      studentId: otherStudentId,
+      loginId: 'grace-student',
+      credentialVersion: CREDENTIAL_VERSION,
+    },
   }
   firestore.store.set(`classrooms/${CLASSROOM_ID}/students/${otherStudentId}`, {
     id: Number(otherStudentId),
@@ -287,6 +309,13 @@ test('student submissions use a bounded per-student rolling throttle window', as
     balance: 20,
     frozen: false,
     transactions: [],
+  })
+  firestore.store.set(`classrooms/${CLASSROOM_ID}/studentCredentials/grace-student`, {
+    active: true,
+    classroomId: CLASSROOM_ID,
+    studentId: otherStudentId,
+    authUid: otherStudentAuth.uid,
+    pinUpdatedAt: CREDENTIAL_VERSION,
   })
   const otherStudentResult = await submitStudentTransactionV2Service(
     { transactionId: 1700000000300, type: 'Add', amount: 1, reason: 'Homework' },
@@ -354,10 +383,12 @@ test('malformed requests and forged student identities fail before Firestore acc
 
   const forgedAuth = [
     null,
-    { uid: STUDENT_UID, token: { role: 'teacher', classroomId: CLASSROOM_ID, studentId: STUDENT_ID } },
-    { uid: 'someone-else', token: { role: 'student', classroomId: CLASSROOM_ID, studentId: STUDENT_ID } },
-    { uid: STUDENT_UID, token: { role: 'student', classroomId: 'other-room', studentId: STUDENT_ID } },
-    { uid: STUDENT_UID, token: { role: 'student', classroomId: CLASSROOM_ID, studentId: '07' } },
+    { uid: STUDENT_UID, token: { ...studentAuth.token, role: 'teacher' } },
+    { uid: 'someone-else', token: { ...studentAuth.token } },
+    { uid: STUDENT_UID, token: { ...studentAuth.token, classroomId: 'other-room' } },
+    { uid: STUDENT_UID, token: { ...studentAuth.token, studentId: '07' } },
+    { uid: STUDENT_UID, token: { ...studentAuth.token, loginId: 'bad/id' } },
+    { uid: STUDENT_UID, token: { ...studentAuth.token, credentialVersion: 0 } },
   ]
   for (const auth of forgedAuth) {
     const firestore = createMockFirestore(foundation())
@@ -371,6 +402,20 @@ test('malformed requests and forged student identities fail before Firestore acc
     )
     assert.equal(firestore.transactionAttempts, 0)
   }
+})
+
+test('a PIN reset immediately invalidates the prior student money session', async () => {
+  const docs = foundation({ credential: { pinUpdatedAt: CREDENTIAL_VERSION + 1 } })
+  const firestore = createMockFirestore(docs)
+
+  await assert.rejects(
+    submitStudentTransactionV2Service(
+      { transactionId: 1700000000500, type: 'Add', amount: 1, reason: 'Homework' },
+      { firestore, auth: studentAuth },
+    ),
+    error => error instanceof StudentMoneyError && error.code === 'permission-denied',
+  )
+  assert.deepEqual(Object.fromEntries(firestore.store), docs)
 })
 
 test('settings, frozen state, reason allowlists, and balance are enforced server-side', async () => {

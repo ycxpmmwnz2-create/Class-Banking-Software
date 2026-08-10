@@ -547,7 +547,7 @@ with the unchanged bridge suite, `test:phase3:rules` provides 39 behavioral
 emulator tests across the three deployment states.
 
 The final SHA-256 is
-`1a5994098bd3041c578bb5578cd299fe24b12263ce390e65c4f21fb274849c71`.
+`1ed51ca745742cf2a76d910fc83b48df9300de1ddbcd2f438a050f748798f5bb`.
 The rollback-safe SHA-256 is
 `c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d`.
 The bridge and unchanged production pins remain as recorded above. These are
@@ -665,7 +665,7 @@ gate-off client performs a collection query on `studentAuthLogs`, so denying
 That disposition changes no bridge or rollback rule bytes.
 
 The final-rules SHA-256 for this correction is
-`1a5994098bd3041c578bb5578cd299fe24b12263ce390e65c4f21fb274849c71`.
+`1ed51ca745742cf2a76d910fc83b48df9300de1ddbcd2f438a050f748798f5bb`.
 The bridge, rollback, and checked-in production-rule hashes are unchanged.
 
 Correction verification on 2026-07-28:

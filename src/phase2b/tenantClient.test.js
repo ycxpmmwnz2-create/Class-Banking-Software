@@ -2315,6 +2315,23 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
+  test("SOURCE GUARD: V2 logout records durable quarantine before cleanup and Firebase sign-out", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const logoutStart = source.indexOf("async function logout() {");
+    const logoutEnd = source.indexOf("\n    function ", logoutStart);
+    assert.notEqual(logoutStart, -1, "logout must remain present");
+    assert.notEqual(logoutEnd, -1, "logout must have a bounded source block");
+    const logoutBlock = source.slice(logoutStart, logoutEnd);
+    const quarantineAt = logoutBlock.indexOf("v2MultiTabInvalidator.quarantineUid(");
+    const orchestrateAt = logoutBlock.indexOf("orchestrateProductionLogout(");
+
+    assert.ok(quarantineAt >= 0, "V2 logout must durably quarantine the active UID");
+    assert.ok(
+      quarantineAt < orchestrateAt,
+      "quarantine must be recorded before cleanup or Firebase sign-out can fail"
+    );
+  });
+
   test("SOURCE GUARD: the login locator stores only a project-scoped classroom code and login ID after successful V2 login", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const loginStart = source.indexOf("async function loginStudent() {");

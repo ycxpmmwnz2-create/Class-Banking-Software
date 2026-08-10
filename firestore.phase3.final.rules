@@ -21,9 +21,15 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/classrooms/$(classroomId));
     }
 
-    // At most two distinct lookups: the relevant teacher record and the
-    // requested classroom root. For a student read, the teacher is the
-    // classroom owner. Repeated references to either path are cached.
+    function studentCredentialDoc(classroomId) {
+      return get(
+        /databases/$(database)/documents/classrooms/$(classroomId)/studentCredentials/$(request.auth.token.loginId)
+      );
+    }
+
+    // At most three distinct lookups for a student read: the relevant teacher,
+    // classroom root, and the server-owned credential version. Repeated
+    // references to each path are cached.
     function isActiveTeacher(uid) {
       return isSignedIn()
         && request.auth.uid == uid
@@ -52,6 +58,24 @@ service cloud.firestore {
         && request.auth.token.role == "student"
         && request.auth.token.classroomId == classroomId
         && request.auth.token.studentId == studentId
+        && request.auth.token.loginId is string
+        && request.auth.token.credentialVersion is int
+        && studentCredentialDoc(classroomId).data.active == true
+        && studentCredentialDoc(classroomId).data.classroomId == classroomId
+        && studentCredentialDoc(classroomId).data.studentId == studentId
+        && studentCredentialDoc(classroomId).data.authUid == request.auth.uid
+        && (
+          (
+            studentCredentialDoc(classroomId).data.pinUpdatedAt is int
+            && studentCredentialDoc(classroomId).data.pinUpdatedAt
+              == request.auth.token.credentialVersion
+          )
+          || (
+            studentCredentialDoc(classroomId).data.pinUpdatedAt is timestamp
+            && studentCredentialDoc(classroomId).data.pinUpdatedAt.toMillis()
+              == request.auth.token.credentialVersion
+          )
+        )
         && hasActiveReciprocalFoundation(classroomId);
     }
 

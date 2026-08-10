@@ -158,6 +158,7 @@ function credentialFixture(classroomId, loginId, studentId, overrides = {}) {
       schemaVersion: 1,
       active: true,
       pinHash: '$2b$10$storedhash',
+      pinUpdatedAt: 1000,
       failedAttempts: 0,
       lockedUntil: null,
       ...overrides,
@@ -195,6 +196,8 @@ test('successful student verification: exact claims, authUid, and token output',
     role: 'student',
     classroomId: 'classA',
     studentId: 'stu123',
+    loginId: 'alex-smith',
+    credentialVersion: 1000,
   })
   assert.equal(result.token, `token_for_${authUidA}_stu123`)
   assert.equal(factory.calls.length, 1)
@@ -435,7 +438,7 @@ test('dummy hash timing defense runs exactly once per attempt', async () => {
   }
 })
 
-test('five-attempt credential lock boundary and expired lock reset', async () => {
+test('wrong PINs never create a victim-controlled lockout and a correct PIN remains usable', async () => {
   const initialDocs = {
     ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
     ...credentialFixture('classA', 'alex-smith', 'stu1', {
@@ -449,7 +452,8 @@ test('five-attempt credential lock boundary and expired lock reset', async () =>
   const factory = tokenFactory()
   let currentTime = 1000000
 
-  // 5th failed attempt -> locks credential
+  // A fifth failed attempt caps the diagnostic counter without locking the
+  // shared credential. Abuse is controlled by source/identifier throttles.
   await assert.rejects(
     () =>
       verifyStudentCredentialV2(
@@ -466,9 +470,9 @@ test('five-attempt credential lock boundary and expired lock reset', async () =>
 
   const lockedCred = firestore.store.get('classrooms/classA/studentCredentials/alex-smith')
   assert.equal(lockedCred.failedAttempts, 5)
-  assert.equal(lockedCred.lockedUntil, currentTime + 5 * 60 * 1000)
+  assert.equal(lockedCred.lockedUntil, null)
 
-  // 6th attempt while locked -> rejects as locked without touching the counter
+  // Further failures do not grow the victim-owned counter.
   await assert.rejects(
     () =>
       verifyStudentCredentialV2(
@@ -485,8 +489,8 @@ test('five-attempt credential lock boundary and expired lock reset', async () =>
   const stillLocked = firestore.store.get('classrooms/classA/studentCredentials/alex-smith')
   assert.equal(stillLocked.failedAttempts, 5)
 
-  // Fast forward past lockout duration (5 mins) -> expired lock allows attempt
-  currentTime += 6 * 60 * 1000
+  // A correct PIN remains usable before the throttle boundary is reached.
+  currentTime += 2000
   const successRes = await verifyStudentCredentialV2(
     { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'correct' },
     {
@@ -531,45 +535,47 @@ test('ten-attempt throttle boundary and window reset', async () => {
   }
 
   const throttleDocs = logEntries(firestore, 'studentLoginThrottle/')
-  assert.equal(throttleDocs.length, 1)
-  assert.equal(throttleDocs[0].data.attempts.length, 10)
+  assert.equal(throttleDocs.length, 3)
+  assert.equal(throttleDocs.every(entry => entry.data.attempts.length === 10), true)
 
-  // 11th attempt within 5 minutes -> rejected at the throttle, even with the
-  // correct PIN, and the bucket does not grow further.
-  await assert.rejects(
-    () =>
-      verifyStudentCredentialV2(
-        { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'correct' },
-        {
-          firestore,
-          verifyPin: async () => true,
-          now: () => currentTime + 1000,
-          createCustomToken: factory.createCustomToken,
-        },
-      ),
-    StudentVerifierError,
-  )
-  assert.equal(factory.calls.length, 0)
-  assert.equal(
-    logEntries(firestore, 'studentLoginThrottle/')[0].data.attempts.length,
-    10,
-  )
-
-  // Fast forward past 5-minute throttle window -> reset allows successful login
-  currentTime += 6 * 60 * 1000
-  const successRes = await verifyStudentCredentialV2(
+  // An attacker can fill the identifier bucket, but the victim's correct PIN
+  // still works while the independent source/global budgets remain available.
+  const recovered = await verifyStudentCredentialV2(
     { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'correct' },
     {
       firestore,
       verifyPin: async () => true,
-      now: () => currentTime,
+      now: () => currentTime + 1000,
       createCustomToken: factory.createCustomToken,
     },
   )
-  assert.ok(successRes)
+  assert.ok(recovered)
+  assert.equal(factory.calls.length, 1)
+  assert.deepEqual(
+    logEntries(firestore, 'studentLoginThrottle/')
+      .map(entry => entry.data.attempts.length).sort((a, b) => a - b),
+    [0, 10, 10],
+  )
+
+  // Fast forward past the window: another failure starts all three rolling
+  // budgets at one rather than preserving stale timestamps.
+  currentTime += 6 * 60 * 1000
+  await assert.rejects(
+    verifyStudentCredentialV2(
+      { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'wrong' },
+      {
+        firestore,
+        verifyPin: async () => false,
+        now: () => currentTime,
+        createCustomToken: factory.createCustomToken,
+      },
+    ),
+    StudentVerifierError,
+  )
   assert.equal(
-    logEntries(firestore, 'studentLoginThrottle/')[0].data.attempts.length,
-    1,
+    logEntries(firestore, 'studentLoginThrottle/')
+      .every(entry => entry.data.attempts.length === 1),
+    true,
   )
 })
 
@@ -610,9 +616,16 @@ test('repeated malformed and unknown-code attempts reach the digest throttle', a
     }
 
     const throttleDocs = logEntries(firestore, 'studentLoginThrottle/')
-    assert.equal(throttleDocs.length, 1, `${desc}: one throttle bucket`)
-    assert.equal(throttleDocs[0].data.attempts.length, 10, `${desc}: ten counted`)
-    assert.match(throttleDocs[0].path, /^studentLoginThrottle\/[a-f0-9]{64}$/)
+    assert.equal(throttleDocs.length, 3, `${desc}: identifier, source, and global buckets`)
+    assert.equal(
+      throttleDocs.every(entry => entry.data.attempts.length === 10),
+      true,
+      `${desc}: ten counted in each bounded layer`,
+    )
+    assert.equal(
+      throttleDocs.every(entry => /^studentLoginThrottle\/[a-f0-9]{64}$/.test(entry.path)),
+      true,
+    )
 
     // The 11th attempt is rejected by the throttle itself.
     await assert.rejects(
@@ -622,11 +635,11 @@ test('repeated malformed and unknown-code attempts reach the digest throttle', a
 
     const throttledLogs = logEntries(firestore, 'studentAuthUnresolvedLogs/')
       .filter(entry => entry.data.outcome === STUDENT_LOGIN_OUTCOMES.THROTTLED)
-    assert.equal(throttledLogs.length, 1, `${desc}: throttled outcome logged`)
+    assert.equal(throttledLogs.length, 0, `${desc}: throttled floods create no new logs`)
   }
 })
 
-test('throttled attempt for a known classroom uses the scoped log path', async () => {
+test('identifier-throttled failures create no further durable auth logs', async () => {
   const initialDocs = {
     ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
     ...credentialFixture('classA', 'alex-smith', 'stu1', { pinHash: 'hash' }),
@@ -653,9 +666,48 @@ test('throttled attempt for a known classroom uses the scoped log path', async (
   const throttled = scopedLogs.filter(
     entry => entry.data.outcome === STUDENT_LOGIN_OUTCOMES.THROTTLED,
   )
-  assert.equal(throttled.length, 1)
-  assert.equal(throttled[0].data.studentId, undefined)
+  assert.equal(throttled.length, 0)
+  assert.equal(scopedLogs.length, 10)
   assert.equal(logEntries(firestore, 'studentAuthUnresolvedLogs/').length, 0)
+})
+
+test('rotating identifiers cannot bypass the bounded source budget', async () => {
+  const firestore = createMockFirestore(
+    classroomFixture('classA', 'teacherA', CLASS_A_CODE),
+  )
+  const factory = tokenFactory()
+  let bcryptCalls = 0
+  const dependencies = {
+    firestore,
+    sourceKey: 'same-network-source',
+    verifyPin: async () => { bcryptCalls += 1; return false },
+    now: () => 9000,
+    createCustomToken: factory.createCustomToken,
+  }
+
+  for (let index = 0; index < 30; index += 1) {
+    await assert.rejects(
+      verifyStudentCredentialV2(
+        { classroomCode: 'FFFFFFFF', loginId: `rotating-${index}`, pin: '1234' },
+        dependencies,
+      ),
+      StudentVerifierError,
+    )
+  }
+  const logsBeforeThrottle = logEntries(firestore, 'studentAuthUnresolvedLogs/').length
+  const writesBeforeThrottle = firestore.store.size
+
+  await assert.rejects(
+    verifyStudentCredentialV2(
+      { classroomCode: 'FFFFFFFF', loginId: 'rotating-31', pin: '1234' },
+      dependencies,
+    ),
+    StudentVerifierError,
+  )
+
+  assert.equal(bcryptCalls, 30, 'the source-throttled request must skip bcrypt')
+  assert.equal(logEntries(firestore, 'studentAuthUnresolvedLogs/').length, logsBeforeThrottle)
+  assert.equal(firestore.store.size, writesBeforeThrottle, 'the throttled request must create no document')
 })
 
 test('resolved versus unresolved log paths and redacted bodies', async () => {
@@ -731,6 +783,9 @@ test('forged credential identity fails closed for every mismatched field', async
     { desc: 'missing pinHash', overrides: { pinHash: undefined } },
     { desc: 'non-string pinHash', overrides: { pinHash: 12345 } },
     { desc: 'empty pinHash', overrides: { pinHash: '' } },
+    { desc: 'missing credential version', overrides: { pinUpdatedAt: undefined } },
+    { desc: 'zero credential version', overrides: { pinUpdatedAt: 0 } },
+    { desc: 'fractional credential version', overrides: { pinUpdatedAt: 1.5 } },
   ]
 
   for (const { desc, overrides } of forgedCases) {

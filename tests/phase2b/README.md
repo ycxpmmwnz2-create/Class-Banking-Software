@@ -57,7 +57,7 @@ A Java runtime is required for the Firestore/Auth emulators and is installed
 
 The proposed-rules contract has teeth: reintroducing the recursive
 `classrooms/{document=**}` allow into the fixture fails **16 of 29** tests,
-including the scoped-credential lockout assertions the plan calls out.
+including scoped-credential throttle and victim-lockout prevention assertions.
 
 The gate-on server suite also loads the checksum-pinned Phase 3 final rules and
 executes the complete clean-start seam without legacy seeding: a time-bounded

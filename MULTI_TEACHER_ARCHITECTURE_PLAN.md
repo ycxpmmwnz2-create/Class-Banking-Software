@@ -1,5 +1,13 @@
 # Multi-Teacher Architecture Plan (Version 2.0)
 
+> Security hardening amendment (2026-08-09): historical requirements below
+> that describe attacker-triggerable credential lockouts are superseded by
+> bounded per-identifier, per-source, and global failure throttles. A correct
+> PIN remains usable when only the identifier bucket is full; `failedAttempts`
+> is bounded telemetry and `lockedUntil` remains `null`. PIN resets revoke
+> refresh tokens and change the credential version checked by final rules and
+> student callables.
+
 Status: **Historical design plus local implementation and bounded release
 record.** This
 document began as a read-only architecture proposal on `feature/multi-teacher`.
