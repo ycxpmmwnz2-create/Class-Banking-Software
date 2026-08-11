@@ -2337,6 +2337,96 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
+  test("SOURCE GUARD: the student classroom-code field normalizes typed and pasted codes without weakening stored-locator validation", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const formatterStart = source.indexOf("function formatStudentClassroomCodeDraft(rawCode) {");
+    const formatterEnd = source.indexOf("\n    function handleStudentClassroomCodeInput(event) {", formatterStart);
+    assert.notEqual(formatterStart, -1, "the classroom-code input formatter must exist");
+    assert.notEqual(formatterEnd, -1, "the classroom-code input formatter must have a bounded source block");
+    const formatterBlock = source.slice(formatterStart, formatterEnd);
+
+    assert.match(
+      formatterBlock,
+      /\[\^2-9A-HJ-NP-Z\]\/g/,
+      "typed input must keep only the server-approved unambiguous alphabet"
+    );
+    assert.match(
+      formatterBlock,
+      /slice\(0, 8\)/,
+      "typed or pasted input must be bounded to one classroom code"
+    );
+    assert.match(
+      formatterBlock,
+      /`\$\{canonical\.slice\(0, 4\)\}-\$\{canonical\.slice\(4\)\}`/,
+      "the visible draft must receive the canonical separator"
+    );
+
+    const inputMatch = source.match(/<input id="studentClassroomCode"[^>]*>/);
+    assert.ok(inputMatch, "the student classroom-code input must remain rendered");
+    assert.match(inputMatch[0], /maxlength="9"/);
+    assert.match(inputMatch[0], /oninput="handleStudentClassroomCodeInput\(event\)"/);
+    assert.match(
+      source,
+      /window\.handleStudentClassroomCodeInput = handleStudentClassroomCodeInput;/,
+      "the inline input handler must be reachable from module-rendered markup"
+    );
+
+    const loginStart = source.indexOf("async function loginStudent() {");
+    const loginEnd = source.indexOf("\n    async function logout() {", loginStart);
+    const loginBlock = source.slice(loginStart, loginEnd);
+    assert.match(
+      loginBlock,
+      /formatStudentClassroomCodeDraft\(\s*document\.getElementById\("studentClassroomCode"\)\?\.value \|\| ""\s*\)/,
+      "the submitted full-form value must be normalized even if an input event was missed"
+    );
+
+    const locatorParserStart = source.indexOf("function parseStudentLoginLocator(rawRecord) {");
+    const locatorParserEnd = source.indexOf("\n    function readStudentLoginLocator() {", locatorParserStart);
+    const locatorParser = source.slice(locatorParserStart, locatorParserEnd);
+    assert.match(
+      locatorParser,
+      /classroomCode !== parsed\.classroomCode/,
+      "stored locators must remain byte-canonical and must not be silently repaired"
+    );
+  });
+
+  test("SOURCE GUARD: the classroom student link carries only a validated code and opens the full student form", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const readerStart = source.indexOf("function readStudentClassroomCodeFromLink() {");
+    const readerEnd = source.indexOf("\n    function studentClassroomLoginLink(rawCode) {", readerStart);
+    const builderEnd = source.indexOf("\n    function clearStudentClassroomCodeFromLink(rawCode) {", readerEnd);
+    assert.notEqual(readerStart, -1, "the classroom-link reader must exist");
+    assert.notEqual(readerEnd, -1, "the classroom-link reader must be bounded");
+    assert.notEqual(builderEnd, -1, "the classroom-link builder must be bounded");
+    const readerBlock = source.slice(readerStart, readerEnd);
+    const builderBlock = source.slice(readerEnd, builderEnd);
+
+    assert.match(readerBlock, /window\.location\.hash\.slice\(1\)/);
+    assert.match(readerBlock, /entries\.length !== 1 \|\| entries\[0\]\[0\] !== "student-login"/);
+    assert.match(readerBlock, /code && code === rawCode \? code : ""/);
+    assert.match(builderBlock, /url\.search = "";/, "the share link must carry no query data");
+    assert.match(builderBlock, /url\.hash = new URLSearchParams\(\{ "student-login": code \}\)\.toString\(\);/);
+    assert.doesNotMatch(
+      `${readerBlock}\n${builderBlock}`,
+      /loginId|studentId|pin|token|uid/i,
+      "the share link must contain no student identity or credential"
+    );
+
+    assert.match(
+      source,
+      /studentLoginLocator = linkedStudentClassroomCode \? null : readStudentLoginLocator\(\);/,
+      "opening a classroom link must show the full form rather than another student's remembered PIN-only form"
+    );
+    assert.match(source, /if \(linkedStudentClassroomCode\) loginTab = "student";/);
+    assert.match(
+      source,
+      /if \(studentLoginLocator\) \{\s*clearStudentClassroomCodeFromLink\(classroomCode\);\s*\}/,
+      "the link fragment may clear only after the successful login locator is available"
+    );
+    assert.match(source, /onclick="copyStudentClassroomLoginLink\(\)"/);
+    assert.match(source, /window\.copyStudentClassroomLoginLink = copyStudentClassroomLoginLink;/);
+  });
+
   test("SOURCE GUARD: the login locator stores only a project-scoped classroom code and login ID after successful V2 login", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const loginStart = source.indexOf("async function loginStudent() {");
@@ -2506,8 +2596,13 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     const resetBlock = source.slice(resetStart, resetEnd);
     assert.match(
       resetBlock,
-      /studentLoginLocator = readStudentLoginLocator\(\);/,
-      "an ordinary logout must rehydrate the remembered locator so daily login stays fast"
+      /studentLoginLocator = linkedStudentClassroomCode \? null : readStudentLoginLocator\(\);/,
+      "an ordinary logout must rehydrate the remembered locator unless an explicit classroom link is active"
+    );
+    assert.match(
+      resetBlock,
+      /studentClassroomCodeDraft = linkedStudentClassroomCode \|\| \(studentLoginLocator/,
+      "an explicit classroom link must win over a different student's remembered locator"
     );
   });
 

@@ -90,6 +90,50 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     )
   }
 
+  test('student classroom code supports typing with or without the separator and pasting', async ({ page }) => {
+    await gotoApp(page)
+    await waitForQuiescence(page)
+    await page.evaluate(() => window.setLoginTab('student'))
+    const input = page.locator('#studentClassroomCode')
+    const canonical = TENANT_A.studentLoginCode
+
+    await input.pressSequentially(canonical.replace('-', '').toLowerCase())
+    await expect(input).toHaveValue(canonical)
+
+    await input.fill('')
+    await input.pressSequentially(canonical.toLowerCase())
+    await expect(input).toHaveValue(canonical)
+
+    await input.fill(canonical.toLowerCase())
+    await expect(input).toHaveValue(canonical)
+  })
+
+  test('classroom-specific link opens the full student form with only the classroom code prefilled', async ({ page }) => {
+    await gotoApp(page)
+    await waitForQuiescence(page)
+    const linkedUrl = await page.evaluate(classroomCode => {
+      const url = new URL(window.location.href)
+      url.search = ''
+      url.hash = new URLSearchParams({ 'student-login': classroomCode }).toString()
+      return url.toString()
+    }, TENANT_A.studentLoginCode)
+
+    // Reload the application through the shared link. A same-document hash
+    // change would not exercise the startup behavior students actually use.
+    await page.goto('about:blank')
+    await page.goto(linkedUrl)
+    await waitForQuiescence(page)
+
+    await expect(page.locator('#studentClassroomCode')).toHaveValue(TENANT_A.studentLoginCode)
+    await expect(page.locator('#studentLoginId')).toHaveValue('')
+    await expect(page.locator('#studentPin')).toHaveValue('')
+    await expect(page.locator('#rememberedStudentIdentity')).toHaveCount(0)
+    expect(
+      await page.evaluate(() => window.__PHASE2B_TEST__.localKeys()
+        .filter(key => key.includes(':student-login:'))),
+    ).toEqual([])
+  })
+
   test('teacher can reveal, copy, and temporarily display only the newly submitted PIN', async ({ page }) => {
     await page.addInitScript(() => {
       Object.defineProperty(navigator, 'clipboard', {
