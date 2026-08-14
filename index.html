@@ -882,6 +882,7 @@ import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./sr
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
 import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateStudentPinDirectoryFetch, orchestrateStudentTransaction, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, reconcileStudentPinDirectory, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
 import { formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
+import { sortStudentsByName } from "./src/phase2b/studentDisplay.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 import { sanitizeLegacyBackup } from "./src/legacy/backupImport.js";
@@ -3712,7 +3713,7 @@ ${data.students.length === 0 ? `
 
 ${transactionTarget !== "whole" ? `
   <div class="student-check-list full-row" style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
-    ${data.students.map(student => `
+    ${sortStudentsByName(data.students).map(student => `
       <label class="student-check-item" style="display: flex; align-items: center; gap: 10px; width: 100%;">
         <input
           type="checkbox"

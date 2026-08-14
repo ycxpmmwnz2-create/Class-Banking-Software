@@ -3021,4 +3021,25 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       assert.ok(fn.includes(needle), `updateStudent must still ${needle}`);
     }
   });
+
+  test("custom transaction student checkboxes use the alphabetical display copy", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const customTransactionStart = source.indexOf('<h2>Custom Transaction</h2>');
+    const recentTransactionsStart = source.indexOf('<h2>Recent Transactions</h2>', customTransactionStart);
+
+    assert.ok(customTransactionStart >= 0, "custom transaction card must exist");
+    assert.ok(recentTransactionsStart > customTransactionStart, "custom transaction card must have a bounded end");
+
+    const customTransactionSource = source.slice(customTransactionStart, recentTransactionsStart);
+    assert.match(
+      customTransactionSource,
+      /sortStudentsByName\(data\.students\)\.map\(student\s*=>/,
+      "the checkbox list must render the alphabetical display copy"
+    );
+    assert.doesNotMatch(
+      customTransactionSource,
+      /data\.students\.sort\(/,
+      "the stored roster must never be sorted in place"
+    );
+  });
 });
