@@ -3481,6 +3481,38 @@ authorization:
   has not completed the post-acceptance observation window, and no second real
   teacher has been invited or onboarded by this work.
 
+## Part 4 — Version 3 AI Insights architecture boundary
+
+Version 3 begins as a new, separately reviewed product layer on top of the
+existing tenant-scoped aggregate view. It does not reopen or weaken the Version
+2 authentication, authorization, tenant-isolation, balance, transaction,
+migration, release, or rollback contracts above.
+
+The first Version 3 item is the provider-independent Insights foundation
+defined in `VERSION3_AI_INSIGHTS_PLAN.md`. It may add a pure deterministic
+analysis module, focused unit tests, a teacher-only Insights destination, and a
+compact dashboard preview. It may read only the already validated in-memory
+`data.students` and `data.transactions` view for the active teacher tenant. It
+must not read Firestore directly, persist an insight report, alter balances or
+transactions, initiate background work, or make a model/network call.
+
+This architecture update permits the following first-item files:
+
+- `VERSION3_AI_INSIGHTS_PLAN.md`;
+- `src/insights/classInsights.js` and its colocated behavioral test;
+- `tests/version3/insights-ui.contract.test.js` for bounded source-wiring
+  evidence;
+- `index.html` for teacher-only navigation and rendering; and
+- `package.json` only to register the focused local test command.
+
+A later real Gemini integration is a different material item. It requires a
+new acceptance boundary covering the callable/provider contract, authenticated
+tenant derivation, request and response validation, retry/idempotency behavior,
+usage metering, the $7.50 monthly Gemini allowance, the separate $5 Firebase
+allowance, the $12.50 combined ceiling, provider billing configuration, and
+emulator/browser evidence. No text in this Part 4 boundary authorizes an API,
+Firebase, billing, staging, production, deployment, commit, or push action.
+
 ---
 
 *This document preserves the original planning rationale and the later local

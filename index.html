@@ -282,6 +282,204 @@
       line-height: 1.25;
     }
 
+    .insights-dashboard-card {
+      margin-bottom: 16px;
+      padding: 18px 20px;
+      background: linear-gradient(135deg, rgba(239, 250, 248, 0.96), rgba(217, 241, 238, 0.96));
+      overflow: hidden;
+    }
+
+    .insights-dashboard-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .insights-dashboard-copy {
+      min-width: 0;
+      max-width: 760px;
+    }
+
+    .insights-dashboard-copy h2 {
+      margin: 3px 0 6px;
+      font-size: 21px;
+    }
+
+    .insights-dashboard-copy p {
+      margin: 0;
+      color: var(--muted);
+      font-weight: 750;
+      line-height: 1.45;
+    }
+
+    .insights-eyebrow {
+      display: block;
+      color: var(--teal-dark);
+      font-size: 12px;
+      font-weight: 950;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+
+    .insights-shell {
+      width: min(980px, 100%);
+      margin: 0 auto;
+      display: grid;
+      gap: 16px;
+    }
+
+    .insights-intro {
+      padding: clamp(22px, 4vw, 38px);
+      background: linear-gradient(145deg, rgba(239, 250, 248, 0.98), rgba(214, 239, 236, 0.98));
+    }
+
+    .insights-intro h2 {
+      margin: 8px 0 10px;
+      font-size: clamp(29px, 5vw, 44px);
+    }
+
+    .insights-intro > p {
+      max-width: 680px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 17px;
+      font-weight: 720;
+      line-height: 1.55;
+    }
+
+    .insights-controls {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 20px;
+      align-items: end;
+      margin-top: 26px;
+    }
+
+    .insights-periods {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      max-width: 360px;
+      padding: 6px;
+      border: 1px solid rgba(169, 211, 207, 0.86);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.48);
+    }
+
+    .insights-periods button {
+      border: 0;
+      border-radius: 12px;
+      background: transparent;
+      box-shadow: none;
+      padding: 9px 12px;
+    }
+
+    .insights-periods button.active {
+      background: #ffffff;
+      color: var(--text);
+      box-shadow: 0 4px 12px rgba(18, 50, 58, 0.09);
+    }
+
+    .insights-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .insights-actions button {
+      margin: 0;
+      white-space: nowrap;
+    }
+
+    .insights-budget-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .insights-budget-item {
+      min-width: 0;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(239, 250, 248, 0.88);
+      border: 1px solid rgba(169, 211, 207, 0.72);
+    }
+
+    .insights-budget-item strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 22px;
+      letter-spacing: -0.03em;
+    }
+
+    .insights-report-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .insights-report-header h2 {
+      margin: 4px 0 5px;
+    }
+
+    .insights-report-meta {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 750;
+      line-height: 1.4;
+    }
+
+    .insights-local-badge {
+      flex: 0 0 auto;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(94, 199, 194, 0.16);
+      color: var(--teal-dark);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .insights-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .insight-observation {
+      padding: 17px 18px;
+      border-radius: 18px;
+      border: 1px solid rgba(169, 211, 207, 0.72);
+      background: rgba(239, 250, 248, 0.82);
+    }
+
+    .insight-observation[data-priority="attention"] {
+      border-color: rgba(222, 132, 103, 0.48);
+      background: rgba(255, 244, 239, 0.72);
+    }
+
+    .insight-observation h3 {
+      margin: 5px 0 7px;
+      font-size: 19px;
+    }
+
+    .insight-observation p {
+      margin: 0;
+      color: #29464e;
+      font-weight: 720;
+      line-height: 1.45;
+    }
+
+    .insight-evidence {
+      margin-top: 9px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 750;
+      line-height: 1.4;
+    }
+
     .student-login-info {
       border: 2px solid rgba(36, 148, 144, 0.42);
       margin-bottom: 12px;
@@ -744,6 +942,8 @@
     @media (max-width: 1000px) {
       .stats { grid-template-columns: repeat(2, 1fr); }
       .dashboard-insights .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .insights-controls { grid-template-columns: 1fr; align-items: stretch; }
+      .insights-actions { justify-content: flex-start; }
       .grid { grid-template-columns: minmax(0, 1fr); }
       .wide-grid { grid-template-columns: 1fr; }
       .hero {
@@ -819,6 +1019,16 @@
       .dashboard-insights .stats { grid-template-columns: 1fr; }
       .dashboard-insights { padding: 12px; }
       .dashboard-insights .stat-box { min-height: 48px; }
+      .insights-dashboard-row,
+      .insights-report-header {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .insights-dashboard-row > button { align-self: flex-start; }
+      .insights-budget-row { grid-template-columns: 1fr; }
+      .insights-actions { display: grid; grid-template-columns: 1fr; }
+      .insights-actions button { width: 100%; }
+      .insights-local-badge { align-self: flex-start; }
       .student-login-info-row { align-items: stretch; }
       .student-login-info-code {
         width: 100%;
@@ -885,6 +1095,7 @@ import { formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthL
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 import { sanitizeLegacyBackup } from "./src/legacy/backupImport.js";
+import { buildClassInsightsReport, buildInsightsDataSignature, INSIGHTS_BUDGETS, INSIGHTS_PERIODS } from "./src/insights/classInsights.js";
 
 const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED === "true";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
@@ -945,6 +1156,10 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let loggedInStudentId = null;
     let teacherProfileStudentId = null;
     let message = "";
+    let insightsPeriodDays = 30;
+    let insightsMode = "quick";
+    let insightsReport = null;
+    let insightsDataSignature = null;
     let studentClassroomCodeDraft = "";
     let studentLoginIdDraft = "";
     // The validated signed-out login locator for this browser, or null. It holds
@@ -1495,6 +1710,75 @@ function toggleStudentDropdown() {
       if (newScreen === "credentials" && IS_MULTI_TEACHER_V2_ENABLED && isTeacher) {
         loadStudentPinDirectory();
       }
+    }
+
+    function setInsightsPeriod(days) {
+      if (!requireTeacher()) return;
+      const nextDays = Number(days);
+      if (!INSIGHTS_PERIODS.includes(nextDays)) return;
+      if (nextDays !== insightsPeriodDays) {
+        insightsPeriodDays = nextDays;
+        insightsReport = null;
+        insightsDataSignature = null;
+      }
+      screen = "insights";
+      render();
+    }
+
+    function generateLocalInsights(mode) {
+      if (!requireTeacher()) return;
+      insightsMode = mode === "deep" ? "deep" : "quick";
+      const currentDataSignature = currentInsightsDataSignature();
+      const nextReport = buildClassInsightsReport({
+        students: data.students,
+        transactions: data.transactions,
+        days: insightsPeriodDays,
+        mode: insightsMode,
+        now: new Date(),
+      });
+      insightsReport = nextReport;
+      insightsDataSignature = currentDataSignature;
+      screen = "insights";
+      render();
+    }
+
+    function currentInsightsDataSignature() {
+      return buildInsightsDataSignature({
+        students: data.students,
+        transactions: data.transactions,
+      });
+    }
+
+    function discardStaleInsightsReport() {
+      if (!insightsReport) return;
+      if (insightsDataSignature === currentInsightsDataSignature()) return;
+      insightsReport = null;
+      insightsDataSignature = null;
+    }
+
+    function insightsObservationHtml(observation) {
+      return `
+        <article class="insight-observation" data-priority="${escapeHtml(observation.priority)}">
+          <span class="insights-eyebrow">${escapeHtml(observation.category)}</span>
+          <h3>${escapeHtml(observation.title)}</h3>
+          <p>${escapeHtml(observation.summary)}</p>
+          <div class="insight-evidence">${escapeHtml(observation.evidence)}</div>
+        </article>
+      `;
+    }
+
+    function formattedInsightsGeneratedAt(value) {
+      const date = new Date(value);
+      return Number.isFinite(date.getTime()) ? date.toLocaleString() : "Just now";
+    }
+
+    function formattedInsightsCurrency(value) {
+      return Number(value).toLocaleString("en-US", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
     }
 
     let profileLoginIdStatus = "Checking...";
@@ -3366,6 +3650,7 @@ link.click();
       if (screen !== "studentProfile" || !isTeacher) {
         clearTemporaryProfileStudentPin();
       }
+      discardStaleInsightsReport();
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         const state = v2TenantSession.getState();
         if (state === SESSION_STATES.AUTHENTICATING) {
@@ -3462,6 +3747,7 @@ link.click();
         ${(isTeacher || loggedInStudentId) ? `
           <div class="button-bar no-print">
             ${isTeacher ? `<button onclick="setScreen('teacher')">Dashboard</button>` : ""}
+            ${isTeacher ? `<button onclick="setScreen('insights')">Insights</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('approvals')">Approvals</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('purchases')">Payments</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('roster')">Roster</button>` : ""}
@@ -3564,6 +3850,21 @@ link.click();
                   : "No students"}
               </div>
               <div class="stat-box">Transactions Today: ${transactionsToday}</div>
+            </div>
+          </div>
+
+          <div class="card no-print insights-dashboard-card">
+            <div class="insights-dashboard-row">
+              <div class="insights-dashboard-copy">
+                <span class="insights-eyebrow">Insights</span>
+                <h2>${insightsReport
+                  ? escapeHtml(insightsReport.observations[0]?.title || "Your latest analysis is ready")
+                  : "See what changed without crowding the dashboard"}</h2>
+                <p>${insightsReport
+                  ? `${escapeHtml(insightsReport.observations[0]?.summary || "Open Insights to review the latest local analysis.")} · ${insightsReport.totalObservationCount} ${insightsReport.totalObservationCount === 1 ? "observation" : "observations"} available · Generated ${escapeHtml(formattedInsightsGeneratedAt(insightsReport.generatedAt))}.`
+                  : "Open one calm, focused view for balance anomalies, timing patterns, and classwide changes."}</p>
+              </div>
+              <button class="primary" onclick="setScreen('insights')">${insightsReport ? "View Insights" : "Open Insights"}</button>
             </div>
           </div>
 
@@ -3673,6 +3974,98 @@ ${transactionTarget !== "whole" ? `
               </div>
               ${transactionTable(filteredTeacherTransactions().slice(0, 25), true)}
             </div>
+          </div>
+        `;
+      }
+
+      if (screen === "insights" && isTeacher) {
+        const reportLabel = insightsReport?.mode === "deep" ? "Deep Analysis" : "Quick Insights";
+        html += `
+          <div class="insights-shell">
+            <section class="card insights-intro">
+              <span class="insights-eyebrow">Morgan Bank Version 3</span>
+              <h2>Insights</h2>
+              <p>Notice meaningful balance changes, request patterns, and classroom timing without turning the page into a wall of data.</p>
+
+              <div class="insights-controls no-print">
+                <div>
+                  <span class="insights-eyebrow" style="margin-bottom: 8px;">Time period</span>
+                  <div class="insights-periods" role="group" aria-label="Insights time period">
+                    ${INSIGHTS_PERIODS.map(days => `
+                      <button
+                        type="button"
+                        class="${insightsPeriodDays === days ? "active" : ""}"
+                        aria-pressed="${insightsPeriodDays === days}"
+                        onclick="setInsightsPeriod(${days})">${days} days</button>
+                    `).join("")}
+                  </div>
+                </div>
+                <div class="insights-actions">
+                  <button
+                    type="button"
+                    class="${insightsReport?.mode === "quick" ? "primary" : ""}"
+                    onclick="generateLocalInsights('quick')">Quick Insights</button>
+                  <button
+                    type="button"
+                    class="${insightsReport?.mode === "deep" ? "primary" : ""}"
+                    onclick="generateLocalInsights('deep')">Deep Analysis</button>
+                </div>
+              </div>
+              <p class="small-note">Analysis runs locally · No additional Gemini or Firebase call · $0.00 API cost</p>
+            </section>
+
+            <section class="card" aria-label="Monthly technology allowances">
+              <div class="insights-budget-row">
+                <div class="insights-budget-item">
+                  <span class="insights-eyebrow">Gemini allowance</span>
+                  <strong>$${INSIGHTS_BUDGETS.geminiMonthlyUsd.toFixed(2)}</strong>
+                  <div class="small-note">$0.00 used by this local foundation</div>
+                </div>
+                <div class="insights-budget-item">
+                  <span class="insights-eyebrow">Firebase allowance</span>
+                  <strong>$${INSIGHTS_BUDGETS.firebaseMonthlyUsd.toFixed(2)}</strong>
+                  <div class="small-note">Kept separate from Gemini</div>
+                </div>
+                <div class="insights-budget-item">
+                  <span class="insights-eyebrow">Combined ceiling</span>
+                  <strong>$${INSIGHTS_BUDGETS.combinedMonthlyUsd.toFixed(2)}</strong>
+                  <div class="small-note">Monthly maximum</div>
+                </div>
+              </div>
+            </section>
+
+            ${insightsReport ? `
+              <section class="card" aria-live="polite">
+                <div class="insights-report-header">
+                  <div>
+                    <span class="insights-eyebrow">${escapeHtml(reportLabel)}</span>
+                    <h2>${insightsReport.totalObservationCount} ${insightsReport.totalObservationCount === 1 ? "observation" : "observations"} from the last ${insightsReport.days} days</h2>
+                    <div class="insights-report-meta">
+                      Generated ${escapeHtml(formattedInsightsGeneratedAt(insightsReport.generatedAt))}
+                      · ${insightsReport.metrics.transactionCount} valid ${insightsReport.metrics.transactionCount === 1 ? "transaction" : "transactions"}
+                      · Class cash ${formattedInsightsCurrency(insightsReport.metrics.totalClassCash)}
+                    </div>
+                  </div>
+                  <span class="insights-local-badge">Local analysis</span>
+                </div>
+                <div class="insights-list">
+                  ${insightsReport.observations.map(insightsObservationHtml).join("")}
+                </div>
+                ${insightsReport.mode === "quick" && insightsReport.totalObservationCount > insightsReport.observations.length ? `
+                  <button type="button" class="link-button" onclick="generateLocalInsights('deep')">
+                    View ${insightsReport.totalObservationCount - insightsReport.observations.length} more in Deep Analysis
+                  </button>
+                ` : ""}
+              </section>
+            ` : `
+              <section class="card">
+                <span class="insights-eyebrow">Ready when you are</span>
+                <h2 style="margin-top: 6px;">Choose the depth that fits the moment</h2>
+                <p style="margin: 0; max-width: 680px; color: var(--muted); font-weight: 720; line-height: 1.5;">
+                  Quick Insights keeps the result to the most important items. Deep Analysis examines the same classroom period and reveals the fuller local pattern set.
+                </p>
+              </section>
+            `}
           </div>
         `;
       }
@@ -4273,6 +4666,10 @@ if (screen === "editSettingsLists" && isTeacher) {
       teacherInvitationEmailDraft = "";
       teacherInvitationExpiryHours = 48;
       studentMoneyRetryPayload = null;
+      insightsPeriodDays = 30;
+      insightsMode = "quick";
+      insightsReport = null;
+      insightsDataSignature = null;
       profileLoginIdStatus = "Checking...";
       clearTemporaryProfileStudentPin();
       // Plaintext PINs belong to exactly one tenant. They must not survive a
@@ -4653,6 +5050,8 @@ window.copyTemporaryProfileStudentPin = copyTemporaryProfileStudentPin;
 window.dismissTemporaryProfileStudentPin = dismissTemporaryProfileStudentPin;
 window.openStudentAuthLogs = openStudentAuthLogs;
 window.setScreen = setScreen;
+window.setInsightsPeriod = setInsightsPeriod;
+window.generateLocalInsights = generateLocalInsights;
 window.viewStudentProfile = viewStudentProfile;
 window.resetProfileStudentPin = resetProfileStudentPin;
 window.activateStudent = activateStudent;
