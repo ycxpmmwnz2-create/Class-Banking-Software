@@ -3513,6 +3513,27 @@ allowance, the $12.50 combined ceiling, provider billing configuration, and
 emulator/browser evidence. No text in this Part 4 boundary authorizes an API,
 Firebase, billing, staging, production, deployment, commit, or push action.
 
+The first guarded-provider slice is the dormant contract kernel defined in
+`VERSION3_GEMINI_LAYER_PLAN.md`. Its server-side service accepts no classroom
+ID, prompt, fact packet, provider model, token budget, or price from a browser.
+Instead, injected production adapters must later reauthenticate the teacher,
+derive the active tenant, load that tenant's evidence, and run Morgan Bank's
+deterministic calculator before constructing a bounded provider packet. The
+provider response can only order supplied observation references, group them
+with a closed vocabulary, and propose explicitly labeled teacher questions;
+Morgan Bank retains every factual title, summary, metric, and evidence value.
+
+That slice also establishes a provider-independent usage-ledger contract. A
+trusted integer-microdollar worst-case reservation, monthly allowance check,
+hourly rate-limit decision, and idempotency decision must complete atomically
+before provider invocation. Once invocation begins, an error, malformed output,
+or ambiguous result retains the reservation unless trusted usage is safely
+reconciled. The kernel itself remains unreachable: it is not imported by
+`functions/index.js` or `index.html`, has no Firebase or provider adapter, and
+makes no network request. Real adapters, callable/browser wiring, emulator and
+browser evidence, current model/pricing selection, secrets, billing, and
+deployment remain later separately approved items.
+
 ---
 
 *This document preserves the original planning rationale and the later local
