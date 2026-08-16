@@ -194,6 +194,28 @@ test('declared identifiers, including a bare student id field, cannot reach the 
   assert.deepEqual(run.calls, ['resolve', 'load'])
 })
 
+test('a declared multi-word student name embedded in evidence cannot reach the packet builder', async () => {
+  const run = harness()
+  run.dependencies.loadDeidentifiedTenantEvidence = async () => {
+    run.calls.push('load')
+    return {
+      analysisEvidence: {
+        reasons: ['Jordan Reyes submitted three requests'],
+      },
+      sensitiveValues: [{ kind: 'student-name', value: 'Jordan Reyes' }],
+      evidenceSignature: SIGNATURE,
+    }
+  }
+  run.service = createInsightAnalysisService(run.dependencies)
+
+  await assert.rejects(
+    run.service({ auth: { uid: 'teacher-alpha' }, data: request() }),
+    error => error instanceof InsightAnalysisServiceError &&
+      error.category === 'evidence-not-deidentified',
+  )
+  assert.deepEqual(run.calls, ['resolve', 'load'])
+})
+
 test('sensitive names and numeric IDs do not collide with legitimate formatted packet text', async () => {
   const run = harness()
   run.dependencies.loadDeidentifiedTenantEvidence = async () => {

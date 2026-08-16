@@ -40,12 +40,15 @@ const [
 
 const nonKernelJavaScript = [
   ...await readJavaScriptTree(new URL('../../functions/', import.meta.url), {
-    exclude: url => url.pathname.includes('/functions/insights/'),
+    exclude: url => (
+      url.pathname.includes('/functions/insights/') ||
+      url.pathname.includes('/node_modules/')
+    ),
   }),
   ...await readJavaScriptTree(new URL('../../src/', import.meta.url)),
 ]
 
-const DORMANT_KERNEL_IMPORT = /(?:from\s+|import\s+|import\s*\(|require\s*\()\s*['"][^'"]*insights\/(?:contracts|costPolicy|analysisService)\.js['"]/
+const DORMANT_KERNEL_IMPORT = /(?:from\s+|import\s+|import\s*\(|require\s*\()\s*(['"`])(?:[^'"`]*\/)?insights\/(?:contracts|costPolicy|analysisService)(?:\.js)?\1/
 
 test('source contract: guarded provider kernel remains unreachable and makes no network call', () => {
   const combinedKernel = `${contractsSource}\n${costPolicySource}\n${serviceSource}`
@@ -70,8 +73,10 @@ test('source contract: guarded provider kernel remains unreachable and makes no 
 test('source contract: dormancy matcher detects real static, dynamic, and CommonJS imports', () => {
   for (const source of [
     "import './insights/analysisService.js'",
+    "import '../../functions/insights/contracts'",
     "export { validateFactPacket } from '../insights/contracts.js'",
     "const module = import('../insights/costPolicy.js')",
+    'const module = import(`../insights/costPolicy`)',
     "const module = require('../insights/analysisService.js')",
   ]) {
     assert.match(source, DORMANT_KERNEL_IMPORT)

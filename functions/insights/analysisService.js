@@ -379,7 +379,7 @@ function assertAnalysisEvidenceIsDeidentified(envelope) {
     const escaped = sensitive.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const tokenPattern = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i')
     const leaked = leaves.some((leaf) => (
-      DIRECT_IDENTIFIER_KINDS.has(sensitive.kind)
+      DIRECT_IDENTIFIER_KINDS.has(sensitive.kind) || /\s/.test(sensitive.value)
         ? tokenPattern.test(leaf)
         : leaf.localeCompare(sensitive.value, 'en-US', { sensitivity: 'accent' }) === 0
     ))
