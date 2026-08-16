@@ -140,6 +140,34 @@ test('provider response can only order, group, and suggest from supplied referen
   assert.deepEqual(validated.usage, { inputTokens: 180, outputTokens: 42 })
 })
 
+test('provider must return every supplied observation exactly once', () => {
+  const observations = Array.from({ length: 3 }, (_, index) => ({
+    ...packet().observations[0],
+    id: `obs-${String(index + 1).padStart(3, '0')}`,
+    evidence: [{
+      id: `ev-${String(index + 1).padStart(3, '0')}`,
+      text: `Synthetic evidence ${index + 1}`,
+    }],
+  }))
+  const factPacket = validateFactPacket(packet({ observations }), request())
+  assert.throws(
+    () => validateProviderResponse({
+      ...response(),
+      orderedObservationIds: ['obs-003'],
+      groups: [],
+      teacherQuestions: [],
+    }, factPacket),
+    InsightContractError,
+  )
+  const validated = validateProviderResponse({
+    ...response(),
+    orderedObservationIds: ['obs-003', 'obs-001', 'obs-002'],
+    groups: [],
+    teacherQuestions: [],
+  }, factPacket)
+  assert.deepEqual(validated.orderedObservationIds, ['obs-003', 'obs-001', 'obs-002'])
+})
+
 test('provider response rejects free-form factual fields, foreign IDs, and factual questions', () => {
   const factPacket = validateFactPacket(packet(), request())
   assert.throws(

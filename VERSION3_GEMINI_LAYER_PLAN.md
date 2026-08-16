@@ -20,12 +20,18 @@ deployment, or network request.
    are accepted.
 3. The orchestration boundary authenticates and resolves the active teacher
    tenant before loading evidence, and derives every tenant key server-side.
-4. The provider receives only a bounded, exact-schema, de-identified fact
-   packet built from server-loaded evidence and Morgan Bank's deterministic
-   analysis.
-5. Provider output cannot introduce factual prose. It may only order supplied
-   observation IDs, group them with a closed vocabulary, and propose short
-   questions explicitly labeled as suggestions and tied to supplied IDs.
+   Its evidence adapter must return an exact envelope containing de-identified
+   analysis evidence, an explicit set of removed sensitive values, and a
+   signature calculated from the current server-loaded evidence.
+4. The service compares that server-calculated signature with the browser's
+   expected signature before packet construction. The packet builder receives
+   only de-identified evidence, server-derived mode/period values, and that
+   server-calculated signature; it never receives the browser request or the
+   removed sensitive values.
+5. Provider output cannot introduce factual prose or suppress a deterministic
+   observation. It must return every supplied observation ID exactly once, may
+   group those IDs with a closed vocabulary, and may propose short questions
+   explicitly labeled as suggestions and tied to supplied IDs.
 6. Unknown keys, malformed values, duplicate or foreign references, excessive
    counts or lengths, invalid usage, and oversized packets fail closed.
 7. The Gemini monthly allowance is exactly $7.50. Cost arithmetic uses integer

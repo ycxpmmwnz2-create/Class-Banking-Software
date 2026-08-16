@@ -159,7 +159,7 @@ export function validateProviderResponse(value, packet) {
     value.orderedObservationIds,
     allowedIds,
     'orderedObservationIds',
-    { minimum: 1, maximum: allowedIds.size },
+    { minimum: allowedIds.size, maximum: allowedIds.size },
   )
   const orderedSet = new Set(orderedObservationIds)
 

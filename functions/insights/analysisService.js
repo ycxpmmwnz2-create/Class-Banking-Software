@@ -38,8 +38,8 @@ export function createInsightAnalysisService(dependencies) {
     )
     const identity = validateTenantIdentity(tenant)
 
-    const evidence = await guardedCall(
-      () => deps.loadTenantEvidence({
+    const rawEvidenceEnvelope = await guardedCall(
+      () => deps.loadDeidentifiedTenantEvidence({
         teacherUid: identity.teacherUid,
         classroomId: identity.classroomId,
         periodDays: request.periodDays,
@@ -47,13 +47,29 @@ export function createInsightAnalysisService(dependencies) {
       'evidence-unavailable',
       'Classroom evidence could not be loaded.',
     )
+    const evidenceEnvelope = validateEvidenceEnvelope(rawEvidenceEnvelope)
+    if (evidenceEnvelope.evidenceSignature !== request.evidenceSignature) {
+      throw new InsightAnalysisServiceError(
+        'stale-evidence',
+        'Classroom evidence changed before analysis could begin.',
+      )
+    }
+    assertAnalysisEvidenceIsDeidentified(evidenceEnvelope)
     const rawPacket = await guardedCall(
-      () => deps.buildFactPacket({ evidence, request, modeProfile: profile }),
+      () => deps.buildFactPacket({
+        evidence: evidenceEnvelope.analysisEvidence,
+        evidenceSignature: evidenceEnvelope.evidenceSignature,
+        mode: request.mode,
+        periodDays: request.periodDays,
+        modeProfile: profile,
+      }),
       'evidence-unavailable',
       'The deterministic fact packet could not be built.',
     )
-    const packet = validateFactPacket(rawPacket, request)
-    assertPacketIsDeidentified(packet, evidence)
+    const packet = validateFactPacket(rawPacket, {
+      ...request,
+      evidenceSignature: evidenceEnvelope.evidenceSignature,
+    })
 
     const rawQuote = await guardedCall(
       () => deps.quoteWorstCaseCost({ modeProfile: profile }),
@@ -184,7 +200,7 @@ function validateDependencies(value) {
   }
   for (const key of [
     'resolveActiveTeacherTenant',
-    'loadTenantEvidence',
+    'loadDeidentifiedTenantEvidence',
     'buildFactPacket',
     'quoteWorstCaseCost',
     'priceActualUsage',
@@ -216,56 +232,179 @@ function validateTenantIdentity(value) {
   })
 }
 
-function assertPacketIsDeidentified(packet, evidence) {
-  const sensitiveValues = new Set()
-  collectSensitiveValues(evidence, sensitiveValues)
-  const serialized = JSON.stringify(packet)
-  for (const sensitiveValue of sensitiveValues) {
-    const escaped = sensitiveValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const directIdentifier = /[@/_-]/.test(sensitiveValue)
-    const pattern = directIdentifier
-      ? new RegExp(escaped, 'i')
-      : new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i')
-    if (pattern.test(serialized)) {
+const SENSITIVE_VALUE_KINDS = Object.freeze(new Set([
+  'student-name',
+  'student-id',
+  'login-id',
+  'pin',
+  'auth-uid',
+  'teacher-uid',
+  'classroom-id',
+  'email',
+]))
+
+const DIRECT_IDENTIFIER_KINDS = Object.freeze(new Set([
+  'student-id',
+  'login-id',
+  'pin',
+  'auth-uid',
+  'teacher-uid',
+  'classroom-id',
+  'email',
+]))
+
+function validateEvidenceEnvelope(value) {
+  if (!isPlainObject(value) || !hasExactKeys(
+    value,
+    ['analysisEvidence', 'sensitiveValues', 'evidenceSignature'],
+  )) {
+    throw new InsightAnalysisServiceError(
+      'evidence-unavailable',
+      'The de-identified evidence envelope is malformed.',
+    )
+  }
+  if (!isPlainObject(value.analysisEvidence)) {
+    throw new InsightAnalysisServiceError(
+      'evidence-unavailable',
+      'De-identified analysis evidence must be a plain object.',
+    )
+  }
+  if (typeof value.evidenceSignature !== 'string' || !/^[a-f0-9]{64}$/.test(value.evidenceSignature)) {
+    throw new InsightAnalysisServiceError(
+      'evidence-unavailable',
+      'The server evidence signature is malformed.',
+    )
+  }
+  if (!Array.isArray(value.sensitiveValues)) {
+    throw new InsightAnalysisServiceError(
+      'evidence-unavailable',
+      'The sensitive-value declaration is malformed.',
+    )
+  }
+  const seen = new Set()
+  const sensitiveValues = value.sensitiveValues.map((entry) => {
+    if (!isPlainObject(entry) || !hasExactKeys(entry, ['kind', 'value'])) {
       throw new InsightAnalysisServiceError(
-        'packet-not-deidentified',
-        'Fact packet contains a direct classroom identifier.',
+        'evidence-unavailable',
+        'A sensitive-value declaration is malformed.',
+      )
+    }
+    if (!SENSITIVE_VALUE_KINDS.has(entry.kind)) {
+      throw new InsightAnalysisServiceError(
+        'evidence-unavailable',
+        'A sensitive-value kind is unsupported.',
+      )
+    }
+    if (
+      typeof entry.value !== 'string' ||
+      entry.value.length < 1 ||
+      entry.value.length > 320 ||
+      entry.value.trim() !== entry.value
+    ) {
+      throw new InsightAnalysisServiceError(
+        'evidence-unavailable',
+        'A sensitive value is malformed.',
+      )
+    }
+    const identity = `${entry.kind}\u0000${entry.value}`
+    if (seen.has(identity)) {
+      throw new InsightAnalysisServiceError(
+        'evidence-unavailable',
+        'Sensitive-value declarations must be unique.',
+      )
+    }
+    seen.add(identity)
+    return Object.freeze({ kind: entry.kind, value: entry.value })
+  })
+  return Object.freeze({
+    analysisEvidence: cloneAnalysisEvidence(value.analysisEvidence),
+    sensitiveValues: Object.freeze(sensitiveValues),
+    evidenceSignature: value.evidenceSignature,
+  })
+}
+
+function cloneAnalysisEvidence(value, seen = new WeakSet()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new InsightAnalysisServiceError(
+        'evidence-unavailable',
+        'De-identified analysis evidence contains a non-finite number.',
+      )
+    }
+    return value
+  }
+  if (!value || typeof value !== 'object') {
+    throw new InsightAnalysisServiceError(
+      'evidence-unavailable',
+      'De-identified analysis evidence is not JSON-safe.',
+    )
+  }
+  if (seen.has(value)) {
+    throw new InsightAnalysisServiceError(
+      'evidence-unavailable',
+      'De-identified analysis evidence is cyclic.',
+    )
+  }
+  seen.add(value)
+  if (Array.isArray(value)) {
+    const result = Object.freeze(value.map((item) => cloneAnalysisEvidence(item, seen)))
+    seen.delete(value)
+    return result
+  }
+  if (!isPlainObject(value)) {
+    throw new InsightAnalysisServiceError(
+      'evidence-unavailable',
+      'De-identified analysis evidence contains an unsupported object.',
+    )
+  }
+  const result = {}
+  for (const [key, childValue] of Object.entries(value)) {
+    if (key === '__proto__' || key === 'prototype' || key === 'constructor') {
+      throw new InsightAnalysisServiceError(
+        'evidence-unavailable',
+        'De-identified analysis evidence contains an unsafe key.',
+      )
+    }
+    result[key] = cloneAnalysisEvidence(childValue, seen)
+  }
+  seen.delete(value)
+  return Object.freeze(result)
+}
+
+function assertAnalysisEvidenceIsDeidentified(envelope) {
+  const leaves = []
+  collectStringLeaves(envelope.analysisEvidence, leaves)
+  for (const sensitive of envelope.sensitiveValues) {
+    const escaped = sensitive.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const tokenPattern = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i')
+    const leaked = leaves.some((leaf) => (
+      DIRECT_IDENTIFIER_KINDS.has(sensitive.kind)
+        ? tokenPattern.test(leaf)
+        : leaf.localeCompare(sensitive.value, 'en-US', { sensitivity: 'accent' }) === 0
+    ))
+    if (leaked) {
+      throw new InsightAnalysisServiceError(
+        'evidence-not-deidentified',
+        'Analysis evidence contains a declared sensitive value.',
       )
     }
   }
 }
 
-function collectSensitiveValues(value, output, key = '') {
+function collectStringLeaves(value, output) {
   if (Array.isArray(value)) {
-    for (const item of value) collectSensitiveValues(item, output, key)
+    for (const item of value) collectStringLeaves(item, output)
     return
   }
   if (!value || typeof value !== 'object') {
-    if (
-      typeof value === 'string' &&
-      value.length >= 3 &&
-      SENSITIVE_EVIDENCE_KEYS.has(key.toLowerCase())
-    ) {
-      output.add(value)
-    }
+    if (typeof value === 'string') output.push(value)
     return
   }
-  for (const [childKey, childValue] of Object.entries(value)) {
-    collectSensitiveValues(childValue, output, childKey)
+  for (const childValue of Object.values(value)) {
+    collectStringLeaves(childValue, output)
   }
 }
-
-const SENSITIVE_EVIDENCE_KEYS = Object.freeze(new Set([
-  'name',
-  'studentname',
-  'studentid',
-  'loginid',
-  'pin',
-  'authuid',
-  'uid',
-  'classroomid',
-  'email',
-]))
 
 function canonicalIdentity(value, label) {
   if (

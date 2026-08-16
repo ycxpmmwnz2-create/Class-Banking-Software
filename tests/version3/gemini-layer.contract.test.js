@@ -1,10 +1,27 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import test from 'node:test'
+
+async function readJavaScriptTree(directoryUrl, { exclude } = {}) {
+  const sources = []
+  const entries = await readdir(directoryUrl, { withFileTypes: true })
+  for (const entry of entries) {
+    const entryUrl = new URL(entry.isDirectory() ? `${entry.name}/` : entry.name, directoryUrl)
+    if (exclude?.(entryUrl)) continue
+    if (entry.isDirectory()) {
+      sources.push(...await readJavaScriptTree(entryUrl, { exclude }))
+    } else if (entry.isFile() && entry.name.endsWith('.js')) {
+      sources.push(Object.freeze({
+        path: entryUrl.pathname,
+        source: await readFile(entryUrl, 'utf8'),
+      }))
+    }
+  }
+  return sources
+}
 
 const [
   indexHtml,
-  functionsIndex,
   contractsSource,
   costPolicySource,
   serviceSource,
@@ -13,7 +30,6 @@ const [
   architecturePlan,
 ] = await Promise.all([
   readFile(new URL('../../index.html', import.meta.url), 'utf8'),
-  readFile(new URL('../../functions/index.js', import.meta.url), 'utf8'),
   readFile(new URL('../../functions/insights/contracts.js', import.meta.url), 'utf8'),
   readFile(new URL('../../functions/insights/costPolicy.js', import.meta.url), 'utf8'),
   readFile(new URL('../../functions/insights/analysisService.js', import.meta.url), 'utf8'),
@@ -21,6 +37,15 @@ const [
   readFile(new URL('../../VERSION3_GEMINI_LAYER_PLAN.md', import.meta.url), 'utf8'),
   readFile(new URL('../../MULTI_TEACHER_ARCHITECTURE_PLAN.md', import.meta.url), 'utf8'),
 ])
+
+const nonKernelJavaScript = [
+  ...await readJavaScriptTree(new URL('../../functions/', import.meta.url), {
+    exclude: url => url.pathname.includes('/functions/insights/'),
+  }),
+  ...await readJavaScriptTree(new URL('../../src/', import.meta.url)),
+]
+
+const DORMANT_KERNEL_IMPORT = /(?:from\s+|import\s+|import\s*\(|require\s*\()\s*['"][^'"]*insights\/(?:contracts|costPolicy|analysisService)\.js['"]/
 
 test('source contract: guarded provider kernel remains unreachable and makes no network call', () => {
   const combinedKernel = `${contractsSource}\n${costPolicySource}\n${serviceSource}`
@@ -36,10 +61,21 @@ test('source contract: guarded provider kernel remains unreachable and makes no 
   ]) {
     assert.doesNotMatch(combinedKernel, forbidden)
   }
-  assert.doesNotMatch(functionsIndex, /insights\/(?:contracts|costPolicy|analysisService)/)
-  assert.doesNotMatch(functionsIndex, /generateTeacherInsightsV3/)
-  assert.doesNotMatch(indexHtml, /generateTeacherInsightsV3/)
-  assert.doesNotMatch(indexHtml, /test:version3:gemini-layer/)
+  for (const file of nonKernelJavaScript) {
+    assert.doesNotMatch(file.source, DORMANT_KERNEL_IMPORT, `dormant kernel imported by ${file.path}`)
+  }
+  assert.doesNotMatch(indexHtml, /functions\/insights\/(?:contracts|costPolicy|analysisService)\.js/)
+})
+
+test('source contract: dormancy matcher detects real static, dynamic, and CommonJS imports', () => {
+  for (const source of [
+    "import './insights/analysisService.js'",
+    "export { validateFactPacket } from '../insights/contracts.js'",
+    "const module = import('../insights/costPolicy.js')",
+    "const module = require('../insights/analysisService.js')",
+  ]) {
+    assert.match(source, DORMANT_KERNEL_IMPORT)
+  }
 })
 
 test('source contract: request excludes browser authority over tenant, facts, prompts, and cost', () => {
@@ -53,7 +89,12 @@ test('source contract: request excludes browser authority over tenant, facts, pr
   )
   assert.match(
     serviceSource,
-    /resolveActiveTeacherTenant\(\{ auth \}\)[\s\S]*?loadTenantEvidence\(\{[\s\S]*?teacherUid: identity\.teacherUid,[\s\S]*?classroomId: identity\.classroomId/,
+    /resolveActiveTeacherTenant\(\{ auth \}\)[\s\S]*?loadDeidentifiedTenantEvidence\(\{[\s\S]*?teacherUid: identity\.teacherUid,[\s\S]*?classroomId: identity\.classroomId/,
+  )
+  assert.match(serviceSource, /evidenceEnvelope\.evidenceSignature !== request\.evidenceSignature/)
+  assert.match(
+    serviceSource,
+    /buildFactPacket\(\{[\s\S]*?evidence: evidenceEnvelope\.analysisEvidence,[\s\S]*?evidenceSignature: evidenceEnvelope\.evidenceSignature,[\s\S]*?mode: request\.mode,[\s\S]*?periodDays: request\.periodDays/,
   )
 })
 

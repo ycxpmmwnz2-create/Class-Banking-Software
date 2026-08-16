@@ -70,18 +70,22 @@ function harness(overrides = {}) {
       calls.push('resolve')
       return { teacherUid: 'teacher-alpha', classroomId: 'classroom-alpha' }
     },
-    async loadTenantEvidence(input) {
+    async loadDeidentifiedTenantEvidence(input) {
       calls.push('load')
       state.loadInput = input
-      return { synthetic: true }
+      return {
+        analysisEvidence: { synthetic: true },
+        sensitiveValues: [],
+        evidenceSignature: SIGNATURE,
+      }
     },
     async buildFactPacket(input) {
       calls.push('build')
       state.buildInput = input
       return factPacket({
-        mode: input.request.mode,
-        periodDays: input.request.periodDays,
-        evidenceSignature: input.request.evidenceSignature,
+        mode: input.mode,
+        periodDays: input.periodDays,
+        evidenceSignature: input.evidenceSignature,
       })
     },
     async quoteWorstCaseCost(input) {
@@ -153,17 +157,54 @@ test('tenant identity is server-derived and never included in the provider packe
     classroomId: 'classroom-alpha',
     periodDays: 30,
   })
+  assert.deepEqual(Object.keys(run.state.buildInput).sort(), [
+    'evidence',
+    'evidenceSignature',
+    'mode',
+    'modeProfile',
+    'periodDays',
+  ])
+  assert.equal(Object.hasOwn(run.state.buildInput, 'request'), false)
+  assert.equal(Object.hasOwn(run.state.buildInput, 'sensitiveValues'), false)
+  assert.equal(Object.isFrozen(run.state.buildInput.evidence), true)
   const serializedProviderInput = JSON.stringify(run.state.providerInput)
   assert.doesNotMatch(serializedProviderInput, /teacher-alpha|classroom-alpha/)
   assert.doesNotMatch(serializedProviderInput, /studentId|loginId|pin|authUid/i)
 })
 
-test('direct identifiers found in loaded evidence cannot survive into the provider packet', async () => {
+test('declared identifiers, including a bare student id field, cannot reach the packet builder', async () => {
   const run = harness()
-  run.dependencies.loadTenantEvidence = async () => {
+  run.dependencies.loadDeidentifiedTenantEvidence = async () => {
     run.calls.push('load')
     return {
-      students: [{ studentId: 'student-17', name: 'Synthetic Learner' }],
+      analysisEvidence: {
+        students: [{ id: 'student-17', displayLabel: 'Learner 17' }],
+      },
+      sensitiveValues: [{ kind: 'student-id', value: 'student-17' }],
+      evidenceSignature: SIGNATURE,
+    }
+  }
+  run.service = createInsightAnalysisService(run.dependencies)
+
+  await assert.rejects(
+    run.service({ auth: { uid: 'teacher-alpha' }, data: request() }),
+    error => error instanceof InsightAnalysisServiceError &&
+      error.category === 'evidence-not-deidentified',
+  )
+  assert.deepEqual(run.calls, ['resolve', 'load'])
+})
+
+test('sensitive names and numeric IDs do not collide with legitimate formatted packet text', async () => {
+  const run = harness()
+  run.dependencies.loadDeidentifiedTenantEvidence = async () => {
+    run.calls.push('load')
+    return {
+      analysisEvidence: { periodDescription: 'the week of May 4' },
+      sensitiveValues: [
+        { kind: 'student-name', value: 'May' },
+        { kind: 'student-id', value: '001' },
+      ],
+      evidenceSignature: SIGNATURE,
     }
   }
   run.dependencies.buildFactPacket = async (input) => {
@@ -171,19 +212,18 @@ test('direct identifiers found in loaded evidence cannot survive into the provid
     return factPacket({
       observations: [{
         ...factPacket().observations[0],
-        summary: 'Synthetic Learner submitted one request.',
+        id: 'obs-001',
+        summary: 'Spending peaked in the week of May 4.',
+        evidence: [{ id: 'ev-001', text: 'Verified activity during May 4.' }],
       }],
-      evidenceSignature: input.request.evidenceSignature,
+      evidenceSignature: input.evidenceSignature,
     })
   }
   run.service = createInsightAnalysisService(run.dependencies)
 
-  await assert.rejects(
-    run.service({ auth: { uid: 'teacher-alpha' }, data: request() }),
-    error => error instanceof InsightAnalysisServiceError &&
-      error.category === 'packet-not-deidentified',
-  )
-  assert.deepEqual(run.calls, ['resolve', 'load', 'build'])
+  const result = await run.service({ auth: { uid: 'teacher-alpha' }, data: request() })
+  assert.deepEqual(result.orderedObservationIds, ['obs-001'])
+  assert.ok(run.calls.includes('provider'))
 })
 
 test('browser-supplied tenant or prompt fields fail before tenant resolution', async () => {
@@ -211,7 +251,7 @@ test('authorization or evidence failure prevents budget reservation and provider
   assert.deepEqual(denied.calls, ['resolve'])
 
   const unavailable = harness({
-    async loadTenantEvidence() {
+    async loadDeidentifiedTenantEvidence() {
       unavailable.calls.push('load')
       throw new Error('raw classroom detail')
     },
@@ -237,6 +277,25 @@ test('budget refusal prevents provider invocation', async () => {
     error => error instanceof InsightAnalysisServiceError && error.category === 'budget-unavailable',
   )
   assert.deepEqual(run.calls, ['resolve', 'load', 'build', 'quote', 'reserve'])
+})
+
+test('server-derived evidence signature mismatch fails before packet construction', async () => {
+  const run = harness()
+  run.dependencies.loadDeidentifiedTenantEvidence = async () => {
+    run.calls.push('load')
+    return {
+      analysisEvidence: { synthetic: true },
+      sensitiveValues: [],
+      evidenceSignature: 'b'.repeat(64),
+    }
+  }
+  run.service = createInsightAnalysisService(run.dependencies)
+
+  await assert.rejects(
+    run.service({ auth: { uid: 'teacher-alpha' }, data: request() }),
+    error => error instanceof InsightAnalysisServiceError && error.category === 'stale-evidence',
+  )
+  assert.deepEqual(run.calls, ['resolve', 'load'])
 })
 
 test('malformed provider output retains the worst-case reservation and displays nothing', async () => {
@@ -325,7 +384,7 @@ test('Deep uses its separately bounded provider and rate-limit profile', async (
     return factPacket({
       mode: 'deep',
       periodDays: 90,
-      evidenceSignature: input.request.evidenceSignature,
+      evidenceSignature: input.evidenceSignature,
     })
   }
   run.service = createInsightAnalysisService(run.dependencies)
