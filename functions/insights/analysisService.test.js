@@ -248,6 +248,38 @@ test('sensitive names and numeric IDs do not collide with legitimate formatted p
   assert.ok(run.calls.includes('provider'))
 })
 
+test('a numeric student id is blocked as a leaf but not as an unrelated count', async () => {
+  const allowed = harness()
+  allowed.dependencies.loadDeidentifiedTenantEvidence = async () => {
+    allowed.calls.push('load')
+    return {
+      analysisEvidence: { summary: '1 pending request needs review' },
+      sensitiveValues: [{ kind: 'student-id', value: '1' }],
+      evidenceSignature: SIGNATURE,
+    }
+  }
+  allowed.service = createInsightAnalysisService(allowed.dependencies)
+  await allowed.service({ auth: { uid: 'teacher-alpha' }, data: request() })
+  assert.ok(allowed.calls.includes('provider'))
+
+  const blocked = harness()
+  blocked.dependencies.loadDeidentifiedTenantEvidence = async () => {
+    blocked.calls.push('load')
+    return {
+      analysisEvidence: { id: '1' },
+      sensitiveValues: [{ kind: 'student-id', value: '1' }],
+      evidenceSignature: SIGNATURE,
+    }
+  }
+  blocked.service = createInsightAnalysisService(blocked.dependencies)
+  await assert.rejects(
+    blocked.service({ auth: { uid: 'teacher-alpha' }, data: request() }),
+    error => error instanceof InsightAnalysisServiceError &&
+      error.category === 'evidence-not-deidentified',
+  )
+  assert.deepEqual(blocked.calls, ['resolve', 'load'])
+})
+
 test('browser-supplied tenant or prompt fields fail before tenant resolution', async () => {
   const run = harness()
   await assert.rejects(

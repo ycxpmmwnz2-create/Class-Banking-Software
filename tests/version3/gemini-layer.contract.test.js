@@ -25,16 +25,24 @@ const [
   contractsSource,
   costPolicySource,
   serviceSource,
+  evidenceAdapterSource,
+  factPacketBuilderSource,
+  usageLedgerSource,
   packageJson,
   plan,
+  bridgePlan,
   architecturePlan,
 ] = await Promise.all([
   readFile(new URL('../../index.html', import.meta.url), 'utf8'),
   readFile(new URL('../../functions/insights/contracts.js', import.meta.url), 'utf8'),
   readFile(new URL('../../functions/insights/costPolicy.js', import.meta.url), 'utf8'),
   readFile(new URL('../../functions/insights/analysisService.js', import.meta.url), 'utf8'),
+  readFile(new URL('../../functions/insights/tenantEvidenceAdapter.js', import.meta.url), 'utf8'),
+  readFile(new URL('../../functions/insights/factPacketBuilder.js', import.meta.url), 'utf8'),
+  readFile(new URL('../../functions/insights/firestoreUsageLedger.js', import.meta.url), 'utf8'),
   readFile(new URL('../../package.json', import.meta.url), 'utf8'),
   readFile(new URL('../../VERSION3_GEMINI_LAYER_PLAN.md', import.meta.url), 'utf8'),
+  readFile(new URL('../../VERSION3_GEMINI_EMULATOR_BRIDGE_PLAN.md', import.meta.url), 'utf8'),
   readFile(new URL('../../MULTI_TEACHER_ARCHITECTURE_PLAN.md', import.meta.url), 'utf8'),
 ])
 
@@ -48,10 +56,17 @@ const nonKernelJavaScript = [
   ...await readJavaScriptTree(new URL('../../src/', import.meta.url)),
 ]
 
-const DORMANT_KERNEL_IMPORT = /(?:from\s+|import\s+|import\s*\(|require\s*\()\s*(['"`])(?:[^'"`]*\/)?insights\/(?:contracts|costPolicy|analysisService)(?:\.js)?\1/
+const DORMANT_KERNEL_IMPORT = /(?:from\s+|import\s+|import\s*\(|require\s*\()\s*(['"`])(?:[^'"`]*\/)?insights\/(?:contracts|costPolicy|analysisService|tenantEvidenceAdapter|factPacketBuilder|firestoreUsageLedger)(?:\.js)?\1/
 
 test('source contract: guarded provider kernel remains unreachable and makes no network call', () => {
-  const combinedKernel = `${contractsSource}\n${costPolicySource}\n${serviceSource}`
+  const combinedKernel = [
+    contractsSource,
+    costPolicySource,
+    serviceSource,
+    evidenceAdapterSource,
+    factPacketBuilderSource,
+    usageLedgerSource,
+  ].join('\n')
   for (const forbidden of [
     /from\s+['"]firebase(?:-admin|-functions|\/|['"])/,
     /\bonCall\s*\(/,
@@ -67,7 +82,10 @@ test('source contract: guarded provider kernel remains unreachable and makes no 
   for (const file of nonKernelJavaScript) {
     assert.doesNotMatch(file.source, DORMANT_KERNEL_IMPORT, `dormant kernel imported by ${file.path}`)
   }
-  assert.doesNotMatch(indexHtml, /functions\/insights\/(?:contracts|costPolicy|analysisService)\.js/)
+  assert.doesNotMatch(
+    indexHtml,
+    /functions\/insights\/(?:contracts|costPolicy|analysisService|tenantEvidenceAdapter|factPacketBuilder|firestoreUsageLedger)(?:\.js)?/,
+  )
 })
 
 test('source contract: dormancy matcher detects real static, dynamic, and CommonJS imports', () => {
@@ -78,6 +96,7 @@ test('source contract: dormancy matcher detects real static, dynamic, and Common
     "const module = import('../insights/costPolicy.js')",
     'const module = import(`../insights/costPolicy`)',
     "const module = require('../insights/analysisService.js')",
+    "import '../insights/firestoreUsageLedger.js'",
   ]) {
     assert.match(source, DORMANT_KERNEL_IMPORT)
   }
@@ -158,4 +177,7 @@ test('source contract: governing documents record dormancy and later approval ga
   assert.match(plan, /No commit, push, pull request, merge, staging\/production access/)
   assert.match(architecturePlan, /The first guarded-provider slice is the dormant contract kernel/)
   assert.match(architecturePlan, /Real adapters, callable\/browser wiring, emulator and[\s\S]*?remain later separately approved items/)
+  assert.match(bridgePlan, /The bridge remains unreachable from the deployed application/)
+  assert.match(bridgePlan, /No live callable or browser integration/)
+  assert.match(bridgePlan, /No Gemini SDK, model selection, API key, secret, billing/)
 })

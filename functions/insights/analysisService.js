@@ -378,8 +378,10 @@ function assertAnalysisEvidenceIsDeidentified(envelope) {
   for (const sensitive of envelope.sensitiveValues) {
     const escaped = sensitive.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const tokenPattern = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i')
+    const numericStudentId = sensitive.kind === 'student-id' && /^[0-9]+$/.test(sensitive.value)
     const leaked = leaves.some((leaf) => (
-      DIRECT_IDENTIFIER_KINDS.has(sensitive.kind) || /\s/.test(sensitive.value)
+      (DIRECT_IDENTIFIER_KINDS.has(sensitive.kind) && !numericStudentId) ||
+        /\s/.test(sensitive.value)
         ? tokenPattern.test(leaf)
         : leaf.localeCompare(sensitive.value, 'en-US', { sensitivity: 'accent' }) === 0
     ))

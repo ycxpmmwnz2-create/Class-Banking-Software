@@ -3534,6 +3534,25 @@ makes no network request. Real adapters, callable/browser wiring, emulator and
 browser evidence, current model/pricing selection, secrets, billing, and
 deployment remain later separately approved items.
 
+The next approved slice is the emulator-only server bridge defined in
+`VERSION3_GEMINI_EMULATOR_BRIDGE_PLAN.md`. It supplies injected Firestore
+adapters that revalidate the existing reciprocal teacher/classroom foundation
+inside the same read-only transaction used to load only that classroom's
+students and authoritative transactions. The adapter pseudonymizes those
+records before invoking the existing deterministic Insights calculator, then
+constructs an exact-schema packet containing only opaque observation and
+evidence references. A separate Firestore transaction stores only digested
+scope/request keys and atomically enforces idempotency, rolling hourly limits,
+and the $7.50 monthly Gemini allowance.
+
+This bridge is exercised only with synthetic records in a Firebase demo-project
+Firestore emulator and an injected fake provider. It remains dormant: nothing
+imports it from `functions/index.js`, `src/`, or `index.html`. It adds no
+callable, browser path, provider SDK, model or pricing choice, secret, billing
+configuration, network request, staging/production access, or deployment.
+Those surfaces remain later, separately approved and independently reviewed
+items.
+
 ---
 
 *This document preserves the original planning rationale and the later local
