@@ -3552,7 +3552,6 @@ link.click();
           <div class="button-bar no-print">
             ${isTeacher ? `<button onclick="setScreen('teacher')">Dashboard</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('approvals')">Approvals</button>` : ""}
-            ${isTeacher ? `<button onclick="setScreen('purchases')">Payments</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('roster')">Roster</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('settings')">Settings</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('credentials')">Credentials</button>` : ""}
@@ -3842,7 +3841,7 @@ ${transactionTarget !== "whole" ? `
               </div>
               ${data.students.length === 0 ? `
                 <div class="empty">No students yet. Add your first student on the left.</div>
-              ` : data.students.map(student => `
+              ` : sortStudentsByName(data.students).map(student => `
                 <div class="roster-row${IS_MULTI_TEACHER_V2_ENABLED ? " v2-roster-row" : ""}" data-roster-student-name="${escapeHtml(student.name.toLowerCase())}">
                   <div>
                     <label for="name-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Student Name</label>
