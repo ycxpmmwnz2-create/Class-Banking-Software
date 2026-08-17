@@ -2,23 +2,23 @@
 
 ## Status and authority
 
-This began as an acceptance-first design document. Checkpoint A was later
-separately authorized and implemented as an uncommitted emulator-only server
-slice; Checkpoint B remains unimplemented and unauthorized. Its baseline is
-the reviewed and integrated emulator bridge commit
-`74a233e3bd75633b44ee9ee0eceac608e181d974`.
+This began as an acceptance-first design document. Checkpoint A was separately
+authorized, independently reviewed, and merged through PR #9. The integrated
+Checkpoint A baseline is merge commit
+`f6315f6b0946d2b568449fd663a731b68f1f6e1d` on `feature/multi-teacher`.
 
-The Checkpoint A authorization did not authorize Checkpoint B, a commit, push,
-pull request, merge, Firebase access, provider access, model or pricing selection,
-secret creation, billing, staging, production, or deployment. Every later
-implementation checkpoint below requires separate approval and the normal
-Codex implementation, Claude detailed-review, and Grok final-review gates.
+Checkpoint B was separately authorized on August 16, 2026 and implemented from
+that exact baseline in the isolated branch
+`codex/version-3-gemini-browser`. It remains uncommitted pending the required
+Claude detailed review. That authorization grants no commit, push, pull request,
+merge, real Firebase project access, provider access, model or pricing selection,
+secret creation, billing, staging, production, or deployment.
 
-Checkpoint A currently proves only the exported `analyzeTeacherInsightsV3`
-callable against the exact demo project with the Auth, Functions, and Firestore
-emulators, synthetic records, and the deterministic fake provider. No browser
-file was changed. The implementation remains uncommitted pending independent
-review.
+Checkpoint B adds a default-off, exact-demo-project browser client and test-only
+UI controls. The focused Chromium and WebKit suites each pass 8/8 against real
+Auth, Functions, and Firestore emulators, synthetic tenants, and the existing
+deterministic fake provider. The ordinary app retains its existing local Quick
+Insights and Deep Analysis controls and zero-API-cost behavior.
 
 ## Objective
 
@@ -327,6 +327,26 @@ Functions deployment packaging. No `firebase.json`, rules, indexes, dependency,
 lockfile, or deployment file change is expected.
 
 ### Checkpoint B — Gated browser wiring and real-browser acceptance
+
+Implementation record (uncommitted, awaiting Claude review):
+
+- the browser client accepts and sends only `{requestId, mode, periodDays}` and
+  validates the exact callable response before display;
+- activation requires the dedicated build flag, exact demo project, exact
+  loopback runtime config, and the Firebase app rebound to that same project;
+- assisted response/loading/error/retry state is memory-only and is cleared by
+  logout, tenant reset, period change, local data-signature change, and newer
+  request version;
+- ambiguous retry reuses only the original cryptographically random request ID;
+- the dedicated harness keeps Checkpoint A's V2 callables disabled and supplies
+  only the test page's tenant-resolution response so the real rules-protected
+  Auth/Firestore classroom can render. `analyzeTeacherInsightsV3` still derives
+  and revalidates its tenant entirely on the server and receives no tenant value
+  from that harness; and
+- both focused browser commands refuse local Google ADC, scrub inherited
+  project/gate/credential variables, use an isolated CLI config, start only
+  Auth/Functions/Firestore on loopback, and select only the explicit demo
+  project.
 
 Expected scope:
 

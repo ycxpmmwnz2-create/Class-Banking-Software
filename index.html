@@ -1096,8 +1096,13 @@ import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver 
 import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 import { sanitizeLegacyBackup } from "./src/legacy/backupImport.js";
 import { buildClassInsightsReport, buildInsightsDataSignature, INSIGHTS_BUDGETS, INSIGHTS_PERIODS } from "./src/insights/classInsights.js";
+import { VERSION3_GEMINI_BROWSER_PROJECT_ID, createProviderInsightsBrowserClient, mapProviderInsightsError, resolveProviderInsightsBrowserActivation } from "./src/insights/providerInsightsClient.js";
 
 const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED === "true";
+    const VERSION3_GEMINI_BROWSER_BUILD_ENABLED =
+      import.meta.env.VITE_VERSION3_GEMINI_BROWSER_TEST === "true";
+    const VERSION3_GEMINI_BROWSER_BUILD_PROJECT_ID =
+      import.meta.env.VITE_VERSION3_GEMINI_BROWSER_PROJECT_ID;
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
     const defaultSettings = {
@@ -1160,6 +1165,16 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let insightsMode = "quick";
     let insightsReport = null;
     let insightsDataSignature = null;
+    let providerInsightsEnabled = false;
+    let providerInsightsClient = null;
+    let providerInsightsMode = "quick";
+    let providerInsightsReport = null;
+    let providerInsightsLoading = false;
+    let providerInsightsError = "";
+    let providerInsightsRetryRequest = null;
+    let providerInsightsDataSignature = null;
+    let providerInsightsCapturedIdentity = null;
+    let providerInsightsRequestVersion = 0;
     let studentClassroomCodeDraft = "";
     let studentLoginIdDraft = "";
     // The validated signed-out login locator for this browser, or null. It holds
@@ -1720,6 +1735,7 @@ function toggleStudentDropdown() {
         insightsPeriodDays = nextDays;
         insightsReport = null;
         insightsDataSignature = null;
+        resetProviderInsightsState();
       }
       screen = "insights";
       render();
@@ -1727,6 +1743,7 @@ function toggleStudentDropdown() {
 
     function generateLocalInsights(mode) {
       if (!requireTeacher()) return;
+      resetProviderInsightsState();
       insightsMode = mode === "deep" ? "deep" : "quick";
       const currentDataSignature = currentInsightsDataSignature();
       const nextReport = buildClassInsightsReport({
@@ -1754,6 +1771,161 @@ function toggleStudentDropdown() {
       if (insightsDataSignature === currentInsightsDataSignature()) return;
       insightsReport = null;
       insightsDataSignature = null;
+    }
+
+    function resetProviderInsightsState() {
+      providerInsightsRequestVersion += 1;
+      providerInsightsMode = "quick";
+      providerInsightsReport = null;
+      providerInsightsLoading = false;
+      providerInsightsError = "";
+      providerInsightsRetryRequest = null;
+      providerInsightsDataSignature = null;
+      providerInsightsCapturedIdentity = null;
+    }
+
+    function providerInsightsContextIsCurrent({
+      capturedIdentity,
+      dataSignature,
+      mode,
+      periodDays,
+      requestVersion,
+    }) {
+      return providerInsightsEnabled
+        && IS_MULTI_TEACHER_V2_ENABLED
+        && isTeacher
+        && providerInsightsRequestVersion === requestVersion
+        && providerInsightsMode === mode
+        && insightsPeriodDays === periodDays
+        && providerInsightsDataSignature === dataSignature
+        && v2TenantSession.validateCapturedIdentity(capturedIdentity)
+        && currentInsightsDataSignature() === dataSignature;
+    }
+
+    function discardStaleProviderInsights() {
+      if (!providerInsightsReport && !providerInsightsLoading && !providerInsightsError) return;
+      if (
+        providerInsightsCapturedIdentity
+        && providerInsightsDataSignature === currentInsightsDataSignature()
+        && v2TenantSession.validateCapturedIdentity(providerInsightsCapturedIdentity)
+      ) return;
+      resetProviderInsightsState();
+    }
+
+    async function generateProviderInsights(mode, retry = false) {
+      if (!providerInsightsEnabled || !providerInsightsClient || !requireTeacher()) return;
+      if (providerInsightsLoading) return;
+      const acceptedMode = mode === "deep" ? "deep" : "quick";
+      const periodDays = insightsPeriodDays;
+      const dataSignature = currentInsightsDataSignature();
+      const capturedIdentity = v2TenantSession.captureIdentity();
+
+      let request;
+      if (retry) {
+        const retryState = providerInsightsRetryRequest;
+        if (
+          !retryState
+          || retryState.mode !== acceptedMode
+          || retryState.periodDays !== periodDays
+          || retryState.dataSignature !== dataSignature
+          || !v2TenantSession.validateCapturedIdentity(retryState.capturedIdentity)
+        ) {
+          resetProviderInsightsState();
+          render();
+          return;
+        }
+        request = retryState.request;
+      } else {
+        request = null;
+      }
+
+      providerInsightsRequestVersion += 1;
+      const requestVersion = providerInsightsRequestVersion;
+      providerInsightsMode = acceptedMode;
+      providerInsightsReport = null;
+      providerInsightsLoading = true;
+      providerInsightsError = "";
+      providerInsightsRetryRequest = null;
+      providerInsightsDataSignature = dataSignature;
+      providerInsightsCapturedIdentity = capturedIdentity;
+      screen = "insights";
+      render();
+
+      try {
+        if (!request) {
+          request = {
+            requestId: providerInsightsClient.newRequestId(),
+            mode: acceptedMode,
+            periodDays,
+          };
+        }
+        const result = await providerInsightsClient.analyze(request);
+        if (!providerInsightsContextIsCurrent({
+          capturedIdentity,
+          dataSignature,
+          mode: acceptedMode,
+          periodDays,
+          requestVersion,
+        })) return;
+        providerInsightsReport = result;
+      } catch (error) {
+        if (!providerInsightsContextIsCurrent({
+          capturedIdentity,
+          dataSignature,
+          mode: acceptedMode,
+          periodDays,
+          requestVersion,
+        })) return;
+        const safeError = mapProviderInsightsError(error);
+        providerInsightsError = safeError.message;
+        if (safeError.ambiguous) {
+          providerInsightsRetryRequest = {
+            request,
+            mode: acceptedMode,
+            periodDays,
+            dataSignature,
+            capturedIdentity,
+          };
+        }
+      } finally {
+        if (providerInsightsRequestVersion === requestVersion) {
+          providerInsightsLoading = false;
+          render();
+        }
+      }
+    }
+
+    function retryProviderInsights() {
+      const mode = providerInsightsRetryRequest?.mode;
+      if (!mode) return;
+      void generateProviderInsights(mode, true);
+    }
+
+    function changeProviderInsightsLocalDataForTest() {
+      if (!providerInsightsEnabled || !requireTeacher() || data.students.length < 1) return;
+      data = {
+        ...data,
+        students: data.students.map((student, index) => index === 0
+          ? { ...student, balance: Number(student.balance) + 1 }
+          : student),
+      };
+      render();
+    }
+
+    function orderedProviderObservations(report) {
+      if (!report) return [];
+      const byId = new Map(report.observations.map(observation => [observation.id, observation]));
+      return report.orderedObservationIds.map(id => byId.get(id));
+    }
+
+    function providerGroupHtml(group, report) {
+      const byId = new Map(report.observations.map(observation => [observation.id, observation]));
+      const titles = group.observationIds.map(id => byId.get(id)?.title).filter(Boolean);
+      return `
+        <div class="insight-evidence">
+          <strong>${escapeHtml(group.label)}</strong>: ${titles.map(escapeHtml).join(" · ")}
+        </div>
+      `;
     }
 
     function insightsObservationHtml(observation) {
@@ -3651,6 +3823,7 @@ link.click();
         clearTemporaryProfileStudentPin();
       }
       discardStaleInsightsReport();
+      discardStaleProviderInsights();
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         const state = v2TenantSession.getState();
         if (state === SESSION_STATES.AUTHENTICATING) {
@@ -3980,6 +4153,9 @@ ${transactionTarget !== "whole" ? `
 
       if (screen === "insights" && isTeacher) {
         const reportLabel = insightsReport?.mode === "deep" ? "Deep Analysis" : "Quick Insights";
+        const providerReportLabel = providerInsightsReport?.mode === "deep"
+          ? "AI Test Deep Analysis"
+          : "AI Test Quick Insights";
         html += `
           <div class="insights-shell">
             <section class="card insights-intro">
@@ -4012,6 +4188,28 @@ ${transactionTarget !== "whole" ? `
                 </div>
               </div>
               <p class="small-note">Analysis runs locally · No additional Gemini or Firebase call · $0.00 API cost</p>
+              ${providerInsightsEnabled ? `
+                <div class="insights-controls no-print" data-testid="provider-insights-controls" style="margin-top: 16px;">
+                  <div>
+                    <span class="insights-eyebrow">Emulator-only AI test</span>
+                    <p class="small-note" style="margin-bottom: 0;">Fake classroom data and a fake AI provider only. Nothing is deployed.</p>
+                  </div>
+                  <div class="insights-actions">
+                    <button
+                      type="button"
+                      data-testid="provider-insights-quick"
+                      class="${providerInsightsReport?.mode === "quick" ? "primary" : ""}"
+                      onclick="generateProviderInsights('quick')"
+                      ${providerInsightsLoading ? "disabled" : ""}>AI Test Quick</button>
+                    <button
+                      type="button"
+                      data-testid="provider-insights-deep"
+                      class="${providerInsightsReport?.mode === "deep" ? "primary" : ""}"
+                      onclick="generateProviderInsights('deep')"
+                      ${providerInsightsLoading ? "disabled" : ""}>AI Test Deep</button>
+                  </div>
+                </div>
+              ` : ""}
             </section>
 
             <section class="card" aria-label="Monthly technology allowances">
@@ -4033,6 +4231,56 @@ ${transactionTarget !== "whole" ? `
                 </div>
               </div>
             </section>
+
+            ${providerInsightsEnabled && providerInsightsLoading ? `
+              <section class="card" aria-live="polite" data-testid="provider-insights-loading">
+                <span class="insights-eyebrow">AI test</span>
+                <h2 style="margin-top: 6px;">Checking the classroom patterns…</h2>
+              </section>
+            ` : ""}
+
+            ${providerInsightsEnabled && providerInsightsError ? `
+              <section class="card" role="alert" data-testid="provider-insights-error">
+                <span class="insights-eyebrow">AI test unavailable</span>
+                <p>${escapeHtml(providerInsightsError)}</p>
+                ${providerInsightsRetryRequest ? `
+                  <button type="button" data-testid="provider-insights-retry" onclick="retryProviderInsights()">Retry same request</button>
+                ` : ""}
+              </section>
+            ` : ""}
+
+            ${providerInsightsEnabled && providerInsightsReport ? `
+              <section class="card" aria-live="polite" data-testid="provider-insights-report">
+                <div class="insights-report-header">
+                  <div>
+                    <span class="insights-eyebrow">${escapeHtml(providerReportLabel)}</span>
+                    <h2>${providerInsightsReport.observations.length} ${providerInsightsReport.observations.length === 1 ? "observation" : "observations"} from the last ${providerInsightsReport.periodDays} days</h2>
+                    <div class="insights-report-meta">
+                      Generated ${escapeHtml(formattedInsightsGeneratedAt(providerInsightsReport.generatedAt))}
+                      · Fake-provider test cost $${(providerInsightsReport.usage.costMicroUsd / 1_000_000).toFixed(6)}
+                    </div>
+                  </div>
+                  <span class="insights-local-badge">Emulator AI test</span>
+                </div>
+                <div class="insights-list">
+                  ${orderedProviderObservations(providerInsightsReport).map(insightsObservationHtml).join("")}
+                </div>
+                ${providerInsightsReport.groups.length ? `
+                  <div data-testid="provider-insights-groups" style="margin-top: 14px;">
+                    <span class="insights-eyebrow">Suggested order</span>
+                    ${providerInsightsReport.groups.map(group => providerGroupHtml(group, providerInsightsReport)).join("")}
+                  </div>
+                ` : ""}
+                ${providerInsightsReport.teacherQuestions.length ? `
+                  <div data-testid="provider-insights-questions" style="margin-top: 14px;">
+                    <span class="insights-eyebrow">Questions for the teacher</span>
+                    ${providerInsightsReport.teacherQuestions.map(question => `
+                      <div class="insight-evidence">${escapeHtml(question.text)}</div>
+                    `).join("")}
+                  </div>
+                ` : ""}
+              </section>
+            ` : ""}
 
             ${insightsReport ? `
               <section class="card" aria-live="polite">
@@ -4670,6 +4918,7 @@ if (screen === "editSettingsLists" && isTeacher) {
       insightsMode = "quick";
       insightsReport = null;
       insightsDataSignature = null;
+      resetProviderInsightsState();
       profileLoginIdStatus = "Checking...";
       clearTemporaryProfileStudentPin();
       // Plaintext PINs belong to exactly one tenant. They must not survive a
@@ -4811,6 +5060,23 @@ if (screen === "editSettingsLists" && isTeacher) {
     // came from the emulator.
     connectPhase2bEmulatorsIfConfigured();
 
+    providerInsightsEnabled = resolveProviderInsightsBrowserActivation({
+      buildEnabled: VERSION3_GEMINI_BROWSER_BUILD_ENABLED,
+      buildProjectId: VERSION3_GEMINI_BROWSER_BUILD_PROJECT_ID,
+      runtimeConfig: window.VERSION3_GEMINI_BROWSER_TEST_CONFIG,
+    }) && app.options.projectId === VERSION3_GEMINI_BROWSER_PROJECT_ID;
+    if (providerInsightsEnabled) {
+      const providerCallable = httpsCallable(functions, "analyzeTeacherInsightsV3");
+      const providerCallAdapter = typeof window.__VERSION3_WRAP_PROVIDER_CALL__ === "function"
+        ? window.__VERSION3_WRAP_PROVIDER_CALL__(providerCallable)
+        : providerCallable;
+      providerInsightsClient = createProviderInsightsBrowserClient({
+        enabled: true,
+        callable: providerCallAdapter,
+        cryptoApi: window.crypto,
+      });
+    }
+
     // Single source of truth for the V2 cache namespace: the project ID of the
     // Firebase app actually in use. Production/default resolves to
     // "morgan-bank"; the browser emulator harness resolves to its demo project.
@@ -4936,6 +5202,13 @@ if (screen === "editSettingsLists" && isTeacher) {
         if (currentAuthGeneration !== authObservedGeneration) return;
 
         const callAdapter = async (name, payload) => {
+          if (
+            providerInsightsEnabled
+            && name === "resolveTeacherTenantV2"
+            && typeof window.__VERSION3_RESOLVE_TEACHER_TENANT__ === "function"
+          ) {
+            return { data: window.__VERSION3_RESOLVE_TEACHER_TENANT__() };
+          }
           const callable = httpsCallable(functions, name);
           return await callable(payload);
         };
@@ -5052,6 +5325,9 @@ window.openStudentAuthLogs = openStudentAuthLogs;
 window.setScreen = setScreen;
 window.setInsightsPeriod = setInsightsPeriod;
 window.generateLocalInsights = generateLocalInsights;
+window.generateProviderInsights = generateProviderInsights;
+window.retryProviderInsights = retryProviderInsights;
+window.changeProviderInsightsLocalDataForTest = changeProviderInsightsLocalDataForTest;
 window.viewStudentProfile = viewStudentProfile;
 window.resetProfileStudentPin = resetProfileStudentPin;
 window.activateStudent = activateStudent;
