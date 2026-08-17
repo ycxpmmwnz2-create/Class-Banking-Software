@@ -3570,7 +3570,25 @@ binds the server signature but persists neither the provider packet nor display
 facts. This checkpoint proves the server callable with synthetic data in all
 three emulators; it changes no browser file and establishes no live Gemini,
 App Check, credentials, pricing, billing, staging, production, or deployment
-authority. Browser wiring remains Checkpoint B and requires separate approval.
+authority.
+
+The separately authorized Checkpoint B adds the exact-schema browser boundary
+and an exact-demo-project-only assisted test panel to the existing Insights
+screen. Normal app builds remain on the local deterministic Quick/Deep
+experience. The assisted page stores nothing, accepts only a teacher click,
+sends only request ID/mode/period, validates every response field, and discards
+late completion after logout, tenant change, evidence change, period change, or
+a newer request. Its synthetic browser harness may resolve the test page's
+rules-protected classroom while V2 callables remain disabled, but that value is
+never added to the Insights request: the real emulator callable independently
+derives and revalidates the authenticated tenant before reading evidence.
+
+Chromium and WebKit each exercise the authenticated click, loading/duplicate
+guard, same-request replay, safe rendering, bounded malformed-response error,
+two-teacher separation, and every stale-completion case against the three real
+emulators and fake provider. This is local synthetic evidence only. It grants
+no live Gemini, App Check, credential, pricing, billing, Firebase project,
+staging, production, commit, push, merge, or deployment authority.
 
 ---
 
