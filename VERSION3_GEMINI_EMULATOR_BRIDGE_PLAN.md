@@ -100,3 +100,19 @@ The emulator command proves local Firestore transaction behavior against a
 synthetic demo project. It does not prove deployed Functions, browser behavior,
 provider behavior, pricing, billing, staging, production, or real-account
 behavior.
+
+## Later Checkpoint A reconciliation
+
+The bridge criteria above remain the historical acceptance boundary for commit
+`74a233e3bd75633b44ee9ee0eceac608e181d974`. The separately approved
+emulator-callable Checkpoint A advances that bridge without enabling any live
+surface: collection reads are now bounded with `MAX + 1` queries, the browser
+no longer supplies the server evidence signature, raw and pseudonymized reports
+must align before reservation, shared identity validation rejects C0/C1 control
+characters, and the schema-v2 reservation binds the internal signature while
+persisting no teacher display facts.
+
+The only new reachability is `analyzeTeacherInsightsV3` under the exact demo
+project's Auth, Functions, and Firestore emulators with a deterministic fake
+provider. Browser wiring and every real-provider, staging, production, billing,
+secret, App Check, commit, push, and deployment gate remain separate.

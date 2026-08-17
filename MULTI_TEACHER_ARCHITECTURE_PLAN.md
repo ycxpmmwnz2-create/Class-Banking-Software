@@ -3553,6 +3553,25 @@ configuration, network request, staging/production access, or deployment.
 Those surfaces remain later, separately approved and independently reviewed
 items.
 
+The next separately approved Checkpoint A is defined in
+`VERSION3_GEMINI_EMULATOR_CALLABLE_BROWSER_PLAN.md`. It exports
+`analyzeTeacherInsightsV3` solely for the exact
+`demo-morgan-bank-version3-gemini-callable-browser` runtime when the Auth,
+Functions, and Firestore emulator guards all pass before a Firestore handle is
+obtained. The request carries only a request ID, mode, and period. The server
+calculates its own evidence signature, runs the deterministic calculator over
+paired raw and pseudonymized views from bounded `MAX + 1` queries, and asserts
+their ordered structural alignment before reservation or fake-provider use.
+
+The fake provider receives only the pseudonymized exact-schema packet and may
+only organize opaque references. The authorized teacher receives the aligned
+raw display facts after provider/replay validation. The schema-v2 usage record
+binds the server signature but persists neither the provider packet nor display
+facts. This checkpoint proves the server callable with synthetic data in all
+three emulators; it changes no browser file and establishes no live Gemini,
+App Check, credentials, pricing, billing, staging, production, or deployment
+authority. Browser wiring remains Checkpoint B and requires separate approval.
+
 ---
 
 *This document preserves the original planning rationale and the later local

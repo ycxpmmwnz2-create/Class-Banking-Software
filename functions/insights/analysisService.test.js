@@ -13,7 +13,6 @@ function request(overrides = {}) {
     requestId: 'request_123456789',
     mode: 'quick',
     periodDays: 30,
-    evidenceSignature: SIGNATURE,
     ...overrides,
   }
 }
@@ -23,7 +22,6 @@ function factPacket(overrides = {}) {
     schemaVersion: 1,
     mode: 'quick',
     periodDays: 30,
-    evidenceSignature: SIGNATURE,
     generatedAt: '2026-08-16T18:00:00.000Z',
     metrics: {
       studentCount: 2,
@@ -39,6 +37,22 @@ function factPacket(overrides = {}) {
       title: 'One request needs review',
       summary: 'One submitted request met the deterministic review threshold.',
       evidence: [{ id: 'ev-001', text: '$20 pending request at 10:30 a.m.' }],
+    }],
+    ...overrides,
+  }
+}
+
+function displayEvidence(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    generatedAt: '2026-08-16T18:00:00.000Z',
+    metrics: factPacket().metrics,
+    observations: [{
+      priority: 'attention',
+      category: 'Needs attention',
+      title: 'One request needs review',
+      summary: 'Jordan Reyes has one submitted request that met the review threshold.',
+      evidence: ['Jordan Reyes requested $20 for a classroom store purchase.'],
     }],
     ...overrides,
   }
@@ -75,6 +89,7 @@ function harness(overrides = {}) {
       state.loadInput = input
       return {
         analysisEvidence: { synthetic: true },
+        displayEvidence: displayEvidence(),
         sensitiveValues: [],
         evidenceSignature: SIGNATURE,
       }
@@ -85,7 +100,6 @@ function harness(overrides = {}) {
       return factPacket({
         mode: input.mode,
         periodDays: input.periodDays,
-        evidenceSignature: input.evidenceSignature,
       })
     },
     async quoteWorstCaseCost(input) {
@@ -142,6 +156,8 @@ test('service resolves tenant, builds facts, reserves worst-case cost, then invo
   assert.deepEqual(run.calls, ['resolve', 'load', 'build', 'quote', 'reserve', 'provider', 'price', 'commit'])
   assert.equal(result.source, 'provider-assisted')
   assert.equal(result.usage.costMicroUsd, 75_000)
+  assert.equal(result.observations[0].summary.includes('Jordan Reyes'), true)
+  assert.equal(Object.hasOwn(result, 'evidenceSignature'), false)
   assert.equal(run.state.reserveInput.monthlyAllowanceMicroUsd, 7_500_000)
   assert.equal(run.state.reserveInput.hourlyRequestLimit, 10)
   assert.equal(run.state.providerInput.providerProfile, 'quick-economy-v1')
@@ -159,7 +175,6 @@ test('tenant identity is server-derived and never included in the provider packe
   })
   assert.deepEqual(Object.keys(run.state.buildInput).sort(), [
     'evidence',
-    'evidenceSignature',
     'mode',
     'modeProfile',
     'periodDays',
@@ -170,6 +185,7 @@ test('tenant identity is server-derived and never included in the provider packe
   const serializedProviderInput = JSON.stringify(run.state.providerInput)
   assert.doesNotMatch(serializedProviderInput, /teacher-alpha|classroom-alpha/)
   assert.doesNotMatch(serializedProviderInput, /studentId|loginId|pin|authUid/i)
+  assert.doesNotMatch(serializedProviderInput, /evidenceSignature/)
 })
 
 test('declared identifiers, including a bare student id field, cannot reach the packet builder', async () => {
@@ -180,6 +196,7 @@ test('declared identifiers, including a bare student id field, cannot reach the 
       analysisEvidence: {
         students: [{ id: 'student-17', displayLabel: 'Learner 17' }],
       },
+      displayEvidence: displayEvidence(),
       sensitiveValues: [{ kind: 'student-id', value: 'student-17' }],
       evidenceSignature: SIGNATURE,
     }
@@ -202,6 +219,7 @@ test('a declared multi-word student name embedded in evidence cannot reach the p
       analysisEvidence: {
         reasons: ['Jordan Reyes submitted three requests'],
       },
+      displayEvidence: displayEvidence(),
       sensitiveValues: [{ kind: 'student-name', value: 'Jordan Reyes' }],
       evidenceSignature: SIGNATURE,
     }
@@ -222,6 +240,13 @@ test('sensitive names and numeric IDs do not collide with legitimate formatted p
     run.calls.push('load')
     return {
       analysisEvidence: { periodDescription: 'the week of May 4' },
+      displayEvidence: displayEvidence({
+        observations: [{
+          ...displayEvidence().observations[0],
+          summary: 'Spending peaked in the week of May 4.',
+          evidence: ['Verified activity during May 4.'],
+        }],
+      }),
       sensitiveValues: [
         { kind: 'student-name', value: 'May' },
         { kind: 'student-id', value: '001' },
@@ -229,7 +254,7 @@ test('sensitive names and numeric IDs do not collide with legitimate formatted p
       evidenceSignature: SIGNATURE,
     }
   }
-  run.dependencies.buildFactPacket = async (input) => {
+  run.dependencies.buildFactPacket = async () => {
     run.calls.push('build')
     return factPacket({
       observations: [{
@@ -238,7 +263,6 @@ test('sensitive names and numeric IDs do not collide with legitimate formatted p
         summary: 'Spending peaked in the week of May 4.',
         evidence: [{ id: 'ev-001', text: 'Verified activity during May 4.' }],
       }],
-      evidenceSignature: input.evidenceSignature,
     })
   }
   run.service = createInsightAnalysisService(run.dependencies)
@@ -254,6 +278,7 @@ test('a numeric student id is blocked as a leaf but not as an unrelated count', 
     allowed.calls.push('load')
     return {
       analysisEvidence: { summary: '1 pending request needs review' },
+      displayEvidence: displayEvidence(),
       sensitiveValues: [{ kind: 'student-id', value: '1' }],
       evidenceSignature: SIGNATURE,
     }
@@ -267,6 +292,7 @@ test('a numeric student id is blocked as a leaf but not as an unrelated count', 
     blocked.calls.push('load')
     return {
       analysisEvidence: { id: '1' },
+      displayEvidence: displayEvidence(),
       sensitiveValues: [{ kind: 'student-id', value: '1' }],
       evidenceSignature: SIGNATURE,
     }
@@ -333,23 +359,22 @@ test('budget refusal prevents provider invocation', async () => {
   assert.deepEqual(run.calls, ['resolve', 'load', 'build', 'quote', 'reserve'])
 })
 
-test('server-derived evidence signature mismatch fails before packet construction', async () => {
+test('server-derived evidence signature is bound internally without browser participation', async () => {
   const run = harness()
   run.dependencies.loadDeidentifiedTenantEvidence = async () => {
     run.calls.push('load')
     return {
       analysisEvidence: { synthetic: true },
+      displayEvidence: displayEvidence(),
       sensitiveValues: [],
       evidenceSignature: 'b'.repeat(64),
     }
   }
   run.service = createInsightAnalysisService(run.dependencies)
 
-  await assert.rejects(
-    run.service({ auth: { uid: 'teacher-alpha' }, data: request() }),
-    error => error instanceof InsightAnalysisServiceError && error.category === 'stale-evidence',
-  )
-  assert.deepEqual(run.calls, ['resolve', 'load'])
+  await run.service({ auth: { uid: 'teacher-alpha' }, data: request() })
+  assert.equal(run.state.reserveInput.evidenceSignature, 'b'.repeat(64))
+  assert.equal(run.state.commitInput.result.evidenceSignature, 'b'.repeat(64))
 })
 
 test('malformed provider output retains the worst-case reservation and displays nothing', async () => {
@@ -427,18 +452,18 @@ test('completed idempotent request is replayed only after current evidence valid
 
   const result = await run.service({ auth: { uid: 'teacher-alpha' }, data: request() })
   assert.equal(result.usage.costMicroUsd, 75_000)
+  assert.equal(result.observations[0].summary.includes('Jordan Reyes'), true)
   assert.deepEqual(run.calls, ['resolve', 'load', 'build', 'quote', 'reserve'])
 })
 
 test('Deep uses its separately bounded provider and rate-limit profile', async () => {
   const run = harness()
   const deepRequest = request({ mode: 'deep', periodDays: 90 })
-  run.dependencies.buildFactPacket = async (input) => {
+  run.dependencies.buildFactPacket = async () => {
     run.calls.push('build')
     return factPacket({
       mode: 'deep',
       periodDays: 90,
-      evidenceSignature: input.evidenceSignature,
     })
   }
   run.service = createInsightAnalysisService(run.dependencies)

@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 
+import { InsightIdentityError, validateInsightIdentity } from './identity.js'
+
 const EVIDENCE_SCHEMA_VERSION = 1
 const STUDENT_KEYS = Object.freeze(['balance', 'frozen', 'id', 'name', 'transactions'])
 const TRANSACTION_KEYS = Object.freeze([
@@ -19,6 +21,7 @@ const PERIODS = Object.freeze([7, 30, 90])
 const MAX_STUDENTS = 500
 const MAX_TRANSACTIONS = 20_000
 const MAX_REPORT_OBSERVATIONS = 20
+const PSEUDONYMIZED_STUDENT_NAME = 'A student'
 
 export class TenantEvidenceAdapterError extends Error {
   constructor(category, message) {
@@ -50,8 +53,15 @@ export function createFirestoreTenantEvidenceLoader({
     classroomId,
     periodDays,
   } = {}) {
-    const teacher = canonicalIdentity(teacherUid, 'teacherUid')
-    const classroom = canonicalIdentity(classroomId, 'classroomId')
+    let teacher
+    let classroom
+    try {
+      teacher = validateInsightIdentity(teacherUid, 'teacherUid')
+      classroom = validateInsightIdentity(classroomId, 'classroomId')
+    } catch (error) {
+      if (error instanceof InsightIdentityError) fail('invalid-identity', error.message)
+      throw error
+    }
     if (!PERIODS.includes(periodDays)) {
       fail('invalid-period', 'The requested evidence period is unsupported.')
     }
@@ -68,8 +78,12 @@ export function createFirestoreTenantEvidenceLoader({
         teacherUid: teacher,
         classroomId: classroom,
       })
-      const studentsSnapshot = await transaction.get(classroomRef.collection('students'))
-      const transactionsSnapshot = await transaction.get(classroomRef.collection('transactions'))
+      const studentsSnapshot = await transaction.get(
+        classroomRef.collection('students').limit(MAX_STUDENTS + 1),
+      )
+      const transactionsSnapshot = await transaction.get(
+        classroomRef.collection('transactions').limit(MAX_TRANSACTIONS + 1),
+      )
       if (studentsSnapshot.size > MAX_STUDENTS || transactionsSnapshot.size > MAX_TRANSACTIONS) {
         fail('evidence-too-large', 'Classroom evidence exceeds the bridge read limit.')
       }
@@ -91,14 +105,22 @@ export function createFirestoreTenantEvidenceLoader({
       return timestamp >= cutoff && timestamp <= generatedAt.getTime()
     })
     const pseudonymized = pseudonymizeEvidence(raw.students, periodTransactions)
-    const report = calculateReport({
+    assertPseudonymizedStudentNames(pseudonymized)
+    const providerReport = projectReport(calculateReport({
       students: pseudonymized.students,
       transactions: pseudonymized.transactions,
       days: periodDays,
       mode: 'deep',
       now: generatedAt,
-    })
-    const analysisEvidence = projectReport(report)
+    }))
+    const displayReport = projectReport(calculateReport({
+      students: raw.students,
+      transactions: periodTransactions,
+      days: periodDays,
+      mode: 'deep',
+      now: generatedAt,
+    }))
+    assertPairedReports(providerReport, displayReport)
     const sensitiveValues = declareSensitiveValues({
       teacherUid: teacher,
       classroomId: classroom,
@@ -114,7 +136,8 @@ export function createFirestoreTenantEvidenceLoader({
     })
 
     return Object.freeze({
-      analysisEvidence,
+      analysisEvidence: providerReport,
+      displayEvidence: displayReport,
       sensitiveValues,
       evidenceSignature,
     })
@@ -216,13 +239,13 @@ function pseudonymizeEvidence(students, transactions) {
   return Object.freeze({
     students: Object.freeze(students.map(student => Object.freeze({
       id: aliases.get(String(student.id)),
-      name: 'A student',
+      name: PSEUDONYMIZED_STUDENT_NAME,
       balance: student.balance,
     }))),
     transactions: Object.freeze(transactions.map((transaction, index) => Object.freeze({
       id: `txn-${index + 1}`,
       studentId: aliases.get(String(transaction.studentId)),
-      studentName: 'A student',
+      studentName: PSEUDONYMIZED_STUDENT_NAME,
       date: transaction.date,
       type: transaction.type,
       amount: transaction.amount,
@@ -231,6 +254,18 @@ function pseudonymizeEvidence(students, transactions) {
       source: transaction.source,
     }))),
   })
+}
+
+function assertPseudonymizedStudentNames({ students, transactions }) {
+  const hasRawStudentName = students.some(
+    student => student.name !== PSEUDONYMIZED_STUDENT_NAME,
+  )
+  const hasRawTransactionStudentName = transactions.some(
+    transaction => transaction.studentName !== PSEUDONYMIZED_STUDENT_NAME,
+  )
+  if (hasRawStudentName || hasRawTransactionStudentName) {
+    fail('evidence-not-deidentified', 'Pseudonymized evidence contains a raw student name.')
+  }
 }
 
 function projectReport(report) {
@@ -303,19 +338,25 @@ function hashEvidence(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex')
 }
 
-function canonicalIdentity(value, label) {
+function assertPairedReports(providerReport, displayReport) {
   if (
-    typeof value !== 'string' ||
-    value.length < 1 ||
-    value.length > 256 ||
-    value.trim() !== value ||
-    value === '.' ||
-    value === '..' ||
-    value.includes('/')
+    providerReport.generatedAt !== displayReport.generatedAt ||
+    JSON.stringify(providerReport.metrics) !== JSON.stringify(displayReport.metrics) ||
+    providerReport.observations.length !== displayReport.observations.length
   ) {
-    fail('invalid-identity', `${label} is malformed.`)
+    fail('calculator-invalid', 'Provider and display reports are not structurally aligned.')
   }
-  return value
+  for (let index = 0; index < providerReport.observations.length; index += 1) {
+    const provider = providerReport.observations[index]
+    const display = displayReport.observations[index]
+    if (
+      provider.priority !== display.priority ||
+      provider.category !== display.category ||
+      provider.title !== display.title
+    ) {
+      fail('calculator-invalid', 'Provider and display observations are not aligned.')
+    }
+  }
 }
 
 function positiveSafeInteger(value, label) {

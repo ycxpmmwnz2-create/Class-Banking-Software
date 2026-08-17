@@ -5,6 +5,7 @@ import {
   validateFactPacket,
   validateInsightRequest,
   validateProviderResponse,
+  validateTeacherAnalysisResponse,
 } from './contracts.js'
 import {
   GEMINI_MONTHLY_ALLOWANCE_MICRO_USD,
@@ -14,6 +15,7 @@ import {
   validateActualCost,
   validateWorstCaseQuote,
 } from './costPolicy.js'
+import { InsightIdentityError, validateInsightIdentity } from './identity.js'
 
 export class InsightAnalysisServiceError extends Error {
   constructor(category, message) {
@@ -48,17 +50,10 @@ export function createInsightAnalysisService(dependencies) {
       'Classroom evidence could not be loaded.',
     )
     const evidenceEnvelope = validateEvidenceEnvelope(rawEvidenceEnvelope)
-    if (evidenceEnvelope.evidenceSignature !== request.evidenceSignature) {
-      throw new InsightAnalysisServiceError(
-        'stale-evidence',
-        'Classroom evidence changed before analysis could begin.',
-      )
-    }
     assertAnalysisEvidenceIsDeidentified(evidenceEnvelope)
     const rawPacket = await guardedCall(
       () => deps.buildFactPacket({
         evidence: evidenceEnvelope.analysisEvidence,
-        evidenceSignature: evidenceEnvelope.evidenceSignature,
         mode: request.mode,
         periodDays: request.periodDays,
         modeProfile: profile,
@@ -66,10 +61,8 @@ export function createInsightAnalysisService(dependencies) {
       'evidence-unavailable',
       'The deterministic fact packet could not be built.',
     )
-    const packet = validateFactPacket(rawPacket, {
-      ...request,
-      evidenceSignature: evidenceEnvelope.evidenceSignature,
-    })
+    const packet = validateFactPacket(rawPacket, request)
+    const displayObservations = pairDisplayObservations(packet, evidenceEnvelope.displayEvidence)
 
     const rawQuote = await guardedCall(
       () => deps.quoteWorstCaseCost({ modeProfile: profile }),
@@ -85,6 +78,7 @@ export function createInsightAnalysisService(dependencies) {
         requestId: request.requestId,
         monthKey: utcMonthKey(now),
         mode: request.mode,
+        evidenceSignature: evidenceEnvelope.evidenceSignature,
         hourlyRequestLimit: profile.hourlyRequestLimit,
         monthlyAllowanceMicroUsd: GEMINI_MONTHLY_ALLOWANCE_MICRO_USD,
         rateCardId: quote.rateCardId,
@@ -97,7 +91,11 @@ export function createInsightAnalysisService(dependencies) {
     if (reservation?.kind === 'completed') {
       let replay
       try {
-        replay = validateCompletedAnalysis(reservation.result, packet)
+        replay = validateCompletedAnalysis(
+          reservation.result,
+          packet,
+          evidenceEnvelope.evidenceSignature,
+        )
       } catch {
         throw new InsightAnalysisServiceError(
           'invalid-replay',
@@ -107,7 +105,7 @@ export function createInsightAnalysisService(dependencies) {
       if (replay.usage.costMicroUsd > GEMINI_MONTHLY_ALLOWANCE_MICRO_USD) {
         throw new InsightAnalysisServiceError('invalid-replay', 'Stored usage exceeds the allowance.')
       }
-      return replay
+      return buildTeacherResponse(replay, displayObservations)
     }
 
     const acceptedReservation = validateReservation(
@@ -136,6 +134,7 @@ export function createInsightAnalysisService(dependencies) {
       const completed = buildCompletedAnalysis({
         packet,
         providerResponse,
+        evidenceSignature: evidenceEnvelope.evidenceSignature,
         generatedAt: now.toISOString(),
         actualCostMicroUsd,
       })
@@ -145,7 +144,7 @@ export function createInsightAnalysisService(dependencies) {
         actualCostMicroUsd,
         result: completed,
       })
-      return completed
+      return buildTeacherResponse(completed, displayObservations)
     } catch (error) {
       if (providerStarted) {
         await retainWorstCaseReservation(deps.usageLedger, {
@@ -175,13 +174,19 @@ export function createInsightAnalysisService(dependencies) {
   }
 }
 
-function buildCompletedAnalysis({ packet, providerResponse, generatedAt, actualCostMicroUsd }) {
+function buildCompletedAnalysis({
+  packet,
+  providerResponse,
+  evidenceSignature,
+  generatedAt,
+  actualCostMicroUsd,
+}) {
   return Object.freeze({
     schemaVersion: INSIGHT_ANALYSIS_SCHEMA_VERSION,
     source: 'provider-assisted',
     mode: packet.mode,
     periodDays: packet.periodDays,
-    evidenceSignature: packet.evidenceSignature,
+    evidenceSignature,
     generatedAt,
     orderedObservationIds: providerResponse.orderedObservationIds,
     groups: providerResponse.groups,
@@ -226,10 +231,17 @@ function validateTenantIdentity(value) {
   if (!isPlainObject(value)) {
     throw new InsightAnalysisServiceError('authorization-failed', 'Tenant identity is malformed.')
   }
-  return Object.freeze({
-    teacherUid: canonicalIdentity(value.teacherUid, 'teacherUid'),
-    classroomId: canonicalIdentity(value.classroomId, 'classroomId'),
-  })
+  try {
+    return Object.freeze({
+      teacherUid: validateInsightIdentity(value.teacherUid, 'teacherUid'),
+      classroomId: validateInsightIdentity(value.classroomId, 'classroomId'),
+    })
+  } catch (error) {
+    if (error instanceof InsightIdentityError) {
+      throw new InsightAnalysisServiceError('authorization-failed', error.message)
+    }
+    throw error
+  }
 }
 
 const SENSITIVE_VALUE_KINDS = Object.freeze(new Set([
@@ -256,14 +268,14 @@ const DIRECT_IDENTIFIER_KINDS = Object.freeze(new Set([
 function validateEvidenceEnvelope(value) {
   if (!isPlainObject(value) || !hasExactKeys(
     value,
-    ['analysisEvidence', 'sensitiveValues', 'evidenceSignature'],
+    ['analysisEvidence', 'displayEvidence', 'sensitiveValues', 'evidenceSignature'],
   )) {
     throw new InsightAnalysisServiceError(
       'evidence-unavailable',
       'The de-identified evidence envelope is malformed.',
     )
   }
-  if (!isPlainObject(value.analysisEvidence)) {
+  if (!isPlainObject(value.analysisEvidence) || !isPlainObject(value.displayEvidence)) {
     throw new InsightAnalysisServiceError(
       'evidence-unavailable',
       'De-identified analysis evidence must be a plain object.',
@@ -318,6 +330,7 @@ function validateEvidenceEnvelope(value) {
   })
   return Object.freeze({
     analysisEvidence: cloneAnalysisEvidence(value.analysisEvidence),
+    displayEvidence: cloneAnalysisEvidence(value.displayEvidence),
     sensitiveValues: Object.freeze(sensitiveValues),
     evidenceSignature: value.evidenceSignature,
   })
@@ -408,21 +421,6 @@ function collectStringLeaves(value, output) {
   }
 }
 
-function canonicalIdentity(value, label) {
-  if (
-    typeof value !== 'string' ||
-    value.length < 1 ||
-    value.length > 256 ||
-    value.trim() !== value ||
-    value === '.' ||
-    value === '..' ||
-    value.includes('/')
-  ) {
-    throw new InsightAnalysisServiceError('authorization-failed', `${label} is malformed.`)
-  }
-  return value
-}
-
 function validateReservation(value, expectedCost) {
   if (!isPlainObject(value) || !hasExactKeys(
     value,
@@ -433,7 +431,12 @@ function validateReservation(value, expectedCost) {
   if (value.kind !== 'reserved') {
     throw new InsightAnalysisServiceError('budget-unavailable', 'Usage reservation was refused.')
   }
-  const reservationId = canonicalIdentity(value.reservationId, 'reservationId')
+  let reservationId
+  try {
+    reservationId = validateInsightIdentity(value.reservationId, 'reservationId')
+  } catch {
+    throw new InsightAnalysisServiceError('budget-unavailable', 'Usage reservation is malformed.')
+  }
   if (value.reservedCostMicroUsd !== expectedCost) {
     throw new InsightAnalysisServiceError('budget-unavailable', 'Usage reservation cost is inconsistent.')
   }
@@ -446,6 +449,58 @@ function validateReservation(value, expectedCost) {
     throw new InsightAnalysisServiceError('budget-unavailable', 'Usage reservation exceeds the allowance.')
   }
   return Object.freeze({ reservationId })
+}
+
+function pairDisplayObservations(packet, displayEvidence) {
+  if (
+    !isPlainObject(displayEvidence) ||
+    !Array.isArray(displayEvidence.observations) ||
+    displayEvidence.observations.length < packet.observations.length
+  ) {
+    throw new InsightAnalysisServiceError(
+      'evidence-unavailable',
+      'Teacher display evidence is incomplete.',
+    )
+  }
+  return Object.freeze(packet.observations.map((providerObservation, index) => {
+    const displayObservation = displayEvidence.observations[index]
+    if (
+      !isPlainObject(displayObservation) ||
+      providerObservation.priority !== displayObservation.priority ||
+      providerObservation.category !== displayObservation.category ||
+      providerObservation.title !== displayObservation.title ||
+      !Array.isArray(displayObservation.evidence) ||
+      displayObservation.evidence.length !== 1
+    ) {
+      throw new InsightAnalysisServiceError(
+        'evidence-unavailable',
+        'Provider and teacher display evidence are not aligned.',
+      )
+    }
+    return Object.freeze({
+      id: providerObservation.id,
+      priority: displayObservation.priority,
+      category: displayObservation.category,
+      title: displayObservation.title,
+      summary: displayObservation.summary,
+      evidence: displayObservation.evidence[0],
+    })
+  }))
+}
+
+function buildTeacherResponse(completed, observations) {
+  return validateTeacherAnalysisResponse({
+    schemaVersion: completed.schemaVersion,
+    source: completed.source,
+    mode: completed.mode,
+    periodDays: completed.periodDays,
+    generatedAt: completed.generatedAt,
+    observations,
+    orderedObservationIds: completed.orderedObservationIds,
+    groups: completed.groups,
+    teacherQuestions: completed.teacherQuestions,
+    usage: completed.usage,
+  })
 }
 
 async function retainWorstCaseReservation(usageLedger, reservation) {

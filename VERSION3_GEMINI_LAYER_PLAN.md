@@ -101,3 +101,24 @@ npm --prefix functions run lint
 npm run build
 git diff --check
 ```
+
+## Checkpoint A contract evolution
+
+The original criteria above describe the reviewed dormant kernel and remain as
+historical evidence for that slice. The separately approved emulator-callable
+Checkpoint A in `VERSION3_GEMINI_EMULATOR_CALLABLE_BROWSER_PLAN.md` supersedes
+only its future-wiring assumptions:
+
+- the callable request is now exactly `requestId`, `mode`, and `periodDays`;
+  the evidence signature is calculated and consumed only by the server;
+- the evidence envelope now pairs a pseudonymized provider report with an
+  aligned raw teacher-display report from the same bounded records and clock;
+- the provider packet contains no evidence signature, while the schema-v2
+  reservation binds the internal signature for replay/conflict detection; and
+- `analyzeTeacherInsightsV3` is reachable only when the exact demo project and
+  Auth, Functions, and Firestore emulator guards all pass before Firestore is
+  obtained. It uses a fake provider and has no production override.
+
+This evolution does not authorize browser wiring, a real provider, provider
+credentials, model or price selection, App Check claims, staging, production,
+billing, deployment, commit, or push.
