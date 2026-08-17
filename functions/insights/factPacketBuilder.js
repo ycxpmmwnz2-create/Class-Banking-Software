@@ -12,7 +12,6 @@ export class InsightFactPacketBuilderError extends Error {
 
 export function buildFactPacketFromEvidence({
   evidence,
-  evidenceSignature,
   mode,
   periodDays,
   modeProfile,
@@ -63,7 +62,6 @@ export function buildFactPacketFromEvidence({
     schemaVersion: INSIGHT_ANALYSIS_SCHEMA_VERSION,
     mode,
     periodDays,
-    evidenceSignature,
     generatedAt: evidence.generatedAt,
     metrics: Object.freeze({ ...evidence.metrics }),
     observations: Object.freeze(observations),

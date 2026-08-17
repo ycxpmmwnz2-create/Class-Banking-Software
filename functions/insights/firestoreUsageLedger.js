@@ -6,10 +6,11 @@ import {
   insightModeProfile,
   utcMonthKey,
 } from './costPolicy.js'
+import { InsightIdentityError, validateInsightIdentity } from './identity.js'
 
 const LEDGER_COLLECTION = 'insightUsageLedgers'
 const RESERVATION_COLLECTION = 'insightUsageReservations'
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 const ROLLING_HOUR_MS = 60 * 60 * 1000
 const MAX_RESULT_BYTES = 64 * 1024
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/
@@ -26,6 +27,7 @@ const LEDGER_KEYS = Object.freeze([
 ])
 const RESERVATION_KEYS = Object.freeze([
   'actualCostMicroUsd',
+  'evidenceSignature',
   'ledgerId',
   'mode',
   'monthKey',
@@ -154,6 +156,7 @@ async function reserve({ firestore, now, input }) {
       monthKey: validated.monthKey,
       requestIdDigest,
       mode: validated.mode,
+      evidenceSignature: validated.evidenceSignature,
       rateCardId: validated.rateCardId,
       worstCaseCostMicroUsd: validated.worstCaseCostMicroUsd,
       status: 'reserved',
@@ -259,13 +262,21 @@ function validateReserveInput(value) {
     'requestId',
     'monthKey',
     'mode',
+    'evidenceSignature',
     'hourlyRequestLimit',
     'monthlyAllowanceMicroUsd',
     'rateCardId',
     'worstCaseCostMicroUsd',
   ], 'reservation input')
-  const teacherUid = canonicalIdentity(value.teacherUid, 'teacherUid')
-  const classroomId = canonicalIdentity(value.classroomId, 'classroomId')
+  let teacherUid
+  let classroomId
+  try {
+    teacherUid = validateInsightIdentity(value.teacherUid, 'teacherUid')
+    classroomId = validateInsightIdentity(value.classroomId, 'classroomId')
+  } catch (error) {
+    if (error instanceof InsightIdentityError) fail('invalid-identity', error.message)
+    throw error
+  }
   if (!REQUEST_ID_PATTERN.test(value.requestId)) fail('invalid-request', 'requestId is malformed.')
   if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(value.monthKey)) {
     fail('invalid-month', 'monthKey is malformed.')
@@ -275,6 +286,7 @@ function validateReserveInput(value) {
     value.hourlyRequestLimit !== profile.hourlyRequestLimit ||
     value.monthlyAllowanceMicroUsd !== GEMINI_MONTHLY_ALLOWANCE_MICRO_USD ||
     !RATE_CARD_PATTERN.test(value.rateCardId) ||
+    !DIGEST_PATTERN.test(value.evidenceSignature) ||
     !Number.isSafeInteger(value.worstCaseCostMicroUsd) ||
     value.worstCaseCostMicroUsd < 1 ||
     value.worstCaseCostMicroUsd > GEMINI_MONTHLY_ALLOWANCE_MICRO_USD
@@ -290,6 +302,7 @@ function validateReserveInput(value) {
     hourlyRequestLimit: value.hourlyRequestLimit,
     monthlyAllowanceMicroUsd: value.monthlyAllowanceMicroUsd,
     rateCardId: value.rateCardId,
+    evidenceSignature: value.evidenceSignature,
     worstCaseCostMicroUsd: value.worstCaseCostMicroUsd,
   })
 }
@@ -354,6 +367,7 @@ function validateReservationDocument(value, nowMs) {
     !DIGEST_PATTERN.test(value.scopeDigest) ||
     !DIGEST_PATTERN.test(value.ledgerId) ||
     !DIGEST_PATTERN.test(value.requestIdDigest) ||
+    !DIGEST_PATTERN.test(value.evidenceSignature) ||
     !['quick', 'deep'].includes(value.mode) ||
     !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(value.monthKey) ||
     !RATE_CARD_PATTERN.test(value.rateCardId) ||
@@ -392,6 +406,7 @@ function requireMatchingReservation(existing, expected) {
     'monthKey',
     'requestIdDigest',
     'mode',
+    'evidenceSignature',
     'rateCardId',
     'worstCaseCostMicroUsd',
   ]) {
@@ -476,21 +491,6 @@ function requireNow(value) {
     fail('invalid-time', 'The usage ledger clock is invalid.')
   }
   return candidate
-}
-
-function canonicalIdentity(value, label) {
-  if (
-    typeof value !== 'string' ||
-    value.length < 1 ||
-    value.length > 256 ||
-    value.trim() !== value ||
-    value === '.' ||
-    value === '..' ||
-    value.includes('/')
-  ) {
-    fail('invalid-identity', `${label} is malformed.`)
-  }
-  return value
 }
 
 function requireExactObject(value, keys, label) {

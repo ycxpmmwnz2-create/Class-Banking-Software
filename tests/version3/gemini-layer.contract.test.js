@@ -20,6 +20,28 @@ async function readJavaScriptTree(directoryUrl, { exclude } = {}) {
   return sources
 }
 
+function exportedConstSource(source, exportName) {
+  const marker = `export const ${exportName} =`
+  const start = source.indexOf(marker)
+  assert.notEqual(start, -1, `missing ${exportName} export`)
+  const nextExport = source.indexOf('\nexport const ', start + marker.length)
+  return source.slice(start, nextExport === -1 ? source.length : nextExport)
+}
+
+function assertTokensInOrder(source, tokens) {
+  const offsets = tokens.map((token) => {
+    const offset = source.indexOf(token)
+    assert.notEqual(offset, -1, `missing ordered token: ${token}`)
+    return offset
+  })
+  for (let index = 1; index < offsets.length; index += 1) {
+    assert.ok(
+      offsets[index - 1] < offsets[index],
+      `ordered token appeared too early: ${tokens[index]}`,
+    )
+  }
+}
+
 const [
   indexHtml,
   contractsSource,
@@ -28,9 +50,14 @@ const [
   evidenceAdapterSource,
   factPacketBuilderSource,
   usageLedgerSource,
+  emulatorCallableSource,
+  functionsIndexSource,
+  callableEnvironmentSource,
+  firebaseJsonSource,
   packageJson,
   plan,
   bridgePlan,
+  callableBrowserPlan,
   architecturePlan,
 ] = await Promise.all([
   readFile(new URL('../../index.html', import.meta.url), 'utf8'),
@@ -40,9 +67,14 @@ const [
   readFile(new URL('../../functions/insights/tenantEvidenceAdapter.js', import.meta.url), 'utf8'),
   readFile(new URL('../../functions/insights/factPacketBuilder.js', import.meta.url), 'utf8'),
   readFile(new URL('../../functions/insights/firestoreUsageLedger.js', import.meta.url), 'utf8'),
+  readFile(new URL('../../functions/insights/emulatorCallable.js', import.meta.url), 'utf8'),
+  readFile(new URL('../../functions/index.js', import.meta.url), 'utf8'),
+  readFile(new URL('../../functions/.env.demo-morgan-bank-version3-gemini-callable-browser', import.meta.url), 'utf8'),
+  readFile(new URL('../../firebase.json', import.meta.url), 'utf8'),
   readFile(new URL('../../package.json', import.meta.url), 'utf8'),
   readFile(new URL('../../VERSION3_GEMINI_LAYER_PLAN.md', import.meta.url), 'utf8'),
   readFile(new URL('../../VERSION3_GEMINI_EMULATOR_BRIDGE_PLAN.md', import.meta.url), 'utf8'),
+  readFile(new URL('../../VERSION3_GEMINI_EMULATOR_CALLABLE_BROWSER_PLAN.md', import.meta.url), 'utf8'),
   readFile(new URL('../../MULTI_TEACHER_ARCHITECTURE_PLAN.md', import.meta.url), 'utf8'),
 ])
 
@@ -50,6 +82,7 @@ const nonKernelJavaScript = [
   ...await readJavaScriptTree(new URL('../../functions/', import.meta.url), {
     exclude: url => (
       url.pathname.includes('/functions/insights/') ||
+      url.pathname.endsWith('/functions/index.js') ||
       url.pathname.includes('/node_modules/')
     ),
   }),
@@ -58,7 +91,7 @@ const nonKernelJavaScript = [
 
 const DORMANT_KERNEL_IMPORT = /(?:from\s+|import\s+|import\s*\(|require\s*\()\s*(['"`])(?:[^'"`]*\/)?insights\/(?:contracts|costPolicy|analysisService|tenantEvidenceAdapter|factPacketBuilder|firestoreUsageLedger)(?:\.js)?\1/
 
-test('source contract: guarded provider kernel remains unreachable and makes no network call', () => {
+test('source contract: guarded provider kernel and emulator provider make no network call', () => {
   const combinedKernel = [
     contractsSource,
     costPolicySource,
@@ -66,12 +99,10 @@ test('source contract: guarded provider kernel remains unreachable and makes no 
     evidenceAdapterSource,
     factPacketBuilderSource,
     usageLedgerSource,
+    emulatorCallableSource,
   ].join('\n')
   for (const forbidden of [
-    /from\s+['"]firebase(?:-admin|-functions|\/|['"])/,
-    /\bonCall\s*\(/,
     /\bhttpsCallable\s*\(/,
-    /\bgetFirestore\s*\(/,
     /\bfetch\s*\(/,
     /XMLHttpRequest/,
     /GoogleGenerativeAI|GoogleAIBackend|GenerativeModel|VertexAI|FirebaseAI/,
@@ -82,6 +113,8 @@ test('source contract: guarded provider kernel remains unreachable and makes no 
   for (const file of nonKernelJavaScript) {
     assert.doesNotMatch(file.source, DORMANT_KERNEL_IMPORT, `dormant kernel imported by ${file.path}`)
   }
+  assert.match(functionsIndexSource, /import \{[\s\S]*?createVersion3GeminiEmulatorHandler[\s\S]*?from '\.\/insights\/emulatorCallable\.js'/)
+  assert.match(functionsIndexSource, /export const analyzeTeacherInsightsV3 = onCall/)
   assert.doesNotMatch(
     indexHtml,
     /functions\/insights\/(?:contracts|costPolicy|analysisService|tenantEvidenceAdapter|factPacketBuilder|firestoreUsageLedger)(?:\.js)?/,
@@ -105,21 +138,59 @@ test('source contract: dormancy matcher detects real static, dynamic, and Common
 test('source contract: request excludes browser authority over tenant, facts, prompts, and cost', () => {
   assert.match(
     contractsSource,
-    /\['requestId', 'mode', 'periodDays', 'evidenceSignature'\]/,
+    /\['requestId', 'mode', 'periodDays'\]/,
   )
   assert.doesNotMatch(
     contractsSource.match(/export function validateInsightRequest[\s\S]*?^}/m)?.[0] ?? '',
-    /classroomId|factPacket|prompt|model|maxOutputTokens|price/,
+    /classroomId|factPacket|prompt|model|maxOutputTokens|price|evidenceSignature/,
   )
   assert.match(
     serviceSource,
     /resolveActiveTeacherTenant\(\{ auth \}\)[\s\S]*?loadDeidentifiedTenantEvidence\(\{[\s\S]*?teacherUid: identity\.teacherUid,[\s\S]*?classroomId: identity\.classroomId/,
   )
-  assert.match(serviceSource, /evidenceEnvelope\.evidenceSignature !== request\.evidenceSignature/)
+  assert.doesNotMatch(serviceSource, /request\.evidenceSignature/)
   assert.match(
     serviceSource,
-    /buildFactPacket\(\{[\s\S]*?evidence: evidenceEnvelope\.analysisEvidence,[\s\S]*?evidenceSignature: evidenceEnvelope\.evidenceSignature,[\s\S]*?mode: request\.mode,[\s\S]*?periodDays: request\.periodDays/,
+    /buildFactPacket\(\{[\s\S]*?evidence: evidenceEnvelope\.analysisEvidence,[\s\S]*?mode: request\.mode,[\s\S]*?periodDays: request\.periodDays/,
   )
+  assert.doesNotMatch(factPacketBuilderSource, /evidenceSignature/)
+  assert.match(serviceSource, /evidenceSignature: evidenceEnvelope\.evidenceSignature/)
+  assert.match(serviceSource, /pairDisplayObservations\(packet, evidenceEnvelope\.displayEvidence\)/)
+})
+
+test('source contract: callable is locked to the exact three-emulator demo runtime', () => {
+  assert.match(emulatorCallableSource, /VERSION3_GEMINI_EMULATOR_ENABLED !== 'true'/)
+  assert.match(emulatorCallableSource, /FUNCTIONS_EMULATOR !== 'true'/)
+  assert.match(emulatorCallableSource, /demo-morgan-bank-version3-gemini-callable-browser/)
+  assert.match(emulatorCallableSource, /FIRESTORE_EMULATOR_HOST/)
+  assert.match(emulatorCallableSource, /FIREBASE_AUTH_EMULATOR_HOST/)
+  const handlerSource = exportedConstSource(functionsIndexSource, 'analyzeTeacherInsightsV3')
+  const orderedHandlerTokens = [
+    'assertVersion3GeminiEmulatorRuntime({',
+    "await import('../src/insights/classInsights.js')",
+    'getFirestore(',
+  ]
+  assertTokensInOrder(handlerSource, orderedHandlerTokens)
+  const preGuardFirestoreRegression = handlerSource.replace(
+    orderedHandlerTokens[0],
+    `const hoisted = getFirestore()\n    ${orderedHandlerTokens[0]}`,
+  )
+  assert.throws(
+    () => assertTokensInOrder(preGuardFirestoreRegression, orderedHandlerTokens),
+    /ordered token appeared too early/,
+  )
+  assert.doesNotMatch(emulatorCallableSource, /API[_-]?KEY|secret|GoogleGenerativeAI|VertexAI|fetch\s*\(|https?:\/\//i)
+  assert.match(callableEnvironmentSource, /VERSION3_GEMINI_EMULATOR_ENABLED=true/)
+  assert.doesNotMatch(callableEnvironmentSource, /API[_-]?KEY|secret|password|token/i)
+  assert.ok(JSON.parse(firebaseJsonSource).functions[0].ignore.includes('.env.demo-*'))
+})
+
+test('source contract: pseudonymized names are asserted before deterministic calculation', () => {
+  assertTokensInOrder(evidenceAdapterSource, [
+    'const pseudonymized = pseudonymizeEvidence(raw.students, periodTransactions)',
+    'assertPseudonymizedStudentNames(pseudonymized)',
+    'const providerReport = projectReport(calculateReport({',
+  ])
 })
 
 test('source contract: provider output has no factual narrative field', () => {
@@ -168,6 +239,10 @@ test('source contract: focused command is local, bounded, and separate from exis
     scripts['test:version3:gemini-layer'],
     /firebase|emulator|playwright|curl|https?:/i,
   )
+  assert.match(
+    scripts['test:version3:gemini-callable:emulator'],
+    /-u VERSION3_GEMINI_EMULATOR_ENABLED/,
+  )
 })
 
 test('source contract: governing documents record dormancy and later approval gates', () => {
@@ -180,4 +255,7 @@ test('source contract: governing documents record dormancy and later approval ga
   assert.match(bridgePlan, /The bridge remains unreachable from the deployed application/)
   assert.match(bridgePlan, /No live callable or browser integration/)
   assert.match(bridgePlan, /No Gemini SDK, model selection, API key, secret, billing/)
+  assert.match(callableBrowserPlan, /Checkpoint A/)
+  assert.match(callableBrowserPlan, /Firebase Auth, Functions, and Firestore emulators/)
+  assert.match(callableBrowserPlan, /before any real provider work/)
 })

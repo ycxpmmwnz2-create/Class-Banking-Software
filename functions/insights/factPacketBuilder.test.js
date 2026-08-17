@@ -7,8 +7,6 @@ import {
   buildFactPacketFromEvidence,
 } from './factPacketBuilder.js'
 
-const SIGNATURE = 'a'.repeat(64)
-
 function observation(index) {
   return {
     priority: index === 0 ? 'attention' : 'context',
@@ -38,7 +36,6 @@ function evidence(overrides = {}) {
 test('builds opaque exact-schema packets and applies the server-owned Quick limit', () => {
   const packet = buildFactPacketFromEvidence({
     evidence: evidence(),
-    evidenceSignature: SIGNATURE,
     mode: 'quick',
     periodDays: 30,
     modeProfile: insightModeProfile('quick'),
@@ -59,13 +56,12 @@ test('builds opaque exact-schema packets and applies the server-owned Quick limi
   ])
   assert.equal(packet.mode, 'quick')
   assert.equal(packet.periodDays, 30)
-  assert.equal(packet.evidenceSignature, SIGNATURE)
+  assert.equal(Object.hasOwn(packet, 'evidenceSignature'), false)
 })
 
 test('Deep retains the complete bounded deterministic observation set', () => {
   const packet = buildFactPacketFromEvidence({
     evidence: evidence(),
-    evidenceSignature: SIGNATURE,
     mode: 'deep',
     periodDays: 90,
     modeProfile: insightModeProfile('deep'),
@@ -78,7 +74,6 @@ test('malformed evidence fails before a packet can be returned', () => {
   assert.throws(
     () => buildFactPacketFromEvidence({
       evidence: evidence({ observations: [{ ...observation(0), studentId: '1' }] }),
-      evidenceSignature: SIGNATURE,
       mode: 'quick',
       periodDays: 30,
       modeProfile: insightModeProfile('quick'),

@@ -24,7 +24,7 @@ export class InsightContractError extends Error {
 export function validateInsightRequest(value) {
   requireExactObject(
     value,
-    ['requestId', 'mode', 'periodDays', 'evidenceSignature'],
+    ['requestId', 'mode', 'periodDays'],
     'request',
   )
   if (!REQUEST_ID_PATTERN.test(value.requestId)) {
@@ -36,14 +36,10 @@ export function validateInsightRequest(value) {
   if (!INSIGHT_ANALYSIS_PERIODS.includes(value.periodDays)) {
     fail('invalid-request', 'periodDays is unsupported.')
   }
-  if (!SIGNATURE_PATTERN.test(value.evidenceSignature)) {
-    fail('invalid-request', 'evidenceSignature is malformed.')
-  }
   return Object.freeze({
     requestId: value.requestId,
     mode: value.mode,
     periodDays: value.periodDays,
-    evidenceSignature: value.evidenceSignature,
   })
 }
 
@@ -56,7 +52,6 @@ export function validateFactPacket(value, expectedRequest) {
       'schemaVersion',
       'mode',
       'periodDays',
-      'evidenceSignature',
       'generatedAt',
       'metrics',
       'observations',
@@ -68,10 +63,9 @@ export function validateFactPacket(value, expectedRequest) {
   }
   if (
     value.mode !== request.mode ||
-    value.periodDays !== request.periodDays ||
-    value.evidenceSignature !== request.evidenceSignature
+    value.periodDays !== request.periodDays
   ) {
-    fail('stale-evidence', 'Fact packet does not match the accepted request.')
+    fail('invalid-packet', 'Fact packet does not match the accepted request.')
   }
   const generatedAt = requireIsoTimestamp(value.generatedAt, 'generatedAt')
   const metrics = validateMetrics(value.metrics)
@@ -133,7 +127,6 @@ export function validateFactPacket(value, expectedRequest) {
     schemaVersion: INSIGHT_ANALYSIS_SCHEMA_VERSION,
     mode: request.mode,
     periodDays: request.periodDays,
-    evidenceSignature: request.evidenceSignature,
     generatedAt,
     metrics,
     observations: Object.freeze(observations),
@@ -226,7 +219,10 @@ export function validateProviderResponse(value, packet) {
   })
 }
 
-export function validateCompletedAnalysis(value, packet) {
+export function validateCompletedAnalysis(value, packet, evidenceSignature) {
+  if (typeof evidenceSignature !== 'string' || !SIGNATURE_PATTERN.test(evidenceSignature)) {
+    fail('invalid-replay', 'The current evidence signature is malformed.')
+  }
   requireExactObject(
     value,
     [
@@ -248,7 +244,7 @@ export function validateCompletedAnalysis(value, packet) {
     value.source !== 'provider-assisted' ||
     value.mode !== packet.mode ||
     value.periodDays !== packet.periodDays ||
-    value.evidenceSignature !== packet.evidenceSignature
+    value.evidenceSignature !== evidenceSignature
   ) {
     fail('invalid-replay', 'Completed analysis does not match current evidence.')
   }
@@ -271,8 +267,97 @@ export function validateCompletedAnalysis(value, packet) {
     source: 'provider-assisted',
     mode: packet.mode,
     periodDays: packet.periodDays,
-    evidenceSignature: packet.evidenceSignature,
+    evidenceSignature,
     generatedAt: requireIsoTimestamp(value.generatedAt, 'generatedAt'),
+    orderedObservationIds: provider.orderedObservationIds,
+    groups: provider.groups,
+    teacherQuestions: provider.teacherQuestions,
+    usage: Object.freeze({
+      inputTokens: provider.usage.inputTokens,
+      outputTokens: provider.usage.outputTokens,
+      costMicroUsd: value.usage.costMicroUsd,
+    }),
+  })
+}
+
+export function validateTeacherAnalysisResponse(value) {
+  requireExactObject(
+    value,
+    [
+      'schemaVersion',
+      'source',
+      'mode',
+      'periodDays',
+      'generatedAt',
+      'observations',
+      'orderedObservationIds',
+      'groups',
+      'teacherQuestions',
+      'usage',
+    ],
+    'teacher analysis response',
+  )
+  if (
+    value.schemaVersion !== INSIGHT_ANALYSIS_SCHEMA_VERSION ||
+    value.source !== 'provider-assisted' ||
+    !INSIGHT_ANALYSIS_MODES.includes(value.mode) ||
+    !INSIGHT_ANALYSIS_PERIODS.includes(value.periodDays)
+  ) {
+    fail('invalid-response', 'Teacher analysis response metadata is malformed.')
+  }
+  const profile = insightModeProfile(value.mode)
+  const generatedAt = requireIsoTimestamp(value.generatedAt, 'generatedAt')
+  if (
+    !Array.isArray(value.observations) ||
+    value.observations.length < 1 ||
+    value.observations.length > profile.maxObservations
+  ) {
+    fail('invalid-response', 'Teacher analysis response observations are malformed.')
+  }
+  const observationIds = new Set()
+  const observations = value.observations.map((observation, index) => {
+    requireExactObject(
+      observation,
+      ['id', 'priority', 'category', 'title', 'summary', 'evidence'],
+      `teacher observations[${index}]`,
+    )
+    if (!OBSERVATION_ID_PATTERN.test(observation.id) || observationIds.has(observation.id)) {
+      fail('invalid-response', 'Teacher observation IDs must be unique opaque references.')
+    }
+    observationIds.add(observation.id)
+    if (!PRIORITIES.includes(observation.priority)) {
+      fail('invalid-response', 'Teacher observation priority is unsupported.')
+    }
+    return Object.freeze({
+      id: observation.id,
+      priority: observation.priority,
+      category: boundedText(observation.category, 1, 60, 'teacher category'),
+      title: boundedText(observation.title, 1, 120, 'teacher title'),
+      summary: boundedText(observation.summary, 1, 320, 'teacher summary'),
+      evidence: boundedText(observation.evidence, 1, 320, 'teacher evidence'),
+    })
+  })
+  requireExactObject(value.usage, ['inputTokens', 'outputTokens', 'costMicroUsd'], 'usage')
+  if (!Number.isSafeInteger(value.usage.costMicroUsd) || value.usage.costMicroUsd < 0) {
+    fail('invalid-response', 'Teacher analysis response cost is malformed.')
+  }
+  const provider = validateProviderResponse({
+    schemaVersion: value.schemaVersion,
+    orderedObservationIds: value.orderedObservationIds,
+    groups: value.groups,
+    teacherQuestions: value.teacherQuestions,
+    usage: {
+      inputTokens: value.usage.inputTokens,
+      outputTokens: value.usage.outputTokens,
+    },
+  }, { mode: value.mode, observations })
+  return Object.freeze({
+    schemaVersion: INSIGHT_ANALYSIS_SCHEMA_VERSION,
+    source: 'provider-assisted',
+    mode: value.mode,
+    periodDays: value.periodDays,
+    generatedAt,
+    observations: Object.freeze(observations),
     orderedObservationIds: provider.orderedObservationIds,
     groups: provider.groups,
     teacherQuestions: provider.teacherQuestions,

@@ -7,6 +7,7 @@ import {
 } from './firestoreUsageLedger.js'
 
 const START = Date.parse('2026-08-16T18:00:00.000Z')
+const SIGNATURE = 'a'.repeat(64)
 
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
@@ -60,6 +61,7 @@ function reserveInput(overrides = {}) {
     requestId: 'request_123456789',
     monthKey: '2026-08',
     mode: 'quick',
+    evidenceSignature: SIGNATURE,
     hourlyRequestLimit: 10,
     monthlyAllowanceMicroUsd: 7_500_000,
     rateCardId: 'fake-emulator-rate-v1',
@@ -209,6 +211,10 @@ test('policy widening and conflicting request reuse fail closed', async () => {
   await ledger.reserve(reserveInput())
   await assert.rejects(
     ledger.reserve(reserveInput({ mode: 'deep', hourlyRequestLimit: 2 })),
+    error => error instanceof FirestoreUsageLedgerError && error.category === 'request-conflict',
+  )
+  await assert.rejects(
+    ledger.reserve(reserveInput({ evidenceSignature: 'b'.repeat(64) })),
     error => error instanceof FirestoreUsageLedgerError && error.category === 'request-conflict',
   )
 })

@@ -8,6 +8,7 @@ import {
   validateFactPacket,
   validateInsightRequest,
   validateProviderResponse,
+  validateTeacherAnalysisResponse,
 } from './contracts.js'
 
 const SIGNATURE = 'a'.repeat(64)
@@ -17,7 +18,6 @@ function request(overrides = {}) {
     requestId: 'request_123456789',
     mode: 'quick',
     periodDays: 30,
-    evidenceSignature: SIGNATURE,
     ...overrides,
   }
 }
@@ -27,7 +27,6 @@ function packet(overrides = {}) {
     schemaVersion: 1,
     mode: 'quick',
     periodDays: 30,
-    evidenceSignature: SIGNATURE,
     generatedAt: '2026-08-16T18:00:00.000Z',
     metrics: {
       studentCount: 2,
@@ -80,6 +79,7 @@ test('request contract refuses browser-supplied tenant, facts, prompt, model, an
     ['model', 'provider-selected-model'],
     ['maxOutputTokens', 50_000],
     ['price', 0],
+    ['evidenceSignature', SIGNATURE],
   ]) {
     assert.throws(
       () => validateInsightRequest({ ...request(), [key]: value }),
@@ -96,9 +96,9 @@ test('fact packet accepts only opaque, evidence-backed observations matching the
   assert.ok(Object.isFrozen(validated.observations[0].evidence))
 })
 
-test('fact packet rejects stale evidence, identifier-bearing fields, and duplicate references', () => {
+test('fact packet rejects request mismatches, identifier-bearing fields, and duplicate references', () => {
   assert.throws(
-    () => validateFactPacket(packet({ evidenceSignature: 'b'.repeat(64) }), request()),
+    () => validateFactPacket(packet({ periodDays: 90 }), request()),
     InsightContractError,
   )
   const withStudentId = packet()
@@ -237,9 +237,40 @@ test('completed idempotent replay must match the current packet and retain trust
     teacherQuestions: [],
     usage: { inputTokens: 180, outputTokens: 42, costMicroUsd: 75_000 },
   }
-  assert.deepEqual(validateCompletedAnalysis(completed, factPacket), completed)
+  assert.deepEqual(validateCompletedAnalysis(completed, factPacket, SIGNATURE), completed)
   assert.throws(
-    () => validateCompletedAnalysis({ ...completed, evidenceSignature: 'b'.repeat(64) }, factPacket),
+    () => validateCompletedAnalysis({ ...completed, evidenceSignature: 'b'.repeat(64) }, factPacket, SIGNATURE),
+    InsightContractError,
+  )
+})
+
+test('teacher response returns exact paired display facts and only provider-approved references', () => {
+  const value = {
+    schemaVersion: 1,
+    source: 'provider-assisted',
+    mode: 'quick',
+    periodDays: 30,
+    generatedAt: '2026-08-16T18:00:01.000Z',
+    observations: [{
+      id: 'obs-001',
+      priority: 'attention',
+      category: 'Needs attention',
+      title: 'One request needs review',
+      summary: 'Jordan Reyes has one submitted request that met the review threshold.',
+      evidence: 'Jordan Reyes requested $20 for a classroom store purchase.',
+    }],
+    orderedObservationIds: ['obs-001'],
+    groups: [{ label: 'review-first', observationIds: ['obs-001'] }],
+    teacherQuestions: [],
+    usage: { inputTokens: 180, outputTokens: 42, costMicroUsd: 75_000 },
+  }
+  assert.deepEqual(validateTeacherAnalysisResponse(value), value)
+  assert.throws(
+    () => validateTeacherAnalysisResponse({ ...value, evidenceSignature: SIGNATURE }),
+    InsightContractError,
+  )
+  assert.throws(
+    () => validateTeacherAnalysisResponse({ ...value, orderedObservationIds: ['obs-999'] }),
     InsightContractError,
   )
 })

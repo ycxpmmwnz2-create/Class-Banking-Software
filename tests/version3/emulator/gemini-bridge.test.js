@@ -153,6 +153,7 @@ function reserveInput(overrides = {}) {
     requestId: 'ledger_request_0001',
     monthKey: '2026-08',
     mode: 'quick',
+    evidenceSignature: 'a'.repeat(64),
     hourlyRequestLimit: 10,
     monthlyAllowanceMicroUsd: 7_500_000,
     rateCardId: 'fake-emulator-rate-v1',
@@ -203,29 +204,22 @@ function createBridgeHarness() {
   return { loadEvidence, providerInputs, service, usageLedger }
 }
 
-async function signatureFor(loadEvidence, teacherUid, classroomId, periodDays = 30) {
-  const envelope = await loadEvidence({ teacherUid, classroomId, periodDays })
-  return envelope.evidenceSignature
-}
-
-function request(requestId, evidenceSignature, overrides = {}) {
+function request(requestId, overrides = {}) {
   return {
     requestId,
     mode: 'quick',
     periodDays: 30,
-    evidenceSignature,
     ...overrides,
   }
 }
 
 test('real emulator bridge isolates tenants, strips identities, and replays safely', async () => {
   const bridge = createBridgeHarness()
-  const signatureA = await signatureFor(bridge.loadEvidence, TEACHER_A, CLASS_A)
-  const signatureB = await signatureFor(bridge.loadEvidence, TEACHER_B, CLASS_B)
-  const firstRequest = request('request_a_first001', signatureA)
+  const firstRequest = request('request_a_first001')
   const first = await bridge.service({ auth: { uid: TEACHER_A }, data: firstRequest })
   assert.equal(first.source, 'provider-assisted')
   assert.equal(first.usage.costMicroUsd, 3_000_000)
+  assert.match(JSON.stringify(first.observations), /May|Jordan Reyes/)
   assert.equal(bridge.providerInputs.length, 1)
 
   const providerPayload = JSON.stringify(bridge.providerInputs[0])
@@ -244,47 +238,43 @@ test('real emulator bridge isolates tenants, strips identities, and replays safe
   assert.deepEqual(replay, first)
   assert.equal(bridge.providerInputs.length, 1)
 
-  await assert.rejects(
-    bridge.service({
-      auth: { uid: TEACHER_A },
-      data: request('request_cross_0001', signatureB),
-    }),
-    error => error instanceof InsightAnalysisServiceError && error.category === 'stale-evidence',
-  )
-  assert.equal(bridge.providerInputs.length, 1)
+  const tenantB = await bridge.service({
+    auth: { uid: TEACHER_B },
+    data: request('request_b_cross001'),
+  })
+  assert.equal(tenantB.source, 'provider-assisted')
+  assert.doesNotMatch(JSON.stringify(tenantB.observations), /May|Jordan Reyes/)
+  assert.equal(bridge.providerInputs.length, 2)
 })
 
-test('server evidence changes go stale and monthly budgets remain tenant-scoped', async () => {
+test('server evidence changes bind request reuse and monthly budgets remain tenant-scoped', async () => {
   const bridge = createBridgeHarness()
-  const oldSignature = await signatureFor(bridge.loadEvidence, TEACHER_A, CLASS_A)
+  await bridge.service({
+    auth: { uid: TEACHER_A },
+    data: request('request_stale_0001'),
+  })
   await firestore.doc(`classrooms/${CLASS_A}/transactions/101`).update({ amount: 26 })
   await assert.rejects(
     bridge.service({
       auth: { uid: TEACHER_A },
-      data: request('request_stale_0001', oldSignature),
-    }),
-    error => error instanceof InsightAnalysisServiceError && error.category === 'stale-evidence',
-  )
-  assert.equal(bridge.providerInputs.length, 0)
-
-  const signatureA = await signatureFor(bridge.loadEvidence, TEACHER_A, CLASS_A)
-  await bridge.service({
-    auth: { uid: TEACHER_A },
-    data: request('request_a_second01', signatureA),
-  })
-  await assert.rejects(
-    bridge.service({
-      auth: { uid: TEACHER_A },
-      data: request('request_a_third001', signatureA),
+      data: request('request_stale_0001'),
     }),
     error => error instanceof InsightAnalysisServiceError && error.category === 'budget-unavailable',
   )
   assert.equal(bridge.providerInputs.length, 1)
 
-  const signatureB = await signatureFor(bridge.loadEvidence, TEACHER_B, CLASS_B)
+  await assert.rejects(
+    bridge.service({
+      auth: { uid: TEACHER_A },
+      data: request('request_a_second01'),
+    }),
+    error => error instanceof InsightAnalysisServiceError && error.category === 'budget-unavailable',
+  )
+  assert.equal(bridge.providerInputs.length, 1)
+
   await bridge.service({
     auth: { uid: TEACHER_B },
-    data: request('request_b_first001', signatureB),
+    data: request('request_b_first001'),
   })
   assert.equal(bridge.providerInputs.length, 2)
 
