@@ -3042,4 +3042,25 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       "the stored roster must never be sorted in place"
     );
   });
+
+  test("teacher Credentials rows use the alphabetical display copy", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const credentialsStart = source.indexOf('<h2>Student Credentials</h2>');
+    const invitationsStart = source.indexOf('if (screen === "teacherInvitations"', credentialsStart);
+
+    assert.ok(credentialsStart >= 0, "the teacher Credentials card must exist");
+    assert.ok(invitationsStart > credentialsStart, "the Credentials screen must have a bounded end");
+
+    const credentialsSource = source.slice(credentialsStart, invitationsStart);
+    assert.match(
+      credentialsSource,
+      /sortStudentsByName\(data\.students\)\.map\(student\s*=>/,
+      "Credentials rows must render the alphabetical display copy"
+    );
+    assert.doesNotMatch(
+      credentialsSource,
+      /data\.students\.sort\(/,
+      "the stored roster must never be sorted in place"
+    );
+  });
 });

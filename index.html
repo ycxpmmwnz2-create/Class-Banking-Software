@@ -4088,7 +4088,7 @@ ${transactionTarget !== "whole" ? `
                   </tr>
                 </thead>
                 <tbody>
-                  ${data.students.map(student => {
+                  ${sortStudentsByName(data.students).map(student => {
                     const loginId = typeof student.name === "string" ? student.name.trim().replaceAll(' ', '-').toLowerCase() : "student";
                     const currentPin = IS_MULTI_TEACHER_V2_ENABLED
                       ? credentialStudentPin(student.id)
