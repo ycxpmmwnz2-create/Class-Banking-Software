@@ -3528,7 +3528,7 @@ link.click();
       const transactionsToday = data.transactions.filter(transaction =>
         new Date(transaction.date).toDateString() === today
       ).length;
-      const studentOptions = data.students.map(student =>
+      const studentOptions = sortStudentsByName(data.students).map(student =>
         `<option value="${student.id}">${escapeHtml(student.name)}</option>`
       ).join("");
 

@@ -3043,6 +3043,27 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
+  test("Quick Cash student options use the alphabetical display copy", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const optionsStart = source.indexOf("const studentOptions =");
+    const renderStart = source.indexOf("let html =", optionsStart);
+
+    assert.ok(optionsStart >= 0, "the Quick Cash student options must exist");
+    assert.ok(renderStart > optionsStart, "the student options definition must have a bounded end");
+
+    const optionsSource = source.slice(optionsStart, renderStart);
+    assert.match(
+      optionsSource,
+      /sortStudentsByName\(data\.students\)\.map\(student\s*=>/,
+      "Quick Cash options must render the alphabetical display copy"
+    );
+    assert.doesNotMatch(
+      optionsSource,
+      /data\.students\.sort\(/,
+      "the stored roster must never be sorted in place"
+    );
+  });
+
   test("teacher Credentials rows use the alphabetical display copy", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const credentialsStart = source.indexOf('<h2>Student Credentials</h2>');
