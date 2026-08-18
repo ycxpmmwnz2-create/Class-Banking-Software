@@ -3084,4 +3084,25 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       "the stored roster must never be sorted in place"
     );
   });
+
+  test("Student Login History options use the alphabetical display copy", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const historyStart = source.indexOf("<h3>Student Login History</h3>");
+    const cleanupStart = source.indexOf("<h3>Cleanup</h3>", historyStart);
+
+    assert.ok(historyStart >= 0, "the Student Login History section must exist");
+    assert.ok(cleanupStart > historyStart, "the login history section must have a bounded end");
+
+    const historySource = source.slice(historyStart, cleanupStart);
+    assert.match(
+      historySource,
+      /sortStudentsByName\(data\.students\)\.map\(student\s*=>/,
+      "Student Login History options must render the alphabetical display copy"
+    );
+    assert.doesNotMatch(
+      historySource,
+      /data\.students\.sort\(/,
+      "the stored roster must never be sorted in place"
+    );
+  });
 });

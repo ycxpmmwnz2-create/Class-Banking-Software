@@ -4033,7 +4033,7 @@ ${transactionTarget !== "whole" ? `
               ` : `
                 <label for="loginHistoryStudentSelect">Student</label>
                 <select id="loginHistoryStudentSelect" onchange="updateLoginHistoryView()">
-                  ${data.students.map(student => `<option value="${student.id}">${escapeHtml(student.name)}</option>`).join("")}
+                  ${sortStudentsByName(data.students).map(student => `<option value="${student.id}">${escapeHtml(student.name)}</option>`).join("")}
                 </select>
                 <div id="studentLoginHistoryContainer">
                   ${loginHistoryTableForSelectedStudent()}
