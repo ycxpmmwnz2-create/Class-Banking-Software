@@ -368,7 +368,7 @@ layer, so cite the right one:
 | --- | --- | --- |
 | Behavioral unit | `src/phase3/*.test.js` (via `test:phase3:unit`) | The real read/write, projection, fail-closed, and staleness decisions. Firestore primitives are **injected**, so no emulator, credential, or network is involved. |
 | Source contract | `tests/phase3/student-identity.contract.test.js` | That production wires the service, is PIN-free, and exposes no test hook. |
-| Browser + rules | `npm run test:phase2b:browser` | The service's real I/O in Chromium and WebKit against the Firestore emulator under `firestore.phase2b.proposed.rules`, including stale-load/stale-save isolation and offline cache behavior. |
+| Browser + rules | `npm run test:phase2b:browser` | The service's real I/O in Chromium and WebKit against the Firestore emulator under the checksum-pinned `firestore.phase3.final.rules`, including stale-load/stale-save isolation and offline cache behavior. The immutable Phase 2B proposed rules retain their dedicated contract suite. |
 
 The Chromium and WebKit browser projects run in separate emulator lifecycles.
 This prevents asynchronous fixture cleanup from one engine from becoming test
@@ -543,11 +543,11 @@ student mirror with matching stale claims, credential isolation, sensitive
 paths, and anonymous denial. `tests/firestore/rules.phase3.rollback.test.js` covers the
 hardcoded exception, foreign teachers, legacy students, scoped shutdown, both
 credential shapes, sensitive collections, and fail-closed fallthrough. Together
-with the unchanged bridge suite, `test:phase3:rules` provides 39 behavioral
+with the unchanged bridge suite, `test:phase3:rules` provides 47 behavioral
 emulator tests across the three deployment states.
 
 The final SHA-256 is
-`1ed51ca745742cf2a76d910fc83b48df9300de1ddbcd2f438a050f748798f5bb`.
+`f071377d7abf8d1d0009e5b9083a42f3cc7c69cdc6b501f6ea6eaf8bc4791702`.
 The rollback-safe SHA-256 is
 `c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d`.
 The bridge and unchanged production pins remain as recorded above. These are
@@ -665,7 +665,7 @@ gate-off client performs a collection query on `studentAuthLogs`, so denying
 That disposition changes no bridge or rollback rule bytes.
 
 The final-rules SHA-256 for this correction is
-`1ed51ca745742cf2a76d910fc83b48df9300de1ddbcd2f438a050f748798f5bb`.
+`f071377d7abf8d1d0009e5b9083a42f3cc7c69cdc6b501f6ea6eaf8bc4791702`.
 The bridge, rollback, and checked-in production-rule hashes are unchanged.
 
 Correction verification on 2026-07-28:
@@ -1159,6 +1159,26 @@ is. The emulator is not production. The supplied snapshot ID, write-freeze
 proof, credential provenance, and authorization ID are operator-entered strings
 that are recorded and bound — they do **not** cryptographically prove that a
 snapshot, freeze, provenance statement, or human approval exists.
+
+## 2026-08-19 classroom rent display evidence
+
+The class-rent feature stores its student-visible value only at
+`classrooms/{classroomId}/studentDisplay/rent`. Projection and service tests
+prove the classroom root excludes rent, missing rent defaults to `$0`, malformed
+or out-of-range values fail closed, and a rent-only save emits one exact write.
+Final-rules tests prove only the active owning teacher can create/update the
+exact two-field document, students can get only their own classroom's value
+while their identity-matched credential and PIN version remain current, and
+list, delete, foreign read, revoked or missing credentials, incomplete claims,
+student write, anonymous access, extra fields, negative values, and values over
+`$1,000,000` are denied.
+
+The combined browser scenario changes Classroom A's rent through the real
+teacher dashboard, verifies the Class Cash total does not change, signs in as a
+real custom-claim student to verify read-only display, verifies Classroom B is
+unchanged, and restores the fixture through a confirmed save. It runs in both
+Chromium and WebKit against the checksum-pinned final rules. All evidence is
+local; no production access, deployment, commit, or push is implied.
 
 ## Relationship to the Phase 2B matrix
 

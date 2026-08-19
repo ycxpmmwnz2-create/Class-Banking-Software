@@ -235,9 +235,9 @@ function installHarness() {
       return snapshot;
     };
 
-    // A student session reads exactly one document, so the student loader's read
-    // is barriered and counted here too — otherwise holding "classroomLoad"
-    // would not park a student load at all.
+    // A student session reads its self document plus the classroom rent display.
+    // Only the identity-bearing self read is barriered and counted here — that
+    // is sufficient to park the load while the production loader awaits both.
     const wrappedGetDoc = async (ref) => {
       const path = refPath(ref);
       const isStudentSelfRead = STUDENT_SELF_DOC.test(path);

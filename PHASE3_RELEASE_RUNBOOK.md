@@ -88,8 +88,13 @@ release:
 | --- | --- | --- |
 | `firestore.rules` | `0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50` | recursive V1 baseline; never deploy |
 | `firestore.phase3.bridge.rules` | `4bf76a85e576a1d5b30573c3c3d5eba0d3561fb9d9a19ac14ac6382dced8d7f0` | retained migration-only artifact; do not deploy |
-| `firestore.phase3.final.rules` | `1ed51ca745742cf2a76d910fc83b48df9300de1ddbcd2f438a050f748798f5bb` | the only clean-start rules deployment |
+| `firestore.phase3.final.rules` | `f071377d7abf8d1d0009e5b9083a42f3cc7c69cdc6b501f6ea6eaf8bc4791702` | the only clean-start rules deployment |
 | `firestore.phase3.rollback.rules` | `c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d` | retained V1-recovery artifact; do not deploy |
+
+The current final-rules candidate includes the narrowly bounded
+`classrooms/{classroomId}/studentDisplay/rent` surface documented in
+`SECURITY_PLAN.md`. That candidate and the matching Hosting build must complete
+the normal Claude and Grok review gates before any separate deployment request.
 
 Never copy a candidate over `firestore.rules` for testing. Never deploy the
 recursive baseline, bridge, or rollback-safe rules in the clean-start route.

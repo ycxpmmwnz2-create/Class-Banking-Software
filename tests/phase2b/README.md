@@ -111,12 +111,14 @@ and Save behavior.
 
 The browser suite runs under `demo-morgan-bank-phase2b-server-test` with
 `auth,functions,firestore`, reusing the gate-on server project's `.env` contract
-so V2 Functions activate. It loads `firestore.phase2b.proposed.rules`, so the
-browser and rules suites exercise the same rules.
+so V2 Functions activate. It loads the current checksum-pinned
+`firestore.phase3.final.rules`. The immutable
+`firestore.phase2b.proposed.rules` fixture remains covered separately by
+`test:phase2b:rules` and is not expanded for later application features.
 
 Seeding goes through `@firebase/rules-unit-testing`'s
 `withSecurityRulesDisabled()`, not plain REST. Unauthenticated REST writes are
-rejected once the proposed rules load — verified directly:
+rejected once the selected rules load — verified directly:
 
 ```
 POST .../documents/things?documentId=x

@@ -12,6 +12,8 @@ import { projectClassroomData, TenantProjectionError } from './tenantDataProject
 
 const CLASSROOM = 'classroom-alpha'
 const TEACHER_UID = 'teacher-uid-1'
+const RENT_AMOUNT = 25
+const RENT_UPDATED_AT = '2026-08-19T12:00:00.000Z'
 
 /**
  * A Firestore double with genuine semantics for the surface this service uses:
@@ -135,6 +137,10 @@ function historyEntry(overrides = {}) {
 function seededStore() {
   return {
     [`classrooms/${CLASSROOM}`]: { settings: { requireTeacherApproval: true }, lastBackupAt: null },
+    [`classrooms/${CLASSROOM}/studentDisplay/rent`]: {
+      rentAmount: RENT_AMOUNT,
+      updatedAt: RENT_UPDATED_AT,
+    },
     [`classrooms/${CLASSROOM}/students/1`]: student({ transactions: [transaction()] }),
     [`classrooms/${CLASSROOM}/transactions/1700000000000`]: transaction(),
     // A credential document deliberately present in the store. Nothing the
@@ -155,6 +161,7 @@ describe('Phase 3 tenant data service — loader', () => {
     assert.equal(result.students[0].name, 'Ada')
     assert.equal(result.transactions.length, 1)
     assert.equal(result.settings.requireTeacherApproval, true)
+    assert.equal(result.settings.rentAmount, RENT_AMOUNT)
   })
 
   it('never reads a credential path', async () => {
@@ -353,7 +360,7 @@ describe('Phase 3 tenant data service — loader', () => {
 })
 
 describe('Phase 3 tenant data service — student loader', () => {
-  it('reads exactly the authenticated student document', async () => {
+  it('reads exactly the authenticated student document and narrow rent display', async () => {
     const readPaths = []
     const double = createFirestoreDouble(seededStore())
     const spying = {
@@ -368,9 +375,29 @@ describe('Phase 3 tenant data service — student loader', () => {
 
     const result = await load({ uid: 'student-uid', classroomId: CLASSROOM, studentId: '1' })
 
-    assert.deepEqual(readPaths, [`classrooms/${CLASSROOM}/students/1`])
+    assert.deepEqual(readPaths, [
+      `classrooms/${CLASSROOM}/students/1`,
+      `classrooms/${CLASSROOM}/studentDisplay/rent`,
+    ])
     assert.equal(result.students.length, 1)
     assert.deepEqual(result.loginHistory, [])
+    assert.equal(result.settings.rentAmount, RENT_AMOUNT)
+  })
+
+  it('defaults a missing rent document to zero without widening the read set', async () => {
+    const seed = seededStore()
+    delete seed[`classrooms/${CLASSROOM}/studentDisplay/rent`]
+    const { firestore } = createFirestoreDouble(seed)
+    const session = createResolvingStudentSession()
+    const load = createStudentDataLoader({ db: {}, session, firestore })
+
+    const result = await load({
+      uid: 'student-uid',
+      classroomId: CLASSROOM,
+      studentId: '1',
+    })
+
+    assert.equal(result.settings.rentAmount, 0)
   })
 
   it('fails closed on incomplete claims', async () => {
@@ -459,9 +486,11 @@ describe('Phase 3 tenant data service — saver', () => {
   }
 
   function persistedDataStore(data = baseData(), rootOverrides = {}) {
+    const rootSettings = { ...(data.settings || {}) }
+    delete rootSettings.rentAmount
     const store = {
       [`classrooms/${CLASSROOM}`]: {
-        settings: data.settings,
+        settings: rootSettings,
         lastBackupAt: data.lastBackupAt,
         ...rootOverrides,
       },
@@ -593,6 +622,34 @@ describe('Phase 3 tenant data service — saver', () => {
 
     const root = double.store.get(`classrooms/${CLASSROOM}`)
     assert.deepEqual(Object.keys(root).sort(), ['lastBackupAt', 'settings', 'updatedAt'])
+  })
+
+  it('persists rent only at the student display path with an exact body', async () => {
+    const previous = baseData({ settings: { requireTeacherApproval: true, rentAmount: 0 } })
+    const double = createFirestoreDouble(persistedDataStore(previous))
+    const session = createActiveSession()
+    const save = createTenantDataSaver({
+      db: {},
+      session,
+      firestore: double.firestore,
+      previousRef: () => previous,
+      nowFn: () => RENT_UPDATED_AT,
+    })
+
+    const result = await save(
+      baseData({ settings: { requireTeacherApproval: true, rentAmount: RENT_AMOUNT } }),
+      session.captureIdentity(),
+    )
+
+    assert.equal(result.written, 1)
+    assert.deepEqual(
+      double.store.get(`classrooms/${CLASSROOM}/studentDisplay/rent`),
+      { rentAmount: RENT_AMOUNT, updatedAt: RENT_UPDATED_AT },
+    )
+    assert.ok(!Object.prototype.hasOwnProperty.call(
+      double.store.get(`classrooms/${CLASSROOM}`).settings,
+      'rentAmount',
+    ))
   })
 
   it('refuses to persist an aggregate carrying a plaintext pin', async () => {
