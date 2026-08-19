@@ -543,11 +543,11 @@ student mirror with matching stale claims, credential isolation, sensitive
 paths, and anonymous denial. `tests/firestore/rules.phase3.rollback.test.js` covers the
 hardcoded exception, foreign teachers, legacy students, scoped shutdown, both
 credential shapes, sensitive collections, and fail-closed fallthrough. Together
-with the unchanged bridge suite, `test:phase3:rules` provides 39 behavioral
+with the unchanged bridge suite, `test:phase3:rules` provides 47 behavioral
 emulator tests across the three deployment states.
 
 The final SHA-256 is
-`bd0e95e3ee7d10ac288847806e83c0b126772ddd500736af6d08073f25e5c52e`.
+`f071377d7abf8d1d0009e5b9083a42f3cc7c69cdc6b501f6ea6eaf8bc4791702`.
 The rollback-safe SHA-256 is
 `c81a058e260502fe31c4240d547dcd731f130eb85be3a3c185caae681e4ef19d`.
 The bridge and unchanged production pins remain as recorded above. These are
@@ -665,7 +665,7 @@ gate-off client performs a collection query on `studentAuthLogs`, so denying
 That disposition changes no bridge or rollback rule bytes.
 
 The final-rules SHA-256 for this correction is
-`bd0e95e3ee7d10ac288847806e83c0b126772ddd500736af6d08073f25e5c52e`.
+`f071377d7abf8d1d0009e5b9083a42f3cc7c69cdc6b501f6ea6eaf8bc4791702`.
 The bridge, rollback, and checked-in production-rule hashes are unchanged.
 
 Correction verification on 2026-07-28:
@@ -1167,9 +1167,11 @@ The class-rent feature stores its student-visible value only at
 prove the classroom root excludes rent, missing rent defaults to `$0`, malformed
 or out-of-range values fail closed, and a rent-only save emits one exact write.
 Final-rules tests prove only the active owning teacher can create/update the
-exact two-field document, students can get only their own classroom's value,
-and list, delete, foreign read, student write, anonymous access, extra fields,
-negative values, and values over `$1,000,000` are denied.
+exact two-field document, students can get only their own classroom's value
+while their identity-matched credential and PIN version remain current, and
+list, delete, foreign read, revoked or missing credentials, incomplete claims,
+student write, anonymous access, extra fields, negative values, and values over
+`$1,000,000` are denied.
 
 The combined browser scenario changes Classroom A's rent through the real
 teacher dashboard, verifies the Class Cash total does not change, signs in as a

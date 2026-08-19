@@ -2649,13 +2649,14 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
       if (!requireTeacher() || rentUpdatePending) return;
       const input = document.getElementById("teacherRentAmount");
       const raw = typeof input?.value === "string" ? input.value : "";
-      if (!/^(0|[1-9][0-9]*)$/.test(raw)) {
+      const normalized = raw.trim();
+      if (!/^[0-9]+$/.test(normalized)) {
         message = "Rent must be a whole-dollar amount of $0 or more.";
         render();
         return;
       }
 
-      const amount = Number(raw);
+      const amount = Number(normalized);
       if (!Number.isSafeInteger(amount) || amount < 0 || amount > MAX_RENT_AMOUNT) {
         message = `Rent must be between $0 and $${MAX_RENT_AMOUNT.toLocaleString()}.`;
         render();

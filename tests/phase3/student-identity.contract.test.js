@@ -687,6 +687,8 @@ describe('Phase 3 student-identity source contract', () => {
     const saveEnd = indexHtml.indexOf('\n    function saveSettings()  {', saveStart)
     const saveBody = indexHtml.slice(saveStart, saveEnd)
     assert.match(saveBody, /if \(!requireTeacher\(\) \|\| rentUpdatePending\) return;/)
+    assert.match(saveBody, /const normalized = raw\.trim\(\)/)
+    assert.match(saveBody, /Number\(normalized\)/)
     assert.match(saveBody, /Number\.isSafeInteger\(amount\)/)
     assert.match(saveBody, /amount > MAX_RENT_AMOUNT/)
     assert.match(saveBody, /data\.settings\.rentAmount = amount/)

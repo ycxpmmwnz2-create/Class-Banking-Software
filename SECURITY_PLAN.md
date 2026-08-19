@@ -158,9 +158,11 @@ with exactly `rentAmount` and `updatedAt`. Rent is deliberately kept out of the
 classroom root so students never gain read access to teacher-only settings. The
 owning active teacher may get and create/update only the exact `rent` document.
 An authenticated student may get that one document only when the classroom in
-their server-minted claim has an active reciprocal teacher/classroom
-foundation. Students, foreign teachers, and anonymous users cannot write it;
-no client may list or delete the `studentDisplay` collection.
+their server-minted claim has an active reciprocal teacher/classroom foundation
+and their server-owned credential is active, identity-matched, and still bound
+to the claim's current PIN version. Students, foreign teachers, and anonymous
+users cannot write it; no client may list or delete the `studentDisplay`
+collection.
 
 The student dashboard renders the amount as read-only text with no input or
 button. It is loaded with the student's exact self document and remains

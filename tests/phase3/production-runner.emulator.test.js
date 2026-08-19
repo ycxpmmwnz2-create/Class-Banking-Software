@@ -2629,7 +2629,7 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
 
       const finalRules = await loadReleaseRules(
         'firestore.phase3.final.rules',
-        'bd0e95e3ee7d10ac288847806e83c0b126772ddd500736af6d08073f25e5c52e',
+        'f071377d7abf8d1d0009e5b9083a42f3cc7c69cdc6b501f6ea6eaf8bc4791702',
       )
       const owner = finalRules.authenticatedContext(E2E_TEACHER_UID).firestore()
       const foreign = finalRules.authenticatedContext('foreign-teacher').firestore()
@@ -2656,7 +2656,7 @@ describe('Phase 3 end-to-end copy and reverify against live emulators', () => {
         `classrooms/${E2E_CLASSROOM_ID}/students/1`,
       ).get())
       releaseLedger.append('final-rules-verified', {
-        rulesSha256: 'bd0e95e3ee7d10ac288847806e83c0b126772ddd500736af6d08073f25e5c52e',
+        rulesSha256: 'f071377d7abf8d1d0009e5b9083a42f3cc7c69cdc6b501f6ea6eaf8bc4791702',
         sensitivePathDenied: true,
       })
       releaseLedger.append('release-id-gate-enabled', {

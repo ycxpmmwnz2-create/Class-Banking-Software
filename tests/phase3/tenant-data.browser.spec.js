@@ -456,7 +456,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${TENANT_A.rentAmount}`)
 
     const updatedRent = 35
-    await page.locator('#teacherRentAmount').fill(String(updatedRent))
+    await page.locator('#teacherRentAmount').fill(String(updatedRent).padStart(4, '0'))
     await page.getByRole('button', { name: 'Save Rent' }).click()
     await expect.poll(() => page.evaluate(
       () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,

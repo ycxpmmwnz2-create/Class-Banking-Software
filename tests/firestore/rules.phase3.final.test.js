@@ -16,7 +16,7 @@ import {
 
 const FINAL_RULES_PATH = 'firestore.phase3.final.rules'
 const FINAL_RULES_SHA256 =
-  'bd0e95e3ee7d10ac288847806e83c0b126772ddd500736af6d08073f25e5c52e'
+  'f071377d7abf8d1d0009e5b9083a42f3cc7c69cdc6b501f6ea6eaf8bc4791702'
 const PRODUCTION_RULES_SHA256 =
   '0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50'
 
@@ -491,6 +491,7 @@ describe('Phase 3 Item 10 final rules', () => {
       await assertSucceeds(db.doc(`classrooms/${room}/studentDisplay/rent`).get())
       await assertFails(db.collection(`classrooms/${room}/students`).get())
       await assertFails(db.collection(`classrooms/${room}/studentDisplay`).get())
+      await assertFails(db.doc(`classrooms/${room}/studentDisplay/other`).get())
       await assertFails(db.doc(ownPath).update({ balance: 999 }))
       await assertFails(db.doc(`classrooms/${room}/studentDisplay/rent`).set(
         rentBody(999, 'student-write'),
@@ -522,7 +523,9 @@ describe('Phase 3 Item 10 final rules', () => {
   test('a PIN reset immediately invalidates the prior student Firestore session', async () => {
     const oldSession = student(`auth-${A_ROOM}`, A_ROOM, A_STUDENT)
     const studentPath = `classrooms/${A_ROOM}/students/${A_STUDENT}`
+    const rentPath = `classrooms/${A_ROOM}/studentDisplay/rent`
     await assertSucceeds(oldSession.doc(studentPath).get())
+    await assertSucceeds(oldSession.doc(rentPath).get())
 
     await testEnv.withSecurityRulesDisabled(async context => {
       await context.firestore()
@@ -531,9 +534,36 @@ describe('Phase 3 Item 10 final rules', () => {
     })
 
     await assertFails(oldSession.doc(studentPath).get())
-    await assertSucceeds(
-      student(`auth-${A_ROOM}`, A_ROOM, A_STUDENT, 2000).doc(studentPath).get(),
-    )
+    await assertFails(oldSession.doc(rentPath).get())
+    const currentSession = student(`auth-${A_ROOM}`, A_ROOM, A_STUDENT, 2000)
+    await assertSucceeds(currentSession.doc(studentPath).get())
+    await assertSucceeds(currentSession.doc(rentPath).get())
+  })
+
+  test('student rent reads require an active credential and complete current claims', async () => {
+    const rentPath = `classrooms/${A_ROOM}/studentDisplay/rent`
+    const currentSession = student(`auth-${A_ROOM}`, A_ROOM, A_STUDENT)
+    await assertSucceeds(currentSession.doc(rentPath).get())
+
+    await testEnv.withSecurityRulesDisabled(async context => {
+      await context.firestore()
+        .doc(`classrooms/${A_ROOM}/studentCredentials/${SHARED_LOGIN_ID}`)
+        .update({ active: false })
+    })
+    await assertFails(currentSession.doc(rentPath).get())
+
+    await testEnv.withSecurityRulesDisabled(async context => {
+      await context.firestore()
+        .doc(`classrooms/${A_ROOM}/studentCredentials/${SHARED_LOGIN_ID}`)
+        .delete()
+    })
+    await assertFails(currentSession.doc(rentPath).get())
+
+    const incompleteClaims = testEnv.authenticatedContext(`auth-${A_ROOM}`, {
+      role: 'student',
+      classroomId: A_ROOM,
+    }).firestore()
+    await assertFails(incompleteClaims.doc(rentPath).get())
   })
 
   test('a migrated Timestamp credential version matches the same millisecond claim', async () => {

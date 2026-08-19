@@ -212,18 +212,18 @@ service cloud.firestore {
           && validStudentUpdate(studentId);
       }
 
-      // One classroom-wide value is intentionally visible to authenticated
-      // students in this classroom. The teacher settings document remains
-      // unreadable, and students can neither list nor write this surface.
+      // One classroom-wide value is intentionally visible to current students
+      // in this classroom. The same active, version-bound credential required
+      // for a student self-read is required here too. The teacher settings
+      // document remains unreadable, and students can neither list nor write
+      // this surface.
       match /studentDisplay/{displayId} {
         allow get: if displayId == "rent"
           && (
             isActiveOwner(classroomId)
             || (
               isSignedIn()
-              && request.auth.token.role == "student"
-              && request.auth.token.classroomId == classroomId
-              && hasActiveReciprocalFoundation(classroomId)
+              && isStudentOf(classroomId, request.auth.token.studentId)
             )
           );
         allow list, delete: if false;
