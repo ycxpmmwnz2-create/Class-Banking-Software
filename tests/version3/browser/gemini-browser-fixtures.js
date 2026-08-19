@@ -141,7 +141,11 @@ export async function clearInsightUsageState() {
   const testEnv = await environment();
   await testEnv.withSecurityRulesDisabled(async context => {
     const db = context.firestore();
-    for (const collectionName of ["insightUsageLedgers", "insightUsageReservations"]) {
+    for (const collectionName of [
+      "insightUsageLedgers",
+      "insightUsageRateLimits",
+      "insightUsageReservations",
+    ]) {
       const snapshot = await db.collection(collectionName).get();
       await Promise.all(snapshot.docs.map(document => document.ref.delete()));
     }

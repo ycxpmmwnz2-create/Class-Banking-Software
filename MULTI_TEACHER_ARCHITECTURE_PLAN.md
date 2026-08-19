@@ -3542,8 +3542,8 @@ students and authoritative transactions. The adapter pseudonymizes those
 records before invoking the existing deterministic Insights calculator, then
 constructs an exact-schema packet containing only opaque observation and
 evidence references. A separate Firestore transaction stores only digested
-scope/request keys and atomically enforces idempotency, rolling hourly limits,
-and the $7.50 monthly Gemini allowance.
+scope/request keys and atomically enforces idempotency, tenant-scoped rolling
+hourly limits, and one application-wide $7.50 monthly Gemini allowance.
 
 This bridge is exercised only with synthetic records in a Firebase demo-project
 Firestore emulator and an injected fake provider. It remains dormant: nothing
@@ -3553,24 +3553,32 @@ configuration, network request, staging/production access, or deployment.
 Those surfaces remain later, separately approved and independently reviewed
 items.
 
-The next separately approved Checkpoint A is defined in
-`VERSION3_GEMINI_EMULATOR_CALLABLE_BROWSER_PLAN.md`. It exports
-`analyzeTeacherInsightsV3` solely for the exact
-`demo-morgan-bank-version3-gemini-callable-browser` runtime when the Auth,
-Functions, and Firestore emulator guards all pass before a Firestore handle is
-obtained. The request carries only a request ID, mode, and period. The server
-calculates its own evidence signature, runs the deterministic calculator over
-paired raw and pseudonymized views from bounded `MAX + 1` queries, and asserts
-their ordered structural alignment before reservation or fake-provider use.
+The separately approved Checkpoint A is defined in
+`VERSION3_GEMINI_EMULATOR_CALLABLE_BROWSER_PLAN.md`. Its corrected discovery
+boundary exports `analyzeTeacherInsightsV3` only from the dedicated
+`functions/version3-emulator` source selected by
+`firebase.version3-gemini-emulator.json`. The default deployable Functions
+entrypoint does not discover it, and the default package excludes that source.
+This August 19 correction remains uncommitted, locally verified, and awaiting
+focused Claude closure review. The dedicated entrypoint refuses non-emulator
+discovery. In the exact
+`demo-morgan-bank-version3-gemini-callable-browser` runtime, the Auth,
+Functions, and Firestore emulator guards still all pass before a Firestore
+handle is obtained. The request carries only a request ID, mode, and period.
+The server calculates its own evidence signature, runs the deterministic
+calculator over paired raw and pseudonymized views from bounded `MAX + 1`
+queries, and asserts their ordered structural alignment before reservation or
+fake-provider use.
 
 The fake provider receives only the pseudonymized exact-schema packet and may
 only organize opaque references. The authorized teacher receives the aligned
-raw display facts after provider/replay validation. The schema-v2 usage record
-binds the server signature but persists neither the provider packet nor display
-facts. This checkpoint proves the server callable with synthetic data in all
-three emulators; it changes no browser file and establishes no live Gemini,
-App Check, credentials, pricing, billing, staging, production, or deployment
-authority.
+raw display facts after provider/replay validation. The schema-v3 usage records
+bind the server signature, separate the one application-wide monthly cost
+ledger from digested tenant rate-limit ledgers, and persist neither the provider
+packet nor display facts. This checkpoint proves the server callable with
+synthetic data in all three emulators; it changes no browser file and
+establishes no live Gemini, App Check, credentials, pricing, billing, staging,
+production, or deployment authority.
 
 The separately authorized Checkpoint B adds the exact-schema browser boundary
 and an exact-demo-project-only assisted test panel to the existing Insights
@@ -3582,6 +3590,13 @@ a newer request. Its synthetic browser harness may resolve the test page's
 rules-protected classroom while V2 callables remain disabled, but that value is
 never added to the Insights request: the real emulator callable independently
 derives and revalidates the authenticated tenant before reading evidence.
+
+Checkpoint B was committed as `c12b39e292eeae9b519b90381c7a702603d80907`
+and merged through PR #10 as
+`74c905ca792aec9cd3e5cec36ca1c5b3a58aaba2`. The available repository/GitHub
+record does not establish the full required Checkpoint A/B Claude-to-Grok
+review closure, so later work must close that governance evidence gap without
+claiming an unverified PASS.
 
 Chromium and WebKit each exercise the authenticated click, loading/duplicate
 guard, same-request replay, safe rendering, bounded malformed-response error,

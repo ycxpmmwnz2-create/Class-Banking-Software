@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { readdir, readFile } from 'node:fs/promises'
+import process from 'node:process'
 import test from 'node:test'
 
 async function readJavaScriptTree(directoryUrl, { exclude } = {}) {
@@ -52,12 +54,17 @@ const [
   usageLedgerSource,
   emulatorCallableSource,
   functionsIndexSource,
+  emulatorFunctionsIndexSource,
   callableEnvironmentSource,
   firebaseJsonSource,
+  emulatorFirebaseJsonSource,
+  functionsPackageJsonSource,
+  emulatorFunctionsPackageJsonSource,
   packageJson,
   plan,
   bridgePlan,
   callableBrowserPlan,
+  correctionBrief,
   architecturePlan,
 ] = await Promise.all([
   readFile(new URL('../../index.html', import.meta.url), 'utf8'),
@@ -69,12 +76,17 @@ const [
   readFile(new URL('../../functions/insights/firestoreUsageLedger.js', import.meta.url), 'utf8'),
   readFile(new URL('../../functions/insights/emulatorCallable.js', import.meta.url), 'utf8'),
   readFile(new URL('../../functions/index.js', import.meta.url), 'utf8'),
-  readFile(new URL('../../functions/.env.demo-morgan-bank-version3-gemini-callable-browser', import.meta.url), 'utf8'),
+  readFile(new URL('../../functions/version3-emulator/index.js', import.meta.url), 'utf8'),
+  readFile(new URL('../../functions/version3-emulator/.env.demo-morgan-bank-version3-gemini-callable-browser', import.meta.url), 'utf8'),
   readFile(new URL('../../firebase.json', import.meta.url), 'utf8'),
+  readFile(new URL('../../firebase.version3-gemini-emulator.json', import.meta.url), 'utf8'),
+  readFile(new URL('../../functions/package.json', import.meta.url), 'utf8'),
+  readFile(new URL('../../functions/version3-emulator/package.json', import.meta.url), 'utf8'),
   readFile(new URL('../../package.json', import.meta.url), 'utf8'),
   readFile(new URL('../../VERSION3_GEMINI_LAYER_PLAN.md', import.meta.url), 'utf8'),
   readFile(new URL('../../VERSION3_GEMINI_EMULATOR_BRIDGE_PLAN.md', import.meta.url), 'utf8'),
   readFile(new URL('../../VERSION3_GEMINI_EMULATOR_CALLABLE_BROWSER_PLAN.md', import.meta.url), 'utf8'),
+  readFile(new URL('../../VERSION3_AI_INSIGHTS_CORRECTION_BRIEF.md', import.meta.url), 'utf8'),
   readFile(new URL('../../MULTI_TEACHER_ARCHITECTURE_PLAN.md', import.meta.url), 'utf8'),
 ])
 
@@ -83,6 +95,7 @@ const nonKernelJavaScript = [
     exclude: url => (
       url.pathname.includes('/functions/insights/') ||
       url.pathname.endsWith('/functions/index.js') ||
+      url.pathname.includes('/functions/version3-emulator/') ||
       url.pathname.includes('/node_modules/')
     ),
   }),
@@ -113,8 +126,9 @@ test('source contract: guarded provider kernel and emulator provider make no net
   for (const file of nonKernelJavaScript) {
     assert.doesNotMatch(file.source, DORMANT_KERNEL_IMPORT, `dormant kernel imported by ${file.path}`)
   }
-  assert.match(functionsIndexSource, /import \{[\s\S]*?createVersion3GeminiEmulatorHandler[\s\S]*?from '\.\/insights\/emulatorCallable\.js'/)
-  assert.match(functionsIndexSource, /export const analyzeTeacherInsightsV3 = onCall/)
+  assert.doesNotMatch(functionsIndexSource, /emulatorCallable|analyzeTeacherInsightsV3/)
+  assert.match(emulatorFunctionsIndexSource, /import \{[\s\S]*?createVersion3GeminiEmulatorHandler[\s\S]*?from '\.\.\/insights\/emulatorCallable\.js'/)
+  assert.match(emulatorFunctionsIndexSource, /export const analyzeTeacherInsightsV3 = onCall/)
   assert.doesNotMatch(
     indexHtml,
     /functions\/insights\/(?:contracts|costPolicy|analysisService|tenantEvidenceAdapter|factPacketBuilder|firestoreUsageLedger)(?:\.js)?/,
@@ -164,10 +178,10 @@ test('source contract: callable is locked to the exact three-emulator demo runti
   assert.match(emulatorCallableSource, /demo-morgan-bank-version3-gemini-callable-browser/)
   assert.match(emulatorCallableSource, /FIRESTORE_EMULATOR_HOST/)
   assert.match(emulatorCallableSource, /FIREBASE_AUTH_EMULATOR_HOST/)
-  const handlerSource = exportedConstSource(functionsIndexSource, 'analyzeTeacherInsightsV3')
+  const handlerSource = exportedConstSource(emulatorFunctionsIndexSource, 'analyzeTeacherInsightsV3')
   const orderedHandlerTokens = [
     'assertVersion3GeminiEmulatorRuntime({',
-    "await import('../src/insights/classInsights.js')",
+    "await import('../../src/insights/classInsights.js')",
     'getFirestore(',
   ]
   assertTokensInOrder(handlerSource, orderedHandlerTokens)
@@ -183,6 +197,58 @@ test('source contract: callable is locked to the exact three-emulator demo runti
   assert.match(callableEnvironmentSource, /VERSION3_GEMINI_EMULATOR_ENABLED=true/)
   assert.doesNotMatch(callableEnvironmentSource, /API[_-]?KEY|secret|password|token/i)
   assert.ok(JSON.parse(firebaseJsonSource).functions[0].ignore.includes('.env.demo-*'))
+})
+
+test('source contract: production discovery excludes the emulator callable and package', () => {
+  const defaultConfig = JSON.parse(firebaseJsonSource)
+  const emulatorConfig = JSON.parse(emulatorFirebaseJsonSource)
+  const functionsPackage = JSON.parse(functionsPackageJsonSource)
+  const emulatorFunctionsPackage = JSON.parse(emulatorFunctionsPackageJsonSource)
+
+  assert.equal(defaultConfig.functions.length, 1)
+  assert.equal(defaultConfig.functions[0].source, 'functions')
+  assert.equal(functionsPackage.main, 'index.js')
+  assert.ok(defaultConfig.functions[0].ignore.includes('version3-emulator'))
+  assert.doesNotMatch(functionsIndexSource, /emulatorCallable|analyzeTeacherInsightsV3/)
+
+  assert.equal(emulatorConfig.functions.length, 1)
+  assert.equal(emulatorConfig.functions[0].source, 'functions/version3-emulator')
+  assert.equal(emulatorConfig.functions[0].codebase, 'version3-gemini-emulator')
+  assert.equal(emulatorFunctionsPackage.main, 'index.js')
+  assertTokensInOrder(emulatorFunctionsIndexSource, [
+    "process.env.FUNCTIONS_EMULATOR !== 'true'",
+    'initializeApp()',
+    'export const analyzeTeacherInsightsV3 = onCall',
+  ])
+  assert.doesNotMatch(
+    emulatorFunctionsIndexSource,
+    /VERSION3_GEMINI_EMULATOR_ENABLED\s*=/,
+  )
+})
+
+test('runtime contract: default Functions exports exclude the emulator callable', async () => {
+  const functionsExports = await import('../../functions/index.js')
+  assert.equal(Object.hasOwn(functionsExports, 'analyzeTeacherInsightsV3'), false)
+})
+
+test('runtime contract: dedicated callable entrypoint refuses non-emulator discovery', () => {
+  const entrypoint = new URL(
+    '../../functions/version3-emulator/index.js',
+    import.meta.url,
+  )
+  const probe = spawnSync(process.execPath, [entrypoint.pathname], {
+    encoding: 'utf8',
+    env: {
+      PATH: process.env.PATH,
+      NODE_NO_WARNINGS: '1',
+    },
+  })
+  assert.notEqual(probe.status, 0)
+  assert.match(probe.stderr, /Version 3 emulator Functions discovery is disabled/)
+  assert.doesNotMatch(
+    probe.stderr,
+    /GCLOUD_PROJECT|FIREBASE_CONFIG|FIRESTORE_EMULATOR_HOST|FIREBASE_AUTH_EMULATOR_HOST/,
+  )
 })
 
 test('source contract: pseudonymized names are asserted before deterministic calculation', () => {
@@ -243,6 +309,13 @@ test('source contract: focused command is local, bounded, and separate from exis
     scripts['test:version3:gemini-callable:emulator'],
     /-u VERSION3_GEMINI_EMULATOR_ENABLED/,
   )
+  for (const command of [
+    scripts['test:version3:gemini-callable:emulator'],
+    scripts['test:version3:gemini-browser:chromium'],
+    scripts['test:version3:gemini-browser:webkit'],
+  ]) {
+    assert.match(command, /--config firebase\.version3-gemini-emulator\.json/)
+  }
 })
 
 test('source contract: governing documents record dormancy and later approval gates', () => {
@@ -258,4 +331,10 @@ test('source contract: governing documents record dormancy and later approval ga
   assert.match(callableBrowserPlan, /Checkpoint A/)
   assert.match(callableBrowserPlan, /Firebase Auth, Functions, and Firestore emulators/)
   assert.match(callableBrowserPlan, /before any real provider work/)
+  assert.match(callableBrowserPlan, /merged through PR #10/)
+  assert.match(callableBrowserPlan, /does not establish the complete required[\s\S]*?Claude detailed-review and Grok final-review closure/)
+  assert.match(correctionBrief, /one\s+application-wide monthly cap/)
+  assert.match(correctionBrief, /default deployable Functions/)
+  assert.match(correctionBrief, /cannot discover or package/)
+  assert.match(correctionBrief, /Stop after preparing the complete Claude read-only handoff/)
 })

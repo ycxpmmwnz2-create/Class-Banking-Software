@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import process from 'node:process'
-import { after, before, test } from 'node:test'
+import { after, before, beforeEach, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { createInsightAnalysisService, InsightAnalysisServiceError } from '../../../functions/insights/analysisService.js'
@@ -144,6 +144,19 @@ async function seedSyntheticClassrooms() {
 }
 
 before(seedSyntheticClassrooms)
+beforeEach(async () => {
+  for (const collectionName of [
+    'insightUsageLedgers',
+    'insightUsageRateLimits',
+    'insightUsageReservations',
+  ]) {
+    const snapshot = await firestore.collection(collectionName).get()
+    if (snapshot.empty) continue
+    const batch = firestore.batch()
+    for (const document of snapshot.docs) batch.delete(document.ref)
+    await batch.commit()
+  }
+})
 after(async () => app.delete())
 
 function reserveInput(overrides = {}) {
@@ -247,7 +260,7 @@ test('real emulator bridge isolates tenants, strips identities, and replays safe
   assert.equal(bridge.providerInputs.length, 2)
 })
 
-test('server evidence changes bind request reuse and monthly budgets remain tenant-scoped', async () => {
+test('server evidence changes bind request reuse and monthly budget remains application-scoped', async () => {
   const bridge = createBridgeHarness()
   await bridge.service({
     auth: { uid: TEACHER_A },
@@ -263,27 +276,29 @@ test('server evidence changes bind request reuse and monthly budgets remain tena
   )
   assert.equal(bridge.providerInputs.length, 1)
 
-  await assert.rejects(
-    bridge.service({
-      auth: { uid: TEACHER_A },
-      data: request('request_a_second01'),
-    }),
-    error => error instanceof InsightAnalysisServiceError && error.category === 'budget-unavailable',
-  )
-  assert.equal(bridge.providerInputs.length, 1)
-
   await bridge.service({
-    auth: { uid: TEACHER_B },
-    data: request('request_b_first001'),
+    auth: { uid: TEACHER_A },
+    data: request('request_a_second01'),
   })
   assert.equal(bridge.providerInputs.length, 2)
 
-  const [ledgers, reservations] = await Promise.all([
+  await assert.rejects(
+    bridge.service({
+      auth: { uid: TEACHER_B },
+      data: request('request_b_first001'),
+    }),
+    error => error instanceof InsightAnalysisServiceError && error.category === 'budget-unavailable',
+  )
+  assert.equal(bridge.providerInputs.length, 2)
+
+  const [ledgers, rateLimits, reservations] = await Promise.all([
     firestore.collection('insightUsageLedgers').get(),
+    firestore.collection('insightUsageRateLimits').get(),
     firestore.collection('insightUsageReservations').get(),
   ])
   const storedUsage = JSON.stringify([
     ...ledgers.docs.map(document => document.data()),
+    ...rateLimits.docs.map(document => document.data()),
     ...reservations.docs.map(document => document.data()),
   ])
   for (const forbidden of [TEACHER_A, TEACHER_B, CLASS_A, CLASS_B, 'May', 'Jordan Reyes']) {
@@ -291,11 +306,15 @@ test('server evidence changes bind request reuse and monthly budgets remain tena
   }
 })
 
-test('real Firestore transactions serialize concurrent allowance reservations', async () => {
+test('real Firestore transactions serialize concurrent cross-tenant allowance reservations', async () => {
   const ledger = createFirestoreUsageLedger({ firestore, now: () => NOW_MS })
   const outcomes = await Promise.allSettled([
     ledger.reserve(reserveInput({ requestId: 'concurrent_req_001' })),
-    ledger.reserve(reserveInput({ requestId: 'concurrent_req_002' })),
+    ledger.reserve(reserveInput({
+      teacherUid: 'ledger-teacher-b',
+      classroomId: 'ledger-class-b',
+      requestId: 'concurrent_req_002',
+    })),
   ])
   assert.equal(outcomes.filter(outcome => outcome.status === 'fulfilled').length, 1)
   const rejected = outcomes.find(outcome => outcome.status === 'rejected')

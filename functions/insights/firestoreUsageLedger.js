@@ -8,16 +8,22 @@ import {
 } from './costPolicy.js'
 import { InsightIdentityError, validateInsightIdentity } from './identity.js'
 
-const LEDGER_COLLECTION = 'insightUsageLedgers'
+const APPLICATION_LEDGER_COLLECTION = 'insightUsageLedgers'
+const RATE_LIMIT_COLLECTION = 'insightUsageRateLimits'
 const RESERVATION_COLLECTION = 'insightUsageReservations'
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 3
 const ROLLING_HOUR_MS = 60 * 60 * 1000
 const MAX_RESULT_BYTES = 64 * 1024
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/
 const RATE_CARD_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/
-const LEDGER_KEYS = Object.freeze([
+const APPLICATION_LEDGER_KEYS = Object.freeze([
   'chargedMicroUsd',
+  'monthKey',
+  'schemaVersion',
+  'updatedAtMs',
+])
+const RATE_LIMIT_KEYS = Object.freeze([
   'deepReservationTimesMs',
   'monthKey',
   'quickReservationTimesMs',
@@ -31,6 +37,7 @@ const RESERVATION_KEYS = Object.freeze([
   'ledgerId',
   'mode',
   'monthKey',
+  'rateLimitLedgerId',
   'rateCardId',
   'requestIdDigest',
   'reservedAtMs',
@@ -74,9 +81,11 @@ async function reserve({ firestore, now, input }) {
   }
   const scopeDigest = digest(`${validated.teacherUid}\u0000${validated.classroomId}`)
   const requestIdDigest = digest(validated.requestId)
-  const ledgerId = digest(`${scopeDigest}\u0000${validated.monthKey}`)
-  const reservationId = digest(`${ledgerId}\u0000${requestIdDigest}`)
-  const ledgerRef = firestore.collection(LEDGER_COLLECTION).doc(ledgerId)
+  const ledgerId = applicationLedgerId(validated.monthKey)
+  const rateLimitLedgerId = tenantRateLimitLedgerId(scopeDigest, validated.monthKey)
+  const reservationId = digest(`${rateLimitLedgerId}\u0000${requestIdDigest}`)
+  const ledgerRef = firestore.collection(APPLICATION_LEDGER_COLLECTION).doc(ledgerId)
+  const rateLimitLedgerRef = firestore.collection(RATE_LIMIT_COLLECTION).doc(rateLimitLedgerId)
   const reservationRef = firestore.collection(RESERVATION_COLLECTION).doc(reservationId)
 
   return firestore.runTransaction(async transaction => {
@@ -87,6 +96,7 @@ async function reserve({ firestore, now, input }) {
         scopeDigest,
         requestIdDigest,
         ledgerId,
+        rateLimitLedgerId,
         ...validated,
       })
       if (existing.status === 'completed') {
@@ -96,24 +106,32 @@ async function reserve({ firestore, now, input }) {
     }
 
     const ledgerSnapshot = await transaction.get(ledgerRef)
-    let ledger
-    if (ledgerSnapshot.exists) {
-      ledger = validateLedgerDocument(
+    const ledger = ledgerSnapshot.exists
+      ? validateApplicationLedgerDocument(
         ledgerSnapshot.data(),
+        { monthKey: validated.monthKey, nowMs },
+      )
+      : emptyApplicationLedger({ monthKey: validated.monthKey, nowMs })
+
+    const rateLimitLedgerSnapshot = await transaction.get(rateLimitLedgerRef)
+    let rateLimitLedger
+    if (rateLimitLedgerSnapshot.exists) {
+      rateLimitLedger = validateRateLimitLedgerDocument(
+        rateLimitLedgerSnapshot.data(),
         { scopeDigest, monthKey: validated.monthKey, nowMs },
       )
     } else {
       const previousMonth = previousUtcMonthKey(nowMs)
-      const previousLedgerId = digest(`${scopeDigest}\u0000${previousMonth}`)
-      const previousLedgerRef = firestore.collection(LEDGER_COLLECTION).doc(previousLedgerId)
+      const previousLedgerId = tenantRateLimitLedgerId(scopeDigest, previousMonth)
+      const previousLedgerRef = firestore.collection(RATE_LIMIT_COLLECTION).doc(previousLedgerId)
       const previousLedgerSnapshot = await transaction.get(previousLedgerRef)
       const previousLedger = previousLedgerSnapshot.exists
-        ? validateLedgerDocument(
+        ? validateRateLimitLedgerDocument(
           previousLedgerSnapshot.data(),
           { scopeDigest, monthKey: previousMonth, nowMs },
         )
         : null
-      ledger = emptyLedger({
+      rateLimitLedger = emptyRateLimitLedger({
         scopeDigest,
         monthKey: validated.monthKey,
         nowMs,
@@ -125,8 +143,8 @@ async function reserve({ firestore, now, input }) {
     if (validated.hourlyRequestLimit !== profile.hourlyRequestLimit) {
       fail('invalid-policy', 'The hourly request limit does not match the mode policy.')
     }
-    const quickTimes = retainRollingHour(ledger.quickReservationTimesMs, nowMs)
-    const deepTimes = retainRollingHour(ledger.deepReservationTimesMs, nowMs)
+    const quickTimes = retainRollingHour(rateLimitLedger.quickReservationTimesMs, nowMs)
+    const deepTimes = retainRollingHour(rateLimitLedger.deepReservationTimesMs, nowMs)
     const selectedTimes = validated.mode === 'quick' ? quickTimes : deepTimes
     if (selectedTimes.length >= validated.hourlyRequestLimit) {
       fail('rate-limit-exhausted', 'The rolling hourly request limit is exhausted.')
@@ -141,6 +159,10 @@ async function reserve({ firestore, now, input }) {
     const nextLedger = {
       ...ledger,
       chargedMicroUsd: nextCharged,
+      updatedAtMs: nowMs,
+    }
+    const nextRateLimitLedger = {
+      ...rateLimitLedger,
       quickReservationTimesMs: validated.mode === 'quick'
         ? [...quickTimes, nowMs]
         : quickTimes,
@@ -153,6 +175,7 @@ async function reserve({ firestore, now, input }) {
       schemaVersion: SCHEMA_VERSION,
       scopeDigest,
       ledgerId,
+      rateLimitLedgerId,
       monthKey: validated.monthKey,
       requestIdDigest,
       mode: validated.mode,
@@ -165,6 +188,7 @@ async function reserve({ firestore, now, input }) {
       result: null,
     }
     transaction.set(ledgerRef, nextLedger)
+    transaction.set(rateLimitLedgerRef, nextRateLimitLedger)
     transaction.create(reservationRef, reservation)
     return Object.freeze({
       kind: 'reserved',
@@ -191,7 +215,8 @@ async function commit({ firestore, now, input }) {
     const reservation = validateReservationDocument(reservationSnapshot.data(), nowMs)
     if (
       reservation.requestIdDigest !== digest(validated.requestId) ||
-      validated.reservationId !== digest(`${reservation.ledgerId}\u0000${reservation.requestIdDigest}`)
+      validated.reservationId !==
+        digest(`${reservation.rateLimitLedgerId}\u0000${reservation.requestIdDigest}`)
     ) {
       fail('reservation-mismatch', 'The request does not match the usage reservation.')
     }
@@ -208,11 +233,10 @@ async function commit({ firestore, now, input }) {
     if (reservation.status !== 'reserved') {
       fail('reservation-unavailable', 'The usage reservation cannot be reconciled.')
     }
-    const ledgerRef = firestore.collection(LEDGER_COLLECTION).doc(reservation.ledgerId)
+    const ledgerRef = firestore.collection(APPLICATION_LEDGER_COLLECTION).doc(reservation.ledgerId)
     const ledgerSnapshot = await transaction.get(ledgerRef)
     if (!ledgerSnapshot.exists) fail('ledger-missing', 'The usage ledger is missing.')
-    const ledger = validateLedgerDocument(ledgerSnapshot.data(), {
-      scopeDigest: reservation.scopeDigest,
+    const ledger = validateApplicationLedgerDocument(ledgerSnapshot.data(), {
       monthKey: reservation.monthKey,
       nowMs,
     })
@@ -241,7 +265,8 @@ async function markUncertain({ firestore, input }) {
     const reservation = validateReservationDocument(snapshot.data())
     if (
       reservation.requestIdDigest !== digest(validated.requestId) ||
-      validated.reservationId !== digest(`${reservation.ledgerId}\u0000${reservation.requestIdDigest}`) ||
+      validated.reservationId !==
+        digest(`${reservation.rateLimitLedgerId}\u0000${reservation.requestIdDigest}`) ||
       reservation.worstCaseCostMicroUsd !== validated.worstCaseCostMicroUsd
     ) {
       fail('reservation-mismatch', 'The request does not match the usage reservation.')
@@ -339,12 +364,10 @@ function validateUncertainInput(value) {
   return value
 }
 
-function validateLedgerDocument(value, { scopeDigest, monthKey, nowMs } = {}) {
-  requireExactObject(value, LEDGER_KEYS, 'ledger document')
+function validateApplicationLedgerDocument(value, { monthKey, nowMs } = {}) {
+  requireExactObject(value, APPLICATION_LEDGER_KEYS, 'application ledger document')
   if (
     value.schemaVersion !== SCHEMA_VERSION ||
-    !DIGEST_PATTERN.test(value.scopeDigest) ||
-    value.scopeDigest !== scopeDigest ||
     value.monthKey !== monthKey ||
     !Number.isSafeInteger(value.chargedMicroUsd) ||
     value.chargedMicroUsd < 0 ||
@@ -354,6 +377,22 @@ function validateLedgerDocument(value, { scopeDigest, monthKey, nowMs } = {}) {
     (nowMs !== undefined && value.updatedAtMs > nowMs)
   ) {
     fail('ledger-malformed', 'The usage ledger is malformed.')
+  }
+  return value
+}
+
+function validateRateLimitLedgerDocument(value, { scopeDigest, monthKey, nowMs } = {}) {
+  requireExactObject(value, RATE_LIMIT_KEYS, 'rate-limit ledger document')
+  if (
+    value.schemaVersion !== SCHEMA_VERSION ||
+    !DIGEST_PATTERN.test(value.scopeDigest) ||
+    value.scopeDigest !== scopeDigest ||
+    value.monthKey !== monthKey ||
+    !Number.isSafeInteger(value.updatedAtMs) ||
+    value.updatedAtMs < 0 ||
+    (nowMs !== undefined && value.updatedAtMs > nowMs)
+  ) {
+    fail('ledger-malformed', 'The usage rate-limit ledger is malformed.')
   }
   validateTimeList(value.quickReservationTimesMs, insightModeProfile('quick').hourlyRequestLimit, nowMs)
   validateTimeList(value.deepReservationTimesMs, insightModeProfile('deep').hourlyRequestLimit, nowMs)
@@ -366,6 +405,7 @@ function validateReservationDocument(value, nowMs) {
     value.schemaVersion !== SCHEMA_VERSION ||
     !DIGEST_PATTERN.test(value.scopeDigest) ||
     !DIGEST_PATTERN.test(value.ledgerId) ||
+    !DIGEST_PATTERN.test(value.rateLimitLedgerId) ||
     !DIGEST_PATTERN.test(value.requestIdDigest) ||
     !DIGEST_PATTERN.test(value.evidenceSignature) ||
     !['quick', 'deep'].includes(value.mode) ||
@@ -381,7 +421,10 @@ function validateReservationDocument(value, nowMs) {
   ) {
     fail('reservation-malformed', 'The usage reservation is malformed.')
   }
-  if (value.ledgerId !== digest(`${value.scopeDigest}\u0000${value.monthKey}`)) {
+  if (
+    value.ledgerId !== applicationLedgerId(value.monthKey) ||
+    value.rateLimitLedgerId !== tenantRateLimitLedgerId(value.scopeDigest, value.monthKey)
+  ) {
     fail('reservation-malformed', 'The usage reservation is not bound to its ledger.')
   }
   if (value.status === 'completed') {
@@ -403,6 +446,7 @@ function requireMatchingReservation(existing, expected) {
   for (const key of [
     'scopeDigest',
     'ledgerId',
+    'rateLimitLedgerId',
     'monthKey',
     'requestIdDigest',
     'mode',
@@ -416,7 +460,16 @@ function requireMatchingReservation(existing, expected) {
   }
 }
 
-function emptyLedger({
+function emptyApplicationLedger({ monthKey, nowMs }) {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    monthKey,
+    chargedMicroUsd: 0,
+    updatedAtMs: nowMs,
+  }
+}
+
+function emptyRateLimitLedger({
   scopeDigest,
   monthKey,
   nowMs,
@@ -427,11 +480,18 @@ function emptyLedger({
     schemaVersion: SCHEMA_VERSION,
     scopeDigest,
     monthKey,
-    chargedMicroUsd: 0,
     quickReservationTimesMs: [...quickReservationTimesMs],
     deepReservationTimesMs: [...deepReservationTimesMs],
     updatedAtMs: nowMs,
   }
+}
+
+function applicationLedgerId(monthKey) {
+  return digest(`application\u0000${monthKey}`)
+}
+
+function tenantRateLimitLedgerId(scopeDigest, monthKey) {
+  return digest(`${scopeDigest}\u0000${monthKey}`)
 }
 
 function previousUtcMonthKey(nowMs) {

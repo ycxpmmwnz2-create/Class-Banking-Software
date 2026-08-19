@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import process from 'node:process'
-import { after, before, test } from 'node:test'
+import { after, before, beforeEach, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { initializeApp as initializeClientApp, deleteApp } from 'firebase/app'
@@ -119,6 +119,20 @@ before(async () => {
   await seedTeacher(identities.b, 'class-callable-b', 'Blaise Example', 'Library helper reward', 7)
 })
 
+beforeEach(async () => {
+  for (const collectionName of [
+    'insightUsageLedgers',
+    'insightUsageRateLimits',
+    'insightUsageReservations',
+  ]) {
+    const snapshot = await firestore.collection(collectionName).get()
+    if (snapshot.empty) continue
+    const batch = firestore.batch()
+    for (const document of snapshot.docs) batch.delete(document.ref)
+    await batch.commit()
+  }
+})
+
 after(async () => {
   await signOut(auth).catch(() => {})
   await deleteApp(clientApp)
@@ -165,18 +179,23 @@ test('callable requires Auth and returns only the caller tenant display facts', 
 test('replay is not charged twice and stored artifacts contain no display facts', async () => {
   await signOut(auth)
   await signInWithEmailAndPassword(auth, credentials.a.email, credentials.a.password)
-  await analyze(request('request_callable_a2'))
+  const first = (await analyze(request('request_callable_a2'))).data
+  const replay = (await analyze(request('request_callable_a2'))).data
+  assert.deepEqual(replay, first)
+  await analyze(request('request_callable_a3'))
   await assert.rejects(
-    analyze(request('request_callable_a3')),
+    analyze(request('request_callable_a4')),
     error => String(error?.code).includes('resource-exhausted'),
   )
 
-  const [ledgers, reservations] = await Promise.all([
+  const [ledgers, rateLimits, reservations] = await Promise.all([
     firestore.collection('insightUsageLedgers').get(),
+    firestore.collection('insightUsageRateLimits').get(),
     firestore.collection('insightUsageReservations').get(),
   ])
   const stored = JSON.stringify([
     ...ledgers.docs.map(document => document.data()),
+    ...rateLimits.docs.map(document => document.data()),
     ...reservations.docs.map(document => document.data()),
   ])
   for (const forbidden of [

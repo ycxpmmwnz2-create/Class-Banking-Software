@@ -103,12 +103,20 @@ test('reserves worst case, reconciles downward, and replays a completed request'
   const replay = await ledger.reserve(input)
   assert.deepEqual(replay, { kind: 'completed', result })
 
+  const otherTenant = await ledger.reserve(reserveInput({
+    teacherUid: 'teacher-b',
+    classroomId: 'class-b',
+    requestId: 'request_other_001',
+    worstCaseCostMicroUsd: 5_500_000,
+  }))
+  assert.equal(otherTenant.remainingAfterReservationMicroUsd, 0)
+
   const stored = JSON.stringify([...fake.store.entries()])
-  assert.doesNotMatch(stored, /teacher-a|class-a|request_123456789/)
-  assert.match(stored, /"chargedMicroUsd":2000000/)
+  assert.doesNotMatch(stored, /teacher-[ab]|class-[ab]|request_(?:123456789|other_001)/)
+  assert.match(stored, /"chargedMicroUsd":7500000/)
 })
 
-test('monthly allowance and tenant scope are enforced before another reservation', async () => {
+test('one monthly application allowance is enforced across tenant-scoped reservations', async () => {
   const fake = createFirestoreDouble()
   const ledger = createFirestoreUsageLedger({ firestore: fake.firestore, now: () => START })
   await ledger.reserve(reserveInput())
@@ -117,11 +125,43 @@ test('monthly allowance and tenant scope are enforced before another reservation
     error => error instanceof FirestoreUsageLedgerError &&
       error.category === 'allowance-exhausted',
   )
-  const otherTenant = await ledger.reserve(reserveInput({
+  await assert.rejects(
+    ledger.reserve(reserveInput({
+      teacherUid: 'teacher-b',
+      classroomId: 'class-b',
+      requestId: 'request_other_001',
+    })),
+    error => error instanceof FirestoreUsageLedgerError &&
+      error.category === 'allowance-exhausted',
+  )
+  const sharedRemainder = await ledger.reserve(reserveInput({
     teacherUid: 'teacher-b',
     classroomId: 'class-b',
+    requestId: 'request_other_002',
+    worstCaseCostMicroUsd: 3_500_000,
   }))
-  assert.equal(otherTenant.kind, 'reserved')
+  assert.equal(sharedRemainder.remainingAfterReservationMicroUsd, 0)
+  await assert.rejects(
+    ledger.reserve(reserveInput({
+      teacherUid: 'teacher-c',
+      classroomId: 'class-c',
+      requestId: 'request_other_003',
+      worstCaseCostMicroUsd: 1,
+    })),
+    error => error instanceof FirestoreUsageLedgerError &&
+      error.category === 'allowance-exhausted',
+  )
+
+  const applicationLedgers = [...fake.store.keys()]
+    .filter(path => path.startsWith('insightUsageLedgers/'))
+  const tenantRateLimits = [...fake.store.keys()]
+    .filter(path => path.startsWith('insightUsageRateLimits/'))
+  assert.equal(applicationLedgers.length, 1)
+  assert.equal(tenantRateLimits.length, 2)
+  assert.doesNotMatch(
+    JSON.stringify([...fake.store.entries()]),
+    /teacher-[abc]|class-[abc]|request_other_00[123]/,
+  )
 })
 
 test('rolling hourly limits expire without releasing monthly charges', async () => {
@@ -216,5 +256,45 @@ test('policy widening and conflicting request reuse fail closed', async () => {
   await assert.rejects(
     ledger.reserve(reserveInput({ evidenceSignature: 'b'.repeat(64) })),
     error => error instanceof FirestoreUsageLedgerError && error.category === 'request-conflict',
+  )
+})
+
+test('malformed application and tenant rate-limit ledgers fail closed', async () => {
+  const malformedApplication = createFirestoreDouble()
+  const applicationLedger = createFirestoreUsageLedger({
+    firestore: malformedApplication.firestore,
+    now: () => START,
+  })
+  await applicationLedger.reserve(reserveInput())
+  const applicationPath = [...malformedApplication.store.keys()]
+    .find(path => path.startsWith('insightUsageLedgers/'))
+  malformedApplication.store.set(applicationPath, {
+    ...malformedApplication.store.get(applicationPath),
+    scopeDigest: 'a'.repeat(64),
+  })
+  await assert.rejects(
+    applicationLedger.reserve(reserveInput({
+      teacherUid: 'teacher-b',
+      classroomId: 'class-b',
+      requestId: 'request_other_004',
+    })),
+    error => error instanceof FirestoreUsageLedgerError && error.category === 'invalid-shape',
+  )
+
+  const malformedRateLimit = createFirestoreDouble()
+  const rateLimitLedger = createFirestoreUsageLedger({
+    firestore: malformedRateLimit.firestore,
+    now: () => START,
+  })
+  await rateLimitLedger.reserve(reserveInput())
+  const rateLimitPath = [...malformedRateLimit.store.keys()]
+    .find(path => path.startsWith('insightUsageRateLimits/'))
+  malformedRateLimit.store.set(rateLimitPath, {
+    ...malformedRateLimit.store.get(rateLimitPath),
+    quickReservationTimesMs: [START + 1],
+  })
+  await assert.rejects(
+    rateLimitLedger.reserve(reserveInput({ requestId: 'request_rate_bad01' })),
+    error => error instanceof FirestoreUsageLedgerError && error.category === 'ledger-malformed',
   )
 })

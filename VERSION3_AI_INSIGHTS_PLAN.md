@@ -19,7 +19,8 @@ The product principle is:
 These are separate buckets. Gemini usage must not consume the Firebase
 allowance. A future provider integration must refuse additional model calls when
 the application-side Gemini allowance is exhausted even if provider billing
-would permit them.
+would permit them. The $7.50 Gemini allowance is one whole-application monthly
+cap, not a separate allowance per teacher or classroom.
 
 ## First implementation item: provider-independent foundation
 
