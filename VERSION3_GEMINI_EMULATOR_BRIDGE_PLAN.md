@@ -5,9 +5,9 @@
 Connect the reviewed dormant Gemini contract kernel to production-shaped
 Firestore adapters inside a Firebase demo-project emulator. The slice proves
 tenant-derived evidence loading, de-identification, deterministic fact-packet
-construction, idempotent usage accounting, rolling hourly limits, and the
-$7.50 monthly Gemini allowance while using only synthetic classroom data and
-an injected fake provider.
+construction, idempotent usage accounting, tenant-scoped rolling hourly limits,
+and one application-wide $7.50 monthly Gemini allowance while using only
+synthetic classroom data and an injected fake provider.
 
 The bridge remains unreachable from the deployed application. It adds no
 callable export, browser request, provider SDK, secret, billing configuration,
@@ -29,9 +29,10 @@ staging access, production access, deployment, or live model request.
    records. The packet builder emits only exact-schema opaque observation and
    evidence references; it receives neither the browser request nor sensitive
    values.
-5. A Firestore transaction atomically enforces per-tenant/per-month accounting,
-   rolling per-mode hourly limits, request idempotency, and the exact $7.50
-   Gemini allowance before the fake provider may run.
+5. A Firestore transaction atomically enforces one application-wide monthly
+   usage ledger, tenant-scoped rolling per-mode hourly limits, request
+   idempotency, and the exact $7.50 Gemini allowance before the fake provider
+   may run.
 6. A completed identical request replays its stored validated result without a
    second provider call. A conflicting reuse, active/uncertain reservation,
    malformed ledger record, rate-limit refusal, or allowance refusal fails
@@ -39,11 +40,11 @@ staging access, production access, deployment, or live model request.
 7. Provider failure or an ambiguous outcome retains the worst-case reservation.
    Successful reconciliation may reduce it only to a trusted actual cost no
    greater than the reservation.
-8. Concurrent reservations that together exceed the allowance cannot both
-   succeed.
+8. Concurrent reservations from the same or different tenants that together
+   exceed the application allowance cannot both succeed.
 9. Emulator evidence uses two synthetic teachers/classrooms and proves both
    tenant directions, stale signatures, no provider-visible identifiers, and
-   separate budget scopes.
+   separate tenant rate-limit scopes against the same budget scope.
 10. The emulator command refuses local Google ADC, scrubs credential/project/
     emulator/gate variables, uses an isolated Firebase CLI configuration, and
     targets only `demo-morgan-bank-version3-gemini-bridge` on loopback.
@@ -109,10 +110,13 @@ emulator-callable Checkpoint A advances that bridge without enabling any live
 surface: collection reads are now bounded with `MAX + 1` queries, the browser
 no longer supplies the server evidence signature, raw and pseudonymized reports
 must align before reservation, shared identity validation rejects C0/C1 control
-characters, and the schema-v2 reservation binds the internal signature while
+characters, and the schema-v3 reservation binds the internal signature while
+separating the application cost ledger from tenant rate-limit ledgers and
 persisting no teacher display facts.
 
-The only new reachability is `analyzeTeacherInsightsV3` under the exact demo
-project's Auth, Functions, and Firestore emulators with a deterministic fake
-provider. Browser wiring and every real-provider, staging, production, billing,
-secret, App Check, commit, push, and deployment gate remain separate.
+The only new reachability is `analyzeTeacherInsightsV3` through the dedicated
+non-deployable Functions-emulator source under the exact demo project's Auth,
+Functions, and Firestore emulators with a deterministic fake provider. The
+default Functions entrypoint and package exclude it. Browser wiring and every
+real-provider, staging, production, billing, secret, App Check, commit, push,
+and deployment gate remain separate.

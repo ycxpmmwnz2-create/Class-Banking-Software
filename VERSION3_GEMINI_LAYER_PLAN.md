@@ -34,9 +34,9 @@ deployment, or network request.
    explicitly labeled as suggestions and tied to supplied IDs.
 6. Unknown keys, malformed values, duplicate or foreign references, excessive
    counts or lengths, invalid usage, and oversized packets fail closed.
-7. The Gemini monthly allowance is exactly $7.50. Cost arithmetic uses integer
-   micro-US-dollars. Firebase retains its separate $5.00 allowance and the UI's
-   combined presentation remains $12.50.
+7. The one application-wide Gemini monthly allowance is exactly $7.50. Cost
+   arithmetic uses integer micro-US-dollars. Firebase retains its separate
+   $5.00 allowance and the UI's combined presentation remains $12.50.
 8. A trusted worst-case cost reservation and rate-limit decision must complete
    before the provider is invoked. Request IDs are idempotency keys.
 9. Once provider invocation begins, malformed output, provider failure, or an
@@ -113,11 +113,14 @@ only its future-wiring assumptions:
   the evidence signature is calculated and consumed only by the server;
 - the evidence envelope now pairs a pseudonymized provider report with an
   aligned raw teacher-display report from the same bounded records and clock;
-- the provider packet contains no evidence signature, while the schema-v2
-  reservation binds the internal signature for replay/conflict detection; and
-- `analyzeTeacherInsightsV3` is reachable only when the exact demo project and
-  Auth, Functions, and Firestore emulator guards all pass before Firestore is
-  obtained. It uses a fake provider and has no production override.
+- the provider packet contains no evidence signature, while the schema-v3
+  reservation binds the internal signature for replay/conflict detection and
+  separates the application cost ledger from tenant rate-limit ledgers; and
+- `analyzeTeacherInsightsV3` is reachable only from the dedicated
+  non-deployable emulator source when the exact demo project and Auth,
+  Functions, and Firestore emulator guards all pass before Firestore is
+  obtained. The default Functions entrypoint and package exclude it. It uses a
+  fake provider and has no production override.
 
 This evolution does not authorize browser wiring, a real provider, provider
 credentials, model or price selection, App Check claims, staging, production,

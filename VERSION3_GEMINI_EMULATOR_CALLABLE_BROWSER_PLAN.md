@@ -3,22 +3,33 @@
 ## Status and authority
 
 This began as an acceptance-first design document. Checkpoint A was separately
-authorized, independently reviewed, and merged through PR #9. The integrated
-Checkpoint A baseline is merge commit
+authorized and merged through PR #9. The integrated Checkpoint A baseline is
+merge commit
 `f6315f6b0946d2b568449fd663a731b68f1f6e1d` on `feature/multi-teacher`.
 
 Checkpoint B was separately authorized on August 16, 2026 and implemented from
 that exact baseline in the isolated branch
-`codex/version-3-gemini-browser`. It remains uncommitted pending the required
-Claude detailed review. That authorization grants no commit, push, pull request,
-merge, real Firebase project access, provider access, model or pricing selection,
-secret creation, billing, staging, production, or deployment.
+`codex/version-3-gemini-browser`. Commit
+`c12b39e292eeae9b519b90381c7a702603d80907` was merged through PR #10 as merge
+commit `74c905ca792aec9cd3e5cec36ca1c5b3a58aaba2`. The repository and GitHub
+record available on August 19, 2026 does not establish the complete required
+Checkpoint A/B Claude detailed-review and Grok final-review closure. This is an
+evidence gap, not a claim that an off-GitHub review did not occur.
 
 Checkpoint B adds a default-off, exact-demo-project browser client and test-only
 UI controls. The focused Chromium and WebKit suites each pass 8/8 against real
 Auth, Functions, and Firestore emulators, synthetic tenants, and the existing
 deterministic fake provider. The ordinary app retains its existing local Quick
 Insights and Deep Analysis controls and zero-API-cost behavior.
+
+An August 19, 2026 isolated correction pass is currently uncommitted and
+locally verified and awaiting Claude review. Its acceptance contract is
+`VERSION3_AI_INSIGHTS_CORRECTION_BRIEF.md`. It makes the $7.50 Gemini allowance
+one application-wide monthly cap, separates tenant-scoped hourly rate ledgers,
+and removes the emulator callable from the default deployable Functions
+discovery/package. This correction authority grants no commit, push, pull
+request, merge, real Firebase or provider access, model or pricing selection,
+secret creation, billing, staging, production, or deployment.
 
 ## Objective
 
@@ -50,9 +61,10 @@ The slice must close four review carry-forwards before any real provider work:
 - Student names and IDs, teacher/classroom IDs, transaction IDs, raw reasons,
   PINs, login IDs, credentials, auth logs, prompts, and raw classroom records
   never cross the provider boundary.
-- Worst-case cost reservation, idempotency, rolling rate limits, and the exact
-  7,500,000 micro-USD monthly Gemini allowance complete atomically before the
-  fake provider runs. Ambiguous outcomes retain the reservation.
+- Worst-case cost reservation, idempotency, tenant-scoped rolling rate limits,
+  and the one application-wide exact 7,500,000 micro-USD monthly Gemini
+  allowance complete atomically before the fake provider runs. Ambiguous
+  outcomes retain the reservation.
 - Existing balances, transactions, deterministic Insights, callables,
   Firestore rules, Firebase configuration, production build behavior, and
   release gates remain unchanged.
@@ -187,12 +199,15 @@ Request IDs retain their existing closed ASCII pattern. Tests prove that NUL,
 newline, tab, and other control-bearing identities fail before a Firestore path
 or digest is constructed.
 
-### 6. Emulator-only callable boundary
+### 6. Emulator-only callable and discovery boundary
 
-The future callable name is `analyzeTeacherInsightsV3`. It is exported from
-`functions/index.js` only for real Functions-emulator acceptance, but every
-invocation must fail before obtaining a Firestore handle unless all of these
-conditions hold:
+The callable name is `analyzeTeacherInsightsV3`. The default deployable
+Functions entrypoint does not import or export it, and `firebase.json` excludes
+the dedicated `functions/version3-emulator` source from the default Functions
+package. Only `firebase.version3-gemini-emulator.json` selects that source for
+local acceptance. Its entrypoint refuses discovery unless
+`FUNCTIONS_EMULATOR` is exactly `"true"`; every invocation must then fail before
+obtaining a Firestore handle unless all of these conditions hold:
 
 - `VERSION3_GEMINI_EMULATOR_ENABLED` is exactly `"true"`;
 - `FUNCTIONS_EMULATOR` is exactly `"true"`;
@@ -284,17 +299,23 @@ that UTC and the teacher's local time are product-equivalent.
 12. Concurrent reservations, allowance exhaustion, Quick/Deep rolling limits,
     conflicting request reuse, malformed state, provider failure, and ambiguous
     completion retain the already reviewed fail-closed behavior.
-13. The dedicated browser build proves the authenticated teacher click, loading
+13. Concurrent reservations from different synthetic tenants serialize through
+    one monthly application ledger, while tenant rate-limit ledgers remain
+    separate.
+14. The dedicated browser build proves the authenticated teacher click, loading
     state, safe rendering, replay, bounded error state, and no duplicate call.
-14. Real-browser tests hold a callable response, then prove logout, tenant
+15. Real-browser tests hold a callable response, then prove logout, tenant
     switch, local data change, period change, and a newer request make the late
     completion inert in both Chromium and WebKit.
-15. Gate-off and normal production builds contain no visible assisted controls
+16. Gate-off and normal production builds contain no visible assisted controls
     and preserve the current local deterministic experience.
-16. Test wrappers refuse local Google ADC, scrub credential/project/gate
+17. The default Functions config discovers all existing legacy/V2 exports but
+    neither discovers nor packages the emulator callable; the dedicated source
+    refuses non-emulator discovery.
+18. Test wrappers refuse local Google ADC, scrub credential/project/gate
     variables, use isolated Firebase CLI configuration, start only the three
     loopback emulators, and target only the explicit demo project.
-17. No test, build, or source-contract result is represented as provider,
+19. No test, build, or source-contract result is represented as provider,
     App Check, pricing, staging, production, billing, or deployment evidence.
 
 ## Future implementation checkpoints
@@ -309,7 +330,8 @@ Expected scope:
 - refactor the request, packet, display, replay, bounded-read, and ledger
   contracts described above;
 - add one emulator-runtime/fake-provider callable adapter;
-- add the guarded `functions/index.js` export;
+- historically, add the guarded `functions/index.js` export; the August 19
+  correction relocates it to a dedicated non-deployable emulator source;
 - extend unit/source-contract coverage; and
 - exercise the exported callable through real Auth, Functions, and Firestore
   emulators with synthetic tenants.
@@ -321,14 +343,15 @@ Expected file families are limited to this plan and the architecture record,
 `functions/index.js`, `functions/insights/**`, the focused Version 3 contract
 and emulator tests, `package.json`, and the exact non-secret demo-project
 Functions dotenv needed to resolve the repository's existing declared
-parameters non-interactively. That dotenv is scoped only to
-`demo-morgan-bank-version3-gemini-callable-browser` and is excluded from
-Functions deployment packaging. No `firebase.json`, rules, indexes, dependency,
-lockfile, or deployment file change is expected.
+parameters noninteractively. The August 19 correction additionally uses
+`functions/version3-emulator/**`, `firebase.version3-gemini-emulator.json`, and
+the default `firebase.json` ignore boundary. No rules, indexes, dependency, or
+lockfile change is expected.
 
 ### Checkpoint B — Gated browser wiring and real-browser acceptance
 
-Implementation record (uncommitted, awaiting Claude review):
+Implementation record (merged through PR #10; full required review closure not
+established by the available record):
 
 - the browser client accepts and sends only `{requestId, mode, periodDays}` and
   validates the exact callable response before display;

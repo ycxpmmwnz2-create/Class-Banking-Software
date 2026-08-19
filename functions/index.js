@@ -30,12 +30,6 @@ import {
 import { listStudentPinsV2CallableHandler } from './phase3/studentPinDirectory.js'
 import { submitStudentTransactionV2CallableHandler } from './phase3/studentMoney.js'
 import { assertV2GateAllowed } from './phase3/productionEnvironment.js'
-import {
-  assertVersion3GeminiEmulatorRuntime,
-  callableErrorCode,
-  callableLogCategory,
-  createVersion3GeminiEmulatorHandler,
-} from './insights/emulatorCallable.js'
 
 export const MULTI_TEACHER_V2_ENABLED = defineBoolean('MULTI_TEACHER_V2_ENABLED', {
   default: false,
@@ -250,37 +244,6 @@ export const submitStudentTransactionV2 = onCall(async (request) => {
     request,
     { firestore: getFirestore() },
   )
-})
-
-// Version 3 Checkpoint A: an emulator-only callable with no live provider,
-// model, key, SDK, network, price lookup, or production override path.
-export const analyzeTeacherInsightsV3 = onCall(async (request) => {
-  try {
-    assertVersion3GeminiEmulatorRuntime({
-      environment: process.env,
-      projectId: process.env.GCLOUD_PROJECT,
-      adminAppCount: getApps().length,
-      adminProjectId: getApps()[0]?.options?.projectId,
-    })
-    // This emulator-only dynamic import occurs after every runtime guard. The
-    // production Functions package contains no browser calculator copy and can
-    // never reach this repository-local test seam.
-    const { buildClassInsightsReport } = await import('../src/insights/classInsights.js')
-    const analyze = createVersion3GeminiEmulatorHandler({
-      firestore: getFirestore(),
-      calculateReport: buildClassInsightsReport,
-    })
-    return await analyze({ auth: request.auth, data: request.data })
-  } catch (error) {
-    globalThis.console.warn('Version 3 emulator analysis refused.', {
-      operation: 'analyzeTeacherInsightsV3',
-      category: callableLogCategory(error),
-    })
-    throw new HttpsError(
-      callableErrorCode(error),
-      'Version 3 emulator analysis is unavailable.',
-    )
-  }
 })
 
 export const syncStudentProfilesV2 = onDocumentWritten(

@@ -1,19 +1,15 @@
 {
   "functions": [
     {
-      "source": "functions",
-      "codebase": "default",
+      "source": "functions/version3-emulator",
+      "codebase": "version3-gemini-emulator",
       "ignore": [
         "node_modules",
         ".git",
         "firebase-debug.log",
         "firebase-debug.*.log",
         "*.local",
-        ".env.demo-*",
-        "version3-emulator"
-      ],
-      "predeploy": [
-        "npm --prefix \"$RESOURCE_DIR\" run lint"
+        ".env.demo-*"
       ]
     }
   ],
@@ -22,20 +18,6 @@
     "location": "nam5",
     "rules": "firestore.phase3.final.rules",
     "indexes": "firestore.indexes.json"
-  },
-  "hosting": {
-    "public": "dist",
-    "ignore": [
-      "firebase.json",
-      "**/.*",
-      "**/node_modules/**"
-    ],
-    "rewrites": [
-      {
-        "source": "**",
-        "destination": "/index.html"
-      }
-    ]
   },
   "emulators": {
     "auth": {
