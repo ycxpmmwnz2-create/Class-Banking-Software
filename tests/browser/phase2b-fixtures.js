@@ -18,11 +18,10 @@
 // Auth user creation stays on REST: the Auth emulator has no rules layer, and
 // its REST signUp endpoint is the documented way to mint local accounts.
 //
-// The normal Phase 2B browser gate loads firestore.phase2b.proposed.rules, so
-// it continues to exercise the historical rules contract. Boundary 11's
-// explicitly selected release rehearsal loads the checksum-pinned Phase 3
-// final candidate instead. Neither path copies over firestore.rules or deploys
-// anything.
+// Current V2 browser tests load the checksum-pinned Phase 3 final candidate.
+// The immutable Phase 2B proposed-rules artifact retains its own dedicated
+// rules contract and is not expanded for later application features. No test
+// path copies over firestore.rules or deploys anything.
 
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -36,11 +35,8 @@ export const AUTH_PORT = 9099;
 // .env/project contract that activates V2 Functions applies here too.
 export const PROJECT_ID = "demo-morgan-bank-phase2b-server-test";
 
-export const PROPOSED_RULES_PATH = "firestore.phase2b.proposed.rules";
 export const FINAL_RULES_PATH = "firestore.phase3.final.rules";
-export const BROWSER_RULES_PATH = process.env.PHASE3_REHEARSAL_MODE === "release"
-  ? FINAL_RULES_PATH
-  : PROPOSED_RULES_PATH;
+export const BROWSER_RULES_PATH = FINAL_RULES_PATH;
 
 // resolveTeacherTenantV2 REQUIRES classrooms/{id}.studentLoginCode to be a
 // nonempty, canonical, display-formatted code
@@ -70,6 +66,7 @@ export const TENANT_A = {
   historyId: "1700000000012",
   classroomName: "Room A Morning",
   studentLoginCode: "AAAA-2345",
+  rentAmount: 25,
   classroomMarker: "A_ONLY_CLASSROOM",
   studentMarker: "A_ONLY_STUDENT",
   transactionMarker: "A-only-transaction",
@@ -88,6 +85,7 @@ export const TENANT_B = {
   historyId: "1700000000022",
   classroomName: "Room B Afternoon",
   studentLoginCode: "BBBB-6789",
+  rentAmount: 40,
   classroomMarker: "B_ONLY_CLASSROOM",
   studentMarker: "B_ONLY_STUDENT",
   transactionMarker: "B-only-transaction",
@@ -319,6 +317,11 @@ async function seedTenantDocs(db, tenant, uid) {
     marker: tenant.classroomMarker,
     settings: { ...COMPLETE_SETTINGS, label: tenant.classroomMarker },
     lastBackupAt: null,
+    updatedAt: "2026-01-01T00:00:00.000Z"
+  });
+
+  await db.doc(`classrooms/${tenant.classroomId}/studentDisplay/rent`).set({
+    rentAmount: tenant.rentAmount,
     updatedAt: "2026-01-01T00:00:00.000Z"
   });
 

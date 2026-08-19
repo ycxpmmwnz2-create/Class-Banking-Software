@@ -437,6 +437,73 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     expect(await page.evaluate(() => document.body.innerText)).not.toContain(TENANT_A.studentMarker)
   })
 
+  test('teacher rent changes are tenant-scoped, display-only, and read-only for students', async ({ page }) => {
+    const seeded = getSeeded()
+    await gotoApp(page)
+    await signInTeacher(page, TENANT_A)
+    await waitForQuiescence(page)
+
+    await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${TENANT_A.rentAmount}`)
+    await expect(page.locator('#teacherRentAmount')).toHaveValue(String(TENANT_A.rentAmount))
+    const classCashBefore = await page.getByText(/^Class Cash:/).textContent()
+    const savesBefore = await page.evaluate(
+      () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
+    )
+
+    await page.locator('#teacherRentAmount').fill('-1')
+    await page.getByRole('button', { name: 'Save Rent' }).click()
+    await expect(page.getByText('Rent must be a whole-dollar amount of $0 or more.')).toBeVisible()
+    await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${TENANT_A.rentAmount}`)
+
+    const updatedRent = 35
+    await page.locator('#teacherRentAmount').fill(String(updatedRent))
+    await page.getByRole('button', { name: 'Save Rent' }).click()
+    await expect.poll(() => page.evaluate(
+      () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
+    )).toBeGreaterThan(savesBefore)
+    await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${updatedRent}`)
+    await expect(page.getByText(
+      `Rent updated to $${updatedRent}. No student balances were changed.`,
+    )).toBeVisible()
+    expect(await page.getByText(/^Class Cash:/).textContent()).toBe(classCashBefore)
+
+    await logout(page)
+    await activateThroughProductionUi(page, TENANT_A, '2468')
+    await submitStudentLogin(page, {
+      classroomCode: TENANT_A.studentLoginCode,
+      loginId: SHARED_LOGIN_ID,
+      pin: '2468',
+    })
+    await expect.poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBe(
+      seeded.credentials.aSharedCredential.authUid,
+    )
+    await waitForQuiescence(page)
+    await expect(page.locator('#studentRentDisplay')).toHaveText(`Current Rent: $${updatedRent}`)
+    await expect(page.locator('#studentRentDisplay').locator('input, button')).toHaveCount(0)
+    await expect(page.locator('#teacherRentCard')).toHaveCount(0)
+
+    await logout(page)
+    await signInTeacher(page, TENANT_B)
+    await waitForQuiescence(page)
+    await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${TENANT_B.rentAmount}`)
+
+    // Restore the shared fixture value so later cases do not depend on this test.
+    await logout(page)
+    await signInTeacher(page, TENANT_A)
+    const restoreSavesBefore = await page.evaluate(
+      () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
+    )
+    await page.locator('#teacherRentAmount').fill(String(TENANT_A.rentAmount))
+    await page.getByRole('button', { name: 'Save Rent' }).click()
+    await expect.poll(() => page.evaluate(
+      () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
+    )).toBeGreaterThan(restoreSavesBefore)
+    await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${TENANT_A.rentAmount}`)
+    await expect(page.getByText(
+      `Rent updated to $${TENANT_A.rentAmount}. No student balances were changed.`,
+    )).toBeVisible()
+  })
+
   test('student money submissions persist through the V2 callable and appear in the owning teacher UI', async ({ page }) => {
     const seeded = getSeeded()
     await gotoApp(page)

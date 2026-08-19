@@ -53,6 +53,7 @@ export function createDefaultGlobalState() {
       transactions: [],
       loginHistory: [],
       settings: {
+        rentAmount: 0,
         studentRequestsEnabled: true,
         studentAddRequestsEnabled: true,
         studentSubtractRequestsEnabled: true,

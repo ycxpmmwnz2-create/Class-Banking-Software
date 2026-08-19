@@ -548,6 +548,17 @@
       color: rgba(18, 50, 58, 0.76);
     }
 
+    .student-rent-display {
+      display: inline-block;
+      padding: 10px 14px;
+      margin: 8px 0 12px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.7);
+      font-size: 20px;
+      font-weight: 900;
+      color: var(--teal-dark);
+    }
+
     .small-note {
       font-size: 13px;
       color: var(--muted);
@@ -884,13 +895,14 @@ import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogi
 import { formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
 import { sortStudentsByName } from "./src/phase2b/studentDisplay.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
-import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
+import { MAX_RENT_AMOUNT, projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 import { sanitizeLegacyBackup } from "./src/legacy/backupImport.js";
 
 const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED === "true";
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
     const defaultSettings = {
+      rentAmount: 0,
       studentRequestsEnabled: true,
       studentAddRequestsEnabled: true,
       studentSubtractRequestsEnabled: true,
@@ -967,6 +979,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let bulkOperationPending = false;
     let studentLifecyclePending = false;
     let studentMoneySubmissionPending = false;
+    let rentUpdatePending = false;
     // Preserve only the latest failed in-memory attempt so an ambiguous network
     // failure can be retried with the same server-idempotency key. It is never
     // persisted and is cleared on success or any session reset.
@@ -1049,6 +1062,11 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
         settings: {
           ...defaultSettings,
           ...(parsed.settings || {}),
+          rentAmount: Number.isSafeInteger(parsed.settings?.rentAmount)
+            && parsed.settings.rentAmount >= 0
+            && parsed.settings.rentAmount <= MAX_RENT_AMOUNT
+              ? parsed.settings.rentAmount
+              : defaultSettings.rentAmount,
           reasons: Array.isArray(parsed.settings?.reasons) ? parsed.settings.reasons : defaultSettings.reasons,
           purchaseCategories: Array.isArray(parsed.settings?.purchaseCategories) ? parsed.settings.purchaseCategories : defaultSettings.purchaseCategories,
           addMoneyCategories: Array.isArray(parsed.settings?.addMoneyCategories) ? parsed.settings.addMoneyCategories : defaultSettings.addMoneyCategories,
@@ -2627,6 +2645,48 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
   screen = "settings";
   render();
 }
+    async function saveRentAmount() {
+      if (!requireTeacher() || rentUpdatePending) return;
+      const input = document.getElementById("teacherRentAmount");
+      const raw = typeof input?.value === "string" ? input.value : "";
+      if (!/^(0|[1-9][0-9]*)$/.test(raw)) {
+        message = "Rent must be a whole-dollar amount of $0 or more.";
+        render();
+        return;
+      }
+
+      const amount = Number(raw);
+      if (!Number.isSafeInteger(amount) || amount < 0 || amount > MAX_RENT_AMOUNT) {
+        message = `Rent must be between $0 and $${MAX_RENT_AMOUNT.toLocaleString()}.`;
+        render();
+        return;
+      }
+
+      const previousAmount = data.settings.rentAmount;
+      const captured = IS_MULTI_TEACHER_V2_ENABLED
+        ? v2TenantSession.captureIdentity()
+        : null;
+      rentUpdatePending = true;
+      data.settings.rentAmount = amount;
+      message = "Saving rent...";
+      render();
+
+      const result = await saveData();
+      if (captured && !v2TenantSession.validateCapturedIdentity(captured)) return;
+
+      rentUpdatePending = false;
+      if (IS_MULTI_TEACHER_V2_ENABLED && !result?.executed) {
+        if (result?.reason !== "concurrent-classroom-change") {
+          data.settings.rentAmount = previousAmount;
+        }
+        render();
+        return;
+      }
+
+      message = `Rent updated to ${dollars(amount)}. No student balances were changed.`;
+      render();
+    }
+
     function saveSettings()  {
       if (!requireTeacher()) return;
       const reasonsText = document.getElementById("reasonList").value;
@@ -3633,6 +3693,26 @@ link.click();
           </div>
           ` : ""}
 
+          <div id="teacherRentCard" class="card no-print soft-card">
+            <h2>Class Rent</h2>
+            <div id="teacherRentDisplay" class="big-balance">${dollars(data.settings.rentAmount)}</div>
+            <p class="small-note">This amount is displayed to students. Saving it does not charge accounts or create transactions.</p>
+            <label for="teacherRentAmount">Rent amount</label>
+            <input
+              id="teacherRentAmount"
+              type="number"
+              min="0"
+              max="${MAX_RENT_AMOUNT}"
+              step="1"
+              inputmode="numeric"
+              value="${data.settings.rentAmount}"
+              ${rentUpdatePending ? "disabled" : ""}
+            />
+            <button class="primary" onclick="saveRentAmount()" ${rentUpdatePending ? "disabled" : ""}>
+              ${rentUpdatePending ? "Saving Rent..." : "Save Rent"}
+            </button>
+          </div>
+
           <div class="card no-print dashboard-insights">
             <h2>Dashboard Insights</h2>
             <div class="stats">
@@ -4238,6 +4318,7 @@ if (screen === "editSettingsLists" && isTeacher) {
                 <h2>${escapeHtml(student.name)}'s Account</h2>
                 ${student.frozen ? `<div class="note backup-reminder">This account is currently frozen. Please see Mr. Morgan.</div>` : ""}
                 <div class="big-balance">${dollars(student.balance)}</div>
+              <div id="studentRentDisplay" class="student-rent-display"><strong>Current Rent:</strong> ${dollars(data.settings.rentAmount)}</div>
               <div class="pending-balance">Pending Credit/Debit Change: ${pendingChange >= 0 ? "+" : ""}${dollars(pendingChange)}</div>
               <div class="pending-balance">Pending Total: ${dollars(Number(student.balance) + pendingChange)}</div>
               </div>
@@ -4359,6 +4440,7 @@ if (screen === "editSettingsLists" && isTeacher) {
       // global contract must be cleared by the same synchronous reset, or a
       // previous tenant's offline badge / profile login ID can survive a switch.
       v2IsOffline = false;
+      rentUpdatePending = false;
       isPlatformAdmin = false;
       teacherInvitationPending = false;
       teacherInvitationEmailDraft = "";
@@ -4784,6 +4866,7 @@ window.filterRoster = filterRoster;
 window.toggleTeacherChoiceMemo = toggleTeacherChoiceMemo;
 window.saveSettings = saveSettings;
 window.saveSettingsLists = saveSettingsLists;
+window.saveRentAmount = saveRentAmount;
 window.exportBackup = exportBackup;
 window.importBackup = importBackup;
   </script>

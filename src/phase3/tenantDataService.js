@@ -171,8 +171,9 @@ function isWellFormedUnicode(value) {
 }
 
 /**
- * Build the production `loadNetworkFn` adapter: read the classroom root and the
- * three scoped collections, then project them into the aggregate view.
+ * Build the production `loadNetworkFn` adapter: read the classroom root, the
+ * narrowly scoped student rent display, and the three tenant collections, then
+ * project them into the aggregate view.
  *
  * Credentials are never in the read set. There is no `studentCredentials`
  * reference anywhere in this function, so no read path can surface one even if
@@ -194,8 +195,9 @@ export function createTenantDataLoader({
     assertSessionRole(session, "teacher");
     const captured = session.captureIdentity();
 
-    const [rootSnapshot, studentsSnapshot, transactionsSnapshot, historySnapshot] = await Promise.all([
+    const [rootSnapshot, rentSnapshot, studentsSnapshot, transactionsSnapshot, historySnapshot] = await Promise.all([
       getDoc(doc(db, `classrooms/${classroomId}`)),
+      getDoc(doc(db, `classrooms/${classroomId}/studentDisplay/rent`)),
       getDocs(collection(db, `classrooms/${classroomId}/students`)),
       getDocs(collection(db, `classrooms/${classroomId}/transactions`)),
       getDocs(collection(db, `classrooms/${classroomId}/loginHistory`))
@@ -216,6 +218,7 @@ export function createTenantDataLoader({
     return projectClassroomData({
       classroomId,
       root,
+      studentRent: readSnapshotData(rentSnapshot),
       students: readCollectionData(studentsSnapshot, "students"),
       transactions: readCollectionData(transactionsSnapshot, "transactions"),
       loginHistory: readCollectionData(historySnapshot, "loginHistory"),
@@ -226,9 +229,9 @@ export function createTenantDataLoader({
 
 /**
  * Build the production `loadStudentNetworkFn` adapter. A signed-in V2 student
- * reads exactly one document: their own. The roster, other students'
- * documents, the transaction collection, and login history are all outside
- * what a student may read.
+ * reads exactly their own student document plus the classroom's narrowly
+ * allowlisted rent display document. The classroom root, roster, other
+ * students, transactions collection, and login history remain unreadable.
  */
 export function createStudentDataLoader({ db, session, firestore, defaultSettings = {} }) {
   const doc = requireFunction(firestore?.doc, "doc");
@@ -274,7 +277,10 @@ export function createStudentDataLoader({ db, session, firestore, defaultSetting
     requireCanonicalStudentId(student);
 
     const captured = session.captureIdentity();
-    const snapshot = await getDoc(doc(db, `classrooms/${tenant}/students/${student}`));
+    const [snapshot, rentSnapshot] = await Promise.all([
+      getDoc(doc(db, `classrooms/${tenant}/students/${student}`)),
+      getDoc(doc(db, `classrooms/${tenant}/studentDisplay/rent`))
+    ]);
     assertIdentityUnchanged(session, captured);
 
     const body = readSnapshotData(snapshot);
@@ -289,6 +295,7 @@ export function createStudentDataLoader({ db, session, firestore, defaultSetting
       classroomId: tenant,
       studentId: student,
       student: body,
+      studentRent: readSnapshotData(rentSnapshot),
       defaultSettings
     });
   };
@@ -298,10 +305,11 @@ export function createStudentDataLoader({ db, session, firestore, defaultSetting
  * Build the production `V2_TENANT_DATA_SAVE_ADAPTER`.
  *
  * The aggregate is decomposed by path and applied through one bounded Firestore
- * transaction. The classroom root receives only `settings`, `lastBackupAt`, and a server-side
- * `updatedAt`; students receive only their exact five-field body; transactions
- * and login history are written at canonical deterministic IDs so a retry is
- * idempotent rather than duplicating records.
+ * transaction. The classroom root receives only teacher settings,
+ * `lastBackupAt`, and a server-side `updatedAt`; the studentDisplay/rent document
+ * receives only the safe rent amount and its timestamp; students receive only
+ * their exact five-field body. Transactions and login history use canonical
+ * deterministic IDs so a retry is idempotent rather than duplicating records.
  *
  * `previousRef` supplies the last-known-persisted aggregate so unchanged
  * documents are skipped. It is read through a getter because the caller holds
@@ -399,6 +407,14 @@ export function createTenantDataSaver({
         // injected primitives could not have caught it: no rules layer runs
         // there.
         merge: true
+      });
+    }
+    if (plan.studentRent) {
+      operations.push({
+        kind: "set",
+        path: plan.studentRent.path,
+        body: { ...plan.studentRent.body, updatedAt: nowFn() },
+        merge: false
       });
     }
     // Students, transactions, and login history are overwritten deliberately.

@@ -143,6 +143,30 @@ per-source, and global rolling-window throttles limit compute, writes, and
 logging without letting an attacker lock out a known student. "Use a different
 student" clears the locator and is student-operable.
 
+## Student-Visible Class Rent
+
+The teacher dashboard may publish one classroom-wide, whole-dollar rent amount
+from `$0` through `$1,000,000`. Missing data displays as `$0`. This is a display
+setting only: saving rent does not change a balance, create a transaction, or
+charge any student.
+
+The value is stored at:
+
+`classrooms/{classroomId}/studentDisplay/rent`
+
+with exactly `rentAmount` and `updatedAt`. Rent is deliberately kept out of the
+classroom root so students never gain read access to teacher-only settings. The
+owning active teacher may get and create/update only the exact `rent` document.
+An authenticated student may get that one document only when the classroom in
+their server-minted claim has an active reciprocal teacher/classroom
+foundation. Students, foreign teachers, and anonymous users cannot write it;
+no client may list or delete the `studentDisplay` collection.
+
+The student dashboard renders the amount as read-only text with no input or
+button. It is loaded with the student's exact self document and remains
+memory-only. A later teacher change becomes visible the next time the student
+signs in or reloads; this first version does not install a real-time listener.
+
 ## Student Money Submission Path
 
 `submitStudentTransactionV2` accepts exactly `transactionId`, `type`, `amount`,

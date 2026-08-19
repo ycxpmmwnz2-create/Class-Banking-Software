@@ -99,6 +99,13 @@ const MAX_CREDENTIAL_SCAN_NODES = 50_000;
 
 export const LOGIN_HISTORY_LIMIT = 500;
 
+export const DEFAULT_RENT_AMOUNT = 0;
+export const MAX_RENT_AMOUNT = 1_000_000;
+export const STUDENT_RENT_DOCUMENT_FIELDS = Object.freeze([
+  "rentAmount",
+  "updatedAt"
+]);
+
 export const PROJECTION_CATEGORIES = Object.freeze({
   SHAPE: "shape",
   TENANT: "tenant",
@@ -503,6 +510,53 @@ function projectSettings(raw, defaultSettings) {
   return merged;
 }
 
+function requireRentAmount(value, where) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_RENT_AMOUNT) {
+    fail(
+      PROJECTION_CATEGORIES.SHAPE,
+      `${where} rentAmount must be a whole-dollar amount from 0 to ${MAX_RENT_AMOUNT}.`,
+      { where, field: "rentAmount" }
+    );
+  }
+  return value;
+}
+
+function projectStudentRent(raw) {
+  if (raw === undefined || raw === null) return DEFAULT_RENT_AMOUNT;
+  if (!isPlainObject(raw)) {
+    fail(
+      PROJECTION_CATEGORIES.SHAPE,
+      "The student rent document must be an object when present.",
+      { where: "studentRent" }
+    );
+  }
+  assertNoCredentialFields(raw, "studentRent");
+  if (!hasExactKeys(raw, STUDENT_RENT_DOCUMENT_FIELDS)) {
+    fail(
+      PROJECTION_CATEGORIES.SHAPE,
+      "The student rent document does not match its exact field contract.",
+      { where: "studentRent" }
+    );
+  }
+  requireString(raw.updatedAt, "studentRent", "updatedAt");
+  return requireRentAmount(raw.rentAmount, "studentRent");
+}
+
+function rentAmountFromAggregate(data) {
+  if (!isPlainObject(data.settings)) return DEFAULT_RENT_AMOUNT;
+  if (!Object.prototype.hasOwnProperty.call(data.settings, "rentAmount")) {
+    return DEFAULT_RENT_AMOUNT;
+  }
+  return requireRentAmount(data.settings.rentAmount, "settings");
+}
+
+function settingsWithoutRent(settings) {
+  if (!isPlainObject(settings)) return null;
+  const privateSettings = { ...settings };
+  delete privateSettings.rentAmount;
+  return privateSettings;
+}
+
 function cloneSettings(settings) {
   if (!isPlainObject(settings)) return {};
   const clone = {};
@@ -557,6 +611,7 @@ function assertTransactionMirrorParity(students, transactions) {
 export function projectClassroomData({
   classroomId,
   root,
+  studentRent = null,
   students,
   transactions,
   loginHistory,
@@ -637,11 +692,14 @@ export function projectClassroomData({
 
   const lastBackupAt = projectLastBackupAt(root?.lastBackupAt);
 
+  const settings = projectSettings(root ? root.settings : null, defaultSettings);
+  settings.rentAmount = projectStudentRent(studentRent);
+
   return {
     students: projectedStudents,
     transactions: projectedTransactions,
     loginHistory: projectedHistory.slice(0, LOGIN_HISTORY_LIMIT),
-    settings: projectSettings(root ? root.settings : null, defaultSettings),
+    settings,
     lastBackupAt
   };
 }
@@ -649,7 +707,7 @@ export function projectClassroomData({
 /**
  * Decompose an aggregate mutation into per-path write intents.
  *
- * Returns `{ root, students, transactions, loginHistory, deletes }`. Each entry
+ * Returns `{ root, studentRent, students, transactions, loginHistory, deletes }`. Each entry
  * is `{ path, id, body }` with `body` already reduced to its exact field
  * contract, so the service layer writes what this function produced and never
  * re-derives a payload from the aggregate.
@@ -816,9 +874,21 @@ export function decomposeClassroomMutation({
   }
 
   const root = buildRootPatch(classroomId, data, previous);
+  const rentAmount = rentAmountFromAggregate(data);
+  const previousRentAmount = previous
+    ? rentAmountFromAggregate(previous)
+    : DEFAULT_RENT_AMOUNT;
+  const studentRent = rentAmount === previousRentAmount
+    ? null
+    : {
+        path: `classrooms/${classroomId}/studentDisplay/rent`,
+        id: "rent",
+        body: { rentAmount }
+      };
 
   const totalWrites =
     (root ? 1 : 0) +
+    (studentRent ? 1 : 0) +
     studentWrites.length +
     transactionWrites.length +
     historyWrites.length +
@@ -834,6 +904,7 @@ export function decomposeClassroomMutation({
 
   return {
     root,
+    studentRent,
     students: studentWrites,
     transactions: transactionWrites,
     loginHistory: historyWrites,
@@ -908,14 +979,17 @@ function pick(record, fields) {
 }
 
 function buildRootPatch(classroomId, data, previous) {
-  const settings = isPlainObject(data.settings) ? data.settings : null;
+  // Rent is intentionally excluded from the classroom root. Students cannot
+  // read that teacher-only document, so their one visible classroom setting is
+  // stored at the narrowly ruled studentDisplay/rent path instead.
+  const settings = settingsWithoutRent(data.settings);
   const lastBackupAt = data.lastBackupAt ?? null;
 
   if (settings) assertNoCredentialFields(settings, "settings");
 
   if (previous) {
     const settingsUnchanged =
-      JSON.stringify(isPlainObject(previous.settings) ? previous.settings : null) === JSON.stringify(settings);
+      JSON.stringify(settingsWithoutRent(previous.settings)) === JSON.stringify(settings);
     const backupUnchanged = (previous.lastBackupAt ?? null) === lastBackupAt;
     if (settingsUnchanged && backupUnchanged) return null;
   }
@@ -993,6 +1067,7 @@ export function projectStudentSelfData({
   classroomId,
   studentId,
   student,
+  studentRent = null,
   defaultSettings = {}
 } = {}) {
   if (typeof classroomId !== "string" || !classroomId.trim()) {
@@ -1011,11 +1086,14 @@ export function projectStudentSelfData({
     );
   }
 
+  const settings = cloneSettings(defaultSettings);
+  settings.rentAmount = projectStudentRent(studentRent);
+
   return {
     students: [projectedStudent],
     transactions: projectedStudent.transactions,
     loginHistory: [],
-    settings: cloneSettings(defaultSettings),
+    settings,
     lastBackupAt: null
   };
 }

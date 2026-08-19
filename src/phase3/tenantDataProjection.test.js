@@ -3,10 +3,12 @@ import assert from 'node:assert/strict'
 
 import {
   CLASSROOM_ROOT_FIELDS,
+  DEFAULT_RENT_AMOUNT,
   FORBIDDEN_CREDENTIAL_FIELDS,
   LOGIN_HISTORY_LIMIT,
   PROJECTION_CATEGORIES,
   STUDENT_DOCUMENT_FIELDS,
+  STUDENT_RENT_DOCUMENT_FIELDS,
   TenantProjectionError,
   decomposeClassroomMutation,
   projectBackupExport,
@@ -88,6 +90,29 @@ describe('Phase 3 tenant data projection — load', () => {
     assert.equal(result.loginHistory.length, 1)
     assert.equal(result.lastBackupAt, '2026-01-01T00:00:00.000Z')
     assert.equal(result.settings.requireTeacherApproval, false)
+  })
+
+  it('projects rent from the narrow student display document, never from teacher settings', () => {
+    const result = load({
+      root: { settings: { rentAmount: 999 }, lastBackupAt: null },
+      studentRent: { rentAmount: 25, updatedAt: '2026-08-19T12:00:00.000Z' },
+    })
+
+    assert.equal(result.settings.rentAmount, 25)
+  })
+
+  it('defaults missing rent to zero and rejects malformed display documents', () => {
+    assert.equal(load({ studentRent: null }).settings.rentAmount, DEFAULT_RENT_AMOUNT)
+
+    for (const studentRent of [
+      { rentAmount: -1, updatedAt: '2026-08-19T12:00:00.000Z' },
+      { rentAmount: 1.5, updatedAt: '2026-08-19T12:00:00.000Z' },
+      { rentAmount: 1_000_001, updatedAt: '2026-08-19T12:00:00.000Z' },
+      { rentAmount: 25 },
+      { rentAmount: 25, updatedAt: '2026-08-19T12:00:00.000Z', extra: true },
+    ]) {
+      expectRejection(() => load({ studentRent }), PROJECTION_CATEGORIES.SHAPE)
+    }
   })
 
   it('normalizes a migrated Firestore lastBackupAt Timestamp to the ISO view model', () => {
@@ -360,6 +385,48 @@ describe('Phase 3 tenant data projection — mutation decomposition', () => {
     assert.ok(!('transactions' in plan.root.body))
   })
 
+  it('writes a rent-only change only to the exact student display path', () => {
+    const previous = { ...data, settings: { ...data.settings, rentAmount: 0 } }
+    const next = { ...data, settings: { ...data.settings, rentAmount: 25 } }
+    const plan = decomposeClassroomMutation({ classroomId: CLASSROOM, data: next, previous })
+
+    assert.equal(plan.root, null)
+    assert.equal(plan.studentRent.path, `classrooms/${CLASSROOM}/studentDisplay/rent`)
+    assert.deepEqual(plan.studentRent.body, { rentAmount: 25 })
+    assert.equal(plan.totalWrites, 1)
+  })
+
+  it('keeps rent out of the teacher-only classroom root patch', () => {
+    const plan = decomposeClassroomMutation({
+      classroomId: CLASSROOM,
+      data: {
+        ...data,
+        settings: { ...data.settings, rentAmount: 25, requireTeacherApproval: false },
+      },
+      previous: {
+        ...data,
+        settings: { ...data.settings, rentAmount: 25 },
+      },
+    })
+
+    assert.ok(plan.root)
+    assert.ok(!Object.prototype.hasOwnProperty.call(plan.root.body.settings, 'rentAmount'))
+    assert.equal(plan.studentRent, null)
+  })
+
+  it('rejects invalid outgoing rent values before creating a write plan', () => {
+    for (const rentAmount of [-1, 2.5, 1_000_001, '25']) {
+      expectRejection(
+        () => decomposeClassroomMutation({
+          classroomId: CLASSROOM,
+          data: { ...data, settings: { ...data.settings, rentAmount } },
+          previous: data,
+        }),
+        PROJECTION_CATEGORIES.SHAPE,
+      )
+    }
+  })
+
   it('aborts the whole mutation when a student carries a plaintext pin', () => {
     // This is the exact legacy roster object shape. It must abort rather than
     // be silently stripped, so a leak cannot pass unnoticed.
@@ -602,6 +669,20 @@ describe('Phase 3 tenant data projection — student self view', () => {
     assert.equal(result.students.length, 1)
     assert.equal(result.students[0].id, 1)
     assert.deepEqual(result.loginHistory, [])
+  })
+
+  it('projects only the exact rent document into the student settings view', () => {
+    const studentRent = { rentAmount: 30, updatedAt: '2026-08-19T12:00:00.000Z' }
+    const result = projectStudentSelfData({
+      classroomId: CLASSROOM,
+      studentId: '1',
+      student: student(),
+      studentRent,
+      defaultSettings: { rentAmount: 0, studentRequestsEnabled: true },
+    })
+
+    assert.equal(result.settings.rentAmount, 30)
+    assert.deepEqual(Object.keys(studentRent).sort(), [...STUDENT_RENT_DOCUMENT_FIELDS].sort())
   })
 
   it('fails closed when the document does not match the claim', () => {
