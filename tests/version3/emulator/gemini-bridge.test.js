@@ -287,7 +287,7 @@ test('server evidence changes bind request reuse and monthly budget remains appl
       auth: { uid: TEACHER_B },
       data: request('request_b_first001'),
     }),
-    error => error instanceof InsightAnalysisServiceError && error.category === 'budget-unavailable',
+    error => error instanceof InsightAnalysisServiceError && error.category === 'allowance-exhausted',
   )
   assert.equal(bridge.providerInputs.length, 2)
 

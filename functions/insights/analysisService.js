@@ -15,7 +15,14 @@ import {
   validateActualCost,
   validateWorstCaseQuote,
 } from './costPolicy.js'
+import { FirestoreUsageLedgerError } from './firestoreUsageLedger.js'
 import { InsightIdentityError, validateInsightIdentity } from './identity.js'
+
+const RESERVATION_FAILURE_MESSAGES = Object.freeze({
+  'allowance-exhausted': 'The monthly Gemini allowance is exhausted.',
+  'rate-limit-exhausted': 'The rolling hourly request limit is exhausted.',
+  'request-unavailable': 'The request already has an active or uncertain reservation.',
+})
 
 export class InsightAnalysisServiceError extends Error {
   constructor(category, message) {
@@ -71,7 +78,7 @@ export function createInsightAnalysisService(dependencies) {
     )
     const quote = validateWorstCaseQuote(rawQuote)
 
-    const reservation = await guardedCall(
+    const reservation = await reserveUsage(
       () => deps.usageLedger.reserve({
         teacherUid: identity.teacherUid,
         classroomId: identity.classroomId,
@@ -84,8 +91,6 @@ export function createInsightAnalysisService(dependencies) {
         rateCardId: quote.rateCardId,
         worstCaseCostMicroUsd: quote.worstCaseCostMicroUsd,
       }),
-      'budget-unavailable',
-      'A usage reservation could not be obtained.',
     )
 
     if (reservation?.kind === 'completed') {
@@ -510,6 +515,26 @@ async function retainWorstCaseReservation(usageLedger, reservation) {
   } catch {
     // The original reserved amount remains the safe accounting state. Never
     // replace the primary failure with telemetry or reconciliation details.
+  }
+}
+
+async function reserveUsage(operation) {
+  try {
+    return await operation()
+  } catch (error) {
+    if (
+      error instanceof FirestoreUsageLedgerError &&
+      Object.hasOwn(RESERVATION_FAILURE_MESSAGES, error.category)
+    ) {
+      throw new InsightAnalysisServiceError(
+        error.category,
+        RESERVATION_FAILURE_MESSAGES[error.category],
+      )
+    }
+    throw new InsightAnalysisServiceError(
+      'budget-unavailable',
+      'A usage reservation could not be obtained.',
+    )
   }
 }
 

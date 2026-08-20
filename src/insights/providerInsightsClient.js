@@ -341,6 +341,21 @@ export function createProviderInsightsBrowserClient({ enabled, callable, cryptoA
 /** Only allowlisted text reaches the page; raw SDK/provider errors are ignored. */
 export function mapProviderInsightsError(error) {
   const code = String(error?.code || "").replace(/^functions\//, "");
+  const details = error?.details;
+  const detailCategory = isPlainObject(details) &&
+    hasExactKeys(details, ["category"]) &&
+    ["allowance-exhausted", "rate-limit-exhausted", "request-unavailable"].includes(details.category)
+    ? details.category
+    : "";
+  if (detailCategory === "allowance-exhausted" && code === "resource-exhausted") {
+    return Object.freeze({ ambiguous: false, message: "The test allowance is used up for now." });
+  }
+  if (detailCategory === "rate-limit-exhausted" && code === "resource-exhausted") {
+    return Object.freeze({ ambiguous: false, message: "The hourly AI test limit was reached. Try again later." });
+  }
+  if (detailCategory === "request-unavailable" && code === "failed-precondition") {
+    return Object.freeze({ ambiguous: false, message: "This AI test request cannot be retried. Start a new request." });
+  }
   if (["unavailable", "deadline-exceeded", "internal", "unknown", "cancelled"].includes(code)) {
     return Object.freeze({
       ambiguous: true,
@@ -348,7 +363,7 @@ export function mapProviderInsightsError(error) {
     });
   }
   if (code === "resource-exhausted") {
-    return Object.freeze({ ambiguous: false, message: "The test allowance is used up for now." });
+    return Object.freeze({ ambiguous: false, message: "AI test requests are temporarily limited. Try again later." });
   }
   if (["unauthenticated", "permission-denied", "failed-precondition"].includes(code)) {
     return Object.freeze({ ambiguous: false, message: "AI test insights are not available for this classroom." });

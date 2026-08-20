@@ -5,6 +5,7 @@ import {
   InsightAnalysisServiceError,
   createInsightAnalysisService,
 } from './analysisService.js'
+import { FirestoreUsageLedgerError } from './firestoreUsageLedger.js'
 
 const SIGNATURE = 'a'.repeat(64)
 
@@ -359,6 +360,29 @@ test('budget refusal prevents provider invocation', async () => {
     error => error instanceof InsightAnalysisServiceError && error.category === 'budget-unavailable',
   )
   assert.deepEqual(run.calls, ['resolve', 'load', 'build', 'quote', 'reserve'])
+})
+
+test('known ledger refusals preserve only their allowlisted categories', async () => {
+  for (const category of [
+    'allowance-exhausted',
+    'rate-limit-exhausted',
+    'request-unavailable',
+  ]) {
+    const run = harness()
+    run.dependencies.usageLedger.reserve = async () => {
+      run.calls.push('reserve')
+      throw new FirestoreUsageLedgerError(category, 'raw private ledger detail')
+    }
+    run.service = createInsightAnalysisService(run.dependencies)
+
+    await assert.rejects(
+      run.service({ auth: { uid: 'teacher-alpha' }, data: request() }),
+      error => error instanceof InsightAnalysisServiceError &&
+        error.category === category &&
+        !error.message.includes('raw private ledger detail'),
+    )
+    assert.deepEqual(run.calls, ['resolve', 'load', 'build', 'quote', 'reserve'])
+  }
 })
 
 test('server-derived evidence signature is bound internally without browser participation', async () => {

@@ -185,7 +185,8 @@ test('replay is not charged twice and stored artifacts contain no display facts'
   await analyze(request('request_callable_a3'))
   await assert.rejects(
     analyze(request('request_callable_a4')),
-    error => String(error?.code).includes('resource-exhausted'),
+    error => String(error?.code).includes('resource-exhausted') &&
+      error?.details?.category === 'allowance-exhausted',
   )
 
   const [ledgers, rateLimits, reservations] = await Promise.all([

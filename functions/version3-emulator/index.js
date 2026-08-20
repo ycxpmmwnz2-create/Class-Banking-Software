@@ -7,6 +7,7 @@ import { HttpsError, onCall } from 'firebase-functions/v2/https'
 import {
   assertVersion3GeminiEmulatorRuntime,
   callableErrorCode,
+  callableErrorDetails,
   callableLogCategory,
   createVersion3GeminiEmulatorHandler,
 } from '../insights/emulatorCallable.js'
@@ -45,6 +46,7 @@ export const analyzeTeacherInsightsV3 = onCall(async (request) => {
     throw new HttpsError(
       callableErrorCode(error),
       'Version 3 emulator analysis is unavailable.',
+      callableErrorDetails(error),
     )
   }
 })

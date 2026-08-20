@@ -139,7 +139,42 @@ test("maps errors to short allowlisted messages and marks only ambiguous outcome
   });
   assert.deepEqual(mapProviderInsightsError({ code: "functions/resource-exhausted" }), {
     ambiguous: false,
+    message: "AI test requests are temporarily limited. Try again later.",
+  });
+  assert.deepEqual(mapProviderInsightsError({
+    code: "functions/resource-exhausted",
+    details: { category: "allowance-exhausted" },
+  }), {
+    ambiguous: false,
     message: "The test allowance is used up for now.",
+  });
+  assert.deepEqual(mapProviderInsightsError({
+    code: "functions/resource-exhausted",
+    details: { category: "rate-limit-exhausted" },
+  }), {
+    ambiguous: false,
+    message: "The hourly AI test limit was reached. Try again later.",
+  });
+  assert.deepEqual(mapProviderInsightsError({
+    code: "functions/failed-precondition",
+    details: { category: "request-unavailable" },
+  }), {
+    ambiguous: false,
+    message: "This AI test request cannot be retried. Start a new request.",
+  });
+  assert.deepEqual(mapProviderInsightsError({
+    code: "functions/resource-exhausted",
+    details: { category: "rate-limit-exhausted", raw: "do not render" },
+  }), {
+    ambiguous: false,
+    message: "AI test requests are temporarily limited. Try again later.",
+  });
+  assert.deepEqual(mapProviderInsightsError({
+    code: "functions/failed-precondition",
+    details: { category: "allowance-exhausted" },
+  }), {
+    ambiguous: false,
+    message: "AI test insights are not available for this classroom.",
   });
   const unknown = mapProviderInsightsError({ code: "functions/raw-secret", message: "do not render" });
   assert.equal(unknown.ambiguous, false);

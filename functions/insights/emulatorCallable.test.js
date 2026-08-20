@@ -6,6 +6,7 @@ import {
   Version3GeminiEmulatorError,
   assertVersion3GeminiEmulatorRuntime,
   callableErrorCode,
+  callableErrorDetails,
   callableLogCategory,
 } from './emulatorCallable.js'
 
@@ -46,7 +47,21 @@ test('accepts only the exact demo project with all emulator guards', () => {
 test('maps only allowlisted callable error categories', () => {
   assert.equal(callableErrorCode({ category: 'authorization-failed' }), 'unauthenticated')
   assert.equal(callableErrorCode({ category: 'budget-unavailable' }), 'resource-exhausted')
+  assert.equal(callableErrorCode({ category: 'allowance-exhausted' }), 'resource-exhausted')
+  assert.equal(callableErrorCode({ category: 'rate-limit-exhausted' }), 'resource-exhausted')
+  assert.equal(callableErrorCode({ category: 'request-unavailable' }), 'failed-precondition')
   assert.equal(callableErrorCode({ category: 'private-internal-detail' }), 'internal')
+  assert.deepEqual(callableErrorDetails({ category: 'allowance-exhausted' }), {
+    category: 'allowance-exhausted',
+  })
+  assert.deepEqual(callableErrorDetails({ category: 'rate-limit-exhausted' }), {
+    category: 'rate-limit-exhausted',
+  })
+  assert.deepEqual(callableErrorDetails({ category: 'request-unavailable' }), {
+    category: 'request-unavailable',
+  })
+  assert.equal(callableErrorDetails({ category: 'private-internal-detail' }), undefined)
   assert.equal(callableLogCategory({ category: 'budget-unavailable' }), 'budget-unavailable')
+  assert.equal(callableLogCategory({ category: 'rate-limit-exhausted' }), 'rate-limit-exhausted')
   assert.equal(callableLogCategory({ category: 'private-internal-detail' }), 'internal')
 })
