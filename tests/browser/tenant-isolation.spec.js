@@ -400,6 +400,51 @@ test("ready teacher header shows only the resolved tenant classroom code", async
   const loginInfo = page.locator(".student-login-info");
   await expect(loginInfo).toContainText("Student Login Information");
   await expect(loginInfo.locator("#teacherStudentClassroomCode")).toHaveText(TENANT_A.studentLoginCode);
+  const desktopLoginRentLayout = await page.locator(".teacher-login-rent-row").evaluate(row => {
+    const login = row.querySelector(".student-login-info");
+    const rent = row.querySelector("#teacherRentCard");
+    if (!login || !rent) throw new Error("teacher login and rent cards did not render");
+    const loginRect = login.getBoundingClientRect();
+    const rentRect = rent.getBoundingClientRect();
+    const rentDisplay = rent.querySelector("#teacherRentDisplay");
+    if (!rentDisplay) throw new Error("teacher rent display did not render");
+    const originalRentText = rentDisplay.textContent;
+    rentDisplay.textContent = "$1,000,000";
+    const maximumRentFits = rent.scrollWidth <= rent.clientWidth;
+    rentDisplay.textContent = originalRentText;
+    return {
+      sameRow: Math.abs(loginRect.top - rentRect.top) <= 1,
+      rentOnRight: rentRect.left > loginRect.right,
+      rentFraction: rentRect.width / (loginRect.width + rentRect.width),
+      maximumRentFits,
+    };
+  });
+  expect(desktopLoginRentLayout.sameRow).toBe(true);
+  expect(desktopLoginRentLayout.rentOnRight).toBe(true);
+  expect(desktopLoginRentLayout.rentFraction).toBeGreaterThan(0.24);
+  expect(desktopLoginRentLayout.rentFraction).toBeLessThan(0.26);
+  expect(desktopLoginRentLayout.maximumRentFits).toBe(true);
+
+  await page.emulateMedia({ media: "print" });
+  expect(await page.locator(".teacher-login-rent-row").evaluate(row => getComputedStyle(row).display)).toBe("none");
+  await page.emulateMedia({ media: "screen" });
+
+  await page.setViewportSize({ width: 900, height: 900 });
+  const compactLoginRentLayout = await page.locator(".teacher-login-rent-row").evaluate(row => {
+    const login = row.querySelector(".student-login-info");
+    const rent = row.querySelector("#teacherRentCard");
+    if (!login || !rent) throw new Error("teacher login and rent cards did not render");
+    const loginRect = login.getBoundingClientRect();
+    const rentRect = rent.getBoundingClientRect();
+    return {
+      rentBelowLogin: rentRect.top >= loginRect.bottom,
+      equalWidth: Math.abs(loginRect.width - rentRect.width) <= 1,
+    };
+  });
+  expect(compactLoginRentLayout.rentBelowLogin).toBe(true);
+  expect(compactLoginRentLayout.equalWidth).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 720 });
+
   await loginInfo.getByRole("button", { name: "Copy classroom code" }).click();
   await expect.poll(() => page.evaluate(() => window.__COPIED_CLASSROOM_CODE__)).toBe(
     TENANT_A.studentLoginCode

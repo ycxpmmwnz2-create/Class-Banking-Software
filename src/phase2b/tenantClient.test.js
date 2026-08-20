@@ -2710,6 +2710,77 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
+  test("SOURCE GUARD: teacher login information and rent share a responsive three-to-one row", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    function assertTeacherLoginRentSourceContract(candidate) {
+      const teacherStart = candidate.indexOf('if (screen === "teacher" && isTeacher) {');
+      const teacherEnd = candidate.indexOf('\n      if (screen === "approvals"', teacherStart);
+      assert.notEqual(teacherStart, -1, "the teacher dashboard block must exist");
+      assert.notEqual(teacherEnd, -1, "the teacher dashboard block must have a bounded source range");
+      const teacherBlock = candidate.slice(teacherStart, teacherEnd);
+
+      const rowStart = teacherBlock.indexOf('<div class="teacher-login-rent-row no-print">');
+      const rowEnd = teacherBlock.indexOf('\n          </div>', rowStart);
+      assert.notEqual(rowStart, -1, "the teacher-only login and rent row must exist and stay print-hidden");
+      assert.notEqual(rowEnd, -1, "the teacher-only login and rent row must have a bounded source range");
+      const rowBlock = teacherBlock.slice(rowStart, rowEnd);
+      assert.match(
+        rowBlock,
+        /<div class="card no-print student-login-info">[\s\S]*?<div id="teacherRentCard" class="card no-print soft-card teacher-rent-card">/,
+        "the bounded teacher-only row must contain login information first and rent second"
+      );
+
+      const desktopRuleStart = candidate.indexOf(".teacher-login-rent-row {");
+      const desktopRuleEnd = candidate.indexOf("\n    }", desktopRuleStart);
+      assert.notEqual(desktopRuleStart, -1, "the desktop login and rent rule must exist");
+      assert.notEqual(desktopRuleEnd, -1, "the desktop login and rent rule must be bounded");
+      assert.match(
+        candidate.slice(desktopRuleStart, desktopRuleEnd),
+        /grid-template-columns:\s*minmax\(0, 3fr\) minmax\(220px, 1fr\);/,
+        "the desktop row must give login information three quarters and rent one quarter"
+      );
+
+      const compactStart = candidate.indexOf("@media (max-width: 1000px) {");
+      const compactEnd = candidate.indexOf("\n    @media (max-width: 700px)", compactStart);
+      assert.notEqual(compactStart, -1, "the compact breakpoint must exist");
+      assert.notEqual(compactEnd, -1, "the compact breakpoint must have a bounded source range");
+      assert.match(
+        candidate.slice(compactStart, compactEnd),
+        /\.teacher-login-rent-row \{ grid-template-columns: 1fr; \}/,
+        "the shared row must stack inside the 1000px breakpoint"
+      );
+    }
+
+    assertTeacherLoginRentSourceContract(source);
+
+    const breakpointMovedTo700 = source
+      .replace('      .teacher-login-rent-row { grid-template-columns: 1fr; }\n', "")
+      .replace(
+        "    @media (max-width: 700px) {",
+        "    @media (max-width: 700px) {\n      .teacher-login-rent-row { grid-template-columns: 1fr; }"
+      );
+    assert.throws(
+      () => assertTeacherLoginRentSourceContract(breakpointMovedTo700),
+      /shared row must stack inside the 1000px breakpoint/,
+      "moving the stack rule to a narrower breakpoint must fail the source contract"
+    );
+
+    const rentMovedOutsideRow = source
+      .replace(
+        '            ` : ""}\n\n            <div id="teacherRentCard"',
+        '            ` : ""}\n          </div>\n\n            <div id="teacherRentCard"'
+      )
+      .replace(
+        '            </div>\n          </div>\n\n          <div class="card no-print dashboard-insights">',
+        '            </div>\n\n          <div class="card no-print dashboard-insights">'
+      );
+    assert.throws(
+      () => assertTeacherLoginRentSourceContract(rentMovedOutsideRow),
+      /bounded teacher-only row must contain login information first and rent second/,
+      "moving rent outside the shared row must fail the source contract"
+    );
+  });
+
   test("SOURCE GUARD: the temporary profile PIN comes only from the submitted input and clears with its teacher context", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const resetStart = source.indexOf("async function resetProfileStudentPin");

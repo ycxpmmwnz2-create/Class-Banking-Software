@@ -512,6 +512,26 @@
       user-select: all;
     }
 
+    .teacher-login-rent-row {
+      display: grid;
+      grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr);
+      gap: 16px;
+      align-items: stretch;
+      margin-bottom: 12px;
+    }
+
+    .teacher-login-rent-row > .card {
+      margin-bottom: 0;
+    }
+
+    .teacher-login-rent-row > .teacher-rent-card:only-child {
+      grid-column: 1 / -1;
+    }
+
+    .teacher-login-rent-row > .teacher-rent-card .big-balance {
+      font-size: clamp(28px, 2.6vw, 44px);
+    }
+
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
@@ -953,6 +973,8 @@
     @media (max-width: 1000px) {
       .stats { grid-template-columns: repeat(2, 1fr); }
       .dashboard-insights .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .teacher-login-rent-row { grid-template-columns: 1fr; }
+      .teacher-login-rent-row > .teacher-rent-card .big-balance { font-size: clamp(42px, 8vw, 70px); }
       .insights-controls { grid-template-columns: 1fr; align-items: stretch; }
       .insights-actions { justify-content: flex-start; }
       .grid { grid-template-columns: minmax(0, 1fr); }
@@ -4140,37 +4162,39 @@ link.click();
 
       if (screen === "teacher" && isTeacher) {
         html += `
-          ${resolvedStudentLoginCode() ? `
-          <div class="card no-print student-login-info">
-            <h2>Student Login Information</h2>
-            <p>Share this classroom code with your students. After a successful login, Morgan Bank can remember the code and that student's login ID on that browser, so the student signs in with just a PIN next time. PINs are never saved.</p>
-            <div class="student-login-info-row">
-              <span>Classroom code:</span>
-              <span id="teacherStudentClassroomCode" class="student-login-info-code">${escapeHtml(resolvedStudentLoginCode())}</span>
-              <button type="button" class="primary" onclick="copyStudentClassroomCode()" aria-label="Copy classroom code">Copy code</button>
-              <button type="button" class="primary" onclick="copyStudentClassroomLoginLink()" aria-label="Copy student login link">Copy student login link</button>
+          <div class="teacher-login-rent-row no-print">
+            ${resolvedStudentLoginCode() ? `
+            <div class="card no-print student-login-info">
+              <h2>Student Login Information</h2>
+              <p>Share this classroom code with your students. After a successful login, Morgan Bank can remember the code and that student's login ID on that browser, so the student signs in with just a PIN next time. PINs are never saved.</p>
+              <div class="student-login-info-row">
+                <span>Classroom code:</span>
+                <span id="teacherStudentClassroomCode" class="student-login-info-code">${escapeHtml(resolvedStudentLoginCode())}</span>
+                <button type="button" class="primary" onclick="copyStudentClassroomCode()" aria-label="Copy classroom code">Copy code</button>
+                <button type="button" class="primary" onclick="copyStudentClassroomLoginLink()" aria-label="Copy student login link">Copy student login link</button>
+              </div>
             </div>
-          </div>
-          ` : ""}
+            ` : ""}
 
-          <div id="teacherRentCard" class="card no-print soft-card">
-            <h2>Class Rent</h2>
-            <div id="teacherRentDisplay" class="big-balance">${dollars(data.settings.rentAmount)}</div>
-            <p class="small-note">This amount is displayed to students. Saving it does not charge accounts or create transactions.</p>
-            <label for="teacherRentAmount">Rent amount</label>
-            <input
-              id="teacherRentAmount"
-              type="number"
-              min="0"
-              max="${MAX_RENT_AMOUNT}"
-              step="1"
-              inputmode="numeric"
-              value="${data.settings.rentAmount}"
-              ${rentUpdatePending ? "disabled" : ""}
-            />
-            <button class="primary" onclick="saveRentAmount()" ${rentUpdatePending ? "disabled" : ""}>
-              ${rentUpdatePending ? "Saving Rent..." : "Save Rent"}
-            </button>
+            <div id="teacherRentCard" class="card no-print soft-card teacher-rent-card">
+              <h2>Class Rent</h2>
+              <div id="teacherRentDisplay" class="big-balance">${dollars(data.settings.rentAmount)}</div>
+              <p class="small-note">This amount is displayed to students. Saving it does not charge accounts or create transactions.</p>
+              <label for="teacherRentAmount">Rent amount</label>
+              <input
+                id="teacherRentAmount"
+                type="number"
+                min="0"
+                max="${MAX_RENT_AMOUNT}"
+                step="1"
+                inputmode="numeric"
+                value="${data.settings.rentAmount}"
+                ${rentUpdatePending ? "disabled" : ""}
+              />
+              <button class="primary" onclick="saveRentAmount()" ${rentUpdatePending ? "disabled" : ""}>
+                ${rentUpdatePending ? "Saving Rent..." : "Save Rent"}
+              </button>
+            </div>
           </div>
 
           <div class="card no-print dashboard-insights">
