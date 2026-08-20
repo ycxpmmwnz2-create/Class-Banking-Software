@@ -6,14 +6,16 @@ import {
 } from './geminiProviderAdapter.js'
 
 const TOKENS_PER_MILLION = 1_000_000
-const INPUT_MICRO_USD_PER_MILLION_TOKENS = 300_000
-const BILLED_OUTPUT_MICRO_USD_PER_MILLION_TOKENS = 2_500_000
+// Reserve against the published post-promotion ceiling so the application
+// remains fail-closed when temporary pricing expires.
+const INPUT_MICRO_USD_PER_MILLION_TOKENS = 1_500_000
+const BILLED_OUTPUT_MICRO_USD_PER_MILLION_TOKENS = 7_500_000
 const INPUT_TOKEN_SAFETY_MARGIN = 1_024
 
 export const GEMINI_RATE_CARD = Object.freeze({
   id: GEMINI_RATE_CARD_ID,
-  model: 'gemini-3.5-flash-lite',
-  effectiveDate: '2026-08-19',
+  model: 'gemini-3.6-flash',
+  effectiveDate: '2027-01-01',
   inputMicroUsdPerMillionTokens: INPUT_MICRO_USD_PER_MILLION_TOKENS,
   billedOutputMicroUsdPerMillionTokens: BILLED_OUTPUT_MICRO_USD_PER_MILLION_TOKENS,
 })
@@ -87,7 +89,7 @@ function assertModeProfile(value) {
     (value.id !== 'quick-economy-v1' && value.id !== 'deep-economy-v1') ||
     !Number.isSafeInteger(value.maxOutputTokens) ||
     value.maxOutputTokens < 1 ||
-    value.maxThinkingTokens !== 65_536
+    value.maxThinkingTokens !== 4_096
   ) {
     fail('invalid-profile', 'The Gemini mode profile is malformed.')
   }

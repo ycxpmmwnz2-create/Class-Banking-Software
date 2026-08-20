@@ -109,6 +109,8 @@ const nonGeminiInsightJavaScript = await readJavaScriptTree(
       url.pathname.endsWith('.test.js') ||
       url.pathname.endsWith('/geminiProviderAdapter.js') ||
       url.pathname.endsWith('/geminiCostPolicy.js') ||
+      url.pathname.endsWith('/geminiQuestionAdapter.js') ||
+      url.pathname.endsWith('/geminiQuestionCostPolicy.js') ||
       url.pathname.endsWith('/geminiTransport.js') ||
       url.pathname.endsWith('/liveCallable.js') ||
       url.pathname.endsWith('/liveRuntime.js')

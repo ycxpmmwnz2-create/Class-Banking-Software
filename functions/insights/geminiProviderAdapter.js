@@ -1,7 +1,7 @@
 import { insightModeProfile } from './costPolicy.js'
 
-export const GEMINI_MODEL_ID = 'gemini-3.5-flash-lite'
-export const GEMINI_RATE_CARD_ID = 'gemini-3.5-flash-lite-standard-2026-08-19'
+export const GEMINI_MODEL_ID = 'gemini-3.6-flash'
+export const GEMINI_RATE_CARD_ID = 'gemini-3.6-flash-standard-ceiling-2027-01-01'
 
 const ANALYSIS_SCHEMA_VERSION = 2
 const TIMING_CATEGORY = 'Timing patterns'
@@ -130,7 +130,6 @@ export function buildGeminiGenerateRequest({
       responseMimeType: 'application/json',
       responseJsonSchema: RESPONSE_JSON_SCHEMA,
       maxOutputTokens,
-      temperature: 0,
       thinkingConfig: Object.freeze({ thinkingLevel: 'MINIMAL' }),
     }),
   })
@@ -149,7 +148,7 @@ export function parseGeminiGenerateResponse(value) {
   if (!isPlainObject(parsed)) {
     fail('invalid-provider-response', 'Gemini structured output must be an object.')
   }
-  const usage = parseUsageMetadata(value.usageMetadata)
+  const usage = parseGeminiUsageMetadata(value.usageMetadata)
   return Object.freeze({
     ...parsed,
     usage,
@@ -174,7 +173,7 @@ function assertGeminiReadyFactPacket(value, expectedMode) {
   }
 }
 
-function parseUsageMetadata(value) {
+export function parseGeminiUsageMetadata(value) {
   if (!isPlainObject(value)) {
     fail('invalid-usage', 'Gemini usage metadata is missing.')
   }

@@ -78,7 +78,7 @@ async function createUser(email, password) {
 }
 
 async function seedTenant(db, tenant, uid, studentId, transactionId) {
-  const transaction = {
+  const pendingTransaction = {
     id: transactionId,
     date: new Date(Date.now() - 60_000).toISOString(),
     studentId,
@@ -90,6 +90,32 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
     category: "",
     status: "Pending",
     source: "Student",
+  };
+  const earningTransaction = {
+    id: transactionId + 1,
+    date: new Date(Date.now() - 120_000).toISOString(),
+    studentId,
+    studentName: tenant.studentName,
+    type: "Add",
+    amount: 12,
+    reason: "Class job",
+    memo: "",
+    category: "Class job",
+    status: "Approved",
+    source: "Teacher",
+  };
+  const spendingTransaction = {
+    id: transactionId + 2,
+    date: new Date(Date.now() - 180_000).toISOString(),
+    studentId,
+    studentName: tenant.studentName,
+    type: "Subtract",
+    amount: 7,
+    reason: "School Store",
+    memo: "",
+    category: "School Store",
+    status: "Approved",
+    source: "Teacher",
   };
   await db.doc(`teachers/${uid}`).set({
     uid,
@@ -116,9 +142,11 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
     name: tenant.studentName,
     balance: 45,
     frozen: false,
-    transactions: [transaction],
+    transactions: [pendingTransaction, earningTransaction, spendingTransaction],
   });
-  await db.doc(`classrooms/${tenant.classroomId}/transactions/${transactionId}`).set(transaction);
+  for (const transaction of [pendingTransaction, earningTransaction, spendingTransaction]) {
+    await db.doc(`classrooms/${tenant.classroomId}/transactions/${transaction.id}`).set(transaction);
+  }
 }
 
 export async function seedBrowserFixtures() {

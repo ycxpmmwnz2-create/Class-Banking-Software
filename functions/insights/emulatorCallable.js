@@ -2,6 +2,8 @@ import { createInsightAnalysisService } from './analysisService.js'
 import { buildFactPacketFromEvidence } from './factPacketBuilder.js'
 import { createFirestoreUsageLedger } from './firestoreUsageLedger.js'
 import { createFirestoreTenantEvidenceLoader } from './tenantEvidenceAdapter.js'
+import { createFirestoreQuestionEvidenceLoader } from './questionEvidenceAdapter.js'
+import { createInsightQuestionService } from './questionService.js'
 import { resolveActiveTeacherTenant } from '../phase2b/teacherTenantResolver.js'
 
 export {
@@ -83,7 +85,7 @@ export function createVersion3GeminiEmulatorHandler({
       }
     },
   })
-  return createInsightAnalysisService({
+  const analyzeInsights = createInsightAnalysisService({
     now,
     resolveActiveTeacherTenant: ({ auth }) => resolveActiveTeacherTenant({ firestore, auth }),
     loadDeidentifiedTenantEvidence: loadEvidence,
@@ -100,6 +102,54 @@ export function createVersion3GeminiEmulatorHandler({
     },
     usageLedger,
   })
+  const loadQuestionEvidence = createFirestoreQuestionEvidenceLoader({ firestore, now })
+  const questionProvider = Object.freeze({
+    async interpret({ providerInput }) {
+      const normalized = providerInput.question.toLocaleLowerCase('en-US')
+      const subjectAlias = providerInput.subjectAliases[0] || null
+      let intent = 'unsupported'
+      if (/categor/.test(normalized) && /(earn|add|gain)/.test(normalized)) {
+        intent = subjectAlias ? 'student-top-earning-category' : 'class-top-earning-category'
+      } else if (/categor/.test(normalized) && /(spend|spent|los|subtract)/.test(normalized)) {
+        intent = subjectAlias ? 'student-top-spending-category' : 'class-top-spending-category'
+      } else if (/(time|hour|day)/.test(normalized) && /(spend|spent|los|subtract)/.test(normalized)) {
+        intent = subjectAlias ? 'student-peak-spending-time' : 'class-peak-spending-time'
+      } else if (/(time|hour|day)/.test(normalized) && /(earn|add|gain)/.test(normalized)) {
+        intent = subjectAlias ? 'student-peak-earning-time' : 'class-peak-earning-time'
+      } else if (/balance/.test(normalized) && subjectAlias) {
+        intent = 'student-current-balance'
+      } else if (/pending/.test(normalized)) {
+        intent = 'pending-request-count'
+      }
+      return {
+        schemaVersion: 1,
+        intent,
+        subjectAlias: intent.startsWith('student-') ? subjectAlias : null,
+        usage: { inputTokens: 90, outputTokens: 18, thinkingTokens: 0 },
+      }
+    },
+  })
+  const askQuestion = createInsightQuestionService({
+    now,
+    resolveActiveTeacherTenant: ({ auth }) => resolveActiveTeacherTenant({ firestore, auth }),
+    loadQuestionEvidence,
+    async quoteWorstCaseCost() {
+      return {
+        rateCardId: FAKE_RATE_CARD_ID,
+        worstCaseCostMicroUsd: FAKE_WORST_CASE_COST_MICRO_USD,
+      }
+    },
+    provider: questionProvider,
+    async priceActualUsage() {
+      return FAKE_ACTUAL_COST_MICRO_USD
+    },
+    usageLedger,
+  })
+  return async function handleVersion3AiRequest(request) {
+    return request?.data?.kind === 'question'
+      ? askQuestion(request)
+      : analyzeInsights(request)
+  }
 }
 
 function isLoopbackHost(value) {

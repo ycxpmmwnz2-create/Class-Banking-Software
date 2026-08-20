@@ -14,7 +14,8 @@ test("source contract: assisted controls are default-off and locked to the one d
   assert.match(indexHtml, /VITE_VERSION3_GEMINI_BROWSER_TEST === "true"/);
   assert.match(indexHtml, /runtimeConfig: window\.VERSION3_GEMINI_BROWSER_TEST_CONFIG/);
   assert.match(indexHtml, /&& app\.options\.projectId === VERSION3_GEMINI_BROWSER_PROJECT_ID/);
-  assert.match(indexHtml, /\$\{providerInsightsEnabled \? `[\s\S]*?data-testid="provider-insights-controls"/);
+  assert.match(indexHtml, /data-testid="provider-insights-action"/);
+  assert.match(indexHtml, /!providerInsightsEnabled \|\| providerInsightsLoading \|\| providerQuestionLoading \? "disabled"/);
   assert.match(browserClient, /demo-morgan-bank-version3-gemini-callable-browser/);
   assert.match(browserViteConfig, /VITE_VERSION3_GEMINI_BROWSER_TEST/);
   assert.doesNotMatch(browserViteConfig, /morgan-bank-staging|["']morgan-bank["']/);
@@ -73,10 +74,12 @@ test("source contract: test tenant loading cannot become browser authority for t
   assert.doesNotMatch(browserClient, /__VERSION3_RESOLVE_TEACHER_TENANT__/);
 });
 
-test("source contract: local Insights remains visible and explicitly zero-cost", () => {
-  assert.match(indexHtml, /onclick="generateLocalInsights\('quick'\)"[^>]*>Quick Insights<\/button>/);
-  assert.match(indexHtml, /onclick="generateLocalInsights\('deep'\)"[^>]*>Deep Analysis<\/button>/);
-  assert.match(indexHtml, /Analysis runs locally · No additional Gemini or Firebase call · \$0\.00 API cost/);
+test("source contract: production has no local fallback and the UI stays model-neutral", () => {
+  assert.doesNotMatch(indexHtml, /generateLocalInsights|buildClassInsightsReport|Analysis runs locally|Local analysis/);
+  assert.match(indexHtml, /AI Insights are currently unavailable for this classroom/);
+  assert.match(indexHtml, /Get AI Insights/);
+  assert.match(indexHtml, /Get More Insights/);
+  assert.doesNotMatch(indexHtml, /Gemini Quick|Gemini Deep|API cost|Gemini allowance/);
 });
 
 test("source contract: focused Chromium and WebKit commands use only three emulators", () => {

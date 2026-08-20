@@ -18,14 +18,14 @@ test('cost policy pins separate Gemini, Firebase, and combined allowances', () =
   assert.equal(COMBINED_MONTHLY_ALLOWANCE_MICRO_USD, 12_500_000)
 })
 
-test('cost policy pins conservative Quick and Deep mode limits', () => {
+test('cost policy pins conservative initial and more-insights limits with minimal-thinking ceiling', () => {
   assert.deepEqual(insightModeProfile('quick'), {
     id: 'quick-economy-v1',
     maxObservations: 4,
     maxEvidenceItems: 12,
     maxInputBytes: 16 * 1024,
     maxOutputTokens: 350,
-    maxThinkingTokens: 65_536,
+    maxThinkingTokens: 4_096,
     maxQuestions: 3,
     hourlyRequestLimit: 10,
   })
@@ -35,7 +35,7 @@ test('cost policy pins conservative Quick and Deep mode limits', () => {
     maxEvidenceItems: 60,
     maxInputBytes: 48 * 1024,
     maxOutputTokens: 900,
-    maxThinkingTokens: 65_536,
+    maxThinkingTokens: 4_096,
     maxQuestions: 6,
     hourlyRequestLimit: 2,
   })

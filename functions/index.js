@@ -299,7 +299,7 @@ export const analyzeTeacherInsightsV3 = onCall({
     })
     throw new HttpsError(
       callableErrorCode(error),
-      'Gemini-assisted analysis is unavailable.',
+      'AI Insights are unavailable.',
       callableErrorDetails(error),
     )
   }

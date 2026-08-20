@@ -58,6 +58,8 @@ test("production-form artifact hard-disables assisted activation and keeps its c
     for (const forbidden of [
       "gemini-3.5-flash-lite",
       "gemini-3.5-flash-lite-standard-2026-08-19",
+      "gemini-3.6-flash",
+      "gemini-3.6-flash-standard-ceiling-2027-01-01",
       "geminiProviderAdapter",
       "geminiCostPolicy",
     ]) {
@@ -85,11 +87,9 @@ test("production-form artifact hard-disables assisted activation and keeps its c
       2,
       "the artifact may initialize and combine the two reviewed gates, but must not re-enable it elsewhere",
     );
-    assert.match(
-      artifact,
-      /providerInsightsEnabled \? `[\s\S]{0,4000}?data-testid="provider-insights-controls"/,
-      "the assisted controls must remain reachable only through the hard-disabled gate",
-    );
+    assert.match(artifact, /!providerInsightsEnabled \|\| providerInsightsLoading \|\| providerQuestionLoading/);
+    assert.match(artifact, /data-testid="provider-insights-action"/);
+    assert.match(artifact, /data-testid="provider-question-submit"/);
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }
@@ -133,7 +133,7 @@ test("authorized live artifact requires verified App Check, V2, and limited-use 
     assert.match(artifact, /appCheckReady,/);
     assert.match(artifact, /v2Enabled: IS_MULTI_TEACHER_V2_ENABLED/);
     assert.match(artifact, /providerInsightsEnabled = true/);
-    assert.doesNotMatch(artifact, /GEMINI_API_KEY|@google\/genai|gemini-3\.5-flash-lite/);
+    assert.doesNotMatch(artifact, /GEMINI_API_KEY|@google\/genai|gemini-3\.(?:5|6)-flash/);
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }

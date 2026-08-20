@@ -11,6 +11,8 @@ import {
   resolveProviderInsightsBrowserActivation,
   validateProviderInsightsRequest,
   validateProviderInsightsResponse,
+  validateProviderQuestionRequest,
+  validateProviderQuestionResponse,
 } from "./providerInsightsClient.js";
 
 function response(overrides = {}) {
@@ -36,6 +38,19 @@ function response(overrides = {}) {
       observationIds: ["obs-001"],
     }],
     usage: { inputTokens: 120, outputTokens: 70, thinkingTokens: 10, costMicroUsd: 500 },
+    ...overrides,
+  };
+}
+
+function questionResponse(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    source: "ai-grounded",
+    periodDays: 30,
+    generatedAt: "2026-08-20T18:00:00.000Z",
+    answer: "GianMarco earned the most in Class job: $20.00.",
+    evidence: ["Class job: $20.00 across 2 approved transactions."],
+    usage: { inputTokens: 90, outputTokens: 18, thinkingTokens: 0, costMicroUsd: 500 },
     ...overrides,
   };
 }
@@ -155,6 +170,39 @@ test("client sends only the accepted request and validates the callable envelope
   assert.equal(createProviderInsightsBrowserClient({ enabled: false }), null);
 });
 
+test("question boundary accepts only the exact teacher text, period, and IANA time-zone lens", async () => {
+  const requestId = "12345678-1234-4234-8234-123456789abc";
+  const request = {
+    requestId,
+    kind: "question",
+    periodDays: 30,
+    timeZone: "America/Denver",
+    question: "What category is GianMarco earning the most money in?",
+  };
+  assert.deepEqual(validateProviderQuestionRequest(request), request);
+  for (const extra of [
+    { classroomId: "class-a" },
+    { studentId: "1" },
+    { model: "browser-choice" },
+    { facts: [] },
+  ]) {
+    assert.throws(() => validateProviderQuestionRequest({ ...request, ...extra }), /unexpected shape/);
+  }
+  const calls = [];
+  const client = createProviderInsightsBrowserClient({
+    enabled: true,
+    callable: async accepted => {
+      calls.push(accepted);
+      return { data: questionResponse() };
+    },
+  });
+  const result = await client.ask(request);
+  assert.deepEqual(calls, [request]);
+  assert.match(result.answer, /Class job/);
+  assert.throws(() => validateProviderQuestionResponse(questionResponse({ secret: "no" })), /unexpected shape/);
+  assert.throws(() => validateProviderQuestionResponse(questionResponse({ periodDays: 7 }), request), /metadata/);
+});
+
 test("maps errors to short allowlisted messages and marks only ambiguous outcomes retryable", () => {
   assert.deepEqual(mapProviderInsightsError({ code: "functions/unavailable", message: "raw" }), {
     ambiguous: true,
@@ -204,19 +252,19 @@ test("maps errors to short allowlisted messages and marks only ambiguous outcome
   assert.doesNotMatch(unknown.message, /raw-secret|do not render/);
 });
 
-test("live errors use allowlisted Gemini wording without exposing raw details", () => {
+test("live errors use model-neutral AI Insights wording without exposing raw details", () => {
   assert.deepEqual(mapProviderInsightsError({
     code: "functions/resource-exhausted",
     details: { category: "allowance-exhausted" },
     message: "sensitive upstream detail",
   }, { testMode: false }), {
     ambiguous: false,
-    message: "The Gemini allowance is used up for now.",
+    message: "The AI Insights allowance is used up for now.",
   });
   const unknown = mapProviderInsightsError({
     code: "functions/raw-secret",
     message: "sensitive upstream detail",
   }, { testMode: false });
-  assert.equal(unknown.message, "Gemini-assisted insights could not be loaded. Try again later.");
+  assert.equal(unknown.message, "AI Insights could not be loaded. Try again later.");
   assert.doesNotMatch(unknown.message, /sensitive|upstream/);
 });
