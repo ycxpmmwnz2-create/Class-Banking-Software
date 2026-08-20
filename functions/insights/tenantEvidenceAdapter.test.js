@@ -377,13 +377,19 @@ test('paired reports stay aligned across every deterministic observation generat
     /Repeated student request/,
     /Negative current balance/,
     /Balance well above the class midpoint/,
-    /Spending clusters/,
-    /Earning clusters/,
     /pending requests/,
     /Class cash/,
   ]) {
     assert.ok(titles.some(title => expected.test(title)), `missing ${expected}`)
   }
+  assert.equal(
+    envelope.analysisEvidence.observations.some(item => item.category === 'Timing patterns'),
+    false,
+  )
+  assert.equal(
+    envelope.displayEvidence.observations.some(item => item.category === 'Timing patterns'),
+    false,
+  )
   assert.deepEqual(
     envelope.analysisEvidence.observations.map(({ priority, category, title }) => ({
       priority, category, title,

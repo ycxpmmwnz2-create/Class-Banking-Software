@@ -22,6 +22,9 @@ const MAX_STUDENTS = 500
 const MAX_TRANSACTIONS = 20_000
 const MAX_REPORT_OBSERVATIONS = 20
 const PSEUDONYMIZED_STUDENT_NAME = 'A student'
+const UNSUPPORTED_LIVE_OBSERVATION_CATEGORIES = Object.freeze(new Set([
+  'Timing patterns',
+]))
 
 export class TenantEvidenceAdapterError extends Error {
   constructor(category, message) {
@@ -289,20 +292,25 @@ function projectReport(report) {
     }
     metrics[key] = value
   }
-  const observations = report.observations.map((observation) => {
-    if (!isPlainObject(observation) || !['attention', 'notable', 'context'].includes(observation.priority)) {
-      fail('calculator-invalid', 'A deterministic observation is malformed.')
-    }
-    return Object.freeze({
-      priority: observation.priority,
-      category: boundedString(observation.category, 1, 60, 'observation category'),
-      title: boundedString(observation.title, 1, 120, 'observation title'),
-      summary: boundedString(observation.summary, 1, 320, 'observation summary'),
-      evidence: Object.freeze([
-        boundedString(observation.evidence, 1, 320, 'observation evidence'),
-      ]),
+  const observations = report.observations
+    .filter(observation => !UNSUPPORTED_LIVE_OBSERVATION_CATEGORIES.has(observation?.category))
+    .map((observation) => {
+      if (!isPlainObject(observation) || !['attention', 'notable', 'context'].includes(observation.priority)) {
+        fail('calculator-invalid', 'A deterministic observation is malformed.')
+      }
+      return Object.freeze({
+        priority: observation.priority,
+        category: boundedString(observation.category, 1, 60, 'observation category'),
+        title: boundedString(observation.title, 1, 120, 'observation title'),
+        summary: boundedString(observation.summary, 1, 320, 'observation summary'),
+        evidence: Object.freeze([
+          boundedString(observation.evidence, 1, 320, 'observation evidence'),
+        ]),
+      })
     })
-  })
+  if (observations.length < 1) {
+    fail('calculator-invalid', 'No observations remain inside the live provider evidence boundary.')
+  }
   return Object.freeze({
     schemaVersion: EVIDENCE_SCHEMA_VERSION,
     generatedAt: requireIsoTimestamp(report.generatedAt),

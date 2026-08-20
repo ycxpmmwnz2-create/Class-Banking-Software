@@ -25,6 +25,7 @@ test('cost policy pins conservative Quick and Deep mode limits', () => {
     maxEvidenceItems: 12,
     maxInputBytes: 16 * 1024,
     maxOutputTokens: 350,
+    maxThinkingTokens: 65_536,
     maxQuestions: 3,
     hourlyRequestLimit: 10,
   })
@@ -34,6 +35,7 @@ test('cost policy pins conservative Quick and Deep mode limits', () => {
     maxEvidenceItems: 60,
     maxInputBytes: 48 * 1024,
     maxOutputTokens: 900,
+    maxThinkingTokens: 65_536,
     maxQuestions: 6,
     hourlyRequestLimit: 2,
   })

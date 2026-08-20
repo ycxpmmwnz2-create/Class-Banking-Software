@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer'
 
 import { insightModeProfile } from './costPolicy.js'
 
-export const INSIGHT_ANALYSIS_SCHEMA_VERSION = 1
+export const INSIGHT_ANALYSIS_SCHEMA_VERSION = 2
 export const INSIGHT_ANALYSIS_PERIODS = Object.freeze([7, 30, 90])
 export const INSIGHT_ANALYSIS_MODES = Object.freeze(['quick', 'deep'])
 
@@ -248,7 +248,11 @@ export function validateCompletedAnalysis(value, packet, evidenceSignature) {
   ) {
     fail('invalid-replay', 'Completed analysis does not match current evidence.')
   }
-  requireExactObject(value.usage, ['inputTokens', 'outputTokens', 'costMicroUsd'], 'usage')
+  requireExactObject(
+    value.usage,
+    ['inputTokens', 'outputTokens', 'thinkingTokens', 'costMicroUsd'],
+    'usage',
+  )
   if (!Number.isSafeInteger(value.usage.costMicroUsd) || value.usage.costMicroUsd < 0) {
     fail('invalid-replay', 'Completed analysis cost is malformed.')
   }
@@ -260,6 +264,7 @@ export function validateCompletedAnalysis(value, packet, evidenceSignature) {
     usage: {
       inputTokens: value.usage.inputTokens,
       outputTokens: value.usage.outputTokens,
+      thinkingTokens: value.usage.thinkingTokens,
     },
   }, packet)
   return Object.freeze({
@@ -275,6 +280,7 @@ export function validateCompletedAnalysis(value, packet, evidenceSignature) {
     usage: Object.freeze({
       inputTokens: provider.usage.inputTokens,
       outputTokens: provider.usage.outputTokens,
+      thinkingTokens: provider.usage.thinkingTokens,
       costMicroUsd: value.usage.costMicroUsd,
     }),
   })
@@ -337,7 +343,11 @@ export function validateTeacherAnalysisResponse(value) {
       evidence: boundedText(observation.evidence, 1, 320, 'teacher evidence'),
     })
   })
-  requireExactObject(value.usage, ['inputTokens', 'outputTokens', 'costMicroUsd'], 'usage')
+  requireExactObject(
+    value.usage,
+    ['inputTokens', 'outputTokens', 'thinkingTokens', 'costMicroUsd'],
+    'usage',
+  )
   if (!Number.isSafeInteger(value.usage.costMicroUsd) || value.usage.costMicroUsd < 0) {
     fail('invalid-response', 'Teacher analysis response cost is malformed.')
   }
@@ -349,6 +359,7 @@ export function validateTeacherAnalysisResponse(value) {
     usage: {
       inputTokens: value.usage.inputTokens,
       outputTokens: value.usage.outputTokens,
+      thinkingTokens: value.usage.thinkingTokens,
     },
   }, { mode: value.mode, observations })
   return Object.freeze({
@@ -364,6 +375,7 @@ export function validateTeacherAnalysisResponse(value) {
     usage: Object.freeze({
       inputTokens: provider.usage.inputTokens,
       outputTokens: provider.usage.outputTokens,
+      thinkingTokens: provider.usage.thinkingTokens,
       costMicroUsd: value.usage.costMicroUsd,
     }),
   })
@@ -393,16 +405,23 @@ function validateMetrics(value) {
 }
 
 function validateUsage(value, profile) {
-  requireExactObject(value, ['inputTokens', 'outputTokens'], 'usage')
-  for (const key of ['inputTokens', 'outputTokens']) {
+  requireExactObject(value, ['inputTokens', 'outputTokens', 'thinkingTokens'], 'usage')
+  for (const key of ['inputTokens', 'outputTokens', 'thinkingTokens']) {
     if (!Number.isSafeInteger(value[key]) || value[key] < 0) {
       fail('invalid-provider-output', `${key} must be a non-negative safe integer.`)
     }
   }
   if (value.outputTokens > profile.maxOutputTokens) {
-    fail('invalid-provider-output', 'Provider output exceeds the configured token limit.')
+    fail('invalid-provider-output', 'Visible provider output exceeds the configured token limit.')
   }
-  return Object.freeze({ inputTokens: value.inputTokens, outputTokens: value.outputTokens })
+  if (value.thinkingTokens > profile.maxThinkingTokens) {
+    fail('invalid-provider-output', 'Provider thinking exceeds the reserved model limit.')
+  }
+  return Object.freeze({
+    inputTokens: value.inputTokens,
+    outputTokens: value.outputTokens,
+    thinkingTokens: value.thinkingTokens,
+  })
 }
 
 function validateReferenceList(value, allowed, label, { minimum, maximum }) {

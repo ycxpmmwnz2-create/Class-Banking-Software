@@ -148,15 +148,6 @@ function timeWindowFor(date) {
     || TIME_WINDOWS[TIME_WINDOWS.length - 1];
 }
 
-function formatEvidenceDate(date) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(date);
-}
-
 function largeStudentAddObservations(transactions) {
   return transactions
     .filter((transaction) => (
@@ -173,7 +164,7 @@ function largeStudentAddObservations(transactions) {
       category: "Needs attention",
       title: `${currency(transaction.amount)} Add Money request meets review threshold`,
       summary: `${transaction.studentName} submitted an Add Money request at or above the ${currency(LARGE_STUDENT_ADD_THRESHOLD)} review threshold.`,
-      evidence: `${transaction.reason} · Pending · Student submitted · ${formatEvidenceDate(transaction.date)}`,
+      evidence: `${transaction.reason} · Pending · Student submitted`,
       studentId: transaction.studentId,
     }));
 }

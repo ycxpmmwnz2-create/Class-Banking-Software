@@ -14,13 +14,15 @@ The product principle is:
 
 - Gemini API: **$7.50**
 - Firebase: **$5.00**
-- Combined ceiling: **$12.50**
+- Combined budget target: **$12.50**
 
 These are separate buckets. Gemini usage must not consume the Firebase
-allowance. A future provider integration must refuse additional model calls when
-the application-side Gemini allowance is exhausted even if provider billing
-would permit them. The $7.50 Gemini allowance is one whole-application monthly
-cap, not a separate allowance per teacher or classroom.
+allowance. The combined amount is a planning target, not a guaranteed hard cap
+on every Firebase charge. A future provider integration must refuse additional
+model calls when the application-side Gemini allowance is exhausted even if
+provider billing would permit them. The $7.50 Gemini allowance is one
+whole-application monthly cap, not a separate allowance per teacher or
+classroom.
 
 ## First implementation item: provider-independent foundation
 

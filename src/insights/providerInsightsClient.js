@@ -37,8 +37,18 @@ const OBSERVATION_ID_PATTERN = /^obs-[0-9]{3}$/;
 const PRIORITIES = Object.freeze(["attention", "notable", "context"]);
 const GROUP_LABELS = Object.freeze(["review-first", "watch", "context"]);
 const MODE_LIMITS = Object.freeze({
-  quick: Object.freeze({ observations: 4, questions: 3, outputTokens: 350 }),
-  deep: Object.freeze({ observations: 20, questions: 6, outputTokens: 900 }),
+  quick: Object.freeze({
+    observations: 4,
+    questions: 3,
+    outputTokens: 350,
+    thinkingTokens: 65_536,
+  }),
+  deep: Object.freeze({
+    observations: 20,
+    questions: 6,
+    outputTokens: 900,
+    thinkingTokens: 65_536,
+  }),
 });
 
 export class ProviderInsightsClientError extends Error {
@@ -172,7 +182,7 @@ function validateReferenceList(value, allowedIds, label, { minimum, maximum }) {
 export function validateProviderInsightsResponse(value, expected = {}) {
   requireExactObject(value, RESPONSE_FIELDS, "response");
   if (
-    value.schemaVersion !== 1
+    value.schemaVersion !== 2
     || value.source !== "provider-assisted"
     || !PROVIDER_INSIGHTS_MODES.includes(value.mode)
     || !PROVIDER_INSIGHTS_PERIODS.includes(value.periodDays)
@@ -284,15 +294,23 @@ export function validateProviderInsightsResponse(value, expected = {}) {
     });
   }));
 
-  requireExactObject(value.usage, ["inputTokens", "outputTokens", "costMicroUsd"], "usage");
+  requireExactObject(
+    value.usage,
+    ["inputTokens", "outputTokens", "thinkingTokens", "costMicroUsd"],
+    "usage",
+  );
   const usage = Object.freeze({
     inputTokens: nonNegativeInteger(value.usage.inputTokens, "inputTokens"),
     outputTokens: nonNegativeInteger(value.usage.outputTokens, "outputTokens", limits.outputTokens),
+    thinkingTokens: nonNegativeInteger(
+      value.usage.thinkingTokens,
+      "thinkingTokens",
+      limits.thinkingTokens,
+    ),
     costMicroUsd: nonNegativeInteger(value.usage.costMicroUsd, "costMicroUsd", 7_500_000),
   });
-
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: "provider-assisted",
     mode: value.mode,
     periodDays: value.periodDays,

@@ -102,7 +102,19 @@ const nonKernelJavaScript = [
   ...await readJavaScriptTree(new URL('../../src/', import.meta.url)),
 ]
 
-const DORMANT_KERNEL_IMPORT = /(?:from\s+|import\s+|import\s*\(|require\s*\()\s*(['"`])(?:[^'"`]*\/)?insights\/(?:contracts|costPolicy|analysisService|tenantEvidenceAdapter|factPacketBuilder|firestoreUsageLedger)(?:\.js)?\1/
+const nonGeminiInsightJavaScript = await readJavaScriptTree(
+  new URL('../../functions/insights/', import.meta.url),
+  {
+    exclude: url => (
+      url.pathname.endsWith('.test.js') ||
+      url.pathname.endsWith('/geminiProviderAdapter.js') ||
+      url.pathname.endsWith('/geminiCostPolicy.js')
+    ),
+  },
+)
+
+const DORMANT_KERNEL_IMPORT = /(?:from\s+|import\s+|import\s*\(|require\s*\()\s*(['"`])(?:[^'"`]*\/)?insights\/(?:contracts|costPolicy|analysisService|tenantEvidenceAdapter|factPacketBuilder|firestoreUsageLedger|geminiProviderAdapter|geminiCostPolicy)(?:\.js)?\1/
+const REAL_GEMINI_IMPORT = /(?:from\s+|import\s+|import\s*\(|require\s*\()\s*(['"`])(?:[^'"`]*\/)?(?:insights\/)?(?:geminiProviderAdapter|geminiCostPolicy)(?:\.js)?\1/
 
 test('source contract: guarded provider kernel and emulator provider make no network call', () => {
   const combinedKernel = [
@@ -126,12 +138,23 @@ test('source contract: guarded provider kernel and emulator provider make no net
   for (const file of nonKernelJavaScript) {
     assert.doesNotMatch(file.source, DORMANT_KERNEL_IMPORT, `dormant kernel imported by ${file.path}`)
   }
+  assert.ok(
+    nonGeminiInsightJavaScript.some(file => file.path.endsWith('/identity.js')),
+    'dynamic real-Gemini import guard must include identity.js',
+  )
+  for (const file of [
+    ...nonGeminiInsightJavaScript,
+    { path: 'functions/index.js', source: functionsIndexSource },
+    { path: 'functions/version3-emulator/index.js', source: emulatorFunctionsIndexSource },
+  ]) {
+    assert.doesNotMatch(file.source, REAL_GEMINI_IMPORT, `real Gemini module imported by ${file.path}`)
+  }
   assert.doesNotMatch(functionsIndexSource, /emulatorCallable|analyzeTeacherInsightsV3/)
   assert.match(emulatorFunctionsIndexSource, /import \{[\s\S]*?createVersion3GeminiEmulatorHandler[\s\S]*?from '\.\.\/insights\/emulatorCallable\.js'/)
   assert.match(emulatorFunctionsIndexSource, /export const analyzeTeacherInsightsV3 = onCall/)
   assert.doesNotMatch(
     indexHtml,
-    /functions\/insights\/(?:contracts|costPolicy|analysisService|tenantEvidenceAdapter|factPacketBuilder|firestoreUsageLedger)(?:\.js)?/,
+    /functions\/insights\/(?:contracts|costPolicy|analysisService|tenantEvidenceAdapter|factPacketBuilder|firestoreUsageLedger|geminiProviderAdapter|geminiCostPolicy)(?:\.js)?/,
   )
 })
 
@@ -144,8 +167,18 @@ test('source contract: dormancy matcher detects real static, dynamic, and Common
     'const module = import(`../insights/costPolicy`)',
     "const module = require('../insights/analysisService.js')",
     "import '../insights/firestoreUsageLedger.js'",
+    "import '../insights/geminiProviderAdapter.js'",
+    "const module = import('../insights/geminiCostPolicy.js')",
   ]) {
     assert.match(source, DORMANT_KERNEL_IMPORT)
+  }
+  for (const source of [
+    "import './geminiProviderAdapter.js'",
+    "export { GEMINI_RATE_CARD } from './geminiCostPolicy.js'",
+    "const module = import('../insights/geminiProviderAdapter.js')",
+    "const module = require('./geminiCostPolicy')",
+  ]) {
+    assert.match(source, REAL_GEMINI_IMPORT)
   }
 })
 

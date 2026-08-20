@@ -19,7 +19,7 @@ function request(overrides = {}) {
 
 function factPacket(overrides = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     mode: 'quick',
     periodDays: 30,
     generatedAt: '2026-08-16T18:00:00.000Z',
@@ -60,7 +60,7 @@ function displayEvidence(overrides = {}) {
 
 function providerResponse(overrides = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     orderedObservationIds: ['obs-001'],
     groups: [{ label: 'review-first', observationIds: ['obs-001'] }],
     teacherQuestions: [{
@@ -68,7 +68,7 @@ function providerResponse(overrides = {}) {
       text: 'Would reviewing this request clarify what happened?',
       observationIds: ['obs-001'],
     }],
-    usage: { inputTokens: 180, outputTokens: 42 },
+    usage: { inputTokens: 180, outputTokens: 42, thinkingTokens: 8 },
     ...overrides,
   }
 }
@@ -156,12 +156,14 @@ test('service resolves tenant, builds facts, reserves worst-case cost, then invo
   assert.deepEqual(run.calls, ['resolve', 'load', 'build', 'quote', 'reserve', 'provider', 'price', 'commit'])
   assert.equal(result.source, 'provider-assisted')
   assert.equal(result.usage.costMicroUsd, 75_000)
+  assert.equal(result.usage.thinkingTokens, 8)
   assert.equal(result.observations[0].summary.includes('Jordan Reyes'), true)
   assert.equal(Object.hasOwn(result, 'evidenceSignature'), false)
   assert.equal(run.state.reserveInput.monthlyAllowanceMicroUsd, 7_500_000)
   assert.equal(run.state.reserveInput.hourlyRequestLimit, 10)
   assert.equal(run.state.providerInput.providerProfile, 'quick-economy-v1')
   assert.equal(run.state.providerInput.maxOutputTokens, 350)
+  assert.equal(run.state.quoteInput.factPacket, run.state.providerInput.factPacket)
 })
 
 test('tenant identity is server-derived and never included in the provider packet', async () => {
@@ -435,7 +437,7 @@ test('completed idempotent request is replayed only after current evidence valid
     return {
       kind: 'completed',
       result: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         source: 'provider-assisted',
         mode: 'quick',
         periodDays: 30,
@@ -444,7 +446,12 @@ test('completed idempotent request is replayed only after current evidence valid
         orderedObservationIds: ['obs-001'],
         groups: [],
         teacherQuestions: [],
-        usage: { inputTokens: 180, outputTokens: 42, costMicroUsd: 75_000 },
+        usage: {
+          inputTokens: 180,
+          outputTokens: 42,
+          thinkingTokens: 8,
+          costMicroUsd: 75_000,
+        },
       },
     }
   }

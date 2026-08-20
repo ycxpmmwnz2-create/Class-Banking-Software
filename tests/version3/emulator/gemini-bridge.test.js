@@ -188,7 +188,7 @@ function createBridgeHarness() {
       providerInputs.push(input)
       const ids = input.factPacket.observations.map(observation => observation.id)
       return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         orderedObservationIds: ids,
         groups: [{ label: 'review-first', observationIds: ids }],
         teacherQuestions: [{
@@ -196,7 +196,7 @@ function createBridgeHarness() {
           text: 'Would reviewing these verified observations help?',
           observationIds: ids,
         }],
-        usage: { inputTokens: 120, outputTokens: 30 },
+        usage: { inputTokens: 120, outputTokens: 30, thinkingTokens: 0 },
       }
     },
   }

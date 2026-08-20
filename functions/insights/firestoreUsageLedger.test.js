@@ -72,7 +72,7 @@ function reserveInput(overrides = {}) {
 
 function completedResult() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: 'provider-assisted',
     mode: 'quick',
     periodDays: 30,
@@ -81,7 +81,7 @@ function completedResult() {
     orderedObservationIds: ['obs-001'],
     groups: [],
     teacherQuestions: [],
-    usage: { inputTokens: 10, outputTokens: 5, costMicroUsd: 2_000_000 },
+    usage: { inputTokens: 10, outputTokens: 5, thinkingTokens: 0, costMicroUsd: 2_000_000 },
   }
 }
 

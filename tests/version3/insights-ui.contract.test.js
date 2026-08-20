@@ -59,13 +59,14 @@ test("source contract: approved monthly allowances are exact and separately pres
   assert.match(insightsSource, /combinedMonthlyUsd:\s*12\.5/);
   assert.match(indexHtml, /Gemini allowance/);
   assert.match(indexHtml, /Firebase allowance/);
-  assert.match(indexHtml, /Combined ceiling/);
+  assert.match(indexHtml, /Combined budget target/);
+  assert.match(indexHtml, /Not a guaranteed hard cap/);
   assert.match(indexHtml, /INSIGHTS_BUDGETS\.geminiMonthlyUsd\.toFixed\(2\)/);
   assert.match(indexHtml, /INSIGHTS_BUDGETS\.firebaseMonthlyUsd\.toFixed\(2\)/);
   assert.match(indexHtml, /INSIGHTS_BUDGETS\.combinedMonthlyUsd\.toFixed\(2\)/);
   assert.match(plan, /Gemini API: \*\*\$7\.50\*\*/);
   assert.match(plan, /Firebase: \*\*\$5\.00\*\*/);
-  assert.match(plan, /Combined ceiling: \*\*\$12\.50\*\*/);
+  assert.match(plan, /Combined budget target: \*\*\$12\.50\*\*/);
 });
 
 test("source contract: insight view state is cleared during the tenant reset", () => {

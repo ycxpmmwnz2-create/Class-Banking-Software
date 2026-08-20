@@ -13,7 +13,7 @@ import {
 
 function response(overrides = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: "provider-assisted",
     mode: "quick",
     periodDays: 30,
@@ -33,7 +33,7 @@ function response(overrides = {}) {
       text: "Would you like to review this request?",
       observationIds: ["obs-001"],
     }],
-    usage: { inputTokens: 120, outputTokens: 80, costMicroUsd: 500 },
+    usage: { inputTokens: 120, outputTokens: 70, thinkingTokens: 10, costMicroUsd: 500 },
     ...overrides,
   };
 }
@@ -111,7 +111,7 @@ test("validates and freezes the exact teacher response before returning it", () 
     observations: [{ ...response().observations[0], title: " leading whitespace" }],
   })), /malformed/);
   assert.throws(() => validateProviderInsightsResponse(response({
-    usage: { inputTokens: 1, outputTokens: 1, costMicroUsd: 7_500_001 },
+    usage: { inputTokens: 1, outputTokens: 1, thinkingTokens: 0, costMicroUsd: 7_500_001 },
   })), /malformed/);
 });
 

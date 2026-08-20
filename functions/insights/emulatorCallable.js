@@ -80,7 +80,7 @@ export function createVersion3GeminiEmulatorHandler({
     async generate({ factPacket }) {
       const orderedObservationIds = factPacket.observations.map(observation => observation.id)
       return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         orderedObservationIds,
         groups: [{ label: 'review-first', observationIds: orderedObservationIds }],
         teacherQuestions: [{
@@ -88,7 +88,7 @@ export function createVersion3GeminiEmulatorHandler({
           text: 'Would reviewing these verified observations help?',
           observationIds: orderedObservationIds,
         }],
-        usage: { inputTokens: 120, outputTokens: 30 },
+        usage: { inputTokens: 120, outputTokens: 30, thinkingTokens: 0 },
       }
     },
   })

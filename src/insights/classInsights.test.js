@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import process from "node:process";
 import test from "node:test";
 
 import {
@@ -65,6 +66,45 @@ test("flags a student-originated pending Add request at the $20 threshold", () =
   assert.doesNotMatch(observation.title, /unusual/i);
   assert.match(observation.summary, /Alex submitted/);
   assert.match(observation.evidence, /Pending · Student submitted/);
+});
+
+test("pending-request evidence is independent of the Functions process timezone", () => {
+  const originalTimeZone = process.env.TZ;
+  const evidenceForTimeZone = (timeZone) => {
+    process.env.TZ = timeZone;
+    const localHour = new Date("2026-08-19T02:30:00.000Z").getHours();
+    const result = report({
+      now: new Date("2026-08-20T00:00:00.000Z"),
+      transactions: [transaction({
+        id: "timezone-boundary",
+        date: "2026-08-19T02:30:00.000Z",
+        amount: 20,
+        status: "Pending",
+        source: "Student",
+        reason: "Chores",
+      })],
+    });
+    return {
+      evidence: result.observations.find(
+        item => item.id === "large-student-add-1-timezone-boundary",
+      )?.evidence,
+      localHour,
+    };
+  };
+
+  try {
+    const utc = evidenceForTimeZone("UTC");
+    const denver = evidenceForTimeZone("America/Denver");
+    assert.equal(utc.localHour, 2);
+    assert.equal(denver.localHour, 20);
+    assert.notEqual(denver.localHour, utc.localHour);
+    assert.equal(utc.evidence, "Chores · Pending · Student submitted");
+    assert.equal(denver.evidence, utc.evidence);
+    assert.doesNotMatch(utc.evidence, /\b(?:AM|PM|UTC)\b|Aug 1[89]/);
+  } finally {
+    if (originalTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTimeZone;
+  }
 });
 
 test("does not treat teacher credits or approved student credits as pending-request anomalies", () => {

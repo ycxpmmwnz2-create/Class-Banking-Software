@@ -52,6 +52,18 @@ test("production-form artifact hard-disables assisted activation and keeps its c
     );
     const artifact = collectJavaScript(outDir);
 
+    for (const forbidden of [
+      "gemini-3.5-flash-lite",
+      "gemini-3.5-flash-lite-standard-2026-08-19",
+      "geminiProviderAdapter",
+      "geminiCostPolicy",
+    ]) {
+      assert.ok(
+        !artifact.includes(forbidden),
+        `production artifact must not contain dormant real-Gemini marker ${forbidden}`,
+      );
+    }
+
     assert.match(artifact, /var VERSION3_GEMINI_BROWSER_BUILD_ENABLED = false;/);
     assert.match(artifact, /var VERSION3_GEMINI_BROWSER_BUILD_PROJECT_ID = void 0;/);
     assert.match(

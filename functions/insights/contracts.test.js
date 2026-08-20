@@ -24,7 +24,7 @@ function request(overrides = {}) {
 
 function packet(overrides = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     mode: 'quick',
     periodDays: 30,
     generatedAt: '2026-08-16T18:00:00.000Z',
@@ -49,7 +49,7 @@ function packet(overrides = {}) {
 
 function response(overrides = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     orderedObservationIds: ['obs-001'],
     groups: [{ label: 'review-first', observationIds: ['obs-001'] }],
     teacherQuestions: [{
@@ -57,7 +57,7 @@ function response(overrides = {}) {
       text: 'Would reviewing this request clarify what happened?',
       observationIds: ['obs-001'],
     }],
-    usage: { inputTokens: 180, outputTokens: 42 },
+    usage: { inputTokens: 180, outputTokens: 42, thinkingTokens: 8 },
     ...overrides,
   }
 }
@@ -137,7 +137,7 @@ test('provider response can only order, group, and suggest from supplied referen
   const validated = validateProviderResponse(response(), factPacket)
   assert.deepEqual(validated.orderedObservationIds, ['obs-001'])
   assert.equal(validated.teacherQuestions[0].kind, 'suggestion')
-  assert.deepEqual(validated.usage, { inputTokens: 180, outputTokens: 42 })
+  assert.deepEqual(validated.usage, { inputTokens: 180, outputTokens: 42, thinkingTokens: 8 })
 })
 
 test('provider must return every supplied observation exactly once', () => {
@@ -217,7 +217,14 @@ test('provider response rejects duplicate grouping and output above the server-o
   assert.throws(
     () => validateProviderResponse({
       ...response(),
-      usage: { inputTokens: 180, outputTokens: 351 },
+      usage: { inputTokens: 180, outputTokens: 351, thinkingTokens: 8 },
+    }, factPacket),
+    InsightContractError,
+  )
+  assert.throws(
+    () => validateProviderResponse({
+      ...response(),
+      usage: { inputTokens: 180, outputTokens: 42, thinkingTokens: 65_537 },
     }, factPacket),
     InsightContractError,
   )
@@ -226,7 +233,7 @@ test('provider response rejects duplicate grouping and output above the server-o
 test('completed idempotent replay must match the current packet and retain trusted usage', () => {
   const factPacket = validateFactPacket(packet(), request())
   const completed = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: 'provider-assisted',
     mode: 'quick',
     periodDays: 30,
@@ -235,7 +242,7 @@ test('completed idempotent replay must match the current packet and retain trust
     orderedObservationIds: ['obs-001'],
     groups: [{ label: 'review-first', observationIds: ['obs-001'] }],
     teacherQuestions: [],
-    usage: { inputTokens: 180, outputTokens: 42, costMicroUsd: 75_000 },
+    usage: { inputTokens: 180, outputTokens: 42, thinkingTokens: 8, costMicroUsd: 75_000 },
   }
   assert.deepEqual(validateCompletedAnalysis(completed, factPacket, SIGNATURE), completed)
   assert.throws(
@@ -246,7 +253,7 @@ test('completed idempotent replay must match the current packet and retain trust
 
 test('teacher response returns exact paired display facts and only provider-approved references', () => {
   const value = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: 'provider-assisted',
     mode: 'quick',
     periodDays: 30,
@@ -262,7 +269,7 @@ test('teacher response returns exact paired display facts and only provider-appr
     orderedObservationIds: ['obs-001'],
     groups: [{ label: 'review-first', observationIds: ['obs-001'] }],
     teacherQuestions: [],
-    usage: { inputTokens: 180, outputTokens: 42, costMicroUsd: 75_000 },
+    usage: { inputTokens: 180, outputTokens: 42, thinkingTokens: 8, costMicroUsd: 75_000 },
   }
   assert.deepEqual(validateTeacherAnalysisResponse(value), value)
   assert.throws(

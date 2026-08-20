@@ -65,7 +65,7 @@ export function createInsightAnalysisService(dependencies) {
     const displayObservations = pairDisplayObservations(packet, evidenceEnvelope.displayEvidence)
 
     const rawQuote = await guardedCall(
-      () => deps.quoteWorstCaseCost({ modeProfile: profile }),
+      () => deps.quoteWorstCaseCost({ modeProfile: profile, factPacket: packet }),
       'cost-policy-unavailable',
       'The trusted cost policy is unavailable.',
     )
@@ -194,6 +194,7 @@ function buildCompletedAnalysis({
     usage: Object.freeze({
       inputTokens: providerResponse.usage.inputTokens,
       outputTokens: providerResponse.usage.outputTokens,
+      thinkingTokens: providerResponse.usage.thinkingTokens,
       costMicroUsd: actualCostMicroUsd,
     }),
   })
