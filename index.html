@@ -1117,7 +1117,7 @@
   </div>
   <div id="app"></div>
   <script type="module">
-import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured } from "./src/firebase/firebase.js";
+import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured, firebaseDeploymentTier, providerAppCheckReadyPromise } from "./src/firebase/firebase.js";
 import { browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider, inMemoryPersistence, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, runTransaction, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
@@ -1130,13 +1130,17 @@ import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver 
 import { MAX_RENT_AMOUNT, projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 import { sanitizeLegacyBackup } from "./src/legacy/backupImport.js";
 import { buildClassInsightsReport, buildInsightsDataSignature, INSIGHTS_BUDGETS, INSIGHTS_PERIODS } from "./src/insights/classInsights.js";
-import { VERSION3_GEMINI_BROWSER_PROJECT_ID, createProviderInsightsBrowserClient, mapProviderInsightsError, resolveProviderInsightsBrowserActivation } from "./src/insights/providerInsightsClient.js";
+import { VERSION3_GEMINI_BROWSER_PROJECT_ID, createProviderInsightsBrowserClient, mapProviderInsightsError, resolveLiveProviderInsightsBrowserActivation, resolveProviderInsightsBrowserActivation } from "./src/insights/providerInsightsClient.js";
 
 const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED === "true";
     const VERSION3_GEMINI_BROWSER_BUILD_ENABLED =
       import.meta.env.VITE_VERSION3_GEMINI_BROWSER_TEST === "true";
     const VERSION3_GEMINI_BROWSER_BUILD_PROJECT_ID =
       import.meta.env.VITE_VERSION3_GEMINI_BROWSER_PROJECT_ID;
+    const VERSION3_GEMINI_LIVE_BUILD_ENABLED =
+      import.meta.env.VITE_VERSION3_GEMINI_LIVE === "true";
+    const VERSION3_GEMINI_LIVE_BUILD_PROJECT_ID =
+      import.meta.env.VITE_VERSION3_GEMINI_PROJECT_ID;
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
     const defaultSettings = {
@@ -1202,6 +1206,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let insightsDataSignature = null;
     let providerInsightsEnabled = false;
     let providerInsightsClient = null;
+    let providerInsightsEnvironment = "disabled";
     let providerInsightsMode = "quick";
     let providerInsightsReport = null;
     let providerInsightsLoading = false;
@@ -1917,7 +1922,9 @@ function toggleStudentDropdown() {
           periodDays,
           requestVersion,
         })) return;
-        const safeError = mapProviderInsightsError(error);
+        const safeError = mapProviderInsightsError(error, {
+          testMode: providerInsightsEnvironment === "emulator",
+        });
         providerInsightsError = safeError.message;
         if (safeError.ambiguous) {
           providerInsightsRetryRequest = {
@@ -4347,9 +4354,10 @@ ${transactionTarget !== "whole" ? `
 
       if (screen === "insights" && isTeacher) {
         const reportLabel = insightsReport?.mode === "deep" ? "Deep Analysis" : "Quick Insights";
+        const providerIsEmulator = providerInsightsEnvironment === "emulator";
         const providerReportLabel = providerInsightsReport?.mode === "deep"
-          ? "AI Test Deep Analysis"
-          : "AI Test Quick Insights";
+          ? (providerIsEmulator ? "AI Test Deep Analysis" : "Gemini Deep Analysis")
+          : (providerIsEmulator ? "AI Test Quick Insights" : "Gemini Quick Insights");
         html += `
           <div class="insights-shell">
             <section class="card insights-intro">
@@ -4385,8 +4393,10 @@ ${transactionTarget !== "whole" ? `
               ${providerInsightsEnabled ? `
                 <div class="insights-controls no-print" data-testid="provider-insights-controls" style="margin-top: 16px;">
                   <div>
-                    <span class="insights-eyebrow">Emulator-only AI test</span>
-                    <p class="small-note" style="margin-bottom: 0;">Fake classroom data and a fake AI provider only. Nothing is deployed.</p>
+                    <span class="insights-eyebrow">${providerIsEmulator ? "Emulator-only AI test" : "Gemini-assisted Insights"}</span>
+                    <p class="small-note" style="margin-bottom: 0;">${providerIsEmulator
+                      ? "Fake classroom data and a fake AI provider only. Nothing is deployed."
+                      : "Uses server-deidentified classroom patterns. Student names, IDs, login information, and PINs are never sent to Gemini."}</p>
                   </div>
                   <div class="insights-actions">
                     <button
@@ -4394,13 +4404,13 @@ ${transactionTarget !== "whole" ? `
                       data-testid="provider-insights-quick"
                       class="${providerInsightsReport?.mode === "quick" ? "primary" : ""}"
                       onclick="generateProviderInsights('quick')"
-                      ${providerInsightsLoading ? "disabled" : ""}>AI Test Quick</button>
+                      ${providerInsightsLoading ? "disabled" : ""}>${providerIsEmulator ? "AI Test Quick" : "Gemini Quick"}</button>
                     <button
                       type="button"
                       data-testid="provider-insights-deep"
                       class="${providerInsightsReport?.mode === "deep" ? "primary" : ""}"
                       onclick="generateProviderInsights('deep')"
-                      ${providerInsightsLoading ? "disabled" : ""}>AI Test Deep</button>
+                      ${providerInsightsLoading ? "disabled" : ""}>${providerIsEmulator ? "AI Test Deep" : "Gemini Deep"}</button>
                   </div>
                 </div>
               ` : ""}
@@ -4411,7 +4421,7 @@ ${transactionTarget !== "whole" ? `
                 <div class="insights-budget-item">
                   <span class="insights-eyebrow">Gemini allowance</span>
                   <strong>$${INSIGHTS_BUDGETS.geminiMonthlyUsd.toFixed(2)}</strong>
-                  <div class="small-note">$0.00 used by this local foundation</div>
+                  <div class="small-note">${providerIsEmulator ? "$0.00 used by this local foundation" : "Protected by the server-side monthly allowance ledger"}</div>
                 </div>
                 <div class="insights-budget-item">
                   <span class="insights-eyebrow">Firebase allowance</span>
@@ -4428,14 +4438,14 @@ ${transactionTarget !== "whole" ? `
 
             ${providerInsightsEnabled && providerInsightsLoading ? `
               <section class="card" aria-live="polite" data-testid="provider-insights-loading">
-                <span class="insights-eyebrow">AI test</span>
+                <span class="insights-eyebrow">${providerIsEmulator ? "AI test" : "Gemini-assisted analysis"}</span>
                 <h2 style="margin-top: 6px;">Checking the classroom patterns…</h2>
               </section>
             ` : ""}
 
             ${providerInsightsEnabled && providerInsightsError ? `
               <section class="card" role="alert" data-testid="provider-insights-error">
-                <span class="insights-eyebrow">AI test unavailable</span>
+                <span class="insights-eyebrow">${providerIsEmulator ? "AI test unavailable" : "Gemini-assisted analysis unavailable"}</span>
                 <p>${escapeHtml(providerInsightsError)}</p>
                 ${providerInsightsRetryRequest ? `
                   <button type="button" data-testid="provider-insights-retry" onclick="retryProviderInsights()">Retry same request</button>
@@ -4451,10 +4461,10 @@ ${transactionTarget !== "whole" ? `
                     <h2>${providerInsightsReport.observations.length} ${providerInsightsReport.observations.length === 1 ? "observation" : "observations"} from the last ${providerInsightsReport.periodDays} days</h2>
                     <div class="insights-report-meta">
                       Generated ${escapeHtml(formattedInsightsGeneratedAt(providerInsightsReport.generatedAt))}
-                      · Fake-provider test cost $${(providerInsightsReport.usage.costMicroUsd / 1_000_000).toFixed(6)}
+                      · ${providerIsEmulator ? "Fake-provider test cost" : "Gemini API cost"} $${(providerInsightsReport.usage.costMicroUsd / 1_000_000).toFixed(6)}
                     </div>
                   </div>
-                  <span class="insights-local-badge">Emulator AI test</span>
+                  <span class="insights-local-badge">${providerIsEmulator ? "Emulator AI test" : "Gemini assisted"}</span>
                 </div>
                 <div class="insights-list">
                   ${orderedProviderObservations(providerInsightsReport).map(insightsObservationHtml).join("")}
@@ -5258,13 +5268,22 @@ if (screen === "editSettingsLists" && isTeacher) {
     // came from the emulator.
     connectPhase2bEmulatorsIfConfigured();
 
-    providerInsightsEnabled = resolveProviderInsightsBrowserActivation({
+    const providerInsightsEmulatorEnabled = resolveProviderInsightsBrowserActivation({
       buildEnabled: VERSION3_GEMINI_BROWSER_BUILD_ENABLED,
       buildProjectId: VERSION3_GEMINI_BROWSER_BUILD_PROJECT_ID,
       runtimeConfig: window.VERSION3_GEMINI_BROWSER_TEST_CONFIG,
     }) && app.options.projectId === VERSION3_GEMINI_BROWSER_PROJECT_ID;
-    if (providerInsightsEnabled) {
-      const providerCallable = httpsCallable(functions, "analyzeTeacherInsightsV3");
+    function enableProviderInsights(providerInsightsLiveEnabled) {
+      providerInsightsEnabled = true;
+      providerInsightsEnvironment = providerInsightsLiveEnabled
+        ? firebaseDeploymentTier
+        : "emulator";
+      const providerCallable = providerInsightsLiveEnabled
+        ? httpsCallable(functions, "analyzeTeacherInsightsV3", {
+          limitedUseAppCheckTokens: true,
+          timeout: 120_000,
+        })
+        : httpsCallable(functions, "analyzeTeacherInsightsV3");
       const providerCallAdapter = typeof window.__VERSION3_WRAP_PROVIDER_CALL__ === "function"
         ? window.__VERSION3_WRAP_PROVIDER_CALL__(providerCallable)
         : providerCallable;
@@ -5272,6 +5291,23 @@ if (screen === "editSettingsLists" && isTeacher) {
         enabled: true,
         callable: providerCallAdapter,
         cryptoApi: window.crypto,
+      });
+    }
+    if (providerInsightsEmulatorEnabled) {
+      enableProviderInsights(false);
+    } else {
+      void providerAppCheckReadyPromise.then(appCheckReady => {
+        const providerInsightsLiveEnabled = resolveLiveProviderInsightsBrowserActivation({
+          buildEnabled: VERSION3_GEMINI_LIVE_BUILD_ENABLED,
+          buildProjectId: VERSION3_GEMINI_LIVE_BUILD_PROJECT_ID,
+          appProjectId: app.options.projectId,
+          deploymentTier: firebaseDeploymentTier,
+          appCheckReady,
+          v2Enabled: IS_MULTI_TEACHER_V2_ENABLED,
+        });
+        if (!providerInsightsLiveEnabled) return;
+        enableProviderInsights(true);
+        render();
       });
     }
 

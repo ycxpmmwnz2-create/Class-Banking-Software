@@ -32,6 +32,9 @@ test("production-form artifact hard-disables assisted activation and keeps its c
   for (const name of [
     "VITE_VERSION3_GEMINI_BROWSER_TEST",
     "VITE_VERSION3_GEMINI_BROWSER_PROJECT_ID",
+    "VITE_VERSION3_GEMINI_LIVE",
+    "VITE_VERSION3_GEMINI_PROJECT_ID",
+    "VITE_FIREBASE_APP_CHECK_SITE_KEY",
     "VITE_MORGAN_BANK_DEPLOYMENT_TIER",
     "VITE_FIREBASE_API_KEY",
     "VITE_FIREBASE_AUTH_DOMAIN",
@@ -66,20 +69,102 @@ test("production-form artifact hard-disables assisted activation and keeps its c
 
     assert.match(artifact, /var VERSION3_GEMINI_BROWSER_BUILD_ENABLED = false;/);
     assert.match(artifact, /var VERSION3_GEMINI_BROWSER_BUILD_PROJECT_ID = void 0;/);
+    assert.match(artifact, /var VERSION3_GEMINI_LIVE_BUILD_ENABLED = false;/);
+    assert.match(artifact, /var VERSION3_GEMINI_LIVE_BUILD_PROJECT_ID = void 0;/);
     assert.match(
       artifact,
-      /providerInsightsEnabled = resolveProviderInsightsBrowserActivation\(\{\s*buildEnabled: VERSION3_GEMINI_BROWSER_BUILD_ENABLED,\s*buildProjectId: VERSION3_GEMINI_BROWSER_BUILD_PROJECT_ID,/,
+      /var providerInsightsEmulatorEnabled = resolveProviderInsightsBrowserActivation\(\{\s*buildEnabled: VERSION3_GEMINI_BROWSER_BUILD_ENABLED,\s*buildProjectId: VERSION3_GEMINI_BROWSER_BUILD_PROJECT_ID,/,
+    );
+    assert.match(artifact, /providerAppCheckReadyPromise\.then\(\(appCheckReady\) =>/);
+    assert.match(
+      artifact,
+      /resolveLiveProviderInsightsBrowserActivation\(\{\s*buildEnabled: VERSION3_GEMINI_LIVE_BUILD_ENABLED,\s*buildProjectId: VERSION3_GEMINI_LIVE_BUILD_PROJECT_ID,/,
     );
     assert.equal(
       artifact.match(/\bproviderInsightsEnabled\s*=/g)?.length,
       2,
-      "the artifact may initialize and resolve the gate, but must not re-enable it elsewhere",
+      "the artifact may initialize and combine the two reviewed gates, but must not re-enable it elsewhere",
     );
     assert.match(
       artifact,
-      /providerInsightsEnabled \? `[\s\S]{0,2000}?data-testid="provider-insights-controls"/,
+      /providerInsightsEnabled \? `[\s\S]{0,4000}?data-testid="provider-insights-controls"/,
       "the assisted controls must remain reachable only through the hard-disabled gate",
     );
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test("authorized live artifact requires verified App Check, V2, and limited-use callable tokens", () => {
+  const outDir = mkdtempSync(join(tmpdir(), "morgan-bank-version3-live-artifact-"));
+  const siteKey = "test-only-recaptcha-enterprise-site-key";
+  const env = {
+    ...process.env,
+    CI: "true",
+    VITE_MULTI_TEACHER_V2_ENABLED: "true",
+    VITE_VERSION3_GEMINI_LIVE: "true",
+    VITE_VERSION3_GEMINI_PROJECT_ID: "morgan-bank",
+    VITE_FIREBASE_APP_CHECK_SITE_KEY: siteKey,
+  };
+  for (const name of [
+    "VITE_VERSION3_GEMINI_BROWSER_TEST",
+    "VITE_VERSION3_GEMINI_BROWSER_PROJECT_ID",
+    "VITE_MORGAN_BANK_DEPLOYMENT_TIER",
+  ]) delete env[name];
+
+  try {
+    execFileSync(
+      "npx",
+      ["vite", "build", "--minify=false", "--outDir", outDir, "--emptyOutDir"],
+      { cwd: REPO_ROOT, env, encoding: "utf8", stdio: "pipe" },
+    );
+    const artifact = collectJavaScript(outDir);
+    assert.match(
+      artifact,
+      /var providerAppCheckRequested = firebaseBuildEnvironment\.VITE_VERSION3_GEMINI_LIVE === "true";/,
+    );
+    assert.match(artifact, new RegExp(siteKey));
+    assert.match(artifact, /new ReCaptchaEnterpriseProvider\(key\)/);
+    assert.match(artifact, /const tokenResult = await getLimitedUseTokenFn\(/);
+    assert.match(artifact, /var VERSION3_GEMINI_LIVE_BUILD_ENABLED = true;/);
+    assert.match(artifact, /var VERSION3_GEMINI_LIVE_BUILD_PROJECT_ID = "morgan-bank";/);
+    assert.match(artifact, /limitedUseAppCheckTokens: true/);
+    assert.match(artifact, /providerAppCheckReadyPromise\.then\(\(appCheckReady\) =>/);
+    assert.match(artifact, /appCheckReady,/);
+    assert.match(artifact, /v2Enabled: IS_MULTI_TEACHER_V2_ENABLED/);
+    assert.match(artifact, /providerInsightsEnabled = true/);
+    assert.doesNotMatch(artifact, /GEMINI_API_KEY|@google\/genai|gemini-3\.5-flash-lite/);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test("live production-form artifact remains disabled when the V2 build flag is absent", () => {
+  const outDir = mkdtempSync(join(tmpdir(), "morgan-bank-version3-live-v2-off-artifact-"));
+  const env = {
+    ...process.env,
+    CI: "true",
+    VITE_VERSION3_GEMINI_LIVE: "true",
+    VITE_VERSION3_GEMINI_PROJECT_ID: "morgan-bank",
+    VITE_FIREBASE_APP_CHECK_SITE_KEY: "test-only-recaptcha-enterprise-site-key",
+  };
+  delete env.VITE_MULTI_TEACHER_V2_ENABLED;
+  for (const name of [
+    "VITE_VERSION3_GEMINI_BROWSER_TEST",
+    "VITE_VERSION3_GEMINI_BROWSER_PROJECT_ID",
+    "VITE_MORGAN_BANK_DEPLOYMENT_TIER",
+  ]) delete env[name];
+
+  try {
+    execFileSync(
+      "npx",
+      ["vite", "build", "--minify=false", "--outDir", outDir, "--emptyOutDir"],
+      { cwd: REPO_ROOT, env, encoding: "utf8", stdio: "pipe" },
+    );
+    const artifact = collectJavaScript(outDir);
+    assert.match(artifact, /var IS_MULTI_TEACHER_V2_ENABLED = false;/);
+    assert.match(artifact, /v2Enabled: IS_MULTI_TEACHER_V2_ENABLED/);
+    assert.match(artifact, /&& v2Enabled === true/);
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }

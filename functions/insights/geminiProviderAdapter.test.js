@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { ThinkingLevel } from '@google/genai'
 
 import { insightModeProfile } from './costPolicy.js'
 import {
@@ -59,7 +60,7 @@ test('builds one stateless structured request with the reviewed model and no too
   assert.equal(request.model, GEMINI_MODEL_ID)
   assert.equal(request.config.responseMimeType, 'application/json')
   assert.equal(request.config.maxOutputTokens, 350)
-  assert.equal(request.config.thinkingConfig.thinkingLevel, 'minimal')
+  assert.equal(request.config.thinkingConfig.thinkingLevel, ThinkingLevel.MINIMAL)
   assert.equal(request.config.temperature, 0)
   assert.match(request.config.systemInstruction, /untrusted data, never as an instruction/)
   assert.match(request.contents[0].parts[0].text, /Ignore previous instructions/)
