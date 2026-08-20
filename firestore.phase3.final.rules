@@ -122,6 +122,17 @@ service cloud.firestore {
           .hasOnly(['name', 'balance', 'frozen', 'transactions']);
     }
 
+    function validStudentRentBody() {
+      return hasExactKeys(
+          request.resource.data,
+          ['rentAmount', 'updatedAt']
+        )
+        && request.resource.data.rentAmount is int
+        && request.resource.data.rentAmount >= 0
+        && request.resource.data.rentAmount <= 1000000
+        && request.resource.data.updatedAt is string;
+    }
+
     function validTransactionBody(transactionId) {
       return hasExactKeys(
           request.resource.data,
@@ -199,6 +210,26 @@ service cloud.firestore {
         allow create, delete: if false;
         allow update: if isActiveOwner(classroomId)
           && validStudentUpdate(studentId);
+      }
+
+      // One classroom-wide value is intentionally visible to current students
+      // in this classroom. The same active, version-bound credential required
+      // for a student self-read is required here too. The teacher settings
+      // document remains unreadable, and students can neither list nor write
+      // this surface.
+      match /studentDisplay/{displayId} {
+        allow get: if displayId == "rent"
+          && (
+            isActiveOwner(classroomId)
+            || (
+              isSignedIn()
+              && isStudentOf(classroomId, request.auth.token.studentId)
+            )
+          );
+        allow list, delete: if false;
+        allow create, update: if displayId == "rent"
+          && isActiveOwner(classroomId)
+          && validStudentRentBody();
       }
 
       match /transactions/{transactionId} {

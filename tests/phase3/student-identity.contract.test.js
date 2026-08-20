@@ -556,7 +556,7 @@ describe('Phase 3 student-identity source contract', () => {
   it('source contract: V2 export is PIN-free and V2 import is disabled', () => {
     assert.match(
       indexHtml,
-      /import \{ projectBackupExport \} from "\.\/src\/phase3\/tenantDataProjection\.js"/,
+      /import \{[^}]*\bprojectBackupExport\b[^}]*\} from "\.\/src\/phase3\/tenantDataProjection\.js"/,
     )
 
     const exportLine = matchingLines(/function exportBackup\(/)[0]
@@ -664,6 +664,35 @@ describe('Phase 3 student-identity source contract', () => {
       readFileSync(new URL('../../src/phase2b/tenantClient.js', import.meta.url), 'utf8'),
       /callableAdapter\("studentPinLoginV2", payload\)/,
     )
+  })
+
+  it('source contract: rent is teacher-editable, student-read-only, and never a balance mutation', () => {
+    const teacherStart = indexHtml.indexOf('if (screen === "teacher" && isTeacher) {')
+    const teacherEnd = indexHtml.indexOf('\n      if (screen === "approvals"', teacherStart)
+    const teacherMarkup = indexHtml.slice(teacherStart, teacherEnd)
+    assert.match(teacherMarkup, /id="teacherRentCard"/)
+    assert.match(teacherMarkup, /id="teacherRentAmount"/)
+    assert.match(teacherMarkup, /onclick="saveRentAmount\(\)"/)
+
+    const studentStart = indexHtml.indexOf('if (screen === "student" && student) {')
+    const studentEnd = indexHtml.indexOf('\n      document.getElementById("app")', studentStart)
+    const studentMarkup = indexHtml.slice(studentStart, studentEnd)
+    const rentStart = studentMarkup.indexOf('id="studentRentDisplay"')
+    const rentEnd = studentMarkup.indexOf('</div>', rentStart)
+    const rentMarkup = studentMarkup.slice(rentStart, rentEnd)
+    assert.match(rentMarkup, /Current Rent:/)
+    assert.doesNotMatch(rentMarkup, /<input|<button|onclick=/)
+
+    const saveStart = indexHtml.indexOf('async function saveRentAmount()')
+    const saveEnd = indexHtml.indexOf('\n    function saveSettings()  {', saveStart)
+    const saveBody = indexHtml.slice(saveStart, saveEnd)
+    assert.match(saveBody, /if \(!requireTeacher\(\) \|\| rentUpdatePending\) return;/)
+    assert.match(saveBody, /const normalized = raw\.trim\(\)/)
+    assert.match(saveBody, /Number\(normalized\)/)
+    assert.match(saveBody, /Number\.isSafeInteger\(amount\)/)
+    assert.match(saveBody, /amount > MAX_RENT_AMOUNT/)
+    assert.match(saveBody, /data\.settings\.rentAmount = amount/)
+    assert.doesNotMatch(saveBody, /student\.balance|data\.transactions|saveTeacherTransaction/)
   })
 
   it('source contract: a stale V2 student-login completion cannot rewrite UI message state', () => {

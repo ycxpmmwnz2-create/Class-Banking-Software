@@ -16,7 +16,7 @@ import {
 
 const FINAL_RULES_PATH = 'firestore.phase3.final.rules'
 const FINAL_RULES_SHA256 =
-  '1ed51ca745742cf2a76d910fc83b48df9300de1ddbcd2f438a050f748798f5bb'
+  'f071377d7abf8d1d0009e5b9083a42f3cc7c69cdc6b501f6ea6eaf8bc4791702'
 const PRODUCTION_RULES_SHA256 =
   '0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50'
 
@@ -98,6 +98,13 @@ function historyBody(id, studentId, marker) {
   }
 }
 
+function rentBody(amount, marker) {
+  return {
+    rentAmount: amount,
+    updatedAt: `2026-07-27T12:00:00.000Z-${marker}`,
+  }
+}
+
 async function seed() {
   await testEnv.withSecurityRulesDisabled(async context => {
     const db = context.firestore()
@@ -128,6 +135,10 @@ async function seed() {
       await db.doc(`classrooms/${room}/students/${student}`).set(
         studentBody(student, marker),
       )
+      await db.doc(`classrooms/${room}/studentDisplay/rent`).set(rentBody(
+        marker === 'A' ? 25 : 40,
+        marker,
+      ))
       await db.doc(`classrooms/${room}/transactions/${tx}`).set(
         transactionBody(tx, student, marker),
       )
@@ -250,7 +261,13 @@ describe('Phase 3 Item 10 final rules', () => {
     const executable = readFileSync(FINAL_RULES_PATH, 'utf8')
       .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
     assert.doesNotMatch(executable, /match\s+\/classrooms\/\{\s*document\s*=\s*\*\*\s*\}/)
-    for (const surface of ['students', 'transactions', 'loginHistory', 'studentCredentials']) {
+    for (const surface of [
+      'students',
+      'studentDisplay',
+      'transactions',
+      'loginHistory',
+      'studentCredentials',
+    ]) {
       assert.match(executable, new RegExp(`match\\s+/${surface}/\\{`))
     }
     assert.match(executable, /match \/studentAuthLogs\/\{logId\}/)
@@ -266,6 +283,7 @@ describe('Phase 3 Item 10 final rules', () => {
       await assertSucceeds(own.doc(`teachers/${direction.owner}`).get())
       await assertSucceeds(own.doc(`classrooms/${direction.room}`).get())
       await assertSucceeds(own.doc(`classrooms/${direction.room}/students/${direction.student}`).get())
+      await assertSucceeds(own.doc(`classrooms/${direction.room}/studentDisplay/rent`).get())
       await assertSucceeds(own.collection(`classrooms/${direction.room}/students`).get())
       await assertSucceeds(own.doc(`classrooms/${direction.room}/transactions/${direction.tx}`).get())
       await assertSucceeds(own.collection(`classrooms/${direction.room}/transactions`).get())
@@ -275,6 +293,7 @@ describe('Phase 3 Item 10 final rules', () => {
       await assertFails(other.doc(`teachers/${direction.owner}`).get())
       await assertFails(other.doc(`classrooms/${direction.room}`).get())
       await assertFails(other.collection(`classrooms/${direction.room}/students`).get())
+      await assertFails(other.doc(`classrooms/${direction.room}/studentDisplay/rent`).get())
       await assertFails(other.collection(`classrooms/${direction.room}/transactions`).get())
       await assertFails(other.collection(`classrooms/${direction.room}/loginHistory`).get())
       await assertFails(other.collection(`studentAuthLogs/${direction.room}/logs`).get())
@@ -329,6 +348,24 @@ describe('Phase 3 Item 10 final rules', () => {
       await assertFails(own.doc(`classrooms/${direction.room}`).update({ name: 'renamed' }))
       await assertFails(own.doc(`classrooms/${direction.room}`).delete())
       await assertFails(own.doc(`classrooms/forged-${direction.room}`).set({ ownerUid: direction.owner }))
+    })
+
+    test(`${direction.marker}: owner alone writes an exact bounded rent display`, async () => {
+      const own = teacher(direction.owner)
+      const other = teacher(direction.intruder)
+      const path = `classrooms/${direction.room}/studentDisplay/rent`
+
+      await assertSucceeds(own.doc(path).set(rentBody(35, 'updated')))
+      await assertFails(other.doc(path).set(rentBody(36, 'foreign')))
+      await assertFails(own.doc(path).set({ rentAmount: -1, updatedAt: 'bad' }))
+      await assertFails(own.doc(path).set({ rentAmount: 1.5, updatedAt: 'bad' }))
+      await assertFails(own.doc(path).set({ rentAmount: 1_000_001, updatedAt: 'bad' }))
+      await assertFails(own.doc(path).set({ rentAmount: 35 }))
+      await assertFails(own.doc(path).set({ ...rentBody(35, 'extra'), extra: true }))
+      await assertFails(own.doc(path).delete())
+      await assertFails(own.doc(`classrooms/${direction.room}/studentDisplay/other`).set(
+        rentBody(35, 'wrong-id'),
+      ))
     })
 
     test(`${direction.marker}: student update has exact keys, immutable id, and no create/delete`, async () => {
@@ -443,7 +480,7 @@ describe('Phase 3 Item 10 final rules', () => {
     }
   })
 
-  test('students retain exact self-read and receive no list, cross-student, or write permission', async () => {
+  test('students retain exact self/rent reads and receive no list, foreign, or write permission', async () => {
     for (const [room, ownId, otherRoom, otherId, existingTx, marker] of [
       [A_ROOM, A_STUDENT, B_ROOM, B_STUDENT, A_TX, 'A'],
       [B_ROOM, B_STUDENT, A_ROOM, A_STUDENT, B_TX, 'B'],
@@ -451,10 +488,17 @@ describe('Phase 3 Item 10 final rules', () => {
       const db = student(`auth-${room}`, room, ownId)
       const ownPath = `classrooms/${room}/students/${ownId}`
       await assertSucceeds(db.doc(ownPath).get())
+      await assertSucceeds(db.doc(`classrooms/${room}/studentDisplay/rent`).get())
       await assertFails(db.collection(`classrooms/${room}/students`).get())
+      await assertFails(db.collection(`classrooms/${room}/studentDisplay`).get())
+      await assertFails(db.doc(`classrooms/${room}/studentDisplay/other`).get())
       await assertFails(db.doc(ownPath).update({ balance: 999 }))
+      await assertFails(db.doc(`classrooms/${room}/studentDisplay/rent`).set(
+        rentBody(999, 'student-write'),
+      ))
       await assertFails(db.doc(ownPath).delete())
       await assertFails(db.doc(`classrooms/${otherRoom}/students/${otherId}`).get())
+      await assertFails(db.doc(`classrooms/${otherRoom}/studentDisplay/rent`).get())
       await assertFails(db.doc(`classrooms/${room}`).get())
       await assertFails(db.doc(`classrooms/${room}/transactions/9901`).set(
         transactionBody('9901', ownId, marker),
@@ -479,7 +523,9 @@ describe('Phase 3 Item 10 final rules', () => {
   test('a PIN reset immediately invalidates the prior student Firestore session', async () => {
     const oldSession = student(`auth-${A_ROOM}`, A_ROOM, A_STUDENT)
     const studentPath = `classrooms/${A_ROOM}/students/${A_STUDENT}`
+    const rentPath = `classrooms/${A_ROOM}/studentDisplay/rent`
     await assertSucceeds(oldSession.doc(studentPath).get())
+    await assertSucceeds(oldSession.doc(rentPath).get())
 
     await testEnv.withSecurityRulesDisabled(async context => {
       await context.firestore()
@@ -488,9 +534,36 @@ describe('Phase 3 Item 10 final rules', () => {
     })
 
     await assertFails(oldSession.doc(studentPath).get())
-    await assertSucceeds(
-      student(`auth-${A_ROOM}`, A_ROOM, A_STUDENT, 2000).doc(studentPath).get(),
-    )
+    await assertFails(oldSession.doc(rentPath).get())
+    const currentSession = student(`auth-${A_ROOM}`, A_ROOM, A_STUDENT, 2000)
+    await assertSucceeds(currentSession.doc(studentPath).get())
+    await assertSucceeds(currentSession.doc(rentPath).get())
+  })
+
+  test('student rent reads require an active credential and complete current claims', async () => {
+    const rentPath = `classrooms/${A_ROOM}/studentDisplay/rent`
+    const currentSession = student(`auth-${A_ROOM}`, A_ROOM, A_STUDENT)
+    await assertSucceeds(currentSession.doc(rentPath).get())
+
+    await testEnv.withSecurityRulesDisabled(async context => {
+      await context.firestore()
+        .doc(`classrooms/${A_ROOM}/studentCredentials/${SHARED_LOGIN_ID}`)
+        .update({ active: false })
+    })
+    await assertFails(currentSession.doc(rentPath).get())
+
+    await testEnv.withSecurityRulesDisabled(async context => {
+      await context.firestore()
+        .doc(`classrooms/${A_ROOM}/studentCredentials/${SHARED_LOGIN_ID}`)
+        .delete()
+    })
+    await assertFails(currentSession.doc(rentPath).get())
+
+    const incompleteClaims = testEnv.authenticatedContext(`auth-${A_ROOM}`, {
+      role: 'student',
+      classroomId: A_ROOM,
+    }).firestore()
+    await assertFails(incompleteClaims.doc(rentPath).get())
   })
 
   test('a migrated Timestamp credential version matches the same millisecond claim', async () => {

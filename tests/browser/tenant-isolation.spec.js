@@ -406,6 +406,22 @@ test("ready teacher header shows only the resolved tenant classroom code", async
   );
   await expect(page.getByText("Classroom code copied.")).toBeVisible();
 
+  await loginInfo.getByRole("button", { name: "Copy student login link" }).click();
+  await expect.poll(async () => {
+    const copied = await page.evaluate(() => window.__COPIED_CLASSROOM_CODE__);
+    return typeof copied === "string" && copied.startsWith("http") ? copied : "";
+  }).not.toBe("");
+  const copiedStudentLoginLink = await page.evaluate(() => window.__COPIED_CLASSROOM_CODE__);
+  const copiedStudentLoginUrl = new URL(copiedStudentLoginLink);
+  const currentAppUrl = new URL(page.url());
+  expect(copiedStudentLoginUrl.origin).toBe(currentAppUrl.origin);
+  expect(copiedStudentLoginUrl.pathname).toBe(currentAppUrl.pathname);
+  expect(copiedStudentLoginUrl.search).toBe("");
+  expect(copiedStudentLoginUrl.hash).toBe(`#student-login=${TENANT_A.studentLoginCode}`);
+  expect(copiedStudentLoginLink).not.toContain(SHARED_LOGIN_ID);
+  expect(copiedStudentLoginLink).not.toMatch(/pin|password|token|student-id/i);
+  await expect(page.getByText("Student login link copied.")).toBeVisible();
+
   await signOutPage(page);
   await expect(page.locator(".student-login-info")).toHaveCount(0);
   await signIn(page, TENANT_B);

@@ -746,6 +746,17 @@
       color: rgba(18, 50, 58, 0.76);
     }
 
+    .student-rent-display {
+      display: inline-block;
+      padding: 10px 14px;
+      margin: 8px 0 12px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.7);
+      font-size: 20px;
+      font-weight: 900;
+      color: var(--teal-dark);
+    }
+
     .small-note {
       font-size: 13px;
       color: var(--muted);
@@ -1092,8 +1103,9 @@ import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./sr
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
 import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateStudentPinDirectoryFetch, orchestrateStudentTransaction, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, reconcileStudentPinDirectory, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
 import { formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
+import { sortStudentsByName } from "./src/phase2b/studentDisplay.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
-import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
+import { MAX_RENT_AMOUNT, projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 import { sanitizeLegacyBackup } from "./src/legacy/backupImport.js";
 import { buildClassInsightsReport, buildInsightsDataSignature, INSIGHTS_BUDGETS, INSIGHTS_PERIODS } from "./src/insights/classInsights.js";
 import { VERSION3_GEMINI_BROWSER_PROJECT_ID, createProviderInsightsBrowserClient, mapProviderInsightsError, resolveProviderInsightsBrowserActivation } from "./src/insights/providerInsightsClient.js";
@@ -1106,6 +1118,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     const STORAGE_KEY = "mrMorganClassCashDataV5";
     const TEACHER_UID = "YkYUzIzy0aW7roolM1VaLcIJPuN2";
     const defaultSettings = {
+      rentAmount: 0,
       studentRequestsEnabled: true,
       studentAddRequestsEnabled: true,
       studentSubtractRequestsEnabled: true,
@@ -1196,6 +1209,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let bulkOperationPending = false;
     let studentLifecyclePending = false;
     let studentMoneySubmissionPending = false;
+    let rentUpdatePending = false;
     // Preserve only the latest failed in-memory attempt so an ambiguous network
     // failure can be retried with the same server-idempotency key. It is never
     // persisted and is cleared on success or any session reset.
@@ -1278,6 +1292,11 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
         settings: {
           ...defaultSettings,
           ...(parsed.settings || {}),
+          rentAmount: Number.isSafeInteger(parsed.settings?.rentAmount)
+            && parsed.settings.rentAmount >= 0
+            && parsed.settings.rentAmount <= MAX_RENT_AMOUNT
+              ? parsed.settings.rentAmount
+              : defaultSettings.rentAmount,
           reasons: Array.isArray(parsed.settings?.reasons) ? parsed.settings.reasons : defaultSettings.reasons,
           purchaseCategories: Array.isArray(parsed.settings?.purchaseCategories) ? parsed.settings.purchaseCategories : defaultSettings.purchaseCategories,
           addMoneyCategories: Array.isArray(parsed.settings?.addMoneyCategories) ? parsed.settings.addMoneyCategories : defaultSettings.addMoneyCategories,
@@ -2256,7 +2275,9 @@ function toggleStudentDropdown() {
       const classroomCode = rememberedLocator
         ? rememberedLocator.classroomCode
         : IS_MULTI_TEACHER_V2_ENABLED
-          ? document.getElementById("studentClassroomCode")?.value.trim() || ""
+          ? formatStudentClassroomCodeDraft(
+              document.getElementById("studentClassroomCode")?.value || ""
+            )
           : "";
       const loginId = rememberedLocator
         ? rememberedLocator.loginId
@@ -2318,6 +2339,9 @@ function toggleStudentDropdown() {
           studentClassroomCodeDraft = studentLoginLocator
             ? studentLoginLocator.classroomCode
             : readRememberedStudentClassroomCode();
+          if (studentLoginLocator) {
+            clearStudentClassroomCodeFromLink(classroomCode);
+          }
           studentLoginIdDraft = "";
           return;
         }
@@ -3077,6 +3101,49 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
   screen = "settings";
   render();
 }
+    async function saveRentAmount() {
+      if (!requireTeacher() || rentUpdatePending) return;
+      const input = document.getElementById("teacherRentAmount");
+      const raw = typeof input?.value === "string" ? input.value : "";
+      const normalized = raw.trim();
+      if (!/^[0-9]+$/.test(normalized)) {
+        message = "Rent must be a whole-dollar amount of $0 or more.";
+        render();
+        return;
+      }
+
+      const amount = Number(normalized);
+      if (!Number.isSafeInteger(amount) || amount < 0 || amount > MAX_RENT_AMOUNT) {
+        message = `Rent must be between $0 and $${MAX_RENT_AMOUNT.toLocaleString()}.`;
+        render();
+        return;
+      }
+
+      const previousAmount = data.settings.rentAmount;
+      const captured = IS_MULTI_TEACHER_V2_ENABLED
+        ? v2TenantSession.captureIdentity()
+        : null;
+      rentUpdatePending = true;
+      data.settings.rentAmount = amount;
+      message = "Saving rent...";
+      render();
+
+      const result = await saveData();
+      if (captured && !v2TenantSession.validateCapturedIdentity(captured)) return;
+
+      rentUpdatePending = false;
+      if (IS_MULTI_TEACHER_V2_ENABLED && !result?.executed) {
+        if (result?.reason !== "concurrent-classroom-change") {
+          data.settings.rentAmount = previousAmount;
+        }
+        render();
+        return;
+      }
+
+      message = `Rent updated to ${dollars(amount)}. No student balances were changed.`;
+      render();
+    }
+
     function saveSettings()  {
       if (!requireTeacher()) return;
       const reasonsText = document.getElementById("reasonList").value;
@@ -3575,6 +3642,73 @@ link.click();
       return `${canonical.slice(0, 4)}-${canonical.slice(4)}`;
     }
 
+    // Make the first-login classroom locator easy to enter from a printed or
+    // displayed code. Physical keyboards do not reliably honor autocapitalize,
+    // so normalize allowed characters as the student types, insert the separator
+    // after the fifth character, and apply the same behavior to pasted text.
+    // This is presentation-only convenience: the callable still validates the
+    // submitted code independently, and stored locators remain strict.
+    function formatStudentClassroomCodeDraft(rawCode) {
+      if (typeof rawCode !== "string") return "";
+      const asciiUpper = rawCode.replace(
+        /[a-z]/g,
+        char => String.fromCharCode(char.charCodeAt(0) - 32)
+      );
+      const canonical = asciiUpper.replace(/[^2-9A-HJ-NP-Z]/g, "").slice(0, 8);
+      if (canonical.length < 4) return canonical;
+      if (canonical.length === 4) {
+        return /[-\s]$/.test(rawCode) ? `${canonical}-` : canonical;
+      }
+      return `${canonical.slice(0, 4)}-${canonical.slice(4)}`;
+    }
+
+    // A classroom link is a non-secret locator only. Keep it in the fragment so
+    // Hosting and other servers never receive it, accept exactly one reviewed
+    // field, and never place a login ID, PIN, token, or student record in the URL.
+    function readStudentClassroomCodeFromLink() {
+      if (!IS_MULTI_TEACHER_V2_ENABLED) return "";
+      let entries;
+      try {
+        entries = [...new URLSearchParams(window.location.hash.slice(1)).entries()];
+      } catch {
+        return "";
+      }
+      if (entries.length !== 1 || entries[0][0] !== "student-login") return "";
+      const rawCode = entries[0][1];
+      const code = formatRememberedStudentClassroomCode(rawCode);
+      return code && code === rawCode ? code : "";
+    }
+
+    function studentClassroomLoginLink(rawCode) {
+      const code = formatRememberedStudentClassroomCode(rawCode);
+      if (!code || code !== rawCode) return "";
+      const url = new URL(window.location.href);
+      url.search = "";
+      url.hash = new URLSearchParams({ "student-login": code }).toString();
+      return url.toString();
+    }
+
+    function clearStudentClassroomCodeFromLink(rawCode) {
+      const linkedCode = readStudentClassroomCodeFromLink();
+      if (!linkedCode || linkedCode !== rawCode) return false;
+      try {
+        const url = new URL(window.location.href);
+        url.hash = "";
+        window.history.replaceState(window.history.state, "", url);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function handleStudentClassroomCodeInput(event) {
+      const input = event?.currentTarget;
+      if (!input || typeof input.value !== "string") return;
+      const formatted = formatStudentClassroomCodeDraft(input.value);
+      input.value = formatted;
+      studentClassroomCodeDraft = formatted;
+    }
+
     // The superseded one-field convenience. Still read so a browser that only
     // ever stored a classroom code keeps that prefill until its next successful
     // login upgrades it to the combined locator. Nothing writes this key anymore.
@@ -3818,6 +3952,22 @@ link.click();
         : "Could not copy the classroom code. Select the code and copy it manually.");
     }
 
+    async function copyStudentClassroomLoginLink() {
+      if (!requireTeacher()) return;
+      const code = resolvedStudentLoginCode();
+      const link = studentClassroomLoginLink(code);
+      if (!link) {
+        showMessage("The student login link is not available yet.");
+        return;
+      }
+
+      const copied = await copyTextWithFallback(link);
+      if (!requireTeacher() || resolvedStudentLoginCode() !== code) return;
+      showMessage(copied
+        ? "Student login link copied."
+        : "Could not copy the student login link. Please try again.");
+    }
+
     function render() {
       if (screen !== "studentProfile" || !isTeacher) {
         clearTemporaryProfileStudentPin();
@@ -3897,7 +4047,7 @@ link.click();
       const transactionsToday = data.transactions.filter(transaction =>
         new Date(transaction.date).toDateString() === today
       ).length;
-      const studentOptions = data.students.map(student =>
+      const studentOptions = sortStudentsByName(data.students).map(student =>
         `<option value="${student.id}">${escapeHtml(student.name)}</option>`
       ).join("");
 
@@ -3922,7 +4072,6 @@ link.click();
             ${isTeacher ? `<button onclick="setScreen('teacher')">Dashboard</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('insights')">Insights</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('approvals')">Approvals</button>` : ""}
-            ${isTeacher ? `<button onclick="setScreen('purchases')">Payments</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('roster')">Roster</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('settings')">Settings</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('credentials')">Credentials</button>` : ""}
@@ -3975,7 +4124,7 @@ link.click();
               ` : `
                 ${IS_MULTI_TEACHER_V2_ENABLED ? `
                   <label for="studentClassroomCode">Classroom code</label>
-                  <input id="studentClassroomCode" value="${escapeHtml(studentClassroomCodeDraft)}" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
+                  <input id="studentClassroomCode" value="${escapeHtml(studentClassroomCodeDraft)}" placeholder="XXXX-XXXX" maxlength="9" autocomplete="off" autocapitalize="characters" spellcheck="false" oninput="handleStudentClassroomCodeInput(event)" onkeydown="handleLoginEnter(event, 'student')" ${studentLoginPending ? "disabled" : ""} />
                   <p class="small-note">After a successful login, this browser remembers only the classroom code and student login ID, so next time you sign in with just your PIN. Your PIN is never saved. Private browsing forgets both when the private window closes.</p>
                 ` : ""}
                 <label for="studentLoginId">Student login ID</label>
@@ -3999,9 +4148,30 @@ link.click();
               <span>Classroom code:</span>
               <span id="teacherStudentClassroomCode" class="student-login-info-code">${escapeHtml(resolvedStudentLoginCode())}</span>
               <button type="button" class="primary" onclick="copyStudentClassroomCode()" aria-label="Copy classroom code">Copy code</button>
+              <button type="button" class="primary" onclick="copyStudentClassroomLoginLink()" aria-label="Copy student login link">Copy student login link</button>
             </div>
           </div>
           ` : ""}
+
+          <div id="teacherRentCard" class="card no-print soft-card">
+            <h2>Class Rent</h2>
+            <div id="teacherRentDisplay" class="big-balance">${dollars(data.settings.rentAmount)}</div>
+            <p class="small-note">This amount is displayed to students. Saving it does not charge accounts or create transactions.</p>
+            <label for="teacherRentAmount">Rent amount</label>
+            <input
+              id="teacherRentAmount"
+              type="number"
+              min="0"
+              max="${MAX_RENT_AMOUNT}"
+              step="1"
+              inputmode="numeric"
+              value="${data.settings.rentAmount}"
+              ${rentUpdatePending ? "disabled" : ""}
+            />
+            <button class="primary" onclick="saveRentAmount()" ${rentUpdatePending ? "disabled" : ""}>
+              ${rentUpdatePending ? "Saving Rent..." : "Save Rent"}
+            </button>
+          </div>
 
           <div class="card no-print dashboard-insights">
             <h2>Dashboard Insights</h2>
@@ -4097,7 +4267,7 @@ ${data.students.length === 0 ? `
 
 ${transactionTarget !== "whole" ? `
   <div class="student-check-list full-row" style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
-    ${data.students.map(student => `
+    ${sortStudentsByName(data.students).map(student => `
       <label class="student-check-item" style="display: flex; align-items: center; gap: 10px; width: 100%;">
         <input
           type="checkbox"
@@ -4393,7 +4563,7 @@ ${transactionTarget !== "whole" ? `
               </div>
               ${data.students.length === 0 ? `
                 <div class="empty">No students yet. Add your first student on the left.</div>
-              ` : data.students.map(student => `
+              ` : sortStudentsByName(data.students).map(student => `
                 <div class="roster-row${IS_MULTI_TEACHER_V2_ENABLED ? " v2-roster-row" : ""}" data-roster-student-name="${escapeHtml(student.name.toLowerCase())}">
                   <div>
                     <label for="name-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Student Name</label>
@@ -4585,7 +4755,7 @@ ${transactionTarget !== "whole" ? `
               ` : `
                 <label for="loginHistoryStudentSelect">Student</label>
                 <select id="loginHistoryStudentSelect" onchange="updateLoginHistoryView()">
-                  ${data.students.map(student => `<option value="${student.id}">${escapeHtml(student.name)}</option>`).join("")}
+                  ${sortStudentsByName(data.students).map(student => `<option value="${student.id}">${escapeHtml(student.name)}</option>`).join("")}
                 </select>
                 <div id="studentLoginHistoryContainer">
                   ${loginHistoryTableForSelectedStudent()}
@@ -4640,7 +4810,7 @@ ${transactionTarget !== "whole" ? `
                   </tr>
                 </thead>
                 <tbody>
-                  ${data.students.map(student => {
+                  ${sortStudentsByName(data.students).map(student => {
                     const loginId = typeof student.name === "string" ? student.name.trim().replaceAll(' ', '-').toLowerCase() : "student";
                     const currentPin = IS_MULTI_TEACHER_V2_ENABLED
                       ? credentialStudentPin(student.id)
@@ -4790,6 +4960,7 @@ if (screen === "editSettingsLists" && isTeacher) {
                 <h2>${escapeHtml(student.name)}'s Account</h2>
                 ${student.frozen ? `<div class="note backup-reminder">This account is currently frozen. Please see Mr. Morgan.</div>` : ""}
                 <div class="big-balance">${dollars(student.balance)}</div>
+              <div id="studentRentDisplay" class="student-rent-display"><strong>Current Rent:</strong> ${dollars(data.settings.rentAmount)}</div>
               <div class="pending-balance">Pending Credit/Debit Change: ${pendingChange >= 0 ? "+" : ""}${dollars(pendingChange)}</div>
               <div class="pending-balance">Pending Total: ${dollars(Number(student.balance) + pendingChange)}</div>
               </div>
@@ -4901,14 +5072,17 @@ if (screen === "editSettingsLists" && isTeacher) {
       // Rehydrate it after the shared reset so an ordinary logout keeps the next
       // daily student login fast, while retaining no PIN, token, Auth UID, student
       // name, or student record.
-      studentLoginLocator = readStudentLoginLocator();
-      studentClassroomCodeDraft = studentLoginLocator
+      const linkedStudentClassroomCode = readStudentClassroomCodeFromLink();
+      studentLoginLocator = linkedStudentClassroomCode ? null : readStudentLoginLocator();
+      studentClassroomCodeDraft = linkedStudentClassroomCode || (studentLoginLocator
         ? studentLoginLocator.classroomCode
-        : readRememberedStudentClassroomCode();
+        : readRememberedStudentClassroomCode());
+      if (linkedStudentClassroomCode) loginTab = "student";
       // Render-affecting V2 view state that is not part of the shared legacy
       // global contract must be cleared by the same synchronous reset, or a
       // previous tenant's offline badge / profile login ID can survive a switch.
       v2IsOffline = false;
+      rentUpdatePending = false;
       isPlatformAdmin = false;
       teacherInvitationPending = false;
       teacherInvitationEmailDraft = "";
@@ -5089,10 +5263,12 @@ if (screen === "editSettingsLists" && isTeacher) {
     const V2_STUDENT_LOGIN_LOCATOR_STORAGE_KEY =
       `morganBank:v2:${V2_ACTIVE_PROJECT_ID}:student-login:locator:v1`;
 
-    studentLoginLocator = readStudentLoginLocator();
-    studentClassroomCodeDraft = studentLoginLocator
+    const linkedStudentClassroomCode = readStudentClassroomCodeFromLink();
+    studentLoginLocator = linkedStudentClassroomCode ? null : readStudentLoginLocator();
+    studentClassroomCodeDraft = linkedStudentClassroomCode || (studentLoginLocator
       ? studentLoginLocator.classroomCode
-      : readRememberedStudentClassroomCode();
+      : readRememberedStudentClassroomCode());
+    if (linkedStudentClassroomCode) loginTab = "student";
 
     const v2TenantSession = new TenantSession({
       storageAdapter: localStorage,
@@ -5314,9 +5490,11 @@ if (screen === "editSettingsLists" && isTeacher) {
 window.loginTeacherWithGoogle = loginTeacherWithGoogle;
 window.linkGoogleAccount = linkGoogleAccount;
 window.handleLoginEnter = handleLoginEnter;
+window.handleStudentClassroomCodeInput = handleStudentClassroomCodeInput;
 window.loginStudent = loginStudent;
 window.useDifferentStudent = useDifferentStudent;
 window.copyStudentClassroomCode = copyStudentClassroomCode;
+window.copyStudentClassroomLoginLink = copyStudentClassroomLoginLink;
 window.toggleProfileNewStudentPinVisibility = toggleProfileNewStudentPinVisibility;
 window.copyProfileNewStudentPin = copyProfileNewStudentPin;
 window.copyTemporaryProfileStudentPin = copyTemporaryProfileStudentPin;
@@ -5364,6 +5542,7 @@ window.filterRoster = filterRoster;
 window.toggleTeacherChoiceMemo = toggleTeacherChoiceMemo;
 window.saveSettings = saveSettings;
 window.saveSettingsLists = saveSettingsLists;
+window.saveRentAmount = saveRentAmount;
 window.exportBackup = exportBackup;
 window.importBackup = importBackup;
   </script>

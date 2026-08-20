@@ -90,6 +90,50 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     )
   }
 
+  test('student classroom code supports typing with or without the separator and pasting', async ({ page }) => {
+    await gotoApp(page)
+    await waitForQuiescence(page)
+    await page.evaluate(() => window.setLoginTab('student'))
+    const input = page.locator('#studentClassroomCode')
+    const canonical = TENANT_A.studentLoginCode
+
+    await input.pressSequentially(canonical.replace('-', '').toLowerCase())
+    await expect(input).toHaveValue(canonical)
+
+    await input.fill('')
+    await input.pressSequentially(canonical.toLowerCase())
+    await expect(input).toHaveValue(canonical)
+
+    await input.fill(canonical.toLowerCase())
+    await expect(input).toHaveValue(canonical)
+  })
+
+  test('classroom-specific link opens the full student form with only the classroom code prefilled', async ({ page }) => {
+    await gotoApp(page)
+    await waitForQuiescence(page)
+    const linkedUrl = await page.evaluate(classroomCode => {
+      const url = new URL(window.location.href)
+      url.search = ''
+      url.hash = new URLSearchParams({ 'student-login': classroomCode }).toString()
+      return url.toString()
+    }, TENANT_A.studentLoginCode)
+
+    // Reload the application through the shared link. A same-document hash
+    // change would not exercise the startup behavior students actually use.
+    await page.goto('about:blank')
+    await page.goto(linkedUrl)
+    await waitForQuiescence(page)
+
+    await expect(page.locator('#studentClassroomCode')).toHaveValue(TENANT_A.studentLoginCode)
+    await expect(page.locator('#studentLoginId')).toHaveValue('')
+    await expect(page.locator('#studentPin')).toHaveValue('')
+    await expect(page.locator('#rememberedStudentIdentity')).toHaveCount(0)
+    expect(
+      await page.evaluate(() => window.__PHASE2B_TEST__.localKeys()
+        .filter(key => key.includes(':student-login:'))),
+    ).toEqual([])
+  })
+
   test('teacher can reveal, copy, and temporarily display only the newly submitted PIN', async ({ page }) => {
     await page.addInitScript(() => {
       Object.defineProperty(navigator, 'clipboard', {
@@ -391,6 +435,73 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
       JSON.stringify({ classroomCode: TENANT_B.studentLoginCode, loginId: SHARED_LOGIN_ID }),
     )
     expect(await page.evaluate(() => document.body.innerText)).not.toContain(TENANT_A.studentMarker)
+  })
+
+  test('teacher rent changes are tenant-scoped, display-only, and read-only for students', async ({ page }) => {
+    const seeded = getSeeded()
+    await gotoApp(page)
+    await signInTeacher(page, TENANT_A)
+    await waitForQuiescence(page)
+
+    await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${TENANT_A.rentAmount}`)
+    await expect(page.locator('#teacherRentAmount')).toHaveValue(String(TENANT_A.rentAmount))
+    const classCashBefore = await page.getByText(/^Class Cash:/).textContent()
+    const savesBefore = await page.evaluate(
+      () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
+    )
+
+    await page.locator('#teacherRentAmount').fill('-1')
+    await page.getByRole('button', { name: 'Save Rent' }).click()
+    await expect(page.getByText('Rent must be a whole-dollar amount of $0 or more.')).toBeVisible()
+    await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${TENANT_A.rentAmount}`)
+
+    const updatedRent = 35
+    await page.locator('#teacherRentAmount').fill(String(updatedRent).padStart(4, '0'))
+    await page.getByRole('button', { name: 'Save Rent' }).click()
+    await expect.poll(() => page.evaluate(
+      () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
+    )).toBeGreaterThan(savesBefore)
+    await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${updatedRent}`)
+    await expect(page.getByText(
+      `Rent updated to $${updatedRent}. No student balances were changed.`,
+    )).toBeVisible()
+    expect(await page.getByText(/^Class Cash:/).textContent()).toBe(classCashBefore)
+
+    await logout(page)
+    await activateThroughProductionUi(page, TENANT_A, '2468')
+    await submitStudentLogin(page, {
+      classroomCode: TENANT_A.studentLoginCode,
+      loginId: SHARED_LOGIN_ID,
+      pin: '2468',
+    })
+    await expect.poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBe(
+      seeded.credentials.aSharedCredential.authUid,
+    )
+    await waitForQuiescence(page)
+    await expect(page.locator('#studentRentDisplay')).toHaveText(`Current Rent: $${updatedRent}`)
+    await expect(page.locator('#studentRentDisplay').locator('input, button')).toHaveCount(0)
+    await expect(page.locator('#teacherRentCard')).toHaveCount(0)
+
+    await logout(page)
+    await signInTeacher(page, TENANT_B)
+    await waitForQuiescence(page)
+    await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${TENANT_B.rentAmount}`)
+
+    // Restore the shared fixture value so later cases do not depend on this test.
+    await logout(page)
+    await signInTeacher(page, TENANT_A)
+    const restoreSavesBefore = await page.evaluate(
+      () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
+    )
+    await page.locator('#teacherRentAmount').fill(String(TENANT_A.rentAmount))
+    await page.getByRole('button', { name: 'Save Rent' }).click()
+    await expect.poll(() => page.evaluate(
+      () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
+    )).toBeGreaterThan(restoreSavesBefore)
+    await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${TENANT_A.rentAmount}`)
+    await expect(page.getByText(
+      `Rent updated to $${TENANT_A.rentAmount}. No student balances were changed.`,
+    )).toBeVisible()
   })
 
   test('student money submissions persist through the V2 callable and appear in the owning teacher UI', async ({ page }) => {
