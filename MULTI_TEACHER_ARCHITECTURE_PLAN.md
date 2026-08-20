@@ -3481,6 +3481,130 @@ authorization:
   has not completed the post-acceptance observation window, and no second real
   teacher has been invited or onboarded by this work.
 
+## Part 4 — Version 3 AI Insights architecture boundary
+
+Version 3 begins as a new, separately reviewed product layer on top of the
+existing tenant-scoped aggregate view. It does not reopen or weaken the Version
+2 authentication, authorization, tenant-isolation, balance, transaction,
+migration, release, or rollback contracts above.
+
+The first Version 3 item is the provider-independent Insights foundation
+defined in `VERSION3_AI_INSIGHTS_PLAN.md`. It may add a pure deterministic
+analysis module, focused unit tests, a teacher-only Insights destination, and a
+compact dashboard preview. It may read only the already validated in-memory
+`data.students` and `data.transactions` view for the active teacher tenant. It
+must not read Firestore directly, persist an insight report, alter balances or
+transactions, initiate background work, or make a model/network call.
+
+This architecture update permits the following first-item files:
+
+- `VERSION3_AI_INSIGHTS_PLAN.md`;
+- `src/insights/classInsights.js` and its colocated behavioral test;
+- `tests/version3/insights-ui.contract.test.js` for bounded source-wiring
+  evidence;
+- `index.html` for teacher-only navigation and rendering; and
+- `package.json` only to register the focused local test command.
+
+A later real Gemini integration is a different material item. It requires a
+new acceptance boundary covering the callable/provider contract, authenticated
+tenant derivation, request and response validation, retry/idempotency behavior,
+usage metering, the $7.50 monthly Gemini allowance, the separate $5 Firebase
+allowance, the $12.50 combined ceiling, provider billing configuration, and
+emulator/browser evidence. No text in this Part 4 boundary authorizes an API,
+Firebase, billing, staging, production, deployment, commit, or push action.
+
+The first guarded-provider slice is the dormant contract kernel defined in
+`VERSION3_GEMINI_LAYER_PLAN.md`. Its server-side service accepts no classroom
+ID, prompt, fact packet, provider model, token budget, or price from a browser.
+Instead, injected production adapters must later reauthenticate the teacher,
+derive the active tenant, load that tenant's evidence, and run Morgan Bank's
+deterministic calculator before constructing a bounded provider packet. The
+provider response can only order supplied observation references, group them
+with a closed vocabulary, and propose explicitly labeled teacher questions;
+Morgan Bank retains every factual title, summary, metric, and evidence value.
+
+That slice also establishes a provider-independent usage-ledger contract. A
+trusted integer-microdollar worst-case reservation, monthly allowance check,
+hourly rate-limit decision, and idempotency decision must complete atomically
+before provider invocation. Once invocation begins, an error, malformed output,
+or ambiguous result retains the reservation unless trusted usage is safely
+reconciled. The kernel itself remains unreachable: it is not imported by
+`functions/index.js` or `index.html`, has no Firebase or provider adapter, and
+makes no network request. Real adapters, callable/browser wiring, emulator and
+browser evidence, current model/pricing selection, secrets, billing, and
+deployment remain later separately approved items.
+
+The next approved slice is the emulator-only server bridge defined in
+`VERSION3_GEMINI_EMULATOR_BRIDGE_PLAN.md`. It supplies injected Firestore
+adapters that revalidate the existing reciprocal teacher/classroom foundation
+inside the same read-only transaction used to load only that classroom's
+students and authoritative transactions. The adapter pseudonymizes those
+records before invoking the existing deterministic Insights calculator, then
+constructs an exact-schema packet containing only opaque observation and
+evidence references. A separate Firestore transaction stores only digested
+scope/request keys and atomically enforces idempotency, tenant-scoped rolling
+hourly limits, and one application-wide $7.50 monthly Gemini allowance.
+
+This bridge is exercised only with synthetic records in a Firebase demo-project
+Firestore emulator and an injected fake provider. It remains dormant: nothing
+imports it from `functions/index.js`, `src/`, or `index.html`. It adds no
+callable, browser path, provider SDK, model or pricing choice, secret, billing
+configuration, network request, staging/production access, or deployment.
+Those surfaces remain later, separately approved and independently reviewed
+items.
+
+The separately approved Checkpoint A is defined in
+`VERSION3_GEMINI_EMULATOR_CALLABLE_BROWSER_PLAN.md`. Its corrected discovery
+boundary exports `analyzeTeacherInsightsV3` only from the dedicated
+`functions/version3-emulator` source selected by
+`firebase.version3-gemini-emulator.json`. The default deployable Functions
+entrypoint does not discover it, and the default package excludes that source.
+This August 19 correction remains uncommitted, locally verified, and awaiting
+focused Claude closure review. The dedicated entrypoint refuses non-emulator
+discovery. In the exact
+`demo-morgan-bank-version3-gemini-callable-browser` runtime, the Auth,
+Functions, and Firestore emulator guards still all pass before a Firestore
+handle is obtained. The request carries only a request ID, mode, and period.
+The server calculates its own evidence signature, runs the deterministic
+calculator over paired raw and pseudonymized views from bounded `MAX + 1`
+queries, and asserts their ordered structural alignment before reservation or
+fake-provider use.
+
+The fake provider receives only the pseudonymized exact-schema packet and may
+only organize opaque references. The authorized teacher receives the aligned
+raw display facts after provider/replay validation. The schema-v3 usage records
+bind the server signature, separate the one application-wide monthly cost
+ledger from digested tenant rate-limit ledgers, and persist neither the provider
+packet nor display facts. This checkpoint proves the server callable with
+synthetic data in all three emulators; it changes no browser file and
+establishes no live Gemini, App Check, credentials, pricing, billing, staging,
+production, or deployment authority.
+
+The separately authorized Checkpoint B adds the exact-schema browser boundary
+and an exact-demo-project-only assisted test panel to the existing Insights
+screen. Normal app builds remain on the local deterministic Quick/Deep
+experience. The assisted page stores nothing, accepts only a teacher click,
+sends only request ID/mode/period, validates every response field, and discards
+late completion after logout, tenant change, evidence change, period change, or
+a newer request. Its synthetic browser harness may resolve the test page's
+rules-protected classroom while V2 callables remain disabled, but that value is
+never added to the Insights request: the real emulator callable independently
+derives and revalidates the authenticated tenant before reading evidence.
+
+Checkpoint B was committed as `c12b39e292eeae9b519b90381c7a702603d80907`
+and merged through PR #10 as
+`74c905ca792aec9cd3e5cec36ca1c5b3a58aaba2`. The available repository/GitHub
+record does not establish the full required Checkpoint A/B Claude-to-Grok
+review closure, so later work must close that governance evidence gap without
+claiming an unverified PASS.
+
+Chromium and WebKit each exercise the authenticated click, loading/duplicate
+guard, same-request replay, safe rendering, bounded malformed-response error,
+two-teacher separation, and every stale-completion case against the three real
+emulators and fake provider. This is local synthetic evidence only. It grants
+no live Gemini, App Check, credential, pricing, billing, Firebase project,
+staging, production, commit, push, merge, or deployment authority.
+
 ---
 
 *This document preserves the original planning rationale and the later local

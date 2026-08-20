@@ -4,8 +4,9 @@
 // tests/browser. tests/browser/tenant-isolation.spec.js imports and registers
 // this authorized Phase 3 suite so it runs inside the same real Auth,
 // Functions, Firestore, Vite, and Chromium harness without a second emulator
-// command or a production test hook. The invoking command selects either the
-// historical proposed rules or the checksum-pinned Phase 3 final candidate.
+// command or a production test hook. The browser suite loads the checksum-
+// pinned Phase 3 final candidate; firestore.phase2b.proposed.rules keeps its
+// separate contract under test:phase2b:rules.
 
 import { expect, test } from '@playwright/test'
 
