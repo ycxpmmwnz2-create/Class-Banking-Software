@@ -1117,7 +1117,7 @@
   </div>
   <div id="app"></div>
   <script type="module">
-import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured, firebaseDeploymentTier, providerAppCheckReady } from "./src/firebase/firebase.js";
+import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured, firebaseDeploymentTier, providerAppCheckReadyPromise } from "./src/firebase/firebase.js";
 import { browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider, inMemoryPersistence, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, runTransaction, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
@@ -5273,18 +5273,11 @@ if (screen === "editSettingsLists" && isTeacher) {
       buildProjectId: VERSION3_GEMINI_BROWSER_BUILD_PROJECT_ID,
       runtimeConfig: window.VERSION3_GEMINI_BROWSER_TEST_CONFIG,
     }) && app.options.projectId === VERSION3_GEMINI_BROWSER_PROJECT_ID;
-    const providerInsightsLiveEnabled = resolveLiveProviderInsightsBrowserActivation({
-      buildEnabled: VERSION3_GEMINI_LIVE_BUILD_ENABLED,
-      buildProjectId: VERSION3_GEMINI_LIVE_BUILD_PROJECT_ID,
-      appProjectId: app.options.projectId,
-      deploymentTier: firebaseDeploymentTier,
-      appCheckReady: providerAppCheckReady,
-    });
-    providerInsightsEnabled = providerInsightsEmulatorEnabled || providerInsightsLiveEnabled;
-    providerInsightsEnvironment = providerInsightsLiveEnabled
-      ? firebaseDeploymentTier
-      : (providerInsightsEmulatorEnabled ? "emulator" : "disabled");
-    if (providerInsightsEnabled) {
+    function enableProviderInsights(providerInsightsLiveEnabled) {
+      providerInsightsEnabled = true;
+      providerInsightsEnvironment = providerInsightsLiveEnabled
+        ? firebaseDeploymentTier
+        : "emulator";
       const providerCallable = providerInsightsLiveEnabled
         ? httpsCallable(functions, "analyzeTeacherInsightsV3", {
           limitedUseAppCheckTokens: true,
@@ -5298,6 +5291,23 @@ if (screen === "editSettingsLists" && isTeacher) {
         enabled: true,
         callable: providerCallAdapter,
         cryptoApi: window.crypto,
+      });
+    }
+    if (providerInsightsEmulatorEnabled) {
+      enableProviderInsights(false);
+    } else {
+      void providerAppCheckReadyPromise.then(appCheckReady => {
+        const providerInsightsLiveEnabled = resolveLiveProviderInsightsBrowserActivation({
+          buildEnabled: VERSION3_GEMINI_LIVE_BUILD_ENABLED,
+          buildProjectId: VERSION3_GEMINI_LIVE_BUILD_PROJECT_ID,
+          appProjectId: app.options.projectId,
+          deploymentTier: firebaseDeploymentTier,
+          appCheckReady,
+          v2Enabled: IS_MULTI_TEACHER_V2_ENABLED,
+        });
+        if (!providerInsightsLiveEnabled) return;
+        enableProviderInsights(true);
+        render();
       });
     }
 

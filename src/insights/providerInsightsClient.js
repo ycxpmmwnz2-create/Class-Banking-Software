@@ -140,10 +140,12 @@ export function resolveLiveProviderInsightsBrowserActivation({
   appProjectId,
   deploymentTier,
   appCheckReady,
+  v2Enabled,
 } = {}) {
   const expectedProjectId = VERSION3_GEMINI_LIVE_PROJECT_IDS[deploymentTier];
   return buildEnabled === true
     && appCheckReady === true
+    && v2Enabled === true
     && typeof expectedProjectId === "string"
     && buildProjectId === expectedProjectId
     && appProjectId === expectedProjectId;

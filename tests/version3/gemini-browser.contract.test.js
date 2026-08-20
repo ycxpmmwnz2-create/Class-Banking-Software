@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [indexHtml, browserClient, browserViteConfig, packageJson] = await Promise.all([
+const [indexHtml, browserClient, providerAppCheck, browserViteConfig, packageJson] = await Promise.all([
   readFile(new URL("../../index.html", import.meta.url), "utf8"),
   readFile(new URL("../../src/insights/providerInsightsClient.js", import.meta.url), "utf8"),
+  readFile(new URL("../../src/firebase/providerAppCheck.js", import.meta.url), "utf8"),
   readFile(new URL("./browser/vite.gemini-browser.config.js", import.meta.url), "utf8"),
   readFile(new URL("../../package.json", import.meta.url), "utf8"),
 ]);
@@ -19,14 +20,18 @@ test("source contract: assisted controls are default-off and locked to the one d
   assert.doesNotMatch(browserViteConfig, /morgan-bank-staging|["']morgan-bank["']/);
 });
 
-test("source contract: live assisted controls are exact-project and App Check gated", () => {
+test("source contract: live assisted controls are exact-project, V2, and verified App Check gated", () => {
   assert.match(indexHtml, /VITE_VERSION3_GEMINI_LIVE === "true"/);
   assert.match(indexHtml, /resolveLiveProviderInsightsBrowserActivation\(\{/);
-  assert.match(indexHtml, /appCheckReady: providerAppCheckReady/);
+  assert.match(indexHtml, /providerAppCheckReadyPromise\.then\(appCheckReady/);
+  assert.match(indexHtml, /appCheckReady,/);
+  assert.match(indexHtml, /v2Enabled: IS_MULTI_TEACHER_V2_ENABLED/);
   assert.match(indexHtml, /limitedUseAppCheckTokens: true/);
   assert.match(browserClient, /production: "morgan-bank"/);
   assert.match(browserClient, /staging: "morgan-bank-staging"/);
-  assert.match(browserClient, /buildEnabled === true[\s\S]*?appCheckReady === true/);
+  assert.match(browserClient, /buildEnabled === true[\s\S]*?appCheckReady === true[\s\S]*?v2Enabled === true/);
+  assert.match(providerAppCheck, /await getLimitedUseTokenFn\(appCheck\)/);
+  assert.doesNotMatch(providerAppCheck, /Boolean\(appCheck\)/);
   assert.doesNotMatch(indexHtml, /GEMINI_API_KEY/);
 });
 

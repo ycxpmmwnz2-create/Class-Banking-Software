@@ -81,10 +81,13 @@ test("live activation requires exact tier, project, build flag, and App Check", 
       appProjectId: projectId,
       deploymentTier,
       appCheckReady: true,
+      v2Enabled: true,
     };
     assert.equal(resolveLiveProviderInsightsBrowserActivation(accepted), true);
     assert.equal(resolveLiveProviderInsightsBrowserActivation({ ...accepted, buildEnabled: false }), false);
     assert.equal(resolveLiveProviderInsightsBrowserActivation({ ...accepted, appCheckReady: false }), false);
+    assert.equal(resolveLiveProviderInsightsBrowserActivation({ ...accepted, v2Enabled: false }), false);
+    assert.equal(resolveLiveProviderInsightsBrowserActivation({ ...accepted, v2Enabled: undefined }), false);
     assert.equal(resolveLiveProviderInsightsBrowserActivation({ ...accepted, appProjectId: "morgan-bank-lookalike" }), false);
     assert.equal(resolveLiveProviderInsightsBrowserActivation({ ...accepted, deploymentTier: "preview" }), false);
   }

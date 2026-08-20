@@ -11,6 +11,7 @@ const [
   transportSource,
   liveRuntimeSource,
   readinessPlan,
+  deploymentRunbook,
   indexHtml,
 ] = await Promise.all([
   readFile(new URL('../../functions/index.js', import.meta.url), 'utf8'),
@@ -21,6 +22,7 @@ const [
   readFile(new URL('../../functions/insights/geminiTransport.js', import.meta.url), 'utf8'),
   readFile(new URL('../../functions/insights/liveRuntime.js', import.meta.url), 'utf8'),
   readFile(new URL('../../VERSION3_REAL_GEMINI_READINESS_PLAN.md', import.meta.url), 'utf8'),
+  readFile(new URL('../../VERSION3_GEMINI_DEPLOYMENT_RUNBOOK.md', import.meta.url), 'utf8'),
   readFile(new URL('../../index.html', import.meta.url), 'utf8'),
 ])
 
@@ -42,7 +44,7 @@ test('dormant adapter has no environment, secret, SDK, or direct network access'
     )
   }
   assert.match(adapterSource, /generateContentOnce/)
-  assert.match(adapterSource, /thinkingLevel: 'minimal'/)
+  assert.match(adapterSource, /thinkingLevel: 'MINIMAL'/)
   assert.match(adapterSource, /Timing-pattern evidence is disabled/)
 })
 
@@ -60,6 +62,15 @@ test('historical readiness plan records the external cutover gates being impleme
   assert.match(readinessPlan, /App Check/)
   assert.match(readinessPlan, /requires new authorization and is outside this checkpoint/)
   assert.match(readinessPlan, /No commit, push, pull request, Firebase access, provider call/)
+})
+
+test('deployment runbook records shared-codebase secret ordering without weakening runtime gates', () => {
+  assert.match(deploymentRunbook, /single `default` codebase/)
+  assert.match(deploymentRunbook, /before applying an `--only functions:<name>` endpoint filter/)
+  assert.match(deploymentRunbook, /VERSION3_GEMINI_ENABLED=false/)
+  assert.match(deploymentRunbook, /runtime feature gate does not bypass this\s+deploy-time requirement/)
+  assert.match(deploymentRunbook, /Never use a placeholder value/)
+  assert.match(deploymentRunbook, /does not authorize enabling/)
 })
 
 test('budget wording is truthful about the non-guaranteed combined target', () => {

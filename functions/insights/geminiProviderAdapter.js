@@ -131,7 +131,7 @@ export function buildGeminiGenerateRequest({
       responseJsonSchema: RESPONSE_JSON_SCHEMA,
       maxOutputTokens,
       temperature: 0,
-      thinkingConfig: Object.freeze({ thinkingLevel: 'minimal' }),
+      thinkingConfig: Object.freeze({ thinkingLevel: 'MINIMAL' }),
     }),
   })
 }
