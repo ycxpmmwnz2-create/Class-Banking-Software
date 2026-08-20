@@ -1089,8 +1089,8 @@ import { browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider,
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, runTransaction, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
-import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
-import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateStudentPinDirectoryFetch, orchestrateStudentTransaction, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, reconcileStudentPinDirectory, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
+import { writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
+import { orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateStudentPinDirectoryFetch, orchestrateStudentTransaction, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, reconcileStudentPinDirectory, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
 import { formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { projectBackupExport } from "./src/phase3/tenantDataProjection.js";
@@ -2115,20 +2115,6 @@ function toggleStudentDropdown() {
       }
     }
 
-    function recordStudentLoginAttempt(student, result, note) {
-      const entry = {
-        id: Date.now(),
-        date: new Date().toLocaleString(),
-        studentId: student ? student.id : null,
-        studentName: student ? student.name : "Unknown student",
-        result,
-        note
-      };
-
-      data.loginHistory = [entry].concat(data.loginHistory || []).slice(0, 500);
-      saveData();
-    }
-
     function clearLoginHistory() {
       if (!requireTeacher()) return;
       const confirmed = confirm("Clear all student login history?");
@@ -2502,121 +2488,6 @@ const targetStudents = transactionTarget === "whole"
       data.transactions = newTransactions.concat(data.transactions);
       saveData();
       message = "Teacher transaction saved and approved.";
-      render();
-    }
-
-    function submitStudentRequest() {
-      const student = currentStudent();
-      if (!student) return;
-
-      if (student.frozen) {
-        showMessage("This account is frozen. Please see Mr. Morgan.");
-        return;
-      }
-
-      if (!data.settings.studentRequestsEnabled) {
-        showMessage("Student requests are currently turned off.");
-        return;
-      }
-
-      const type = document.getElementById("studentRequestType").value;
-      const amount = Number(document.getElementById("studentRequestAmount").value);
-      const reason = document.getElementById("studentRequestReason").value;
-
-      if (type === "Add" && !data.settings.studentAddRequestsEnabled) {
-        showMessage("Add-money requests are currently turned off.");
-        return;
-      }
-
-      if (type === "Subtract" && !data.settings.studentSubtractRequestsEnabled) {
-        showMessage("Spend-money requests are currently turned off.");
-        return;
-      }
-
-      if (!amount || amount <= 0) {
-        showMessage("Enter an amount greater than 0.");
-        return;
-      }
-
-      if (type === "Subtract" && amount > Number(student.balance)) {
-        showMessage("That payment is more than your approved balance.");
-        return;
-      }
-
-      const shouldBePending = type === "Add";
-
-      const newTransaction = {
-        id: Date.now(),
-        date: new Date().toLocaleString(),
-        studentId: student.id,
-        studentName: student.name,
-        type,
-        amount,
-        reason,
-        memo: "",
-        category: "",
-        status: shouldBePending ? "Pending" : "Approved",
-        source: "Student"
-      };
-
-      if (!shouldBePending) {
-        changeStudentBalance(student.id, type, amount);
-      }
-
-      data.transactions = [newTransaction].concat(data.transactions);
-      saveData();
-      message = shouldBePending
-        ? "Credit request submitted for teacher approval."
-        : "Payment submitted and approved.";
-      render();
-    }
-
-    function submitPurchaseRequest() {
-      const student = currentStudent();
-      if (!student) return;
-
-      if (student.frozen) {
-        showMessage("This account is frozen. Please see Mr. Morgan.");
-        return;
-      }
-
-      if (!data.settings.purchaseRequestsEnabled) {
-        showMessage("Purchase requests are currently turned off.");
-        return;
-      }
-
-      const category = document.getElementById("purchaseCategory").value;
-      const memo = document.getElementById("purchaseMemo").value.trim();
-      const amount = Number(document.getElementById("purchaseAmount").value);
-
-      if (!amount || amount <= 0) {
-        showMessage("Enter a purchase amount greater than 0.");
-        return;
-      }
-
-      if (amount > Number(student.balance)) {
-        showMessage("That purchase is more than your approved balance. Ask Mr. Morgan if you think that is wrong.");
-        return;
-      }
-
-      const newTransaction = {
-        id: Date.now(),
-        date: new Date().toLocaleString(),
-        studentId: student.id,
-        studentName: student.name,
-        type: "Subtract",
-        amount,
-        reason: "Purchase: " + category,
-        memo,
-        category,
-        status: "Approved",
-        source: "Student Purchase"
-      };
-
-      changeStudentBalance(student.id, "Subtract", amount);
-      data.transactions = [newTransaction].concat(data.transactions);
-      saveData();
-      message = "Purchase submitted and approved. Money has been subtracted.";
       render();
     }
 
@@ -3218,17 +3089,6 @@ link.click();
       };
       reader.readAsText(file);
     }
-    function reasonOptions(selectedReason) {
-      return data.settings.reasons.map(reason =>
-        `<option value="${escapeHtml(reason)}" ${selectedReason === reason ? "selected" : ""}>${escapeHtml(reason)}</option>`
-      ).join("");
-    }
-    function purchaseCategoryOptions(selectedCategory) {
-      return data.settings.purchaseCategories.map(category =>
-        `<option value="${escapeHtml(category)}" ${selectedCategory === category ? "selected" : ""}>${escapeHtml(category)}</option>`
-      ).join("");
-    }
-
     function categoryOptions(categories, selectedCategory) {
       return categories.map(category =>
         `<option value="${escapeHtml(category)}" ${selectedCategory === category ? "selected" : ""}>${escapeHtml(category)}</option>`

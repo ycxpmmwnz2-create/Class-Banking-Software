@@ -112,10 +112,16 @@ describe('Phase 3 student-identity source contract', () => {
 
   it('source contract: every Date.now() id is a transaction or login-history id, not a student id', () => {
     const dateNowIds = matchingLines(/id:\s*Date\.now\(\)/)
+    // Was seven. Three of the original sites lived in client-authoritative
+    // paths that nothing called any more — recordStudentLoginAttempt,
+    // submitStudentRequest, and submitPurchaseRequest — and were deleted with
+    // those functions. The census is deliberately re-pinned to the four
+    // surviving sites rather than loosened to an inequality: its whole purpose
+    // is that an unclassified site cannot appear unnoticed.
     assert.equal(
       dateNowIds.length,
-      7,
-      'the seven known Date.now() ID sites must remain accounted for',
+      4,
+      'the four known Date.now() ID sites must remain accounted for',
     )
 
     for (const lineNumber of dateNowIds) {
@@ -155,15 +161,15 @@ describe('Phase 3 student-identity source contract', () => {
     ).length
     assert.equal(
       idLiterals.length,
-      9,
-      `expected 9 known id: literals (1 allocator, 7 transaction/history, 1 claim echo); found ${idLiterals.length} at lines ${idLiterals.join(', ')}`,
+      6,
+      `expected 6 known id: literals (1 allocator, 4 transaction/history, 1 claim echo); found ${idLiterals.length} at lines ${idLiterals.join(', ')}`,
     )
     // Guards against two literals hiding on one line, which the line-based
     // count above would report as one.
     assert.equal(
       totalOccurrences,
-      9,
-      `expected 9 total id: occurrences; found ${totalOccurrences}`,
+      6,
+      `expected 6 total id: occurrences; found ${totalOccurrences}`,
     )
 
     const claimEcho = idLiterals.filter(lineNumber =>
