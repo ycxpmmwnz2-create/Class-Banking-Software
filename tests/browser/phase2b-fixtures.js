@@ -106,6 +106,9 @@ export const TENANT_B = {
 // recycled studentId is rejected."
 export const SHARED_STUDENT_NAME = "Shared Name";
 export const SHARED_LOGIN_ID = "shared-name";
+// Interactive sandbox credential. The fixture owns this value so the runner
+// never prints a PIN that was not also used to activate the seeded credential.
+export const SANDBOX_STUDENT_PIN = "2468";
 
 // The injected load adapter returns the V2 data contract directly; unlike the
 // legacy load path, the application does not run it through normalizeData().
