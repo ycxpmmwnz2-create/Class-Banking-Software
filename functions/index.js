@@ -5,7 +5,7 @@ import { getAuth } from 'firebase-admin/auth'
 import { getFirestore } from 'firebase-admin/firestore'
 import { HttpsError, onCall } from 'firebase-functions/v2/https'
 import { onDocumentWritten } from 'firebase-functions/v2/firestore'
-import { defineBoolean, defineString } from 'firebase-functions/params'
+import { defineBoolean, defineSecret, defineString } from 'firebase-functions/params'
 
 import { ensureTeacherClassroomForCaller } from './phase1/ensureTeacherClassroom.js'
 import { resetStudentPinForTeacher } from './resetStudentPin.js'
@@ -30,6 +30,15 @@ import {
 import { listStudentPinsV2CallableHandler } from './phase3/studentPinDirectory.js'
 import { submitStudentTransactionV2CallableHandler } from './phase3/studentMoney.js'
 import { assertV2GateAllowed } from './phase3/productionEnvironment.js'
+import {
+  callableErrorCode,
+  callableErrorDetails,
+  callableLogCategory,
+} from './insights/callableErrors.js'
+import { createVersion3GeminiLiveHandler } from './insights/liveCallable.js'
+import {
+  assertVersion3GeminiLiveRuntime,
+} from './insights/liveRuntime.js'
 
 export const MULTI_TEACHER_V2_ENABLED = defineBoolean('MULTI_TEACHER_V2_ENABLED', {
   default: false,
@@ -46,6 +55,16 @@ export const MORGAN_BANK_DEPLOYMENT_TIER = defineString('MORGAN_BANK_DEPLOYMENT_
 export const MORGAN_BANK_STAGING_PROJECT_ID = defineString('MORGAN_BANK_STAGING_PROJECT_ID', {
   default: '',
 })
+
+export const VERSION3_GEMINI_ENABLED = defineBoolean('VERSION3_GEMINI_ENABLED', {
+  default: false,
+})
+
+export const VERSION3_GEMINI_RELEASE_ID = defineString('VERSION3_GEMINI_RELEASE_ID', {
+  default: '',
+})
+
+export const GEMINI_API_KEY = defineSecret('GEMINI_API_KEY')
 
 // This identifier is part of the reviewed Functions artifact. Production V2
 // invocations require the separately configured release parameter to match it
@@ -244,6 +263,46 @@ export const submitStudentTransactionV2 = onCall(async (request) => {
     request,
     { firestore: getFirestore() },
   )
+})
+
+export const analyzeTeacherInsightsV3 = onCall({
+  enforceAppCheck: true,
+  consumeAppCheckToken: true,
+  secrets: [GEMINI_API_KEY],
+  timeoutSeconds: 120,
+  memory: '256MiB',
+  maxInstances: 1,
+  concurrency: 1,
+}, async (request) => {
+  try {
+    const v2Runtime = assertV2Invocation('analyzeTeacherInsightsV3')
+    const apiKey = GEMINI_API_KEY.value()
+    assertVersion3GeminiLiveRuntime({
+      enabled: VERSION3_GEMINI_ENABLED.value(),
+      releaseId: VERSION3_GEMINI_RELEASE_ID.value(),
+      deploymentTier: MORGAN_BANK_DEPLOYMENT_TIER.value() || 'production',
+      v2Runtime,
+      adminAppCount: getApps().length,
+      adminProjectId: getApps()[0]?.options?.projectId,
+      apiKey,
+    })
+    const analyze = createVersion3GeminiLiveHandler({
+      firestore: getFirestore(),
+      apiKey,
+    })
+    return await analyze({ auth: request.auth, data: request.data })
+  } catch (error) {
+    if (error instanceof HttpsError) throw error
+    globalThis.console.warn('Version 3 Gemini live analysis refused.', {
+      operation: 'analyzeTeacherInsightsV3',
+      category: callableLogCategory(error),
+    })
+    throw new HttpsError(
+      callableErrorCode(error),
+      'Gemini-assisted analysis is unavailable.',
+      callableErrorDetails(error),
+    )
+  }
 })
 
 export const syncStudentProfilesV2 = onDocumentWritten(

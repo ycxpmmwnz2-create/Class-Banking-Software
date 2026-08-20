@@ -2,7 +2,9 @@ import { initializeApp } from "firebase/app";
 import { getAuth, connectAuthEmulator } from "firebase/auth";
 import { getFirestore, initializeFirestore, connectFirestoreEmulator } from "firebase/firestore";
 import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
 import { resolveFirebaseBuildConfiguration } from "./firebaseConfig.js";
+import { VERSION3_GEMINI_LIVE_PROJECT_IDS } from "../insights/providerInsightsClient.js";
 
 const firebaseBuildEnvironment = import.meta.env || {};
 const resolvedFirebaseBuild = resolveFirebaseBuildConfiguration(firebaseBuildEnvironment);
@@ -20,6 +22,39 @@ if (isStagingDeployment && typeof document !== "undefined") {
 }
 
 let app = initializeApp(firebaseConfig);
+export let providerAppCheckReady = false;
+const providerAppCheckRequested =
+  firebaseBuildEnvironment.VITE_VERSION3_GEMINI_LIVE === "true";
+if (providerAppCheckRequested) {
+  const expectedProjectId = VERSION3_GEMINI_LIVE_PROJECT_IDS[firebaseDeploymentTier];
+  const buildProjectId = firebaseBuildEnvironment.VITE_VERSION3_GEMINI_PROJECT_ID;
+  const siteKey = firebaseBuildEnvironment.VITE_FIREBASE_APP_CHECK_SITE_KEY;
+  const validSiteKey = typeof siteKey === "string"
+    && siteKey.length >= 20
+    && siteKey.length <= 256
+    && siteKey.trim() === siteKey;
+  if (
+    expectedProjectId === firebaseConfig.projectId
+    && buildProjectId === expectedProjectId
+    && validSiteKey
+  ) {
+    try {
+      const appCheck = initializeAppCheck(app, {
+        provider: new ReCaptchaEnterpriseProvider(siteKey),
+        isTokenAutoRefreshEnabled: true,
+      });
+      providerAppCheckReady = Boolean(appCheck);
+    } catch {
+      globalThis.console.warn("Gemini App Check initialization refused.", {
+        category: "invalid-runtime",
+      });
+    }
+  } else {
+    globalThis.console.warn("Gemini App Check configuration refused.", {
+      category: "invalid-runtime",
+    });
+  }
+}
 let auth = getAuth(app);
 let db = getFirestore(app);
 let functions = getFunctions(app);

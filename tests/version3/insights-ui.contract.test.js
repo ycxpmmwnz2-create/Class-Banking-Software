@@ -4,7 +4,7 @@ import test from "node:test";
 
 const [indexHtml, insightsSource, packageJson, plan] = await Promise.all([
   readFile(new URL("../../index.html", import.meta.url), "utf8"),
-  readFile(new URL("../../src/insights/classInsights.js", import.meta.url), "utf8"),
+  readFile(new URL("../../functions/insights/classInsights.js", import.meta.url), "utf8"),
   readFile(new URL("../../package.json", import.meta.url), "utf8"),
   readFile(new URL("../../VERSION3_AI_INSIGHTS_PLAN.md", import.meta.url), "utf8"),
 ]);

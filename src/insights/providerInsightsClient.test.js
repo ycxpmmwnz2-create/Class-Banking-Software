@@ -3,9 +3,11 @@ import test from "node:test";
 
 import {
   VERSION3_GEMINI_BROWSER_PROJECT_ID,
+  VERSION3_GEMINI_LIVE_PROJECT_IDS,
   createProviderInsightsBrowserClient,
   createProviderInsightsRequestId,
   mapProviderInsightsError,
+  resolveLiveProviderInsightsBrowserActivation,
   resolveProviderInsightsBrowserActivation,
   validateProviderInsightsRequest,
   validateProviderInsightsResponse,
@@ -68,6 +70,24 @@ test("activation requires the exact build flag, demo project, loopback host, and
     ...accepted,
     runtimeConfig: { ...runtimeConfig, extra: true },
   }), false);
+});
+
+test("live activation requires exact tier, project, build flag, and App Check", () => {
+  for (const deploymentTier of ["production", "staging"]) {
+    const projectId = VERSION3_GEMINI_LIVE_PROJECT_IDS[deploymentTier];
+    const accepted = {
+      buildEnabled: true,
+      buildProjectId: projectId,
+      appProjectId: projectId,
+      deploymentTier,
+      appCheckReady: true,
+    };
+    assert.equal(resolveLiveProviderInsightsBrowserActivation(accepted), true);
+    assert.equal(resolveLiveProviderInsightsBrowserActivation({ ...accepted, buildEnabled: false }), false);
+    assert.equal(resolveLiveProviderInsightsBrowserActivation({ ...accepted, appCheckReady: false }), false);
+    assert.equal(resolveLiveProviderInsightsBrowserActivation({ ...accepted, appProjectId: "morgan-bank-lookalike" }), false);
+    assert.equal(resolveLiveProviderInsightsBrowserActivation({ ...accepted, deploymentTier: "preview" }), false);
+  }
 });
 
 test("request IDs use cryptographic randomness and requests have exactly three fields", () => {
@@ -179,4 +199,21 @@ test("maps errors to short allowlisted messages and marks only ambiguous outcome
   const unknown = mapProviderInsightsError({ code: "functions/raw-secret", message: "do not render" });
   assert.equal(unknown.ambiguous, false);
   assert.doesNotMatch(unknown.message, /raw-secret|do not render/);
+});
+
+test("live errors use allowlisted Gemini wording without exposing raw details", () => {
+  assert.deepEqual(mapProviderInsightsError({
+    code: "functions/resource-exhausted",
+    details: { category: "allowance-exhausted" },
+    message: "sensitive upstream detail",
+  }, { testMode: false }), {
+    ambiguous: false,
+    message: "The Gemini allowance is used up for now.",
+  });
+  const unknown = mapProviderInsightsError({
+    code: "functions/raw-secret",
+    message: "sensitive upstream detail",
+  }, { testMode: false });
+  assert.equal(unknown.message, "Gemini-assisted insights could not be loaded. Try again later.");
+  assert.doesNotMatch(unknown.message, /sensitive|upstream/);
 });

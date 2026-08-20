@@ -19,6 +19,17 @@ test("source contract: assisted controls are default-off and locked to the one d
   assert.doesNotMatch(browserViteConfig, /morgan-bank-staging|["']morgan-bank["']/);
 });
 
+test("source contract: live assisted controls are exact-project and App Check gated", () => {
+  assert.match(indexHtml, /VITE_VERSION3_GEMINI_LIVE === "true"/);
+  assert.match(indexHtml, /resolveLiveProviderInsightsBrowserActivation\(\{/);
+  assert.match(indexHtml, /appCheckReady: providerAppCheckReady/);
+  assert.match(indexHtml, /limitedUseAppCheckTokens: true/);
+  assert.match(browserClient, /production: "morgan-bank"/);
+  assert.match(browserClient, /staging: "morgan-bank-staging"/);
+  assert.match(browserClient, /buildEnabled === true[\s\S]*?appCheckReady === true/);
+  assert.doesNotMatch(indexHtml, /GEMINI_API_KEY/);
+});
+
 test("source contract: browser request carries exactly requestId, mode, and periodDays", () => {
   assert.match(browserClient, /REQUEST_FIELDS = Object\.freeze\(\["requestId", "mode", "periodDays"\]\)/);
   assert.match(

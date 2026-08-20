@@ -32,6 +32,9 @@ test("production-form artifact hard-disables assisted activation and keeps its c
   for (const name of [
     "VITE_VERSION3_GEMINI_BROWSER_TEST",
     "VITE_VERSION3_GEMINI_BROWSER_PROJECT_ID",
+    "VITE_VERSION3_GEMINI_LIVE",
+    "VITE_VERSION3_GEMINI_PROJECT_ID",
+    "VITE_FIREBASE_APP_CHECK_SITE_KEY",
     "VITE_MORGAN_BANK_DEPLOYMENT_TIER",
     "VITE_FIREBASE_API_KEY",
     "VITE_FIREBASE_AUTH_DOMAIN",
@@ -66,20 +69,67 @@ test("production-form artifact hard-disables assisted activation and keeps its c
 
     assert.match(artifact, /var VERSION3_GEMINI_BROWSER_BUILD_ENABLED = false;/);
     assert.match(artifact, /var VERSION3_GEMINI_BROWSER_BUILD_PROJECT_ID = void 0;/);
+    assert.match(artifact, /var VERSION3_GEMINI_LIVE_BUILD_ENABLED = false;/);
+    assert.match(artifact, /var VERSION3_GEMINI_LIVE_BUILD_PROJECT_ID = void 0;/);
     assert.match(
       artifact,
-      /providerInsightsEnabled = resolveProviderInsightsBrowserActivation\(\{\s*buildEnabled: VERSION3_GEMINI_BROWSER_BUILD_ENABLED,\s*buildProjectId: VERSION3_GEMINI_BROWSER_BUILD_PROJECT_ID,/,
+      /var providerInsightsEmulatorEnabled = resolveProviderInsightsBrowserActivation\(\{\s*buildEnabled: VERSION3_GEMINI_BROWSER_BUILD_ENABLED,\s*buildProjectId: VERSION3_GEMINI_BROWSER_BUILD_PROJECT_ID,/,
+    );
+    assert.match(
+      artifact,
+      /var providerInsightsLiveEnabled = resolveLiveProviderInsightsBrowserActivation\(\{\s*buildEnabled: VERSION3_GEMINI_LIVE_BUILD_ENABLED,\s*buildProjectId: VERSION3_GEMINI_LIVE_BUILD_PROJECT_ID,/,
     );
     assert.equal(
       artifact.match(/\bproviderInsightsEnabled\s*=/g)?.length,
       2,
-      "the artifact may initialize and resolve the gate, but must not re-enable it elsewhere",
+      "the artifact may initialize and combine the two reviewed gates, but must not re-enable it elsewhere",
     );
     assert.match(
       artifact,
-      /providerInsightsEnabled \? `[\s\S]{0,2000}?data-testid="provider-insights-controls"/,
+      /providerInsightsEnabled \? `[\s\S]{0,4000}?data-testid="provider-insights-controls"/,
       "the assisted controls must remain reachable only through the hard-disabled gate",
     );
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test("authorized live artifact requires App Check and limited-use callable tokens", () => {
+  const outDir = mkdtempSync(join(tmpdir(), "morgan-bank-version3-live-artifact-"));
+  const siteKey = "test-only-recaptcha-enterprise-site-key";
+  const env = {
+    ...process.env,
+    CI: "true",
+    VITE_MULTI_TEACHER_V2_ENABLED: "true",
+    VITE_VERSION3_GEMINI_LIVE: "true",
+    VITE_VERSION3_GEMINI_PROJECT_ID: "morgan-bank",
+    VITE_FIREBASE_APP_CHECK_SITE_KEY: siteKey,
+  };
+  for (const name of [
+    "VITE_VERSION3_GEMINI_BROWSER_TEST",
+    "VITE_VERSION3_GEMINI_BROWSER_PROJECT_ID",
+    "VITE_MORGAN_BANK_DEPLOYMENT_TIER",
+  ]) delete env[name];
+
+  try {
+    execFileSync(
+      "npx",
+      ["vite", "build", "--minify=false", "--outDir", outDir, "--emptyOutDir"],
+      { cwd: REPO_ROOT, env, encoding: "utf8", stdio: "pipe" },
+    );
+    const artifact = collectJavaScript(outDir);
+    assert.match(
+      artifact,
+      /if \(firebaseBuildEnvironment\.VITE_VERSION3_GEMINI_LIVE === "true"\)/,
+    );
+    assert.match(artifact, new RegExp(siteKey));
+    assert.match(artifact, /new ReCaptchaEnterpriseProvider\(siteKey\)/);
+    assert.match(artifact, /var VERSION3_GEMINI_LIVE_BUILD_ENABLED = true;/);
+    assert.match(artifact, /var VERSION3_GEMINI_LIVE_BUILD_PROJECT_ID = "morgan-bank";/);
+    assert.match(artifact, /limitedUseAppCheckTokens: true/);
+    assert.match(artifact, /appCheckReady: providerAppCheckReady/);
+    assert.match(artifact, /providerInsightsEnabled = providerInsightsEmulatorEnabled \|\| providerInsightsLiveEnabled/);
+    assert.doesNotMatch(artifact, /GEMINI_API_KEY|@google\/genai|gemini-3\.5-flash-lite/);
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }

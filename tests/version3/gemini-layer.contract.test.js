@@ -108,7 +108,10 @@ const nonGeminiInsightJavaScript = await readJavaScriptTree(
     exclude: url => (
       url.pathname.endsWith('.test.js') ||
       url.pathname.endsWith('/geminiProviderAdapter.js') ||
-      url.pathname.endsWith('/geminiCostPolicy.js')
+      url.pathname.endsWith('/geminiCostPolicy.js') ||
+      url.pathname.endsWith('/geminiTransport.js') ||
+      url.pathname.endsWith('/liveCallable.js') ||
+      url.pathname.endsWith('/liveRuntime.js')
     ),
   },
 )
@@ -116,7 +119,7 @@ const nonGeminiInsightJavaScript = await readJavaScriptTree(
 const DORMANT_KERNEL_IMPORT = /(?:from\s+|import\s+|import\s*\(|require\s*\()\s*(['"`])(?:[^'"`]*\/)?insights\/(?:contracts|costPolicy|analysisService|tenantEvidenceAdapter|factPacketBuilder|firestoreUsageLedger|geminiProviderAdapter|geminiCostPolicy)(?:\.js)?\1/
 const REAL_GEMINI_IMPORT = /(?:from\s+|import\s+|import\s*\(|require\s*\()\s*(['"`])(?:[^'"`]*\/)?(?:insights\/)?(?:geminiProviderAdapter|geminiCostPolicy)(?:\.js)?\1/
 
-test('source contract: guarded provider kernel and emulator provider make no network call', () => {
+test('source contract: guarded kernel and emulator stay network-free while live transport is isolated', () => {
   const combinedKernel = [
     contractsSource,
     costPolicySource,
@@ -144,12 +147,13 @@ test('source contract: guarded provider kernel and emulator provider make no net
   )
   for (const file of [
     ...nonGeminiInsightJavaScript,
-    { path: 'functions/index.js', source: functionsIndexSource },
     { path: 'functions/version3-emulator/index.js', source: emulatorFunctionsIndexSource },
   ]) {
     assert.doesNotMatch(file.source, REAL_GEMINI_IMPORT, `real Gemini module imported by ${file.path}`)
   }
-  assert.doesNotMatch(functionsIndexSource, /emulatorCallable|analyzeTeacherInsightsV3/)
+  assert.doesNotMatch(functionsIndexSource, /emulatorCallable/)
+  assert.match(functionsIndexSource, /createVersion3GeminiLiveHandler/)
+  assert.match(functionsIndexSource, /export const analyzeTeacherInsightsV3 = onCall/)
   assert.match(emulatorFunctionsIndexSource, /import \{[\s\S]*?createVersion3GeminiEmulatorHandler[\s\S]*?from '\.\.\/insights\/emulatorCallable\.js'/)
   assert.match(emulatorFunctionsIndexSource, /export const analyzeTeacherInsightsV3 = onCall/)
   assert.doesNotMatch(
@@ -232,7 +236,7 @@ test('source contract: callable is locked to the exact three-emulator demo runti
   assert.ok(JSON.parse(firebaseJsonSource).functions[0].ignore.includes('.env.demo-*'))
 })
 
-test('source contract: production discovery excludes the emulator callable and package', () => {
+test('source contract: production discovery includes only the protected live callable', () => {
   const defaultConfig = JSON.parse(firebaseJsonSource)
   const emulatorConfig = JSON.parse(emulatorFirebaseJsonSource)
   const functionsPackage = JSON.parse(functionsPackageJsonSource)
@@ -242,7 +246,8 @@ test('source contract: production discovery excludes the emulator callable and p
   assert.equal(defaultConfig.functions[0].source, 'functions')
   assert.equal(functionsPackage.main, 'index.js')
   assert.ok(defaultConfig.functions[0].ignore.includes('version3-emulator'))
-  assert.doesNotMatch(functionsIndexSource, /emulatorCallable|analyzeTeacherInsightsV3/)
+  assert.doesNotMatch(functionsIndexSource, /emulatorCallable/)
+  assert.match(functionsIndexSource, /export const analyzeTeacherInsightsV3 = onCall\(\{[\s\S]*?enforceAppCheck: true,[\s\S]*?consumeAppCheckToken: true,[\s\S]*?secrets: \[GEMINI_API_KEY\]/)
 
   assert.equal(emulatorConfig.functions.length, 1)
   assert.equal(emulatorConfig.functions[0].source, 'functions/version3-emulator')
@@ -259,9 +264,30 @@ test('source contract: production discovery excludes the emulator callable and p
   )
 })
 
-test('runtime contract: default Functions exports exclude the emulator callable', async () => {
+test('source contract: V2 gates secret access and the live gate precedes Firestore/provider use', () => {
+  const start = functionsIndexSource.indexOf('export const analyzeTeacherInsightsV3 = onCall')
+  const end = functionsIndexSource.indexOf('export const syncStudentProfilesV2', start)
+  assert.ok(start >= 0 && end > start)
+  const callable = functionsIndexSource.slice(start, end)
+  const v2Gate = callable.indexOf("assertV2Invocation('analyzeTeacherInsightsV3')")
+  const secretRead = callable.indexOf('GEMINI_API_KEY.value()')
+  const liveGate = callable.indexOf('assertVersion3GeminiLiveRuntime({')
+  const firestoreRead = callable.indexOf('firestore: getFirestore()')
+  const providerCall = callable.indexOf('return await analyze(')
+  assert.ok(v2Gate >= 0)
+  assert.ok(v2Gate < secretRead)
+  assert.ok(secretRead < liveGate)
+  assert.ok(liveGate < firestoreRead)
+  assert.ok(firestoreRead < providerCall)
+  assert.match(functionsIndexSource, /VERSION3_GEMINI_ENABLED = defineBoolean\([\s\S]*?default: false/)
+  assert.match(functionsIndexSource, /VERSION3_GEMINI_RELEASE_ID = defineString\([\s\S]*?default: ''/)
+  assert.doesNotMatch(callable, /error\?\.message|console\.(?:log|error)\(error/)
+})
+
+test('runtime contract: default Functions exports the protected live callable', async () => {
   const functionsExports = await import('../../functions/index.js')
-  assert.equal(Object.hasOwn(functionsExports, 'analyzeTeacherInsightsV3'), false)
+  assert.equal(Object.hasOwn(functionsExports, 'analyzeTeacherInsightsV3'), true)
+  assert.equal(Object.hasOwn(functionsExports, 'GEMINI_API_KEY'), true)
 })
 
 test('runtime contract: dedicated callable entrypoint refuses non-emulator discovery', () => {
