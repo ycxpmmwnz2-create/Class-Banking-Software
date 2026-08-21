@@ -46,6 +46,9 @@ test("source contract: production has no local analysis call site or fallback", 
 test("source contract: Q&A is explicit, exact-shaped, period-bound, and never automatic", () => {
   assert.match(indexHtml, /data-testid="provider-question-submit"/);
   assert.match(indexHtml, /onclick="askProviderQuestion\(\)"/);
+  assert.match(indexHtml, /Who did not pay rent today, or how can I encourage saving\?/);
+  assert.match(indexHtml, /Morgan Bank features, or classroom-economy ideas/);
+  assert.doesNotMatch(indexHtml, /Get a focused look at your classroom data|Ready when you are/);
   assert.match(indexHtml, /kind: "question",\s*periodDays,\s*timeZone,\s*question,/);
   assert.match(providerClientSource, /QUESTION_REQUEST_FIELDS = Object\.freeze\(\[\s*"requestId",\s*"kind",\s*"periodDays",\s*"timeZone",\s*"question",/);
   assert.match(providerClientSource, /async ask\(request\)[\s\S]*?callable\(accepted\)/);

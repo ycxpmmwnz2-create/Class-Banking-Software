@@ -53,7 +53,7 @@ test('live transport explicitly disables retries and keeps the dormant adapter p
   assert.match(transportSource, /retryOptions: Object\.freeze\(\{ attempts: 1 \}\)/)
   assert.match(transportSource, /timeout: 60_000/)
   assert.doesNotMatch(transportSource, /setTimeout|for\s*\(|while\s*\(/)
-  assert.match(liveRuntimeSource, /gemini-3\.6-flash-grounded-query-v1/)
+  assert.match(liveRuntimeSource, /gemini-3\.6-flash-morgan-bank-assistant-v3/)
 })
 
 test('historical readiness plan records the external cutover gates being implemented', () => {

@@ -113,7 +113,22 @@ export function createVersion3GeminiEmulatorHandler({
           label.split(/[^a-z0-9]+/).filter(token => token.length >= 4).some(token => normalized.includes(token))
       })
       let plan = null
-      if (category && /(who|which student)/.test(normalized)) {
+      let guidance = null
+      if (/(did not|didn't|not pay|unpaid)/.test(normalized) && /rent/.test(normalized)) {
+        const amount = normalized.match(/\$\s*(\d+(?:\.\d+)?)/)?.[1]
+        plan = {
+          operation: 'students-without-transactions',
+          subjectAliases,
+          categoryAlias: null,
+          purpose: 'rent',
+          transactionType: 'Subtract',
+          status: 'Approved',
+          dateScope: /today/.test(normalized) ? 'today' : 'period',
+          amountExact: amount ? Number(amount) : null,
+          studentState: 'any',
+          limit: 8,
+        }
+      } else if (category && /(who|which student)/.test(normalized)) {
         plan = queryPlan({
           metric: /(money|amount|dollar)/.test(normalized) ? 'amount-total' : 'count',
           categoryAlias: category.alias,
@@ -162,11 +177,23 @@ export function createVersion3GeminiEmulatorHandler({
         }
       } else if (/pending/.test(normalized)) {
         plan = queryPlan({ metric: 'count', status: 'Pending', groupBy: 'none' })
+      } else if (
+        /(?:how|ideas|explain|help|routine|strategy)/.test(normalized) &&
+        /(?:morgan bank|classroom econom|saving|rent|balance|categor|transaction|student account)/.test(normalized)
+      ) {
+        guidance = 'Set a small, visible savings goal, use consistent earning categories, and celebrate progress without comparing students. Review balances privately and let students choose how much to save before optional classroom purchases.'
+      }
+      if (
+        plan &&
+        /(?:and|then).*(?:what should|how can|ideas|strategy|help)/.test(normalized)
+      ) {
+        guidance = 'Review the result privately, ask students to set a realistic next goal, and use consistent earning opportunities rather than public comparisons or automatic penalties.'
       }
       return {
-        schemaVersion: 2,
-        kind: plan ? 'query' : 'unsupported',
+        schemaVersion: 4,
+        kind: plan && guidance ? 'query-and-guidance' : plan ? 'query' : guidance ? 'guidance' : 'unsupported',
         plan,
+        guidance,
         usage: { inputTokens: 90, outputTokens: 18, thinkingTokens: 0 },
       }
     },

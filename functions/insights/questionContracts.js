@@ -1,5 +1,5 @@
 export const INSIGHT_QUESTION_SCHEMA_VERSION = 2
-export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 2
+export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 4
 
 export const INSIGHT_QUERY_DATASETS = Object.freeze(['transactions', 'students'])
 export const INSIGHT_QUERY_METRICS = Object.freeze([
@@ -29,6 +29,14 @@ const TRANSACTION_TYPES = Object.freeze(['Add', 'Subtract', 'any'])
 const TRANSACTION_STATUSES = Object.freeze(['Approved', 'Pending', 'Denied', 'any'])
 const TIME_BUCKETS = Object.freeze(['morning', 'afternoon', 'evening', 'night'])
 const STUDENT_STATES = Object.freeze(['active', 'frozen', 'any'])
+const TRANSACTION_PURPOSES = Object.freeze(['any', 'rent'])
+const DATE_SCOPES = Object.freeze(['period', 'today'])
+const MAX_EXACT_AMOUNT = 1_000_000
+const MIN_GUIDANCE_LENGTH = 20
+const MAX_GUIDANCE_LENGTH = 480
+const PROVIDER_ALIAS_PATTERN = /(?:student|category)-[0-9]{3}/iu
+const PROVIDER_PLACEHOLDER_PATTERN = /\[(?:student|category)(?:-[0-9]{3})?\]/iu
+const URL_PATTERN = /(?:https?:\/\/|www\.)/iu
 
 export class InsightQuestionContractError extends Error {
   constructor(category, message) {
@@ -64,24 +72,32 @@ export function validateInsightQuestionRequest(value) {
 export function validateQuestionInterpretation(value, allowed) {
   requireExactObject(
     value,
-    ['schemaVersion', 'kind', 'plan', 'usage'],
+    ['schemaVersion', 'kind', 'plan', 'guidance', 'usage'],
     'question interpretation',
     'invalid-provider-output',
   )
   if (
     value.schemaVersion !== INSIGHT_QUERY_PLAN_SCHEMA_VERSION ||
-    !['query', 'unsupported'].includes(value.kind)
+    !['query', 'guidance', 'query-and-guidance', 'unsupported'].includes(value.kind)
   ) {
     fail('invalid-provider-output', 'The question interpretation is unsupported.')
   }
   const aliases = validateAllowedAliases(allowed, 'invalid-provider-output')
-  const plan = value.kind === 'unsupported'
-    ? requireNullPlan(value.plan, 'invalid-provider-output')
-    : validateQueryPlan(value.plan, aliases, 'invalid-provider-output')
+  const plan = ['query', 'query-and-guidance'].includes(value.kind)
+    ? validateQuestionPlan(value.plan, aliases, 'invalid-provider-output')
+    : requireNullPlan(value.plan, 'invalid-provider-output')
+  const guidance = ['guidance', 'query-and-guidance'].includes(value.kind)
+    ? validateGuidance(
+        value.guidance,
+        'invalid-provider-output',
+        value.kind === 'query-and-guidance' ? 240 : MAX_GUIDANCE_LENGTH,
+      )
+    : requireNullGuidance(value.guidance, 'invalid-provider-output')
   return Object.freeze({
     schemaVersion: INSIGHT_QUERY_PLAN_SCHEMA_VERSION,
     kind: value.kind,
     plan,
+    guidance,
     usage: validateProviderUsage(value.usage),
   })
 }
@@ -97,6 +113,7 @@ export function validateCompletedQuestion(value, expected) {
       'generatedAt',
       'kind',
       'plan',
+      'guidance',
       'usage',
     ],
     'completed question',
@@ -108,7 +125,7 @@ export function validateCompletedQuestion(value, expected) {
     value.periodDays !== expected.periodDays ||
     value.evidenceSignature !== expected.evidenceSignature ||
     !SIGNATURE_PATTERN.test(value.evidenceSignature) ||
-    !['query', 'unsupported'].includes(value.kind)
+    !['query', 'guidance', 'query-and-guidance', 'unsupported'].includes(value.kind)
   ) {
     fail('invalid-replay', 'The stored question does not match current evidence.')
   }
@@ -117,9 +134,16 @@ export function validateCompletedQuestion(value, expected) {
   return Object.freeze({
     schemaVersion: INSIGHT_QUERY_PLAN_SCHEMA_VERSION,
     kind: value.kind,
-    plan: value.kind === 'unsupported'
-      ? requireNullPlan(value.plan, 'invalid-replay')
-      : validateQueryPlan(value.plan, aliases, 'invalid-replay'),
+    plan: ['query', 'query-and-guidance'].includes(value.kind)
+      ? validateQuestionPlan(value.plan, aliases, 'invalid-replay')
+      : requireNullPlan(value.plan, 'invalid-replay'),
+    guidance: ['guidance', 'query-and-guidance'].includes(value.kind)
+      ? validateGuidance(
+          value.guidance,
+          'invalid-replay',
+          value.kind === 'query-and-guidance' ? 240 : MAX_GUIDANCE_LENGTH,
+        )
+      : requireNullGuidance(value.guidance, 'invalid-replay'),
     usage: validateBilledUsage(value.usage, 'invalid-replay'),
   })
 }
@@ -153,6 +177,13 @@ export function validateTeacherQuestionResponse(value) {
     ))),
     usage: validateBilledUsage(value.usage, 'invalid-response'),
   })
+}
+
+function validateQuestionPlan(value, allowed, category) {
+  if (isPlainObject(value) && Object.hasOwn(value, 'operation')) {
+    return validateMissingTransactionPlan(value, allowed, category)
+  }
+  return validateQueryPlan(value, allowed, category)
 }
 
 function validateQueryPlan(value, allowed, category) {
@@ -205,6 +236,71 @@ function validateQueryPlan(value, allowed, category) {
   })
 }
 
+function validateMissingTransactionPlan(value, allowed, category) {
+  requireExactObject(
+    value,
+    [
+      'operation',
+      'subjectAliases',
+      'categoryAlias',
+      'purpose',
+      'transactionType',
+      'status',
+      'dateScope',
+      'amountExact',
+      'studentState',
+      'limit',
+    ],
+    'missing transaction plan',
+    category,
+  )
+  if (
+    value.operation !== 'students-without-transactions' ||
+    !TRANSACTION_PURPOSES.includes(value.purpose) ||
+    !TRANSACTION_TYPES.includes(value.transactionType) ||
+    !TRANSACTION_STATUSES.includes(value.status) ||
+    !DATE_SCOPES.includes(value.dateScope) ||
+    !STUDENT_STATES.includes(value.studentState) ||
+    !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 8 ||
+    !(value.amountExact === null || (
+      typeof value.amountExact === 'number' && Number.isFinite(value.amountExact) &&
+      value.amountExact > 0 && value.amountExact <= MAX_EXACT_AMOUNT
+    ))
+  ) {
+    fail(category, 'The missing transaction plan contains an unsupported operation.')
+  }
+  if (
+    !Array.isArray(value.subjectAliases) || value.subjectAliases.length > 8 ||
+    value.subjectAliases.some(alias => (
+      !SUBJECT_ALIAS_PATTERN.test(alias) || !allowed.studentAliases.includes(alias)
+    )) || new Set(value.subjectAliases).size !== value.subjectAliases.length ||
+    !(value.categoryAlias === null || (
+      CATEGORY_ALIAS_PATTERN.test(value.categoryAlias) &&
+      allowed.categoryAliases.includes(value.categoryAlias)
+    ))
+  ) {
+    fail(category, 'The missing transaction plan contains an unsupported alias.')
+  }
+  if (
+    value.purpose === 'rent' &&
+    (value.categoryAlias !== null || value.transactionType !== 'Subtract')
+  ) {
+    fail(category, 'The missing transaction plan is inconsistent.')
+  }
+  return Object.freeze({
+    operation: 'students-without-transactions',
+    subjectAliases: Object.freeze([...value.subjectAliases]),
+    categoryAlias: value.categoryAlias,
+    purpose: value.purpose,
+    transactionType: value.transactionType,
+    status: value.status,
+    dateScope: value.dateScope,
+    amountExact: value.amountExact,
+    studentState: value.studentState,
+    limit: value.limit,
+  })
+}
+
 export function questionQueryPlanCoherenceError(value) {
   if (value.dataset === 'students') {
     const isBalanceRanking = value.metric === 'current-balance' && value.groupBy === 'student'
@@ -246,8 +342,36 @@ function validateAllowedAliases(value, category) {
 }
 
 function requireNullPlan(value, category) {
-  if (value !== null) fail(category, 'An unsupported question cannot contain a query plan.')
+  if (value !== null) fail(category, 'A non-query question cannot contain a query plan.')
   return null
+}
+
+function requireNullGuidance(value, category) {
+  if (value !== null) fail(category, 'A non-guidance question cannot contain guidance text.')
+  return null
+}
+
+function validateGuidance(value, category, maximum = MAX_GUIDANCE_LENGTH) {
+  const guidance = boundedText(
+    value,
+    MIN_GUIDANCE_LENGTH,
+    maximum,
+    'guidance',
+    category,
+  )
+  const hasControl = [...guidance].some(character => {
+    const codePoint = character.codePointAt(0)
+    return codePoint === 127 || codePoint < 32
+  })
+  if (
+    hasControl ||
+    PROVIDER_ALIAS_PATTERN.test(guidance) ||
+    PROVIDER_PLACEHOLDER_PATTERN.test(guidance) ||
+    URL_PATTERN.test(guidance)
+  ) {
+    fail(category, 'The Morgan Bank guidance contains unsupported content.')
+  }
+  return guidance
 }
 
 function canonicalTimeZone(value) {
@@ -291,7 +415,7 @@ function validateTokenUsage(value, category) {
     }
     result[field] = value[field]
   }
-  if (result.outputTokens > 256 || result.thinkingTokens > 4_096) {
+  if (result.outputTokens > 384 || result.thinkingTokens > 4_096) {
     fail(category, 'Question usage exceeds the reviewed limits.')
   }
   return result

@@ -7,7 +7,7 @@ Gemini callable. It does not authorize a secret change, Functions deployment,
 feature-gate activation, provider call, or production operation.
 
 The reviewed AI Insights experience requires release ID
-`gemini-3.6-flash-grounded-query-v1`. A deployment using another release
+`gemini-3.6-flash-morgan-bank-assistant-v3`. A deployment using another release
 ID stays fail-closed. Changing the deployed runtime flag or release ID remains
 a separate external-state authorization after code review.
 

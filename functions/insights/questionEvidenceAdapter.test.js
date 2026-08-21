@@ -88,10 +88,10 @@ function createFirestoreDouble(initial) {
   }
 }
 
-function loader(data = fixture()) {
+function loader(data = fixture(), currentTime = NOW) {
   return createFirestoreQuestionEvidenceLoader({
     firestore: createFirestoreDouble(data).firestore,
-    now: () => NOW,
+    now: () => currentTime,
   })
 }
 
@@ -108,7 +108,7 @@ test('replaces a full or unique partial roster name before constructing provider
       question,
     })
     assert.deepEqual(envelope.providerInput.subjectAliases, ['student-001'])
-    assert.equal(envelope.providerInput.schemaVersion, 2)
+    assert.equal(envelope.providerInput.schemaVersion, 4)
     assert.deepEqual(envelope.providerInput.categoryCatalog, [{
       alias: 'category-001',
       label: 'Class job',
@@ -122,8 +122,54 @@ test('replaces a full or unique partial roster name before constructing provider
     assert.doesNotMatch(JSON.stringify(envelope.providerInput), /GianMarco|Bellini|Sofia|Reyes|teacher-a|class-a/)
     assert.equal(envelope.answerEvidence.students[0].name, 'GianMarco Bellini')
     assert.equal(envelope.answerEvidence.transactions[0].categoryAlias, 'category-001')
+    assert.equal(envelope.answerEvidence.transactions[0].purpose, 'other')
+    assert.equal(envelope.answerEvidence.asOfDate, '2026-08-20')
     assert.match(envelope.evidenceSignature, /^[a-f0-9]{64}$/)
   }
+})
+
+test('classifies a V2 blank-category Rent reason only in server answer evidence', async () => {
+  const base = fixture()['classrooms/class-a/transactions/101']
+  const envelope = await loader(fixture({
+    'classrooms/class-a/transactions/101': {
+      ...base,
+      date: '2026-08-20T16:00:00.000Z',
+      type: 'Subtract',
+      amount: 10,
+      reason: 'Rent',
+      category: '',
+    },
+  }))({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'Which students did not pay $10 in rent today?',
+  })
+  assert.equal(envelope.answerEvidence.transactions[0].purpose, 'rent')
+  assert.equal(envelope.answerEvidence.asOfDate, '2026-08-20')
+  assert.deepEqual(envelope.providerInput.categoryCatalog, [{
+    alias: 'category-001',
+    label: 'Uncategorized',
+    transactionTypes: ['Subtract'],
+  }])
+  assert.doesNotMatch(JSON.stringify(envelope.providerInput), /GianMarco|Sofia|teacher-a|class-a/)
+})
+
+test('binds today questions to the classroom local date without exposing it to the provider', async () => {
+  const input = {
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'Which students did not pay rent today?',
+  }
+  const first = await loader(fixture(), new Date('2026-08-20T23:59:00.000Z'))(input)
+  const next = await loader(fixture(), new Date('2026-08-21T06:01:00.000Z'))(input)
+  assert.equal(first.answerEvidence.asOfDate, '2026-08-20')
+  assert.equal(next.answerEvidence.asOfDate, '2026-08-21')
+  assert.notEqual(first.evidenceSignature, next.evidenceSignature)
+  assert.equal(Object.hasOwn(first.providerInput, 'asOfDate'), false)
 })
 
 test('provider receives only a bounded category catalog and never raw transaction reasons or facts', async () => {

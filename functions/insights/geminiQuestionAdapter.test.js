@@ -11,7 +11,7 @@ import {
 } from './geminiQuestionAdapter.js'
 
 const providerInput = Object.freeze({
-  schemaVersion: 2,
+  schemaVersion: 4,
   question: 'Who has used the restroom the most?',
   subjectAliases: Object.freeze([]),
   categoryCatalog: Object.freeze([
@@ -29,11 +29,17 @@ test('question request uses the single regular Flash model with minimal thinking
   assert.equal(request.model, GEMINI_MODEL_ID)
   assert.equal(request.model, 'gemini-3.6-flash')
   assert.equal(request.config.thinkingConfig.thinkingLevel, 'MINIMAL')
-  assert.equal(request.config.maxOutputTokens, 256)
+  assert.equal(request.config.maxOutputTokens, 384)
   assert.equal(Object.hasOwn(request.config, 'temperature'), false)
   assert.equal(Object.hasOwn(request.config, 'tools'), false)
-  assert.match(request.config.systemInstruction, /never answer it, calculate a result, or invent a fact/)
+  assert.match(request.config.systemInstruction, /kind query.*fact.*classroom records/i)
+  assert.match(request.config.systemInstruction, /kind guidance.*Morgan Bank explanations/i)
+  assert.match(request.config.systemInstruction, /classroom tool, not a real bank/i)
   assert.match(request.config.systemInstruction, /visits.*use metric count/)
+  assert.match(request.config.systemInstruction, /students-without-transactions/)
+  assert.match(request.config.systemInstruction, /unpaid rent.*amountExact.*dateScope today/)
+  assert.match(JSON.stringify(request.config.responseJsonSchema), /students-without-transactions/)
+  assert.match(JSON.stringify(request.config.responseJsonSchema), /guidance/)
   assert.doesNotMatch(JSON.stringify(request), /GianMarco/)
 })
 
@@ -44,7 +50,7 @@ test('question adapter makes one injected call and accepts only structured inter
       calls += 1
       return {
         text: JSON.stringify({
-          schemaVersion: 2,
+          schemaVersion: 4,
           kind: 'query',
           plan: {
             dataset: 'transactions',
@@ -61,6 +67,7 @@ test('question adapter makes one injected call and accepts only structured inter
             order: 'highest',
             limit: 1,
           },
+          guidance: null,
         }),
         usageMetadata: {
           promptTokenCount: 90,
@@ -76,6 +83,38 @@ test('question adapter makes one injected call and accepts only structured inter
   assert.deepEqual(result.usage, { inputTokens: 90, outputTokens: 18, thinkingTokens: 0 })
   assert.equal(result.plan.categoryAlias, undefined)
   assert.equal(result.plan.filters.categoryAlias, 'category-001')
+})
+
+test('question adapter accepts a bounded Morgan Bank guidance route', async () => {
+  const guidance = 'Use a weekly savings goal and predictable earning categories so students can practice planning before optional classroom purchases.'
+  const adapter = createGeminiQuestionAdapter({
+    async generateContentOnce(request) {
+      assert.match(request.config.systemInstruction, /must not claim that you inspected data/i)
+      return {
+        text: JSON.stringify({
+          schemaVersion: 4,
+          kind: 'guidance',
+          plan: null,
+          guidance,
+        }),
+        usageMetadata: {
+          promptTokenCount: 120,
+          candidatesTokenCount: 35,
+          thoughtsTokenCount: 0,
+          totalTokenCount: 155,
+        },
+      }
+    },
+  })
+  const result = await adapter.interpret({
+    providerInput: {
+      ...providerInput,
+      question: 'How can I encourage saving in Morgan Bank?',
+    },
+  })
+  assert.equal(result.kind, 'guidance')
+  assert.equal(result.guidance, guidance)
+  assert.equal(result.plan, null)
 })
 
 test('question adapter redacts transport details and rejects malformed inputs before a call', async () => {

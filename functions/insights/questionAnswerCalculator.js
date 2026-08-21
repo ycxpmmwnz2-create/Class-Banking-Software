@@ -11,6 +11,9 @@ const MAX_ANSWER_LENGTH = 800
 const MAX_EVIDENCE_LENGTH = 320
 const MAX_DISPLAY_LABEL_LENGTH = 48
 const RESPONSE_LABEL_LENGTHS = Object.freeze([48, 40, 32, 24, 16])
+const GUIDANCE_ALIAS_PATTERN = /(?:student|category)-[0-9]{3}/iu
+const GUIDANCE_PLACEHOLDER_PATTERN = /\[(?:student|category)(?:-[0-9]{3})?\]/iu
+const GUIDANCE_URL_PATTERN = /(?:https?:\/\/|www\.)/iu
 
 export class InsightQuestionAnswerError extends Error {
   constructor(category, message) {
@@ -20,20 +23,135 @@ export class InsightQuestionAnswerError extends Error {
   }
 }
 
-export function calculateQuestionAnswer({ kind, plan, evidence } = {}) {
+export function calculateQuestionAnswer({ kind, plan, guidance = null, evidence } = {}) {
   const context = validateEvidence(evidence)
-  if (kind === 'unsupported') {
-    if (plan !== null) fail('answer-unavailable', 'An unsupported question cannot contain a query plan.')
+  if (kind === 'guidance') {
+    if (plan !== null) fail('answer-unavailable', 'Morgan Bank guidance cannot contain a query plan.')
     return answer(
-      'The available Morgan Bank records do not contain the information needed to answer that question reliably.',
-      ['No answer was generated beyond the supported classroom records.'],
+      validateGuidanceForCalculation(guidance),
+      ['General Morgan Bank guidance; no classroom records were used to make a factual claim.'],
+    )
+  }
+  if (kind === 'unsupported') {
+    if (plan !== null || guidance !== null) {
+      fail('answer-unavailable', 'An unsupported question cannot contain a plan or guidance.')
+    }
+    return answer(
+      'I can help with Morgan Bank, classroom-economy routines, and the available classroom records, but not that request.',
+      ['No answer was generated outside the Morgan Bank classroom-assistant scope.'],
+    )
+  }
+  if (kind === 'query-and-guidance') {
+    const guidanceText = validateGuidanceForCalculation(guidance, 240)
+    validatePlanForCalculation(plan)
+    const calculated = calculateQueryAnswer(plan, context)
+    return answer(
+      `${calculated.answer} General Morgan Bank guidance: ${guidanceText}`,
+      calculated.evidence,
     )
   }
   if (kind !== 'query') fail('answer-unavailable', 'The interpreted question is unsupported.')
+  if (guidance !== null) fail('answer-unavailable', 'A classroom query cannot contain guidance text.')
   validatePlanForCalculation(plan)
+  return calculateQueryAnswer(plan, context)
+}
 
+function calculateQueryAnswer(plan, context) {
+  if (plan.operation === 'students-without-transactions') {
+    return calculateStudentsWithoutTransactions(plan, context)
+  }
   if (plan.dataset === 'students') return calculateStudentQuery(plan, context)
   return calculateTransactionQuery(plan, context)
+}
+
+function validateGuidanceForCalculation(value, maximum = 480) {
+  const hasControl = typeof value === 'string' && [...value].some(character => {
+    const codePoint = character.codePointAt(0)
+    return codePoint === 127 || codePoint < 32
+  })
+  if (
+    typeof value !== 'string' || value.length < 20 || value.length > maximum ||
+    value.trim() !== value || hasControl ||
+    GUIDANCE_ALIAS_PATTERN.test(value) ||
+    GUIDANCE_PLACEHOLDER_PATTERN.test(value) ||
+    GUIDANCE_URL_PATTERN.test(value)
+  ) fail('answer-unavailable', 'The Morgan Bank guidance is malformed.')
+  return value
+}
+
+function calculateStudentsWithoutTransactions(plan, context) {
+  let students = context.students
+  if (plan.subjectAliases.length) {
+    students = plan.subjectAliases.map(alias => {
+      const selected = context.studentsByAlias.get(alias)
+      if (!selected) fail('answer-unavailable', 'A selected current student is unavailable.')
+      return selected
+    })
+  }
+  if (plan.studentState !== 'any') {
+    const frozen = plan.studentState === 'frozen'
+    students = students.filter(student => student.frozen === frozen)
+  }
+
+  let transactions = context.transactions
+  if (plan.categoryAlias !== null) {
+    if (!context.categoriesByAlias.has(plan.categoryAlias)) {
+      fail('answer-unavailable', 'The selected category is unavailable.')
+    }
+    transactions = transactions.filter(transaction => transaction.categoryAlias === plan.categoryAlias)
+  }
+  if (plan.purpose !== 'any') {
+    transactions = transactions.filter(transaction => transaction.purpose === plan.purpose)
+  }
+  if (plan.transactionType !== 'any') {
+    transactions = transactions.filter(transaction => transaction.type === plan.transactionType)
+  }
+  if (plan.status !== 'any') {
+    transactions = transactions.filter(transaction => transaction.status === plan.status)
+  }
+  if (plan.dateScope === 'today') {
+    transactions = transactions.filter(transaction => (
+      localDateKey(transaction.date, context.timeZone) === context.asOfDate
+    ))
+  }
+  if (plan.amountExact !== null) {
+    transactions = transactions.filter(transaction => transaction.amount === plan.amountExact)
+  }
+
+  const matchingStudentIds = new Set(transactions.map(transaction => transaction.studentId))
+  const missing = students
+    .filter(student => !matchingStudentIds.has(student.id))
+    .sort((left, right) => left.name.localeCompare(right.name, 'en-US') || left.id - right.id)
+  return renderStudentsWithoutTransactions({ plan, context, students, missing })
+}
+
+function renderStudentsWithoutTransactions({ plan, context, students, missing }) {
+  return fitResponseWithinPublicBounds(labelLength => {
+    const filterContext = describeMissingTransactionFilters(plan, context, Math.min(24, labelLength))
+    const matchLabel = plan.purpose === 'rent' ? 'rent payment' : 'transaction'
+    if (!students.length) {
+      return {
+        text: `No current students were available to check. This checks ${filterContext}.`,
+        evidence: [`Students checked: 0. Checked ${filterContext}.`],
+      }
+    }
+    if (!missing.length) {
+      return {
+        text: `No. All ${students.length} current ${students.length === 1 ? 'student has' : 'students have'} a matching ${matchLabel}. This checks ${filterContext}.`,
+        evidence: [`Students checked: ${students.length}; students without a match: 0. Checked ${filterContext}.`],
+      }
+    }
+    const selected = missing.slice(0, plan.limit)
+    const omitted = missing.length - selected.length
+    const labels = joinLabels(selected.map(student => displayLabel(student.name, labelLength)))
+    const omittedText = omitted ? ` and ${omitted} ${omitted === 1 ? 'other' : 'others'}` : ''
+    return {
+      text: `Yes. ${missing.length} of ${students.length} current students do not have a matching ${matchLabel}: ${labels}${omittedText}. This checks ${filterContext}.`,
+      evidence: selected.map(student => (
+        `${displayLabel(student.name, labelLength)}: no matching ${matchLabel}. Checked ${filterContext}.`
+      )),
+    }
+  })
 }
 
 function calculateStudentQuery(plan, context) {
@@ -327,12 +445,18 @@ function localDateParts(date, timeZone) {
   return { year: Number(parts.year), month: Number(parts.month), day: Number(parts.day) }
 }
 
+function localDateKey(date, timeZone) {
+  const parts = localDateParts(date, timeZone)
+  return `${String(parts.year).padStart(4, '0')}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
+}
+
 function validateEvidence(value) {
   if (
     !value || typeof value !== 'object' || !Array.isArray(value.participants) ||
     !Array.isArray(value.students) ||
     !Array.isArray(value.categories) || !Array.isArray(value.transactions) ||
-    ![7, 30, 90].includes(value.periodDays) || typeof value.timeZone !== 'string'
+    ![7, 30, 90].includes(value.periodDays) || typeof value.timeZone !== 'string' ||
+    typeof value.asOfDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.asOfDate)
   ) fail('answer-unavailable', 'The server answer evidence is malformed.')
 
   const participantsById = new Map()
@@ -374,6 +498,7 @@ function validateEvidence(value) {
       !transaction || !Number.isSafeInteger(transaction.id) || transaction.id < 1 ||
       !participantsById.has(transaction.studentId) || !categoriesByAlias.has(transaction.categoryAlias) ||
       !['Add', 'Subtract'].includes(transaction.type) || !['Approved', 'Pending', 'Denied'].includes(transaction.status) ||
+      !['rent', 'other'].includes(transaction.purpose) ||
       !Number.isFinite(transaction.amount) || transaction.amount <= 0 || transactionIds.has(transaction.id) ||
       !Number.isFinite(Date.parse(transaction.date))
     ) fail('answer-unavailable', 'The server transaction evidence is malformed.')
@@ -395,6 +520,10 @@ function validateEvidence(value) {
 }
 
 function validatePlanForCalculation(plan) {
+  if (isPlainObject(plan) && Object.hasOwn(plan, 'operation')) {
+    validateMissingTransactionPlanForCalculation(plan)
+    return
+  }
   if (
     !isPlainObject(plan) || !hasExactKeys(plan, ['dataset', 'metric', 'filters', 'groupBy', 'order', 'limit']) ||
     !isPlainObject(plan.filters) || !hasExactKeys(
@@ -417,6 +546,69 @@ function validatePlanForCalculation(plan) {
   ) fail('answer-unavailable', 'The server query plan is malformed.')
   const coherenceError = questionQueryPlanCoherenceError(plan)
   if (coherenceError) fail('answer-unavailable', coherenceError)
+}
+
+function validateMissingTransactionPlanForCalculation(plan) {
+  if (
+    !hasExactKeys(plan, [
+      'operation',
+      'subjectAliases',
+      'categoryAlias',
+      'purpose',
+      'transactionType',
+      'status',
+      'dateScope',
+      'amountExact',
+      'studentState',
+      'limit',
+    ]) ||
+    plan.operation !== 'students-without-transactions' ||
+    !Array.isArray(plan.subjectAliases) || plan.subjectAliases.length > 8 ||
+    plan.subjectAliases.some(alias => !/^student-[0-9]{3}$/.test(alias)) ||
+    new Set(plan.subjectAliases).size !== plan.subjectAliases.length ||
+    !(plan.categoryAlias === null || /^category-[0-9]{3}$/.test(plan.categoryAlias)) ||
+    !['any', 'rent'].includes(plan.purpose) ||
+    !['Add', 'Subtract', 'any'].includes(plan.transactionType) ||
+    !['Approved', 'Pending', 'Denied', 'any'].includes(plan.status) ||
+    !['period', 'today'].includes(plan.dateScope) ||
+    !(plan.amountExact === null || (
+      typeof plan.amountExact === 'number' && Number.isFinite(plan.amountExact) &&
+      plan.amountExact > 0 && plan.amountExact <= 1_000_000
+    )) ||
+    !['active', 'frozen', 'any'].includes(plan.studentState) ||
+    !Number.isSafeInteger(plan.limit) || plan.limit < 1 || plan.limit > 8 ||
+    (plan.purpose === 'rent' && (plan.categoryAlias !== null || plan.transactionType !== 'Subtract'))
+  ) fail('answer-unavailable', 'The missing transaction plan is malformed.')
+}
+
+function describeMissingTransactionFilters(plan, context, labelLength = 24) {
+  const type = plan.transactionType === 'Add'
+    ? 'earning (Add) transactions'
+    : plan.transactionType === 'Subtract'
+      ? 'spending (Subtract) transactions'
+      : 'earning (Add) and spending (Subtract) transactions'
+  const parts = [plan.status === 'any'
+    ? `${type} across all approval statuses`
+    : `${plan.status.toLocaleLowerCase('en-US')} ${type}`]
+  if (plan.purpose === 'rent') parts.push('rent payments')
+  if (plan.categoryAlias !== null) {
+    const category = context.categoriesByAlias.get(plan.categoryAlias)
+    parts.push(`category ${displayLabel(category?.label || plan.categoryAlias, labelLength)}`)
+  }
+  if (plan.amountExact !== null) parts.push(`exactly ${money(plan.amountExact)}`)
+  if (plan.dateScope === 'today') {
+    parts.push(`today (${context.asOfDate} in ${context.timeZone})`)
+  } else {
+    parts.push(`the last ${context.periodDays} days`)
+  }
+  parts.push(plan.studentState === 'any'
+    ? 'all current students'
+    : `current ${plan.studentState} students`)
+  if (plan.subjectAliases.length) {
+    const names = plan.subjectAliases.map(alias => context.studentsByAlias.get(alias)?.name || alias)
+    parts.push(`selected ${summarizeLabels(names, { maximum: 2, labelLength })}`)
+  }
+  return parts.join('; ')
 }
 
 function describeQueryFilters(plan, context, labelLength = 24) {

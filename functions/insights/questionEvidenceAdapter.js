@@ -66,6 +66,7 @@ export function createFirestoreQuestionEvidenceLoader({
       fail('question-sensitive', 'Remove email addresses, links, and phone numbers before asking.')
     }
     const generatedAt = requireDate(now())
+    const asOfDate = localDateKey(generatedAt, timeZone)
     const teacherRef = firestore.collection('teachers').doc(teacher)
     const classroomRef = firestore.collection('classrooms').doc(classroom)
 
@@ -146,10 +147,12 @@ export function createFirestoreQuestionEvidenceLoader({
         type: transaction.type,
         amount: transaction.amount,
         categoryAlias: categoryAliasByKey.get(categoryKey(transaction.category)),
+        purpose: transactionPurpose(transaction),
         status: transaction.status,
       }))),
       periodDays,
       timeZone,
+      asOfDate,
     })
     const providerInput = Object.freeze({
       schemaVersion: INSIGHT_QUERY_PLAN_SCHEMA_VERSION,
@@ -181,11 +184,30 @@ export function createFirestoreQuestionEvidenceLoader({
         question,
         periodDays,
         timeZone,
+        asOfDate,
         students: raw.students,
         transactions: periodTransactions,
       })).digest('hex'),
     })
   }
+}
+
+function transactionPurpose(transaction) {
+  const labels = [transaction.category, transaction.reason].map(value => (
+    normalizeDisplayCategory(value).normalize('NFKC').toLocaleLowerCase('en-US')
+  ))
+  return labels.some(label => label === 'rent' || label === 'desk rent') ? 'rent' : 'other'
+}
+
+function localDateKey(date, timeZone) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+  const parts = Object.fromEntries(formatter.formatToParts(date).map(part => [part.type, part.value]))
+  return `${parts.year}-${parts.month}-${parts.day}`
 }
 
 function buildParticipants(students, transactions) {

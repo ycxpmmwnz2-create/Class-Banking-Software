@@ -236,6 +236,71 @@ test("natural restroom question uses the exact five-field request and ranks visi
   expect(await browserStorageSnapshot(page)).toEqual(storageBefore);
 });
 
+test("rent question names current students without an approved exact payment today", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  await page.locator("#providerQuestionInput").fill("Who did not pay $10 in rent today?");
+  await page.getByTestId("provider-question-submit").click();
+  await expect(page.getByTestId("provider-question-result")).toContainText(TENANT_A.classmateName);
+  await expect(page.getByTestId("provider-question-result")).toContainText("$10.00");
+  await expect(page.getByTestId("provider-question-result")).toContainText("rent payment");
+  await expect(page.getByTestId("provider-question-result")).not.toContainText(TENANT_A.studentName);
+  await expect(page.getByTestId("provider-question-result")).not.toContainText(TENANT_A.foreignName);
+
+  const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
+  expect(calls).toHaveLength(1);
+  expect(Object.keys(calls[0]).sort()).toEqual([
+    "kind",
+    "periodDays",
+    "question",
+    "requestId",
+    "timeZone",
+  ]);
+  expect(calls[0].question).toBe("Who did not pay $10 in rent today?");
+});
+
+test("Morgan Bank guidance question receives useful domain help without claiming classroom facts", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  const question = "How can I help students build a saving habit in Morgan Bank?";
+  await page.locator("#providerQuestionInput").fill(question);
+  await page.getByTestId("provider-question-submit").click();
+  const result = page.getByTestId("provider-question-result");
+  await expect(result).toContainText("savings goal");
+  await expect(result).toContainText("no classroom records were used");
+  await expect(result).not.toContainText(TENANT_A.studentName);
+  await expect(result).not.toContainText(TENANT_A.classmateName);
+  await expect(result).not.toContainText(TENANT_A.foreignName);
+
+  const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
+  expect(calls).toHaveLength(1);
+  expect(Object.keys(calls[0]).sort()).toEqual([
+    "kind",
+    "periodDays",
+    "question",
+    "requestId",
+    "timeZone",
+  ]);
+  expect(calls[0].question).toBe(question);
+});
+
+test("one question can combine a calculated classroom answer with general Morgan Bank guidance", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  const question = "Who has the lowest balance, and how can I help them set a goal?";
+  await page.locator("#providerQuestionInput").fill(question);
+  await page.getByTestId("provider-question-submit").click();
+  const result = page.getByTestId("provider-question-result");
+  await expect(result).toContainText("lowest current balance");
+  await expect(result).toContainText("General Morgan Bank guidance");
+  await expect(result).toContainText("realistic next goal");
+  await expect(result).not.toContainText(TENANT_A.foreignName);
+
+  const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
+  expect(calls).toHaveLength(1);
+  expect(calls[0].question).toBe(question);
+});
+
 test("changing the period discards a late question answer", async ({ page }) => {
   await openApp(page);
   await signIn(page, TENANT_A);
