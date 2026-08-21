@@ -10,7 +10,7 @@ const DAY_LABELS = Object.freeze(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'T
 const MAX_ANSWER_LENGTH = 800
 const MAX_EVIDENCE_LENGTH = 320
 const MAX_DISPLAY_LABEL_LENGTH = 48
-const RANKED_LABEL_LENGTHS = Object.freeze([48, 40, 32, 24, 16])
+const RESPONSE_LABEL_LENGTHS = Object.freeze([48, 40, 32, 24, 16])
 
 export class InsightQuestionAnswerError extends Error {
   constructor(category, message) {
@@ -147,18 +147,20 @@ function calculateTransactionQuery(plan, context) {
 }
 
 function renderRows({ rows, plan, context, noun, subjectNames = [] }) {
-  const filterContext = describeQueryFilters(plan, context)
   if (!rows.length) {
-    if (plan.dataset === 'students') {
-      return answer(
-        `No matching students were found in the current classroom roster. This uses ${filterContext}.`,
-        [`Matching students: 0. Included records: ${filterContext}.`],
-      )
-    }
-    return answer(
-      `No matching records were found in the last ${context.periodDays} days. This uses ${filterContext}.`,
-      [`Matching records: 0. Included records: ${filterContext}.`],
-    )
+    return fitResponseWithinPublicBounds(labelLength => {
+      const filterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
+      if (plan.dataset === 'students') {
+        return {
+          text: `No matching students were found in the current classroom roster. This uses ${filterContext}.`,
+          evidence: [`Matching students: 0. Included records: ${filterContext}.`],
+        }
+      }
+      return {
+        text: `No matching records were found in the last ${context.periodDays} days. This uses ${filterContext}.`,
+        evidence: [`Matching records: 0. Included records: ${filterContext}.`],
+      }
+    })
   }
   const sorted = sortRows(rows, plan.order)
   const tiedRows = includeTies(sorted, plan.limit)
@@ -167,15 +169,18 @@ function renderRows({ rows, plan, context, noun, subjectNames = [] }) {
   if (plan.groupBy === 'none') {
     const row = selected[0]
     const periodSuffix = plan.dataset === 'students' ? '' : ` for the last ${context.periodDays} days`
-    return answer(
-      `The ${noun} is ${formatMetric(plan, row.value, row.count)}${periodSuffix}. This uses ${filterContext}.`,
-      [`${evidenceLine(row, plan)} Included records: ${filterContext}.`],
-    )
+    return fitResponseWithinPublicBounds(labelLength => {
+      const filterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
+      return {
+        text: `The ${noun} is ${formatMetric(plan, row.value, row.count)}${periodSuffix}. This uses ${filterContext}.`,
+        evidence: [`${evidenceLine(row, plan, labelLength)} Included records: ${filterContext}.`],
+      }
+    })
   }
 
   const direction = plan.order === 'lowest' ? 'lowest' : plan.order === 'highest' ? 'highest' : null
   const tied = direction && selected.length > 1 && selected.every(row => row.value === selected[0].value)
-  for (const labelLength of RANKED_LABEL_LENGTHS) {
+  return fitResponseWithinPublicBounds(labelLength => {
     const rankedFilterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
     let summary
     if (tied) {
@@ -197,9 +202,8 @@ function renderRows({ rows, plan, context, noun, subjectNames = [] }) {
     const evidence = selected.map(row => (
       `${evidenceLine(row, plan, labelLength)} Included records: ${rankedFilterContext}.`
     ))
-    if (responseWithinPublicBounds(summary, evidence)) return answer(summary, evidence)
-  }
-  fail('answer-unavailable', 'The calculated answer exceeds the public response bounds.')
+    return { text: summary, evidence }
+  })
 }
 
 function groupFor(transaction, groupBy, context) {
@@ -497,6 +501,14 @@ function answer(text, evidence) {
     fail('answer-unavailable', 'The calculated answer exceeds the public response bounds.')
   }
   return Object.freeze({ answer: text, evidence: Object.freeze(evidence) })
+}
+
+function fitResponseWithinPublicBounds(render) {
+  for (const labelLength of RESPONSE_LABEL_LENGTHS) {
+    const { text, evidence } = render(labelLength)
+    if (responseWithinPublicBounds(text, evidence)) return answer(text, evidence)
+  }
+  fail('answer-unavailable', 'The calculated answer exceeds the public response bounds.')
 }
 
 function responseWithinPublicBounds(text, evidence) {

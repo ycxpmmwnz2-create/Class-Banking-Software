@@ -415,7 +415,7 @@ test('maximum-length category rankings are validated before a successful ledger 
   assert.deepEqual(fixture.calls, ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'price', 'commit'])
 })
 
-test('eight maximum-length named students with every filter produce a valid committed response', async () => {
+test('ranked and aggregate maximum-length named-student queries commit valid responses', async () => {
   const value = envelope()
   const students = Array.from({ length: 8 }, (_, index) => ({
     id: index + 1,
@@ -465,49 +465,51 @@ test('eight maximum-length named students with every filter produce a valid comm
       ]),
     ],
   }
-  const fixture = dependencies({
-    async loadQuestionEvidence() {
-      fixture.calls.push('evidence')
-      return rankedEnvelope
-    },
-    provider: {
-      async interpret() {
-        fixture.calls.push('provider')
-        return {
-          schemaVersion: 2,
-          kind: 'query',
-          plan: {
-            dataset: 'transactions',
-            metric: 'count',
-            filters: {
-              subjectAliases: aliases,
-              categoryAlias: category.alias,
-              transactionType: 'any',
-              status: 'any',
-              timeBucket: 'afternoon',
-              studentState: 'frozen',
-            },
-            groupBy: 'student',
-            order: 'highest',
-            limit: 8,
-          },
-          usage: { inputTokens: 90, outputTokens: 18, thinkingTokens: 0 },
-        }
+  for (const [groupBy, limit, evidenceCount] of [['student', 8, 8], ['none', 1, 1]]) {
+    const fixture = dependencies({
+      async loadQuestionEvidence() {
+        fixture.calls.push('evidence')
+        return rankedEnvelope
       },
-    },
-  })
-  const result = await createInsightQuestionService(fixture.deps)({
-    auth: { uid: 'teacher-a' },
-    data: request,
-  })
-  assert.equal(result.schemaVersion, 2)
-  assert.ok(result.answer.length <= 800)
-  assert.equal(result.evidence.length, 8)
-  assert.ok(result.evidence.every(line => line.length <= 320))
-  assert.match(result.answer, /…/)
-  assert.equal(fixture.commits.length, 1)
-  assert.equal(fixture.uncertain.length, 0)
-  assert.deepEqual(fixture.calls, ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'price', 'commit'])
+      provider: {
+        async interpret() {
+          fixture.calls.push('provider')
+          return {
+            schemaVersion: 2,
+            kind: 'query',
+            plan: {
+              dataset: 'transactions',
+              metric: 'count',
+              filters: {
+                subjectAliases: aliases,
+                categoryAlias: category.alias,
+                transactionType: 'any',
+                status: 'any',
+                timeBucket: 'afternoon',
+                studentState: 'frozen',
+              },
+              groupBy,
+              order: 'highest',
+              limit,
+            },
+            usage: { inputTokens: 90, outputTokens: 18, thinkingTokens: 0 },
+          }
+        },
+      },
+    })
+    const result = await createInsightQuestionService(fixture.deps)({
+      auth: { uid: 'teacher-a' },
+      data: request,
+    })
+    assert.equal(result.schemaVersion, 2)
+    assert.ok(result.answer.length <= 800)
+    assert.equal(result.evidence.length, evidenceCount)
+    assert.ok(result.evidence.every(line => line.length <= 320))
+    assert.match(result.answer, /…/)
+    assert.equal(fixture.commits.length, 1)
+    assert.equal(fixture.uncertain.length, 0)
+    assert.deepEqual(fixture.calls, ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'price', 'commit'])
+  }
 })
 
 test('response construction failures retain the reservation without committing or blaming the provider', async () => {
