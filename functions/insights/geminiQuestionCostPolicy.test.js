@@ -9,9 +9,14 @@ import {
 import { GEMINI_RATE_CARD_ID } from './geminiProviderAdapter.js'
 
 const providerInput = {
-  schemaVersion: 1,
-  question: 'What category is [student-001] earning the most money in?',
-  subjectAliases: ['student-001'],
+  schemaVersion: 2,
+  question: 'Who has used the restroom the most?',
+  subjectAliases: [],
+  categoryCatalog: [{
+    alias: 'category-001',
+    label: 'Bathroom break',
+    transactionTypes: ['Subtract'],
+  }],
   periodDays: 30,
 }
 
@@ -33,7 +38,7 @@ test('question pricing rejects mismatched cards and usage above either output ce
   }) > 0)
   for (const input of [
     { rateCardId: 'browser-selected', usage: { inputTokens: 1, outputTokens: 1, thinkingTokens: 0 } },
-    { rateCardId: GEMINI_RATE_CARD_ID, usage: { inputTokens: 1, outputTokens: 97, thinkingTokens: 0 } },
+    { rateCardId: GEMINI_RATE_CARD_ID, usage: { inputTokens: 1, outputTokens: 257, thinkingTokens: 0 } },
     { rateCardId: GEMINI_RATE_CARD_ID, usage: { inputTokens: 1, outputTokens: 1, thinkingTokens: 4_097 } },
   ]) {
     assert.throws(() => priceGeminiQuestionActualUsage(input), GeminiQuestionCostPolicyError)

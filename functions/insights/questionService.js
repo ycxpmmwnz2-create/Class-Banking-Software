@@ -7,8 +7,12 @@ import {
 } from './costPolicy.js'
 import { FirestoreUsageLedgerError } from './firestoreUsageLedger.js'
 import { InsightIdentityError, validateInsightIdentity } from './identity.js'
-import { calculateQuestionAnswer } from './questionAnswerCalculator.js'
 import {
+  calculateQuestionAnswer,
+  InsightQuestionAnswerError,
+} from './questionAnswerCalculator.js'
+import {
+  INSIGHT_QUERY_PLAN_SCHEMA_VERSION,
   INSIGHT_QUESTION_SCHEMA_VERSION,
   InsightQuestionContractError,
   validateCompletedQuestion,
@@ -58,7 +62,7 @@ export function createInsightQuestionService(dependencies) {
       if (error instanceof InsightQuestionServiceError) throw error
       if (
         error instanceof InsightQuestionEvidenceError &&
-        ['question-ambiguous', 'question-sensitive'].includes(error.category)
+        ['question-ambiguous', 'question-sensitive', 'category-sensitive'].includes(error.category)
       ) {
         throw new InsightQuestionServiceError(error.category, error.message)
       }
@@ -95,7 +99,11 @@ export function createInsightQuestionService(dependencies) {
         throw new InsightQuestionServiceError('invalid-replay', 'Stored question does not match current evidence.')
       }
       return buildTeacherResponse({
-        interpretation: replay,
+        calculated: calculateGroundedAnswer({
+          kind: replay.kind,
+          plan: replay.plan,
+          evidence: envelope.answerEvidence,
+        }),
         envelope,
         generatedAt: reservation.result.generatedAt,
         usage: replay.usage,
@@ -110,6 +118,11 @@ export function createInsightQuestionService(dependencies) {
         await deps.provider.interpret({ providerInput: envelope.providerInput }),
         envelope.allowedAliases,
       )
+      const calculated = calculateGroundedAnswer({
+        kind: interpretation.kind,
+        plan: interpretation.plan,
+        evidence: envelope.answerEvidence,
+      })
       const actualCostMicroUsd = validateActualCost(
         await deps.priceActualUsage({
           rateCardId: quote.rateCardId,
@@ -122,13 +135,13 @@ export function createInsightQuestionService(dependencies) {
         costMicroUsd: actualCostMicroUsd,
       })
       const completed = Object.freeze({
-        schemaVersion: INSIGHT_QUESTION_SCHEMA_VERSION,
+        schemaVersion: INSIGHT_QUERY_PLAN_SCHEMA_VERSION,
         source: 'provider-interpreted',
         periodDays: request.periodDays,
         evidenceSignature: envelope.evidenceSignature,
         generatedAt: now.toISOString(),
-        intent: interpretation.intent,
-        subjectAlias: interpretation.subjectAlias,
+        kind: interpretation.kind,
+        plan: interpretation.plan,
         usage: billedUsage,
       })
       await deps.usageLedger.commit({
@@ -138,7 +151,7 @@ export function createInsightQuestionService(dependencies) {
         result: completed,
       })
       return buildTeacherResponse({
-        interpretation,
+        calculated,
         envelope,
         generatedAt: completed.generatedAt,
         usage: billedUsage,
@@ -154,18 +167,16 @@ export function createInsightQuestionService(dependencies) {
       if (error instanceof InsightQuestionContractError) {
         throw new InsightQuestionServiceError('provider-output-invalid', 'The AI question interpretation was invalid.')
       }
+      if (error instanceof InsightQuestionAnswerError) {
+        throw new InsightQuestionServiceError('answer-unavailable', 'The classroom records could not produce a safe answer.')
+      }
       if (error instanceof InsightQuestionServiceError) throw error
       throw new InsightQuestionServiceError('provider-unavailable', 'AI question interpretation is unavailable.')
     }
   }
 }
 
-function buildTeacherResponse({ interpretation, envelope, generatedAt, usage }) {
-  const calculated = calculateQuestionAnswer({
-    intent: interpretation.intent,
-    subjectAlias: interpretation.subjectAlias,
-    evidence: envelope.answerEvidence,
-  })
+function buildTeacherResponse({ calculated, envelope, generatedAt, usage }) {
   return validateTeacherQuestionResponse({
     schemaVersion: INSIGHT_QUESTION_SCHEMA_VERSION,
     source: 'ai-grounded',
@@ -175,6 +186,17 @@ function buildTeacherResponse({ interpretation, envelope, generatedAt, usage }) 
     evidence: calculated.evidence,
     usage,
   })
+}
+
+function calculateGroundedAnswer(input) {
+  try {
+    return calculateQuestionAnswer(input)
+  } catch (error) {
+    if (error instanceof InsightQuestionAnswerError) {
+      throw new InsightQuestionServiceError('answer-unavailable', 'The classroom records could not produce a safe answer.')
+    }
+    throw error
+  }
 }
 
 function validateEvidenceEnvelope(value) {
@@ -187,7 +209,10 @@ function validateEvidenceEnvelope(value) {
   if (
     !isPlainObject(value.providerInput) ||
     !isPlainObject(value.answerEvidence) ||
-    !Array.isArray(value.allowedAliases) ||
+    !isPlainObject(value.allowedAliases) ||
+    !hasExactKeys(value.allowedAliases, ['studentAliases', 'categoryAliases']) ||
+    !Array.isArray(value.allowedAliases.studentAliases) ||
+    !Array.isArray(value.allowedAliases.categoryAliases) ||
     !Array.isArray(value.sensitiveValues) ||
     typeof value.evidenceSignature !== 'string' ||
     !/^[a-f0-9]{64}$/.test(value.evidenceSignature)
@@ -236,6 +261,15 @@ function assertProviderInputIsDeidentified(providerInput, sensitiveValues) {
           'The provider question input contains an obscured sensitive value.',
         )
       }
+    } else if (
+      ['teacher-uid', 'classroom-id'].includes(entry.kind) &&
+      collapseSensitiveText(entry.value).length >= 4 &&
+      privacyLeaves.some(leaf => collapseSensitiveText(leaf).includes(collapseSensitiveText(entry.value)))
+    ) {
+      throw new InsightQuestionServiceError(
+        'evidence-not-deidentified',
+        'The provider question input contains an obscured sensitive value.',
+      )
     }
   }
 }

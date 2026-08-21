@@ -19,26 +19,32 @@ function envelope() {
   return {
     generatedAt: '2026-08-20T18:00:00.000Z',
     providerInput: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       question: 'What category is [student-001] earning the most money in?',
       subjectAliases: ['student-001'],
+      categoryCatalog: [{ alias: 'category-001', label: 'Class job', transactionTypes: ['Add'] }],
       periodDays: 30,
     },
     answerEvidence: {
       periodDays: 30,
       timeZone: 'America/Denver',
-      students: [{ id: 1, alias: 'student-001', name: 'GianMarco', balance: 42 }],
+      participants: [{ id: 1, alias: 'student-001', name: 'GianMarco' }],
+      students: [{ id: 1, alias: 'student-001', name: 'GianMarco', balance: 42, frozen: false }],
+      categories: [{ alias: 'category-001', label: 'Class job' }],
       transactions: [{
         id: 1,
         studentId: 1,
         date: '2026-08-19T16:00:00.000Z',
         type: 'Add',
         amount: 20,
-        category: 'Class job',
+        categoryAlias: 'category-001',
         status: 'Approved',
       }],
     },
-    allowedAliases: ['student-001'],
+    allowedAliases: {
+      studentAliases: ['student-001'],
+      categoryAliases: ['category-001'],
+    },
     sensitiveValues: [
       { kind: 'teacher-uid', value: 'teacher-a' },
       { kind: 'classroom-id', value: 'class-a' },
@@ -79,9 +85,23 @@ function dependencies(overrides = {}) {
           calls.push('provider')
           assert.doesNotMatch(JSON.stringify(providerInput), /GianMarco|teacher-a|class-a/)
           return {
-            schemaVersion: 1,
-            intent: 'student-top-earning-category',
-            subjectAlias: 'student-001',
+            schemaVersion: 2,
+            kind: 'query',
+            plan: {
+              dataset: 'transactions',
+              metric: 'amount-total',
+              filters: {
+                subjectAliases: ['student-001'],
+                categoryAlias: null,
+                transactionType: 'Add',
+                status: 'Approved',
+                timeBucket: null,
+                studentState: 'any',
+              },
+              groupBy: 'category',
+              order: 'highest',
+              limit: 1,
+            },
             usage: { inputTokens: 90, outputTokens: 18, thinkingTokens: 0 },
           }
         },
@@ -121,12 +141,12 @@ test('resolves tenant, sanitizes evidence, reserves, interprets, calculates, and
   const service = createInsightQuestionService(fixture.deps)
   const result = await service({ auth: { uid: 'teacher-a' }, data: request })
   assert.deepEqual(fixture.calls, ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'price', 'commit'])
-  assert.match(result.answer, /GianMarco.*Class job.*\$20\.00/)
+  assert.match(result.answer, /GianMarco.*class job.*\$20\.00/i)
   assert.equal(result.source, 'ai-grounded')
   assert.equal(fixture.commits.length, 1)
   const stored = JSON.stringify(fixture.commits[0].result)
   assert.doesNotMatch(stored, /GianMarco|What category|Class job/)
-  assert.match(stored, /student-001|student-top-earning-category/)
+  assert.match(stored, /student-001|amount-total/)
 })
 
 test('browser authority fields fail before tenant resolution', async () => {
@@ -209,6 +229,30 @@ test('ordinary words containing a declared name substring still reach the provid
   }
 })
 
+test('declared tenant identities cannot be smuggled through category catalog labels', async () => {
+  for (const label of ['class-a', 'classa', 'teacher.a']) {
+    const fixture = dependencies({
+      async loadQuestionEvidence() {
+        fixture.calls.push('evidence')
+        const value = envelope()
+        return {
+          ...value,
+          providerInput: {
+            ...value.providerInput,
+            categoryCatalog: [{ ...value.providerInput.categoryCatalog[0], label }],
+          },
+        }
+      },
+    })
+    const service = createInsightQuestionService(fixture.deps)
+    await assert.rejects(
+      service({ auth: { uid: 'teacher-a' }, data: request }),
+      error => error instanceof InsightQuestionServiceError && error.category === 'evidence-not-deidentified',
+    )
+    assert.deepEqual(fixture.calls, ['tenant', 'evidence'])
+  }
+})
+
 test('provider failure retains the worst-case reservation and returns no answer', async () => {
   const fixture = dependencies({
     provider: {
@@ -229,15 +273,56 @@ test('provider failure retains the worst-case reservation and returns no answer'
   assert.deepEqual(fixture.calls, ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'uncertain'])
 })
 
+test('server calculation must succeed before pricing or commit and failures retain worst-case cost', async () => {
+  const fixture = dependencies({
+    async loadQuestionEvidence() {
+      fixture.calls.push('evidence')
+      const value = envelope()
+      return {
+        ...value,
+        answerEvidence: {
+          ...value.answerEvidence,
+          transactions: value.answerEvidence.transactions.map(transaction => ({
+            ...transaction,
+            categoryAlias: 'category-999',
+          })),
+        },
+      }
+    },
+  })
+  const service = createInsightQuestionService(fixture.deps)
+  await assert.rejects(
+    service({ auth: { uid: 'teacher-a' }, data: request }),
+    error => error instanceof InsightQuestionServiceError && error.category === 'answer-unavailable',
+  )
+  assert.deepEqual(fixture.calls, ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'uncertain'])
+  assert.equal(fixture.commits.length, 0)
+  assert.equal(fixture.uncertain.length, 1)
+})
+
 test('completed replay is signature-checked and recalculated from current server evidence', async () => {
   const completed = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: 'provider-interpreted',
     periodDays: 30,
     evidenceSignature: SIGNATURE,
     generatedAt: '2026-08-20T18:00:00.000Z',
-    intent: 'student-top-earning-category',
-    subjectAlias: 'student-001',
+    kind: 'query',
+    plan: {
+      dataset: 'transactions',
+      metric: 'amount-total',
+      filters: {
+        subjectAliases: ['student-001'],
+        categoryAlias: null,
+        transactionType: 'Add',
+        status: 'Approved',
+        timeBucket: null,
+        studentState: 'any',
+      },
+      groupBy: 'category',
+      order: 'highest',
+      limit: 1,
+    },
     usage: { inputTokens: 90, outputTokens: 18, thinkingTokens: 0, costMicroUsd: 25_000 },
   }
   const fixture = dependencies({

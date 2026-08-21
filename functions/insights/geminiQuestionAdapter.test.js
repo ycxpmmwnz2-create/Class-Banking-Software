@@ -11,9 +11,16 @@ import {
 } from './geminiQuestionAdapter.js'
 
 const providerInput = Object.freeze({
-  schemaVersion: 1,
-  question: 'What category is [student-001] earning the most money in?',
-  subjectAliases: Object.freeze(['student-001']),
+  schemaVersion: 2,
+  question: 'Who has used the restroom the most?',
+  subjectAliases: Object.freeze([]),
+  categoryCatalog: Object.freeze([
+    Object.freeze({
+      alias: 'category-001',
+      label: 'Bathroom break',
+      transactionTypes: Object.freeze(['Subtract']),
+    }),
+  ]),
   periodDays: 30,
 })
 
@@ -22,10 +29,11 @@ test('question request uses the single regular Flash model with minimal thinking
   assert.equal(request.model, GEMINI_MODEL_ID)
   assert.equal(request.model, 'gemini-3.6-flash')
   assert.equal(request.config.thinkingConfig.thinkingLevel, 'MINIMAL')
-  assert.equal(request.config.maxOutputTokens, 96)
+  assert.equal(request.config.maxOutputTokens, 256)
   assert.equal(Object.hasOwn(request.config, 'temperature'), false)
   assert.equal(Object.hasOwn(request.config, 'tools'), false)
-  assert.match(request.config.systemInstruction, /Do not answer the question and do not add facts/)
+  assert.match(request.config.systemInstruction, /never answer it, calculate a result, or invent a fact/)
+  assert.match(request.config.systemInstruction, /visits.*use metric count/)
   assert.doesNotMatch(JSON.stringify(request), /GianMarco/)
 })
 
@@ -36,9 +44,23 @@ test('question adapter makes one injected call and accepts only structured inter
       calls += 1
       return {
         text: JSON.stringify({
-          schemaVersion: 1,
-          intent: 'student-top-earning-category',
-          subjectAlias: 'student-001',
+          schemaVersion: 2,
+          kind: 'query',
+          plan: {
+            dataset: 'transactions',
+            metric: 'count',
+            filters: {
+              subjectAliases: [],
+              categoryAlias: 'category-001',
+              transactionType: 'Subtract',
+              status: 'Approved',
+              timeBucket: null,
+              studentState: 'any',
+            },
+            groupBy: 'student',
+            order: 'highest',
+            limit: 1,
+          },
         }),
         usageMetadata: {
           promptTokenCount: 90,
@@ -52,6 +74,8 @@ test('question adapter makes one injected call and accepts only structured inter
   const result = await adapter.interpret({ providerInput })
   assert.equal(calls, 1)
   assert.deepEqual(result.usage, { inputTokens: 90, outputTokens: 18, thinkingTokens: 0 })
+  assert.equal(result.plan.categoryAlias, undefined)
+  assert.equal(result.plan.filters.categoryAlias, 'category-001')
 })
 
 test('question adapter redacts transport details and rejects malformed inputs before a call', async () => {
@@ -64,6 +88,16 @@ test('question adapter redacts transport details and rejects malformed inputs be
   })
   await assert.rejects(
     adapter.interpret({ providerInput: { ...providerInput, realName: 'GianMarco' } }),
+    error => error instanceof GeminiQuestionAdapterError && error.category === 'invalid-question-input',
+  )
+  assert.equal(calls, 0)
+  await assert.rejects(
+    adapter.interpret({
+      providerInput: {
+        ...providerInput,
+        categoryCatalog: [{ ...providerInput.categoryCatalog[0], answerCount: 4 }],
+      },
+    }),
     error => error instanceof GeminiQuestionAdapterError && error.category === 'invalid-question-input',
   )
   assert.equal(calls, 0)

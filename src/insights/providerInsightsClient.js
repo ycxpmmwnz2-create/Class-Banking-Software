@@ -243,8 +243,8 @@ export function validateProviderQuestionResponse(value, expected = {}) {
     fail("invalid-response", "Question response metadata is malformed.");
   }
   validateIsoTimestamp(value.generatedAt, "generatedAt");
-  const answer = boundedText(value.answer, 1, 500, "answer");
-  if (!Array.isArray(value.evidence) || value.evidence.length < 1 || value.evidence.length > 4) {
+  const answer = boundedText(value.answer, 1, 800, "answer");
+  if (!Array.isArray(value.evidence) || value.evidence.length < 1 || value.evidence.length > 8) {
     fail("invalid-response", "Question evidence is malformed.");
   }
   requireExactObject(
@@ -261,7 +261,7 @@ export function validateProviderQuestionResponse(value, expected = {}) {
     evidence: Object.freeze(value.evidence.map(item => boundedText(item, 1, 320, "evidence"))),
     usage: Object.freeze({
       inputTokens: nonNegativeInteger(value.usage.inputTokens, "inputTokens"),
-      outputTokens: nonNegativeInteger(value.usage.outputTokens, "outputTokens", 96),
+      outputTokens: nonNegativeInteger(value.usage.outputTokens, "outputTokens", 256),
       thinkingTokens: nonNegativeInteger(value.usage.thinkingTokens, "thinkingTokens", 4_096),
       costMicroUsd: nonNegativeInteger(value.usage.costMicroUsd, "costMicroUsd", 7_500_000),
     }),

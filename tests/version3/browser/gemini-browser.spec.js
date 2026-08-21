@@ -210,17 +210,16 @@ test("opening AI Insights makes no request until the teacher clicks", async ({ p
   expect(await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.callCount())).toBe(0);
 });
 
-test("teacher question uses the exact five-field request and renders a server-calculated answer", async ({ page }) => {
+test("natural restroom question uses the exact five-field request and ranks visits by count", async ({ page }) => {
   await openApp(page);
   await signIn(page, TENANT_A);
   const storageBefore = await browserStorageSnapshot(page);
-  await page.locator("#providerQuestionInput").fill(
-    `What category is ${TENANT_A.studentName} earning the most money in?`,
-  );
+  await page.locator("#providerQuestionInput").fill("Who has used the restroom the most?");
   await page.getByTestId("provider-question-submit").click();
   await expect(page.getByTestId("provider-question-result")).toContainText(TENANT_A.studentName);
-  await expect(page.getByTestId("provider-question-result")).toContainText("Class job");
-  await expect(page.getByTestId("provider-question-result")).toContainText("$12.00");
+  await expect(page.getByTestId("provider-question-result")).toContainText("Bathroom break");
+  await expect(page.getByTestId("provider-question-result")).toContainText("3 transactions");
+  await expect(page.getByTestId("provider-question-result")).not.toContainText(TENANT_A.classmateName);
   await expect(page.getByTestId("provider-question-result")).not.toContainText(TENANT_A.foreignName);
 
   const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
@@ -233,7 +232,7 @@ test("teacher question uses the exact five-field request and renders a server-ca
     "timeZone",
   ]);
   expect(calls[0]).toMatchObject({ kind: "question", periodDays: 30 });
-  expect(calls[0].question).toContain(TENANT_A.studentName);
+  expect(calls[0].question).toBe("Who has used the restroom the most?");
   expect(await browserStorageSnapshot(page)).toEqual(storageBefore);
 });
 
