@@ -14,6 +14,7 @@ function request(overrides = {}) {
     requestId: 'request_123456789',
     mode: 'quick',
     periodDays: 30,
+    timeZone: 'America/Denver',
     ...overrides,
   }
 }
@@ -175,6 +176,7 @@ test('tenant identity is server-derived and never included in the provider packe
     teacherUid: 'teacher-alpha',
     classroomId: 'classroom-alpha',
     periodDays: 30,
+    timeZone: 'America/Denver',
   })
   assert.deepEqual(Object.keys(run.state.buildInput).sort(), [
     'evidence',

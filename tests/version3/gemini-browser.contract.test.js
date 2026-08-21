@@ -36,11 +36,11 @@ test("source contract: live assisted controls are exact-project, V2, and verifie
   assert.doesNotMatch(indexHtml, /GEMINI_API_KEY/);
 });
 
-test("source contract: browser request carries exactly requestId, mode, and periodDays", () => {
-  assert.match(browserClient, /REQUEST_FIELDS = Object\.freeze\(\["requestId", "mode", "periodDays"\]\)/);
+test("source contract: browser request carries only analysis controls and a validated time zone", () => {
+  assert.match(browserClient, /REQUEST_FIELDS = Object\.freeze\(\["requestId", "mode", "periodDays", "timeZone"\]\)/);
   assert.match(
     indexHtml,
-    /try \{\s*if \(!request\) \{\s*request = \{\s*requestId: providerInsightsClient\.newRequestId\(\),\s*mode: acceptedMode,\s*periodDays,\s*\};/,
+    /try \{\s*if \(!request\) \{\s*request = \{\s*requestId: providerInsightsClient\.newRequestId\(\),\s*mode: acceptedMode,\s*periodDays,\s*timeZone,\s*\};/,
   );
   const requestBody = indexHtml.match(
     /request = \{\s*([\s\S]*?)\s*\};\s*\}\s*const result = await providerInsightsClient\.analyze\(request\);/,
@@ -48,8 +48,10 @@ test("source contract: browser request carries exactly requestId, mode, and peri
   assert.ok(requestBody, "the new-request object must remain directly attached to the analyzed request");
   assert.deepEqual(
     [...requestBody.matchAll(/^\s*([A-Za-z][A-Za-z0-9]*)(?::|,)/gm)].map(match => match[1]),
-    ["requestId", "mode", "periodDays"],
+    ["requestId", "mode", "periodDays", "timeZone"],
   );
+  assert.match(indexHtml, /Intl\.DateTimeFormat\(\)\.resolvedOptions\(\)\.timeZone \|\| "UTC"/);
+  assert.match(browserClient, /resolvedOptions\(\)\.timeZone/);
 });
 
 test("source contract: assisted state is in memory, reset with tenant state, and stale-checked", () => {

@@ -191,7 +191,7 @@ test('source contract: dormancy matcher detects real static, dynamic, and Common
 test('source contract: request excludes browser authority over tenant, facts, prompts, and cost', () => {
   assert.match(
     contractsSource,
-    /\['requestId', 'mode', 'periodDays'\]/,
+    /\['requestId', 'mode', 'periodDays', 'timeZone'\]/,
   )
   assert.doesNotMatch(
     contractsSource.match(/export function validateInsightRequest[\s\S]*?^}/m)?.[0] ?? '',
@@ -199,7 +199,7 @@ test('source contract: request excludes browser authority over tenant, facts, pr
   )
   assert.match(
     serviceSource,
-    /resolveActiveTeacherTenant\(\{ auth \}\)[\s\S]*?loadDeidentifiedTenantEvidence\(\{[\s\S]*?teacherUid: identity\.teacherUid,[\s\S]*?classroomId: identity\.classroomId/,
+    /resolveActiveTeacherTenant\(\{ auth \}\)[\s\S]*?loadDeidentifiedTenantEvidence\(\{[\s\S]*?teacherUid: identity\.teacherUid,[\s\S]*?classroomId: identity\.classroomId,[\s\S]*?timeZone: request\.timeZone/,
   )
   assert.doesNotMatch(serviceSource, /request\.evidenceSignature/)
   assert.match(

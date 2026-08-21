@@ -35,7 +35,7 @@ const RUNTIME_FIELDS = Object.freeze([
   "functionsPort",
   "firestorePort",
 ]);
-const REQUEST_FIELDS = Object.freeze(["requestId", "mode", "periodDays"]);
+const REQUEST_FIELDS = Object.freeze(["requestId", "mode", "periodDays", "timeZone"]);
 const QUESTION_REQUEST_FIELDS = Object.freeze([
   "requestId",
   "kind",
@@ -178,10 +178,12 @@ export function validateProviderInsightsRequest(value) {
   if (!PROVIDER_INSIGHTS_PERIODS.includes(value.periodDays)) {
     fail("invalid-request", "periodDays is unsupported.");
   }
+  const timeZone = canonicalRequestTimeZone(value.timeZone, "timeZone");
   return Object.freeze({
     requestId: value.requestId,
     mode: value.mode,
     periodDays: value.periodDays,
+    timeZone,
   });
 }
 
@@ -211,12 +213,7 @@ export function validateProviderQuestionRequest(value) {
     fail("invalid-request", "Question period is unsupported.");
   }
   const question = boundedRequestText(value.question, 3, 500, "question");
-  const timeZone = boundedRequestText(value.timeZone, 1, 80, "timeZone");
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date(0));
-  } catch {
-    fail("invalid-request", "Question timeZone is unsupported.");
-  }
+  const timeZone = canonicalRequestTimeZone(value.timeZone, "Question timeZone");
   return Object.freeze({
     requestId: value.requestId,
     kind: "question",
@@ -224,6 +221,15 @@ export function validateProviderQuestionRequest(value) {
     timeZone,
     question,
   });
+}
+
+function canonicalRequestTimeZone(value, label) {
+  const timeZone = boundedRequestText(value, 1, 80, label);
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone }).resolvedOptions().timeZone;
+  } catch {
+    fail("invalid-request", `${label} is unsupported.`);
+  }
 }
 
 export function validateProviderQuestionResponse(value, expected = {}) {

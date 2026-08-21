@@ -62,7 +62,7 @@ function installHarness() {
   // callable disabled. This test-only resolver lets the real browser load its
   // real Auth/Firestore tenant without changing that server gate. The Insights
   // callable still derives and revalidates the tenant independently on the
-  // server; no browser tenant value enters its three-field request.
+  // server; no browser tenant value enters its allowlisted request.
   window.__VERSION3_RESOLVE_TEACHER_TENANT__ = () => {
     const tenant = auth.currentUser?.email === "browser-teacher-a@example.test"
       ? {

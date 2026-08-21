@@ -222,6 +222,7 @@ function request(requestId, overrides = {}) {
     requestId,
     mode: 'quick',
     periodDays: 30,
+    timeZone: 'America/Denver',
     ...overrides,
   }
 }

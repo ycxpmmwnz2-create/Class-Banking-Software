@@ -108,17 +108,22 @@ test("live activation requires exact tier, project, build flag, and App Check", 
   }
 });
 
-test("request IDs use cryptographic randomness and requests have exactly three fields", () => {
+test("request IDs use cryptographic randomness and requests have the exact safe fields", () => {
   const generated = createProviderInsightsRequestId({ randomUUID: () => "12345678-1234-4234-8234-123456789abc" });
   assert.equal(generated, "12345678-1234-4234-8234-123456789abc");
   assert.deepEqual(validateProviderInsightsRequest({
     requestId: generated,
     mode: "deep",
     periodDays: 90,
-  }), { requestId: generated, mode: "deep", periodDays: 90 });
+    timeZone: "aMeRiCa/DeNvEr",
+  }), { requestId: generated, mode: "deep", periodDays: 90, timeZone: "America/Denver" });
   assert.throws(
-    () => validateProviderInsightsRequest({ requestId: generated, mode: "deep", periodDays: 90, classroomId: "x" }),
+    () => validateProviderInsightsRequest({ requestId: generated, mode: "deep", periodDays: 90, timeZone: "UTC", classroomId: "x" }),
     /unexpected shape/,
+  );
+  assert.throws(
+    () => validateProviderInsightsRequest({ requestId: generated, mode: "deep", periodDays: 90, timeZone: "Not/A_Zone" }),
+    /unsupported/,
   );
 });
 
@@ -164,8 +169,8 @@ test("client sends only the accepted request and validates the callable envelope
     },
   });
   const requestId = client.newRequestId();
-  const result = await client.analyze({ requestId, mode: "quick", periodDays: 30 });
-  assert.deepEqual(calls, [{ requestId, mode: "quick", periodDays: 30 }]);
+  const result = await client.analyze({ requestId, mode: "quick", periodDays: 30, timeZone: "America/Denver" });
+  assert.deepEqual(calls, [{ requestId, mode: "quick", periodDays: 30, timeZone: "America/Denver" }]);
   assert.equal(result.source, "provider-assisted");
   assert.equal(createProviderInsightsBrowserClient({ enabled: false }), null);
 });
