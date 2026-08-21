@@ -1855,6 +1855,7 @@ function toggleStudentDropdown() {
       if (providerInsightsLoading || providerQuestionLoading) return;
       const acceptedMode = mode === "deep" ? "deep" : "quick";
       const periodDays = insightsPeriodDays;
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
       const dataSignature = currentInsightsDataSignature();
       const capturedIdentity = v2TenantSession.captureIdentity();
 
@@ -1895,6 +1896,7 @@ function toggleStudentDropdown() {
             requestId: providerInsightsClient.newRequestId(),
             mode: acceptedMode,
             periodDays,
+            timeZone,
           };
         }
         const result = await providerInsightsClient.analyze(request);

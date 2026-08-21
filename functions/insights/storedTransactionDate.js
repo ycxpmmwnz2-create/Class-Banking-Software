@@ -1,4 +1,5 @@
 const LEGACY_US_DATE_PATTERN = /^(\d{1,2})\/(\d{1,2})\/(\d{4}), (\d{1,2}):(\d{2}):(\d{2}) (AM|PM)$/
+const MAX_PARTS_FORMATTERS = 64
 const PARTS_FORMATTERS = new Map()
 
 /**
@@ -7,11 +8,15 @@ const PARTS_FORMATTERS = new Map()
  * Unknown parseable strings stay rejected so the evidence boundary remains
  * deterministic and fail-closed.
  */
-export function normalizeStoredTransactionDate(value, { timeZone = 'UTC' } = {}) {
+export function normalizeStoredTransactionDate(value, { timeZone } = {}) {
   if (typeof value !== 'string' || value.length < 1 || value.length > 40) return null
 
   const parsedCanonical = new Date(value)
-  if (Number.isFinite(parsedCanonical.getTime()) && parsedCanonical.toISOString() === value) {
+  if (
+    value.length === 24 &&
+    Number.isFinite(parsedCanonical.getTime()) &&
+    parsedCanonical.toISOString() === value
+  ) {
     return value
   }
 
@@ -56,32 +61,44 @@ function localWallClockToIso(target, timeZone) {
     if (difference === 0) break
   }
 
-  const matches = []
-  for (let offsetMinutes = -180; offsetMinutes <= 180; offsetMinutes += 15) {
+  const candidateMatches = sameParts(formattedParts(formatter, candidate), target)
+  const matches = candidateMatches ? [candidate] : []
+  const maximumOffsetMinutes = candidateMatches ? -15 : 180
+  for (let offsetMinutes = -180; offsetMinutes <= maximumOffsetMinutes; offsetMinutes += 15) {
     const possible = candidate + offsetMinutes * 60_000
     if (sameParts(formattedParts(formatter, possible), target)) matches.push(possible)
   }
   if (!matches.length) return null
-  return new Date(Math.min(...matches)).toISOString()
+  const iso = new Date(Math.min(...matches)).toISOString()
+  return iso.length === 24 ? iso : null
 }
 
 function partsFormatter(timeZone) {
   if (typeof timeZone !== 'string' || timeZone.length < 1 || timeZone.length > 80) {
     throw new TypeError('timeZone is invalid.')
   }
-  if (!PARTS_FORMATTERS.has(timeZone)) {
-    PARTS_FORMATTERS.set(timeZone, new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hourCycle: 'h23',
-    }))
+  const cachedFormatter = PARTS_FORMATTERS.get(timeZone)
+  if (cachedFormatter) return cachedFormatter
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  })
+  const canonicalTimeZone = formatter.resolvedOptions().timeZone
+  const canonicalFormatter = PARTS_FORMATTERS.get(canonicalTimeZone)
+  if (canonicalFormatter) return canonicalFormatter
+  if (!PARTS_FORMATTERS.has(canonicalTimeZone)) {
+    if (PARTS_FORMATTERS.size >= MAX_PARTS_FORMATTERS) {
+      PARTS_FORMATTERS.delete(PARTS_FORMATTERS.keys().next().value)
+    }
+    PARTS_FORMATTERS.set(canonicalTimeZone, formatter)
   }
-  return PARTS_FORMATTERS.get(timeZone)
+  return PARTS_FORMATTERS.get(canonicalTimeZone)
 }
 
 function formattedParts(formatter, milliseconds) {

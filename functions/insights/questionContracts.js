@@ -51,12 +51,7 @@ export function validateInsightQuestionRequest(value) {
     fail('invalid-request', 'The question period is unsupported.')
   }
   const question = boundedText(value.question, 3, 500, 'question')
-  const timeZone = boundedText(value.timeZone, 1, 80, 'timeZone')
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date(0))
-  } catch {
-    fail('invalid-request', 'The question time zone is unsupported.')
-  }
+  const timeZone = canonicalTimeZone(value.timeZone)
   return Object.freeze({
     requestId: value.requestId,
     kind: 'question',
@@ -64,6 +59,15 @@ export function validateInsightQuestionRequest(value) {
     timeZone,
     question,
   })
+}
+
+function canonicalTimeZone(value) {
+  const timeZone = boundedText(value, 1, 80, 'timeZone')
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone }).resolvedOptions().timeZone
+  } catch {
+    fail('invalid-request', 'The question time zone is unsupported.')
+  }
 }
 
 export function validateQuestionInterpretation(value, allowedAliases) {

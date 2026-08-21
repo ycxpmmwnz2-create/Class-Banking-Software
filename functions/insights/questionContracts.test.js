@@ -18,6 +18,10 @@ const request = {
 
 test('server question request has exactly five browser fields and validates IANA time zones', () => {
   assert.deepEqual(validateInsightQuestionRequest(request), request)
+  assert.equal(
+    validateInsightQuestionRequest({ ...request, timeZone: 'aMeRiCa/DeNvEr' }).timeZone,
+    'America/Denver',
+  )
   for (const invalid of [
     { ...request, classroomId: 'class-a' },
     { ...request, studentId: '1' },

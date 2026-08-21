@@ -18,6 +18,7 @@ function request(overrides = {}) {
     requestId: 'request_123456789',
     mode: 'quick',
     periodDays: 30,
+    timeZone: 'America/Denver',
     ...overrides,
   }
 }
@@ -69,6 +70,11 @@ test('request contract preserves exactly the reviewed 7, 30, and 90 day periods'
   }
   assert.throws(() => validateInsightRequest(request({ periodDays: 365 })), InsightContractError)
   assert.throws(() => validateInsightRequest(request({ mode: 'automatic' })), InsightContractError)
+  assert.equal(
+    validateInsightRequest(request({ timeZone: 'aMeRiCa/DeNvEr' })).timeZone,
+    'America/Denver',
+  )
+  assert.throws(() => validateInsightRequest(request({ timeZone: 'Not/A_Zone' })), InsightContractError)
 })
 
 test('request contract refuses browser-supplied tenant, facts, prompt, model, and price fields', () => {

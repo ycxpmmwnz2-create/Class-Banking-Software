@@ -24,7 +24,7 @@ export class InsightContractError extends Error {
 export function validateInsightRequest(value) {
   requireExactObject(
     value,
-    ['requestId', 'mode', 'periodDays'],
+    ['requestId', 'mode', 'periodDays', 'timeZone'],
     'request',
   )
   if (!REQUEST_ID_PATTERN.test(value.requestId)) {
@@ -36,11 +36,22 @@ export function validateInsightRequest(value) {
   if (!INSIGHT_ANALYSIS_PERIODS.includes(value.periodDays)) {
     fail('invalid-request', 'periodDays is unsupported.')
   }
+  const timeZone = canonicalTimeZone(value.timeZone)
   return Object.freeze({
     requestId: value.requestId,
     mode: value.mode,
     periodDays: value.periodDays,
+    timeZone,
   })
+}
+
+function canonicalTimeZone(value) {
+  const timeZone = boundedText(value, 1, 80, 'timeZone')
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone }).resolvedOptions().timeZone
+  } catch {
+    fail('invalid-request', 'timeZone is unsupported.')
+  }
 }
 
 export function validateFactPacket(value, expectedRequest) {

@@ -104,12 +104,12 @@ test("authenticated click keeps browser storage unchanged, blocks duplicates, sa
 
   const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
   expect(calls).toHaveLength(2);
-  expect(Object.keys(calls[0]).sort()).toEqual(["mode", "periodDays", "requestId"]);
+  expect(Object.keys(calls[0]).sort()).toEqual(["mode", "periodDays", "requestId", "timeZone"]);
   expect(calls[1]).toEqual(calls[0]);
   expect(await browserStorageSnapshot(page)).toEqual(storageBefore);
 });
 
-test("Get More Insights uses the selected period and the same exact three-field boundary", async ({ page }) => {
+test("Get More Insights uses the selected period and the same exact safe request boundary", async ({ page }) => {
   await openApp(page);
   await signIn(page, TENANT_A);
   await page.evaluate(() => window.setInsightsPeriod(90));
@@ -123,8 +123,12 @@ test("Get More Insights uses the selected period and the same exact three-field 
   expect(calls).toHaveLength(2);
   expect(calls[0]).toMatchObject({ mode: "quick", periodDays: 90 });
   expect(calls[1]).toMatchObject({ mode: "deep", periodDays: 90 });
+  const browserTimeZone = await page.evaluate(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone,
+  );
   for (const call of calls) {
-    expect(Object.keys(call).sort()).toEqual(["mode", "periodDays", "requestId"]);
+    expect(Object.keys(call).sort()).toEqual(["mode", "periodDays", "requestId", "timeZone"]);
+    expect(call.timeZone).toBe(browserTimeZone);
   }
 });
 

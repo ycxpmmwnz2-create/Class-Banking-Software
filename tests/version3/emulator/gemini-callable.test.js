@@ -140,7 +140,7 @@ after(async () => {
 })
 
 function request(requestId) {
-  return { requestId, mode: 'quick', periodDays: 30 }
+  return { requestId, mode: 'quick', periodDays: 30, timeZone: 'America/Denver' }
 }
 
 test('callable requires Auth and returns only the caller tenant display facts', async () => {

@@ -52,6 +52,7 @@ export function createInsightAnalysisService(dependencies) {
         teacherUid: identity.teacherUid,
         classroomId: identity.classroomId,
         periodDays: request.periodDays,
+        timeZone: request.timeZone,
       }),
       'evidence-unavailable',
       'Classroom evidence could not be loaded.',

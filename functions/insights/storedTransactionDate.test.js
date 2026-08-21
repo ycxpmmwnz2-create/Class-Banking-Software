@@ -20,7 +20,7 @@ test('normalizes the exact legacy en-US browser date in the requested time zone'
     '2026-01-15T17:15:30.000Z',
   )
   assert.equal(
-    normalizeStoredTransactionDate('8/19/2026, 12:05:06 AM'),
+    normalizeStoredTransactionDate('8/19/2026, 12:05:06 AM', { timeZone: 'UTC' }),
     '2026-08-19T00:05:06.000Z',
   )
   assert.equal(
@@ -46,5 +46,19 @@ test('rejects unknown parseable shapes, impossible wall times, and invalid zones
   assert.equal(
     normalizeStoredTransactionDate('3/8/2026, 2:15:30 AM', { timeZone: 'America/Denver' }),
     null,
+  )
+  assert.equal(normalizeStoredTransactionDate('8/19/2026, 10:15:30 AM'), null)
+  assert.equal(
+    normalizeStoredTransactionDate('12/31/9999, 11:59:59 PM', { timeZone: 'America/Denver' }),
+    null,
+  )
+  assert.equal(normalizeStoredTransactionDate('+010000-01-01T00:00:00.000Z'), null)
+})
+
+test('canonicalizes formatter aliases without changing the normalized instant', () => {
+  const value = '8/19/2026, 10:15:30 AM'
+  assert.equal(
+    normalizeStoredTransactionDate(value, { timeZone: 'aMeRiCa/DeNvEr' }),
+    normalizeStoredTransactionDate(value, { timeZone: 'America/Denver' }),
   )
 })

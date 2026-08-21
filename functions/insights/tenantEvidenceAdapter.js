@@ -56,6 +56,7 @@ export function createFirestoreTenantEvidenceLoader({
     teacherUid,
     classroomId,
     periodDays,
+    timeZone,
   } = {}) {
     let teacher
     let classroom
@@ -69,6 +70,7 @@ export function createFirestoreTenantEvidenceLoader({
     if (!PERIODS.includes(periodDays)) {
       fail('invalid-period', 'The requested evidence period is unsupported.')
     }
+    const canonicalTimeZone = validateTimeZone(timeZone)
     const generatedAt = requireDate(now())
     const teacherRef = firestore.collection('teachers').doc(teacher)
     const classroomRef = firestore.collection('classrooms').doc(classroom)
@@ -95,7 +97,7 @@ export function createFirestoreTenantEvidenceLoader({
         .map(validateStudentSnapshot)
         .sort((left, right) => left.id - right.id)
       const transactions = transactionsSnapshot.docs
-        .map(validateTransactionSnapshot)
+        .map(snapshot => validateTransactionSnapshot(snapshot, canonicalTimeZone))
         .sort((left, right) => left.id - right.id)
       return Object.freeze({
         students: Object.freeze(students),
@@ -187,7 +189,7 @@ function validateStudentSnapshot(snapshot) {
   return Object.freeze({ id, name, balance: value.balance })
 }
 
-function validateTransactionSnapshot(snapshot) {
+function validateTransactionSnapshot(snapshot, timeZone) {
   const value = snapshot?.data?.()
   if (!isPlainObject(value) || !hasExactKeys(value, TRANSACTION_KEYS)) {
     fail('evidence-malformed', 'A transaction record is malformed.')
@@ -198,9 +200,9 @@ function validateTransactionSnapshot(snapshot) {
     fail('evidence-malformed', 'A transaction record path is inconsistent.')
   }
   const storedDate = boundedString(value.date, 1, 40, 'transaction date')
-  const date = normalizeStoredTransactionDate(storedDate)
+  const date = normalizeStoredTransactionDate(storedDate, { timeZone })
   if (!date) {
-    fail('evidence-malformed', 'A transaction date is not canonical ISO time.')
+    fail('evidence-malformed', 'A transaction date has an unsupported stored shape or wall time.')
   }
   if (
     (value.type !== 'Add' && value.type !== 'Subtract') ||
@@ -224,6 +226,17 @@ function validateTransactionSnapshot(snapshot) {
     status: value.status,
     source: boundedString(value.source, 0, 80, 'transaction source'),
   })
+}
+
+function validateTimeZone(value) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 80 || value.trim() !== value) {
+    fail('invalid-time-zone', 'The requested evidence time zone is unsupported.')
+  }
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: value }).resolvedOptions().timeZone
+  } catch {
+    fail('invalid-time-zone', 'The requested evidence time zone is unsupported.')
+  }
 }
 
 function pseudonymizeEvidence(students, transactions) {
