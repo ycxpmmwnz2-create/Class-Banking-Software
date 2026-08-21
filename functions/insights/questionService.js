@@ -201,6 +201,7 @@ function validateEvidenceEnvelope(value) {
 function assertProviderInputIsDeidentified(providerInput, sensitiveValues) {
   const leaves = []
   collectStringLeaves(providerInput, leaves)
+  const collapsedLeaves = leaves.map(collapseProviderLeafForSensitiveScan)
   for (const entry of sensitiveValues) {
     if (
       !isPlainObject(entry) ||
@@ -228,7 +229,37 @@ function assertProviderInputIsDeidentified(providerInput, sensitiveValues) {
         )
       }
     }
+    if (entry.kind === 'student-name') {
+      const collapsedSensitiveValues = [
+        collapseSensitiveText(entry.value),
+        ...entry.value
+          .normalize('NFKC')
+          .split(/[^\p{L}\p{N}]+/u)
+          .map(collapseSensitiveText)
+          .filter(value => value.length >= 4),
+      ].filter(Boolean)
+      if (collapsedSensitiveValues.some(sensitive => (
+        collapsedLeaves.some(leaf => leaf.includes(sensitive))
+      ))) {
+        throw new InsightQuestionServiceError(
+          'evidence-not-deidentified',
+          'The provider question input contains an obscured sensitive value.',
+        )
+      }
+    }
   }
+}
+
+function collapseProviderLeafForSensitiveScan(value) {
+  if (/^student-[0-9]{3}$/iu.test(value)) return ''
+  return collapseSensitiveText(value.replace(/\[student(?:-[0-9]{3})?\]/giu, ''))
+}
+
+function collapseSensitiveText(value) {
+  return String(value)
+    .normalize('NFKC')
+    .toLocaleLowerCase('en-US')
+    .replace(/[^\p{L}\p{N}]/gu, '')
 }
 
 function collectStringLeaves(value, output) {

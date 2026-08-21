@@ -143,6 +143,9 @@ test('a declared roster name or name token cannot reach the provider', async () 
   for (const leakedQuestion of [
     'What category is GianMarco earning in?',
     'What category is gianmarco earning in?',
+    'What category is GianMarcoBellini earning in?',
+    'What category is Gian\u200BMarco earning in?',
+    'What category is Gian-Marco earning in?',
   ]) {
     const fixture = dependencies({
       async loadQuestionEvidence() {

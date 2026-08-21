@@ -227,14 +227,27 @@ function sanitizeQuestion({ question, students, aliasesByStudentId, mentionedStu
 
 function assertNoRosterNameLeak(question, students) {
   const normalizedQuestion = normalize(question)
+  const collapsedQuestion = collapseSensitiveText(
+    question.replace(/\[student(?:-[0-9]{3})?\]/giu, ''),
+  )
   for (const student of students) {
     if (containsPhrase(normalizedQuestion, normalize(student.name))) {
       fail('evidence-not-deidentified', 'The sanitized question contains a student name.')
     }
-    for (const token of tokens(student.name).filter(value => value.length >= 2)) {
+    const nameTokens = tokens(student.name)
+    for (const token of nameTokens.filter(value => value.length >= 2)) {
       if (tokens(question).includes(token)) {
         fail('evidence-not-deidentified', 'The sanitized question contains a student name token.')
       }
+    }
+    const collapsedSensitiveValues = [
+      collapseSensitiveText(student.name),
+      ...nameTokens
+        .map(collapseSensitiveText)
+        .filter(value => value.length >= 4),
+    ].filter(Boolean)
+    if (collapsedSensitiveValues.some(value => collapsedQuestion.includes(value))) {
+      fail('evidence-not-deidentified', 'The sanitized question contains an obscured student name.')
     }
   }
 }
@@ -301,6 +314,10 @@ function tokens(value) {
 
 function normalize(value) {
   return String(value).normalize('NFKC').toLocaleLowerCase('en-US')
+}
+
+function collapseSensitiveText(value) {
+  return normalize(value).replace(/[^\p{L}\p{N}]/gu, '')
 }
 
 function containsPhrase(haystack, needle) {

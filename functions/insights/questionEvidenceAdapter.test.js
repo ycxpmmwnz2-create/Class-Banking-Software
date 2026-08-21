@@ -115,6 +115,26 @@ test('replaces a full or unique partial roster name before constructing provider
   }
 })
 
+test('separator-obscured roster names fail before provider input can be constructed', async () => {
+  for (const question of [
+    'What category is GianMarcoBellini earning the most money in?',
+    'What category is Gian\u200BMarco earning the most money in?',
+    'What category is Gian-Marco earning the most money in?',
+  ]) {
+    await assert.rejects(
+      loader()({
+        teacherUid: 'teacher-a',
+        classroomId: 'class-a',
+        periodDays: 30,
+        timeZone: 'America/Denver',
+        question,
+      }),
+      error => error instanceof InsightQuestionEvidenceError &&
+        error.category === 'evidence-not-deidentified',
+    )
+  }
+})
+
 test('reads only the active reciprocal tenant and bounds the period server-side', async () => {
   const fake = createFirestoreDouble(fixture({
     'classrooms/class-a/transactions/102': {
