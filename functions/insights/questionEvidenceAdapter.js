@@ -238,9 +238,7 @@ function assertNoRosterNameLeak(question, students) {
         fail('evidence-not-deidentified', 'The sanitized question contains a student name token.')
       }
     }
-    if (sensitiveNameSequences(student.name).some(sequence => (
-      containsSeparatorObscuredSequence(questionWithoutAliases, sequence)
-    ))) {
+    if (containsSeparatorObscuredName(questionWithoutAliases, student.name)) {
       fail('evidence-not-deidentified', 'The sanitized question contains an obscured student name.')
     }
   }
@@ -314,27 +312,36 @@ function collapseSensitiveText(value) {
   return normalize(value).replace(/[^\p{L}\p{N}]/gu, '')
 }
 
-function sensitiveNameSequences(value) {
-  const nameTokens = tokens(value).map(collapseSensitiveText).filter(Boolean)
-  const sequences = new Set(nameTokens.filter(token => token.length >= 2))
-  for (let index = 0; index < nameTokens.length - 1; index += 1) {
-    sequences.add(`${nameTokens[index]}${nameTokens[index + 1]}`)
+function containsSeparatorObscuredName(value, name) {
+  const nameTokens = tokens(name).map(collapseSensitiveText).filter(Boolean)
+  if (nameTokens.length === 0) return false
+  const maximumCandidateLength = nameTokens.reduce((total, token) => total + token.length, 0)
+  const runs = normalize(value).match(/[\p{L}\p{N}]+/gu) ?? []
+  for (let start = 0; start < runs.length; start += 1) {
+    let candidate = ''
+    for (let end = start; end < runs.length; end += 1) {
+      candidate += collapseSensitiveText(runs[end])
+      if (candidate.length > maximumCandidateLength) break
+      if (matchesSensitiveNameCombination(candidate, nameTokens)) return true
+    }
   }
-  if (nameTokens.length > 1) {
-    sequences.add(`${nameTokens[0]}${nameTokens.at(-1)}`)
-    sequences.add(nameTokens.join(''))
-  }
-  return [...sequences]
+  return false
 }
 
-function containsSeparatorObscuredSequence(value, sequence) {
-  if (!sequence) return false
-  const characters = [...sequence].map(escapeRegExp)
-  const obscured = characters.join('[^\\p{L}\\p{N}]*')
-  return new RegExp(
-    `(^|[^\\p{L}\\p{N}])${obscured}(?=$|[^\\p{L}\\p{N}])`,
-    'u',
-  ).test(normalize(value))
+function matchesSensitiveNameCombination(candidate, nameTokens) {
+  const uniqueTokens = [...new Set(nameTokens)]
+  const segmentCounts = Array(candidate.length + 1).fill(-1)
+  segmentCounts[0] = 0
+  for (let index = 0; index < candidate.length; index += 1) {
+    if (segmentCounts[index] < 0) continue
+    for (const token of uniqueTokens) {
+      if (!candidate.startsWith(token, index)) continue
+      const nextIndex = index + token.length
+      segmentCounts[nextIndex] = Math.max(segmentCounts[nextIndex], segmentCounts[index] + 1)
+    }
+  }
+  const usedCount = segmentCounts[candidate.length]
+  return usedCount >= 2 || (usedCount === 1 && candidate.length >= 2)
 }
 
 function containsPhrase(haystack, needle) {

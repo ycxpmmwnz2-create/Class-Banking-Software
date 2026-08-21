@@ -118,6 +118,7 @@ test('replaces a full or unique partial roster name before constructing provider
 test('separator-obscured roster names fail before provider input can be constructed', async () => {
   for (const question of [
     'What category is GianMarcoBellini earning the most money in?',
+    'What category is BelliniGianMarco earning the most money in?',
     'What category is Gian\u200BMarco earning the most money in?',
     'What category is Gian-Marco earning the most money in?',
     'What category is ＧｉａｎＭａｒｃｏ earning the most money in?',
@@ -146,9 +147,59 @@ test('separator-obscured roster names fail before provider input can be construc
     'What is KimVan earning?',
     'What is VanLee earning?',
     'What is KimLee earning?',
+    'What is LeeKim earning?',
+    'What is LeeVanKim earning?',
   ]) {
     await assert.rejects(
       loader(shortTokenRoster)({
+        teacherUid: 'teacher-a',
+        classroomId: 'class-a',
+        periodDays: 30,
+        timeZone: 'America/Denver',
+        question,
+      }),
+      error => error instanceof InsightQuestionEvidenceError &&
+        error.category === 'evidence-not-deidentified',
+    )
+  }
+
+  const multiTokenRoster = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Ana Maria Lopez Cruz',
+    },
+  })
+  for (const question of [
+    'What is MariaCruz earning?',
+    'What is AnaLopez earning?',
+    'What is CruzAnaMaria earning?',
+  ]) {
+    await assert.rejects(
+      loader(multiTokenRoster)({
+        teacherUid: 'teacher-a',
+        classroomId: 'class-a',
+        periodDays: 30,
+        timeZone: 'America/Denver',
+        question,
+      }),
+      error => error instanceof InsightQuestionEvidenceError &&
+      error.category === 'evidence-not-deidentified',
+    )
+  }
+
+  const initialRoster = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Mark A Chen',
+    },
+  })
+  for (const question of [
+    'What is MarkA earning?',
+    'What is AChen earning?',
+    'What is ChenAMark earning?',
+  ]) {
+    await assert.rejects(
+      loader(initialRoster)({
         teacherUid: 'teacher-a',
         classroomId: 'class-a',
         periodDays: 30,
@@ -171,6 +222,9 @@ test('ordinary words containing a roster-name substring remain valid questions',
   for (const question of [
     'What is a benchmark total this week?',
     'How much did the kitchen job pay out?',
+    'Were remarks or chenille supplies approved?',
+    'What was earmarked for supplies?',
+    'Is A the top earner?',
   ]) {
     const result = await loader(commonSubstringRoster)({
       teacherUid: 'teacher-a',

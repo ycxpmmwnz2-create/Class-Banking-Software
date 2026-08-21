@@ -144,11 +144,20 @@ test('a declared roster name or name token cannot reach the provider', async () 
     { leakedQuestion: 'What category is GianMarco earning in?', sensitiveName: 'GianMarco' },
     { leakedQuestion: 'What category is gianmarco earning in?', sensitiveName: 'GianMarco' },
     { leakedQuestion: 'What category is GianMarcoBellini earning in?', sensitiveName: 'GianMarco Bellini' },
+    { leakedQuestion: 'What category is BelliniGianMarco earning in?', sensitiveName: 'GianMarco Bellini' },
     { leakedQuestion: 'What category is Gian\u200BMarco earning in?', sensitiveName: 'GianMarco' },
     { leakedQuestion: 'What category is Gian-Marco earning in?', sensitiveName: 'GianMarco' },
     { leakedQuestion: 'What is KimVan earning?', sensitiveName: 'Kim Van Lee' },
     { leakedQuestion: 'What is VanLee earning?', sensitiveName: 'Kim Van Lee' },
     { leakedQuestion: 'What is KimLee earning?', sensitiveName: 'Kim Van Lee' },
+    { leakedQuestion: 'What is LeeKim earning?', sensitiveName: 'Kim Van Lee' },
+    { leakedQuestion: 'What is LeeVanKim earning?', sensitiveName: 'Kim Van Lee' },
+    { leakedQuestion: 'What is MariaCruz earning?', sensitiveName: 'Ana Maria Lopez Cruz' },
+    { leakedQuestion: 'What is AnaLopez earning?', sensitiveName: 'Ana Maria Lopez Cruz' },
+    { leakedQuestion: 'What is CruzAnaMaria earning?', sensitiveName: 'Ana Maria Lopez Cruz' },
+    { leakedQuestion: 'What is MarkA earning?', sensitiveName: 'Mark A Chen' },
+    { leakedQuestion: 'What is AChen earning?', sensitiveName: 'Mark A Chen' },
+    { leakedQuestion: 'What is ChenAMark earning?', sensitiveName: 'Mark A Chen' },
   ]) {
     const fixture = dependencies({
       async loadQuestionEvidence() {
@@ -175,6 +184,9 @@ test('ordinary words containing a declared name substring still reach the provid
   for (const question of [
     'What is a benchmark total this week?',
     'How much did the kitchen job pay out?',
+    'Were remarks or chenille supplies approved?',
+    'What was earmarked for supplies?',
+    'Is A the top earner?',
   ]) {
     const fixture = dependencies({
       async loadQuestionEvidence() {
