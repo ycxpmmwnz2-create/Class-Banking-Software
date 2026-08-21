@@ -143,6 +143,7 @@ test('resolves tenant, sanitizes evidence, reserves, interprets, calculates, and
   assert.deepEqual(fixture.calls, ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'price', 'commit'])
   assert.match(result.answer, /GianMarco.*class job.*\$20\.00/i)
   assert.equal(result.source, 'ai-grounded')
+  assert.equal(result.schemaVersion, 2)
   assert.equal(fixture.commits.length, 1)
   const stored = JSON.stringify(fixture.commits[0].result)
   assert.doesNotMatch(stored, /GianMarco|What category|Class job/)
@@ -339,4 +340,131 @@ test('completed replay is signature-checked and recalculated from current server
   const result = await service({ auth: { uid: 'teacher-a' }, data: request })
   assert.match(result.answer, /GianMarco.*\$20\.00/)
   assert.deepEqual(fixture.calls, ['tenant', 'evidence', 'quote', 'reserve'])
+})
+
+test('maximum-length category rankings are validated before a successful ledger commit', async () => {
+  const categories = Array.from({ length: 8 }, (_, index) => ({
+    alias: `category-${String(index + 1).padStart(3, '0')}`,
+    label: `${String(index + 1).padStart(3, '0')}-${'Long category label '.repeat(8)}`.slice(0, 120),
+  }))
+  const value = envelope()
+  const rankedEnvelope = {
+    ...value,
+    providerInput: {
+      ...value.providerInput,
+      categoryCatalog: categories.map(category => ({
+        ...category,
+        transactionTypes: ['Add'],
+      })),
+    },
+    answerEvidence: {
+      ...value.answerEvidence,
+      categories,
+      transactions: categories.map((category, index) => ({
+        ...value.answerEvidence.transactions[0],
+        id: index + 1,
+        amount: 100 - index,
+        categoryAlias: category.alias,
+      })),
+    },
+    allowedAliases: {
+      ...value.allowedAliases,
+      categoryAliases: categories.map(category => category.alias),
+    },
+  }
+  const fixture = dependencies({
+    async loadQuestionEvidence() {
+      fixture.calls.push('evidence')
+      return rankedEnvelope
+    },
+    provider: {
+      async interpret() {
+        fixture.calls.push('provider')
+        return {
+          schemaVersion: 2,
+          kind: 'query',
+          plan: {
+            dataset: 'transactions',
+            metric: 'amount-total',
+            filters: {
+              subjectAliases: ['student-001'],
+              categoryAlias: null,
+              transactionType: 'Add',
+              status: 'Approved',
+              timeBucket: null,
+              studentState: 'any',
+            },
+            groupBy: 'category',
+            order: 'highest',
+            limit: 8,
+          },
+          usage: { inputTokens: 90, outputTokens: 18, thinkingTokens: 0 },
+        }
+      },
+    },
+  })
+  const result = await createInsightQuestionService(fixture.deps)({
+    auth: { uid: 'teacher-a' },
+    data: request,
+  })
+  assert.ok(result.answer.length <= 800)
+  assert.equal(result.evidence.length, 8)
+  assert.ok(result.evidence.every(line => line.length <= 320))
+  assert.equal(fixture.commits.length, 1)
+  assert.equal(fixture.uncertain.length, 0)
+  assert.deepEqual(fixture.calls, ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'price', 'commit'])
+})
+
+test('response construction failures retain the reservation without committing or blaming the provider', async () => {
+  const fixture = dependencies({
+    async loadQuestionEvidence() {
+      fixture.calls.push('evidence')
+      const value = envelope()
+      const unsafeName = 'Unsafe\u007fName'
+      return {
+        ...value,
+        answerEvidence: {
+          ...value.answerEvidence,
+          participants: [{ ...value.answerEvidence.participants[0], name: unsafeName }],
+          students: [{ ...value.answerEvidence.students[0], name: unsafeName }],
+        },
+        sensitiveValues: value.sensitiveValues.map(entry => (
+          entry.kind === 'student-name' ? { ...entry, value: unsafeName } : entry
+        )),
+      }
+    },
+    provider: {
+      async interpret() {
+        fixture.calls.push('provider')
+        return {
+          schemaVersion: 2,
+          kind: 'query',
+          plan: {
+            dataset: 'transactions',
+            metric: 'amount-total',
+            filters: {
+              subjectAliases: [],
+              categoryAlias: null,
+              transactionType: 'Add',
+              status: 'Approved',
+              timeBucket: null,
+              studentState: 'any',
+            },
+            groupBy: 'student',
+            order: 'highest',
+            limit: 1,
+          },
+          usage: { inputTokens: 90, outputTokens: 18, thinkingTokens: 0 },
+        }
+      },
+    },
+  })
+  const service = createInsightQuestionService(fixture.deps)
+  await assert.rejects(
+    service({ auth: { uid: 'teacher-a' }, data: request }),
+    error => error instanceof InsightQuestionServiceError && error.category === 'answer-unavailable',
+  )
+  assert.equal(fixture.commits.length, 0)
+  assert.equal(fixture.uncertain.length, 1)
+  assert.deepEqual(fixture.calls, ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'price', 'uncertain'])
 })

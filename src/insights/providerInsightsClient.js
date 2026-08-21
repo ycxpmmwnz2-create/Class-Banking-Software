@@ -235,7 +235,7 @@ function canonicalRequestTimeZone(value, label) {
 export function validateProviderQuestionResponse(value, expected = {}) {
   requireExactObject(value, QUESTION_RESPONSE_FIELDS, "question response");
   if (
-    value.schemaVersion !== 1
+    value.schemaVersion !== 2
     || value.source !== "ai-grounded"
     || !PROVIDER_INSIGHTS_PERIODS.includes(value.periodDays)
     || (expected.periodDays !== undefined && value.periodDays !== expected.periodDays)
@@ -253,7 +253,7 @@ export function validateProviderQuestionResponse(value, expected = {}) {
     "question usage",
   );
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: "ai-grounded",
     periodDays: value.periodDays,
     generatedAt: value.generatedAt,

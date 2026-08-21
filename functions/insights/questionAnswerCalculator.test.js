@@ -92,6 +92,8 @@ test('answers restroom visits by approved transaction count rather than dollars 
   assert.match(result.answer, /Genesis.*highest.*transaction count: 3 transactions/)
   assert.doesNotMatch(result.answer, /Sofia.*highest/)
   assert.match(result.evidence[0], /Genesis: 3 transactions/)
+  assert.match(result.answer, /approved spending \(Subtract\) transactions/)
+  assert.match(result.evidence[0], /approved spending \(Subtract\) transactions/)
 })
 
 test('calculates a named student category ranking without sending facts to the model', () => {
@@ -137,6 +139,8 @@ test('answers broad roster questions about student count, frozen accounts, and a
     evidence,
   })
   assert.match(frozenCount.answer, /frozen student count is 1 student/)
+  assert.match(frozenCount.answer, /current frozen students/)
+  assert.match(frozenCount.evidence[0], /current frozen students/)
 
   const average = calculateQuestionAnswer({
     kind: 'query',
@@ -259,6 +263,145 @@ test('large ties stay explicit without exceeding the public evidence bound', () 
       transactions,
     },
   })
-  assert.match(result.answer, /and 1 more are tied/)
+  assert.match(result.answer, /1 more are tied at the cutoff/)
+  assert.equal(result.evidence.length, 8)
+})
+
+test('discloses status, type, time, and current-student filters in the summary and evidence', () => {
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: {
+        ...filters,
+        transactionType: 'Subtract',
+        status: 'Pending',
+        timeBucket: 'afternoon',
+        studentState: 'frozen',
+      },
+    }),
+    evidence,
+  })
+  for (const text of [result.answer, ...result.evidence]) {
+    assert.match(text, /pending spending \(Subtract\) transactions/)
+    assert.match(text, /afternoon \(12:00 PM–4:59 PM\)/)
+    assert.match(text, /current frozen students/)
+  }
+})
+
+test('reports no matches instead of synthetic zero-dollar averages', () => {
+  const noStudents = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      dataset: 'students',
+      metric: 'average-balance',
+      filters: {
+        ...filters,
+        subjectAliases: ['student-001'],
+        status: 'any',
+        studentState: 'frozen',
+      },
+    }),
+    evidence,
+  })
+  assert.match(noStudents.answer, /No matching students/)
+  assert.doesNotMatch(noStudents.answer, /\$0\.00/)
+
+  const noTransactions = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'amount-average',
+      filters: {
+        ...filters,
+        categoryAlias: 'category-003',
+        status: 'Pending',
+      },
+    }),
+    evidence,
+  })
+  assert.match(noTransactions.answer, /No matching records/)
+  assert.doesNotMatch(noTransactions.answer, /\$0\.00/)
+})
+
+test('calculator independently enforces the canonical cross-field plan rules', () => {
+  for (const invalidPlan of [
+    plan({
+      dataset: 'students',
+      metric: 'average-balance',
+      filters: { ...filters, transactionType: 'Add', status: 'any' },
+    }),
+    plan({ metric: 'net-amount', filters: { ...filters, transactionType: 'Add' } }),
+    plan({ order: 'chronological' }),
+  ]) {
+    assert.throws(() => calculateQuestionAnswer({ kind: 'query', plan: invalidPlan, evidence }), InsightQuestionAnswerError)
+  }
+})
+
+test('bounds maximum-length ranked labels inside the public response contract', () => {
+  const categories = Array.from({ length: 8 }, (_, index) => ({
+    alias: `category-${String(index + 1).padStart(3, '0')}`,
+    label: `${String(index + 1).padStart(3, '0')}-${'Long category label '.repeat(8)}`.slice(0, 120),
+  }))
+  const transactions = categories.map((category, index) => ({
+    id: index + 100,
+    studentId: 1,
+    date: '2026-08-19T15:00:00.000Z',
+    type: 'Add',
+    amount: 100 - index,
+    categoryAlias: category.alias,
+    status: 'Approved',
+  }))
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      filters: { ...filters, subjectAliases: ['student-001'], transactionType: 'Add' },
+      groupBy: 'category',
+      limit: 8,
+    }),
+    evidence: { ...evidence, categories, transactions },
+  })
+  assert.ok(result.answer.length <= 800)
+  assert.equal(result.evidence.length, 8)
+  assert.ok(result.evidence.every(line => line.length <= 320))
+  assert.match(result.answer, /…/)
+})
+
+test('discloses ties omitted at a non-leading cutoff', () => {
+  const students = Array.from({ length: 10 }, (_, index) => ({
+    id: index + 1,
+    alias: `student-${String(index + 1).padStart(3, '0')}`,
+    name: `Student ${index + 1}`,
+    balance: 0,
+    frozen: false,
+  }))
+  const transactions = [
+    { id: 1, studentId: 1, date: '2026-08-19T15:00:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', status: 'Approved' },
+    { id: 2, studentId: 1, date: '2026-08-19T16:00:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', status: 'Approved' },
+    ...students.slice(1).map((student, index) => ({
+      id: index + 3,
+      studentId: student.id,
+      date: '2026-08-19T17:00:00.000Z',
+      type: 'Subtract',
+      amount: 1,
+      categoryAlias: 'category-001',
+      status: 'Approved',
+    })),
+  ]
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: { ...filters, categoryAlias: 'category-001', transactionType: 'Subtract' },
+      groupBy: 'student',
+      limit: 2,
+    }),
+    evidence: {
+      ...evidence,
+      participants: students.map(({ id, alias, name }) => ({ id, alias, name })),
+      students,
+      transactions,
+    },
+  })
+  assert.match(result.answer, /And 2 more are tied at the cutoff/)
   assert.equal(result.evidence.length, 8)
 })

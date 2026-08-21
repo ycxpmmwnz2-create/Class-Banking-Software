@@ -190,25 +190,114 @@ test('up to eight named students become opaque aliases for grounded comparisons'
   assert.doesNotMatch(JSON.stringify(envelope.providerInput), /GianMarco|Bellini|Sofia|Reyes/)
 })
 
-test('sensitive category labels fail before quote or provider input can exist', async () => {
-  for (const category of ['GianMarco Bellini', 'teacher@example.com', 'https://example.com']) {
-    await assert.rejects(
-      loader(fixture({
-        'classrooms/class-a/transactions/101': {
-          ...fixture()['classrooms/class-a/transactions/101'],
-          category,
-        },
-      }))({
-        teacherUid: 'teacher-a',
-        classroomId: 'class-a',
-        periodDays: 30,
-        timeZone: 'America/Denver',
-        question: 'Which category has the most transactions?',
-      }),
-      error => error instanceof InsightQuestionEvidenceError &&
-        ['category-sensitive', 'evidence-not-deidentified'].includes(error.category),
-    )
-  }
+test('unsafe category labels become deterministic neutral aliases without blocking safe classroom data', async () => {
+  const base = fixture()['classrooms/class-a/transactions/101']
+  const envelope = await loader(fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Grace',
+    },
+    'classrooms/class-a/students/2': {
+      ...fixture()['classrooms/class-a/students/2'],
+      name: 'Private category 001',
+    },
+    'classrooms/class-a/transactions/101': {
+      ...base,
+      studentName: 'Grace',
+      category: 'Grace period fee',
+    },
+    'classrooms/class-a/transactions/102': {
+      ...base,
+      id: 102,
+      studentName: 'Grace',
+      category: 'Class job',
+    },
+    'classrooms/class-a/transactions/103': {
+      ...base,
+      id: 103,
+      studentName: 'Grace',
+      category: '2026 08 21',
+    },
+    'classrooms/class-a/transactions/104': {
+      ...base,
+      id: 104,
+      studentName: 'Grace',
+      category: 'teacher@example.com',
+    },
+  }))({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'How many approved transactions are there?',
+  })
+  const providerText = JSON.stringify(envelope.providerInput)
+  assert.match(providerText, /Class job/)
+  assert.match(providerText, /◆◆/)
+  assert.match(providerText, /Restricted label 003/)
+  assert.match(providerText, /Restricted label 004/)
+  assert.doesNotMatch(providerText, /Grace period fee|2026 08 21|teacher@example\.com/)
+  assert.deepEqual(
+    envelope.answerEvidence.categories.map(category => category.label),
+    envelope.providerInput.categoryCatalog.map(category => category.label),
+  )
+})
+
+test('deduplicates case and whitespace equivalent categories while accumulating transaction types', async () => {
+  const base = fixture()['classrooms/class-a/transactions/101']
+  const envelope = await loader(fixture({
+    'classrooms/class-a/transactions/101': { ...base, category: '  Class   Job  ', type: 'Add' },
+    'classrooms/class-a/transactions/102': { ...base, id: 102, category: 'class job', type: 'Subtract' },
+  }))({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'Which category has the most transactions?',
+  })
+  assert.deepEqual(envelope.providerInput.categoryCatalog, [{
+    alias: 'category-001',
+    label: 'Class Job',
+    transactionTypes: ['Add', 'Subtract'],
+  }])
+  assert.ok(envelope.answerEvidence.transactions.every(transaction => (
+    transaction.categoryAlias === 'category-001'
+  )))
+})
+
+test('validates one distinct category label rather than repeating roster checks at read ceilings', { timeout: 10_000 }, async () => {
+  const base = fixture()['classrooms/class-a/transactions/101']
+  const students = Object.fromEntries(Array.from({ length: 498 }, (_, index) => {
+    const id = index + 3
+    return [`classrooms/class-a/students/${id}`, {
+      ...fixture()['classrooms/class-a/students/1'],
+      id,
+      name: `Roster Student ${String(id).padStart(3, '0')}`,
+    }]
+  }))
+  const transactions = Object.fromEntries(Array.from({ length: 19_999 }, (_, index) => {
+    const id = index + 1_000
+    return [`classrooms/class-a/transactions/${id}`, {
+      ...base,
+      id,
+      type: index % 2 ? 'Add' : 'Subtract',
+      category: index % 2 ? 'Class job' : '  CLASS   JOB ',
+    }]
+  }))
+  const startedAt = Date.now()
+  const envelope = await loader(fixture({ ...students, ...transactions }))({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'Which category has the most transactions?',
+  })
+  assert.ok(Date.now() - startedAt < 5_000)
+  assert.deepEqual(envelope.providerInput.categoryCatalog, [{
+    alias: 'category-001',
+    label: 'Class job',
+    transactionTypes: ['Add', 'Subtract'],
+  }])
 })
 
 test('category aliases are stable across transaction order and category catalog size fails closed', async () => {

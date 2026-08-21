@@ -144,18 +144,19 @@ export function createInsightQuestionService(dependencies) {
         plan: interpretation.plan,
         usage: billedUsage,
       })
+      const teacherResponse = buildTeacherResponse({
+        calculated,
+        envelope,
+        generatedAt: completed.generatedAt,
+        usage: billedUsage,
+      })
       await deps.usageLedger.commit({
         reservationId: acceptedReservation.reservationId,
         requestId: request.requestId,
         actualCostMicroUsd,
         result: completed,
       })
-      return buildTeacherResponse({
-        calculated,
-        envelope,
-        generatedAt: completed.generatedAt,
-        usage: billedUsage,
-      })
+      return teacherResponse
     } catch (error) {
       if (providerStarted) {
         await retainWorstCaseReservation(deps.usageLedger, {
@@ -177,15 +178,22 @@ export function createInsightQuestionService(dependencies) {
 }
 
 function buildTeacherResponse({ calculated, envelope, generatedAt, usage }) {
-  return validateTeacherQuestionResponse({
-    schemaVersion: INSIGHT_QUESTION_SCHEMA_VERSION,
-    source: 'ai-grounded',
-    periodDays: envelope.answerEvidence.periodDays,
-    generatedAt,
-    answer: calculated.answer,
-    evidence: calculated.evidence,
-    usage,
-  })
+  try {
+    return validateTeacherQuestionResponse({
+      schemaVersion: INSIGHT_QUESTION_SCHEMA_VERSION,
+      source: 'ai-grounded',
+      periodDays: envelope.answerEvidence.periodDays,
+      generatedAt,
+      answer: calculated.answer,
+      evidence: calculated.evidence,
+      usage,
+    })
+  } catch (error) {
+    if (error instanceof InsightQuestionContractError) {
+      throw new InsightQuestionServiceError('answer-unavailable', 'The classroom records could not produce a safe answer.')
+    }
+    throw error
+  }
 }
 
 function calculateGroundedAnswer(input) {

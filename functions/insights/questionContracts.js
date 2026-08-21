@@ -1,4 +1,4 @@
-export const INSIGHT_QUESTION_SCHEMA_VERSION = 1
+export const INSIGHT_QUESTION_SCHEMA_VERSION = 2
 export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 2
 
 export const INSIGHT_QUERY_DATASETS = Object.freeze(['transactions', 'students'])
@@ -193,29 +193,8 @@ function validateQueryPlan(value, allowed, category) {
   ) {
     fail(category, 'The question query plan contains an unsupported alias.')
   }
-  if (value.dataset === 'students') {
-    const isBalanceRanking = value.metric === 'current-balance' && value.groupBy === 'student'
-    const isStudentAggregate = ['count', 'average-balance'].includes(value.metric) && value.groupBy === 'none'
-    if (
-      (!isBalanceRanking && !isStudentAggregate) ||
-      value.filters.categoryAlias !== null || value.filters.transactionType !== 'any' ||
-      value.filters.status !== 'any' || value.filters.timeBucket !== null ||
-      value.order === 'chronological'
-    ) {
-      fail(category, 'The balance query plan is inconsistent.')
-    }
-  } else {
-    if (['current-balance', 'average-balance'].includes(value.metric)) {
-      fail(category, 'A transaction query cannot read balances.')
-    }
-    if (value.metric === 'net-amount' && value.filters.transactionType !== 'any') {
-      fail(category, 'A net query cannot preselect one transaction type.')
-    }
-    const temporal = ['time-of-day', 'day-of-week', 'week'].includes(value.groupBy)
-    if (value.order === 'chronological' && !temporal) {
-      fail(category, 'Only a time grouping can be ordered chronologically.')
-    }
-  }
+  const coherenceError = questionQueryPlanCoherenceError(value)
+  if (coherenceError) fail(category, coherenceError)
   return Object.freeze({
     dataset: value.dataset,
     metric: value.metric,
@@ -224,6 +203,31 @@ function validateQueryPlan(value, allowed, category) {
     order: value.order,
     limit: value.limit,
   })
+}
+
+export function questionQueryPlanCoherenceError(value) {
+  if (value.dataset === 'students') {
+    const isBalanceRanking = value.metric === 'current-balance' && value.groupBy === 'student'
+    const isStudentAggregate = ['count', 'average-balance'].includes(value.metric) && value.groupBy === 'none'
+    if (
+      (!isBalanceRanking && !isStudentAggregate) ||
+      value.filters.categoryAlias !== null || value.filters.transactionType !== 'any' ||
+      value.filters.status !== 'any' || value.filters.timeBucket !== null ||
+      value.order === 'chronological'
+    ) return 'The balance query plan is inconsistent.'
+    return null
+  }
+  if (['current-balance', 'average-balance'].includes(value.metric)) {
+    return 'A transaction query cannot read balances.'
+  }
+  if (value.metric === 'net-amount' && value.filters.transactionType !== 'any') {
+    return 'A net query cannot preselect one transaction type.'
+  }
+  const temporal = ['time-of-day', 'day-of-week', 'week'].includes(value.groupBy)
+  if (value.order === 'chronological' && !temporal) {
+    return 'Only a time grouping can be ordered chronologically.'
+  }
+  return null
 }
 
 function validateAllowedAliases(value, category) {

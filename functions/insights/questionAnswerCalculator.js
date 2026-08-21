@@ -1,3 +1,5 @@
+import { questionQueryPlanCoherenceError } from './questionContracts.js'
+
 const TIME_BUCKETS = Object.freeze([
   Object.freeze({ id: 'morning', label: 'morning (5:00 AM–11:59 AM)', matches: hour => hour >= 5 && hour < 12 }),
   Object.freeze({ id: 'afternoon', label: 'afternoon (12:00 PM–4:59 PM)', matches: hour => hour >= 12 && hour < 17 }),
@@ -5,6 +7,9 @@ const TIME_BUCKETS = Object.freeze([
   Object.freeze({ id: 'night', label: 'night (9:00 PM–4:59 AM)', matches: hour => hour >= 21 || hour < 5 }),
 ])
 const DAY_LABELS = Object.freeze(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'])
+const MAX_ANSWER_LENGTH = 800
+const MAX_EVIDENCE_LENGTH = 320
+const MAX_DISPLAY_LABEL_LENGTH = 48
 
 export class InsightQuestionAnswerError extends Error {
   constructor(category, message) {
@@ -52,9 +57,8 @@ function calculateStudentQuery(plan, context) {
     })
   }
   if (plan.metric === 'average-balance') {
-    const average = students.length
-      ? students.reduce((total, student) => total + student.balance, 0) / students.length
-      : 0
+    if (!students.length) return renderRows({ rows: [], plan, context, noun: 'average current balance' })
+    const average = students.reduce((total, student) => total + student.balance, 0) / students.length
     if (!Number.isFinite(average)) fail('answer-unavailable', 'The average balance exceeds safe precision.')
     return renderRows({
       rows: [{ key: 'students', label: 'Matching students', value: average, count: students.length, chronological: 'students' }],
@@ -85,7 +89,7 @@ function calculateTransactionQuery(plan, context) {
     })
     const selectedIds = new Set(selectedStudents.map(student => student.id))
     transactions = transactions.filter(transaction => selectedIds.has(transaction.studentId))
-    subjectName = joinLabels(selectedStudents.map(student => student.name))
+    subjectName = summarizeLabels(selectedStudents.map(student => student.name))
   }
   if (filters.categoryAlias !== null) {
     if (!context.categoriesByAlias.has(filters.categoryAlias)) {
@@ -109,6 +113,9 @@ function calculateTransactionQuery(plan, context) {
     transactions = transactions.filter(transaction => (
       timeBucketFor(transaction.date, context.timeZone).id === filters.timeBucket
     ))
+  }
+  if (plan.metric === 'amount-average' && transactions.length === 0) {
+    return renderRows({ rows: [], plan, context, noun: metricNoun(plan), subjectName })
   }
 
   const grouped = new Map()
@@ -134,21 +141,22 @@ function calculateTransactionQuery(plan, context) {
   const categoryLabel = filters.categoryAlias === null
     ? null
     : context.categoriesByAlias.get(filters.categoryAlias)?.label
-  const noun = categoryLabel ? `${categoryLabel} ${metricNoun(plan)}` : metricNoun(plan)
+  const noun = categoryLabel ? `${displayLabel(categoryLabel, 80)} ${metricNoun(plan)}` : metricNoun(plan)
   return renderRows({ rows, plan, context, noun, subjectName })
 }
 
 function renderRows({ rows, plan, context, noun, subjectName = null }) {
+  const filterContext = describeQueryFilters(plan, context)
   if (!rows.length) {
     if (plan.dataset === 'students') {
       return answer(
-        'No matching students were found in the current classroom roster.',
-        ['Matching students: 0.'],
+        `No matching students were found in the current classroom roster. This uses ${filterContext}.`,
+        [`Matching students: 0. Included records: ${filterContext}.`],
       )
     }
     return answer(
-      `No matching records were found in the last ${context.periodDays} days.`,
-      ['Matching records: 0.'],
+      `No matching records were found in the last ${context.periodDays} days. This uses ${filterContext}.`,
+      [`Matching records: 0. Included records: ${filterContext}.`],
     )
   }
   const sorted = sortRows(rows, plan.order)
@@ -159,8 +167,8 @@ function renderRows({ rows, plan, context, noun, subjectName = null }) {
     const row = selected[0]
     const periodSuffix = plan.dataset === 'students' ? '' : ` for the last ${context.periodDays} days`
     return answer(
-      `The ${noun} is ${formatMetric(plan, row.value, row.count)}${periodSuffix}.`,
-      [evidenceLine(row, plan)],
+      `The ${noun} is ${formatMetric(plan, row.value, row.count)}${periodSuffix}. This uses ${filterContext}.`,
+      [`${evidenceLine(row, plan)} Included records: ${filterContext}.`],
     )
   }
 
@@ -168,16 +176,21 @@ function renderRows({ rows, plan, context, noun, subjectName = null }) {
   const tied = direction && selected.length > 1 && selected.every(row => row.value === selected[0].value)
   let summary
   if (tied) {
-    const labels = `${joinLabels(selected.map(row => row.label))}${omittedTies ? ` and ${omittedTies} more` : ''}`
+    const labels = joinLabels(selected.map(row => displayLabel(row.label)))
     summary = `${labels} are tied for the ${direction} ${noun} at ${formatMetric(plan, selected[0].value, selected[0].count)}.`
+    if (omittedTies) summary += ` And ${omittedTies} more are tied at the cutoff.`
   } else if (selected.length === 1) {
     const row = selected[0]
-    summary = `${row.label} has the ${direction ? `${direction} ` : ''}${noun}: ${formatMetric(plan, row.value, row.count)}.`
+    summary = `${displayLabel(row.label)} has the ${direction ? `${direction} ` : ''}${noun}: ${formatMetric(plan, row.value, row.count)}.`
   } else {
-    summary = `${direction ? capitalize(direction) : 'Chronological'} ${noun} results for the last ${context.periodDays} days: ${selected.map(row => `${row.label} (${formatMetric(plan, row.value, row.count)})`).join(', ')}.`
+    summary = `${direction ? capitalize(direction) : 'Chronological'} ${noun} results for the last ${context.periodDays} days: ${selected.map(row => `${displayLabel(row.label)} (${formatMetric(plan, row.value, row.count)})`).join(', ')}.`
+    if (omittedTies) summary += ` And ${omittedTies} more are tied at the cutoff.`
   }
   if (subjectName) summary = `For ${subjectName}, ${summary.charAt(0).toLocaleLowerCase('en-US')}${summary.slice(1)}`
-  return answer(summary, selected.map(row => evidenceLine(row, plan)))
+  summary += ` This uses ${filterContext}.`
+  return answer(summary, selected.map(row => (
+    `${evidenceLine(row, plan)} Included records: ${filterContext}.`
+  )))
 }
 
 function groupFor(transaction, groupBy, context) {
@@ -265,11 +278,11 @@ function evidenceLine(row, plan) {
   if (plan.dataset === 'students') {
     if (metric === 'count') return `Matching students: ${row.value}.`
     if (metric === 'average-balance') return `Average current balance: ${money(row.value)} across ${row.count} ${row.count === 1 ? 'student' : 'students'}.`
-    return `${row.label}: ${money(row.value)} current balance.`
+    return `${displayLabel(row.label)}: ${money(row.value)} current balance.`
   }
   const count = `${row.count} matching ${row.count === 1 ? 'transaction' : 'transactions'}`
   if (metric === 'current-balance') return `${row.label}: ${money(row.value)} current balance.`
-  return `${row.label}: ${formatMetric(plan, row.value, row.count)}; ${count}.`
+  return `${displayLabel(row.label)}: ${formatMetric(plan, row.value, row.count)}; ${count}.`
 }
 
 function formatMetric(plan, value, count) {
@@ -389,6 +402,54 @@ function validatePlanForCalculation(plan) {
     !(plan.filters.timeBucket === null || TIME_BUCKETS.some(bucket => bucket.id === plan.filters.timeBucket)) ||
     !['active', 'frozen', 'any'].includes(plan.filters.studentState)
   ) fail('answer-unavailable', 'The server query plan is malformed.')
+  const coherenceError = questionQueryPlanCoherenceError(plan)
+  if (coherenceError) fail('answer-unavailable', coherenceError)
+}
+
+function describeQueryFilters(plan, context) {
+  if (plan.dataset === 'students') {
+    const state = plan.filters.studentState === 'any'
+      ? 'all current students'
+      : `current ${plan.filters.studentState} students`
+    if (!plan.filters.subjectAliases.length) return state
+    const names = plan.filters.subjectAliases.map(alias => context.studentsByAlias.get(alias)?.name || alias)
+    return `${state}; selected ${summarizeLabels(names, { maximum: 2, labelLength: 24 })}`
+  }
+  const type = plan.filters.transactionType === 'Add'
+    ? 'earning (Add) transactions'
+    : plan.filters.transactionType === 'Subtract'
+      ? 'spending (Subtract) transactions'
+      : 'earning (Add) and spending (Subtract) transactions'
+  const parts = [plan.filters.status === 'any'
+    ? `${type} across all approval statuses`
+    : `${plan.filters.status.toLocaleLowerCase('en-US')} ${type}`]
+  if (plan.filters.subjectAliases.length) {
+    const names = plan.filters.subjectAliases.map(alias => context.participantsByAlias.get(alias)?.name || alias)
+    parts.push(`selected ${summarizeLabels(names, { maximum: 2, labelLength: 24 })}`)
+  }
+  if (plan.filters.categoryAlias !== null) {
+    const category = context.categoriesByAlias.get(plan.filters.categoryAlias)
+    parts.push(`category ${displayLabel(category?.label || plan.filters.categoryAlias, 24)}`)
+  }
+  if (plan.filters.timeBucket !== null) {
+    parts.push(TIME_BUCKETS.find(bucket => bucket.id === plan.filters.timeBucket)?.label || plan.filters.timeBucket)
+  }
+  if (plan.filters.studentState !== 'any') {
+    parts.push(`current ${plan.filters.studentState} students`)
+  }
+  return parts.join('; ')
+}
+
+function summarizeLabels(labels, { maximum = 2, labelLength = MAX_DISPLAY_LABEL_LENGTH } = {}) {
+  const selected = labels.slice(0, maximum).map(label => displayLabel(label, labelLength))
+  const omitted = labels.length - selected.length
+  return `${joinLabels(selected)}${omitted ? ` and ${omitted} ${omitted === 1 ? 'other' : 'others'}` : ''}`
+}
+
+function displayLabel(value, maximum = MAX_DISPLAY_LABEL_LENGTH) {
+  const characters = [...String(value).replace(/\s+/gu, ' ').trim()]
+  if (characters.length <= maximum) return characters.join('')
+  return `${characters.slice(0, maximum - 1).join('')}…`
 }
 
 function money(value) {
@@ -423,6 +484,11 @@ function hasExactKeys(value, expected) {
 }
 
 function answer(text, evidence) {
+  if (
+    typeof text !== 'string' || text.length < 1 || text.length > MAX_ANSWER_LENGTH ||
+    !Array.isArray(evidence) || evidence.length < 1 || evidence.length > 8 ||
+    evidence.some(line => typeof line !== 'string' || line.length < 1 || line.length > MAX_EVIDENCE_LENGTH)
+  ) fail('answer-unavailable', 'The calculated answer exceeds the public response bounds.')
   return Object.freeze({ answer: text, evidence: Object.freeze(evidence) })
 }
 

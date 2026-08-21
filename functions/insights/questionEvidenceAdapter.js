@@ -261,10 +261,6 @@ function buildCategoryCatalog(transactions, students) {
   const byKey = new Map()
   for (const transaction of transactions) {
     const label = normalizeDisplayCategory(transaction.category)
-    if (hasDisallowedControl(label) || EMAIL_OR_URL_PATTERN.test(label) || PHONE_PATTERN.test(label)) {
-      fail('category-sensitive', 'A transaction category contains contact information.')
-    }
-    assertNoRosterNameLeak(label, students)
     const key = categoryKey(label)
     const current = byKey.get(key) || { key, label, transactionTypes: new Set() }
     current.transactionTypes.add(transaction.type)
@@ -275,12 +271,41 @@ function buildCategoryCatalog(transactions, students) {
   }
   return [...byKey.values()]
     .sort((left, right) => left.key.localeCompare(right.key, 'en-US'))
-    .map((category, index) => Object.freeze({
-      key: category.key,
-      alias: `category-${String(index + 1).padStart(3, '0')}`,
-      label: category.label,
-      transactionTypes: Object.freeze([...category.transactionTypes].sort()),
-    }))
+    .map((category, index) => {
+      const aliasNumber = String(index + 1).padStart(3, '0')
+      return Object.freeze({
+        key: category.key,
+        alias: `category-${aliasNumber}`,
+        label: isProviderSafeCategoryLabel(category.label, students)
+          ? category.label
+          : neutralCategoryLabel(aliasNumber, students),
+        transactionTypes: Object.freeze([...category.transactionTypes].sort()),
+      })
+    })
+}
+
+function neutralCategoryLabel(aliasNumber, students) {
+  for (const prefix of ['Private category', 'Restricted label', 'Hidden entry', 'Opaque item']) {
+    const candidate = `${prefix} ${aliasNumber}`
+    if (isProviderSafeCategoryLabel(candidate, students)) return candidate
+  }
+  const encodedAlias = Number(aliasNumber).toString(2).replaceAll('0', '◇').replaceAll('1', '◆')
+  return `◆${encodedAlias}`
+}
+
+function isProviderSafeCategoryLabel(label, students) {
+  if (hasDisallowedControl(label) || EMAIL_OR_URL_PATTERN.test(label) || PHONE_PATTERN.test(label)) {
+    return false
+  }
+  try {
+    assertNoRosterNameLeak(label, students)
+    return true
+  } catch (error) {
+    if (error instanceof InsightQuestionEvidenceError && error.category === 'evidence-not-deidentified') {
+      return false
+    }
+    throw error
+  }
 }
 
 function hasDisallowedControl(value) {

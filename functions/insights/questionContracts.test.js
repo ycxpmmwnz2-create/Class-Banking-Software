@@ -138,7 +138,7 @@ test('completed replay is pinned to schema, evidence signature, and current alia
 
 test('teacher response accepts only calculated answer text, bounded evidence, and billed usage', () => {
   const response = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: 'ai-grounded',
     periodDays: 30,
     generatedAt: '2026-08-20T18:00:00.000Z',
@@ -147,5 +147,6 @@ test('teacher response accepts only calculated answer text, bounded evidence, an
     usage: { ...usage, costMicroUsd: 500 },
   }
   assert.deepEqual(validateTeacherQuestionResponse(response), response)
+  assert.throws(() => validateTeacherQuestionResponse({ ...response, schemaVersion: 1 }), InsightQuestionContractError)
   assert.throws(() => validateTeacherQuestionResponse({ ...response, rawProviderText: 'no' }), InsightQuestionContractError)
 })

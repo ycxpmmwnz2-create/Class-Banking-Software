@@ -44,7 +44,7 @@ function response(overrides = {}) {
 
 function questionResponse(overrides = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: "ai-grounded",
     periodDays: 30,
     generatedAt: "2026-08-20T18:00:00.000Z",
@@ -205,6 +205,7 @@ test("question boundary accepts only the exact teacher text, period, and IANA ti
   assert.deepEqual(calls, [request]);
   assert.match(result.answer, /Class job/);
   assert.throws(() => validateProviderQuestionResponse(questionResponse({ secret: "no" })), /unexpected shape/);
+  assert.throws(() => validateProviderQuestionResponse(questionResponse({ schemaVersion: 1 })), /metadata/);
   assert.throws(() => validateProviderQuestionResponse(questionResponse({ periodDays: 7 }), request), /metadata/);
 });
 
