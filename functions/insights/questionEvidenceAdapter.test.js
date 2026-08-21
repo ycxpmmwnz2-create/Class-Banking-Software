@@ -120,6 +120,8 @@ test('separator-obscured roster names fail before provider input can be construc
     'What category is GianMarcoBellini earning the most money in?',
     'What category is Gian\u200BMarco earning the most money in?',
     'What category is Gian-Marco earning the most money in?',
+    'What category is ＧｉａｎＭａｒｃｏ earning the most money in?',
+    'What category is Gian[student-001]MarcoBellini earning the most money in?',
   ]) {
     await assert.rejects(
       loader()({
@@ -132,6 +134,53 @@ test('separator-obscured roster names fail before provider input can be construc
       error => error instanceof InsightQuestionEvidenceError &&
         error.category === 'evidence-not-deidentified',
     )
+  }
+
+  const shortTokenRoster = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Kim Van Lee',
+    },
+  })
+  for (const question of [
+    'What is KimVan earning?',
+    'What is VanLee earning?',
+    'What is KimLee earning?',
+  ]) {
+    await assert.rejects(
+      loader(shortTokenRoster)({
+        teacherUid: 'teacher-a',
+        classroomId: 'class-a',
+        periodDays: 30,
+        timeZone: 'America/Denver',
+        question,
+      }),
+      error => error instanceof InsightQuestionEvidenceError &&
+        error.category === 'evidence-not-deidentified',
+    )
+  }
+})
+
+test('ordinary words containing a roster-name substring remain valid questions', async () => {
+  const commonSubstringRoster = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Mark A Chen',
+    },
+  })
+  for (const question of [
+    'What is a benchmark total this week?',
+    'How much did the kitchen job pay out?',
+  ]) {
+    const result = await loader(commonSubstringRoster)({
+      teacherUid: 'teacher-a',
+      classroomId: 'class-a',
+      periodDays: 30,
+      timeZone: 'America/Denver',
+      question,
+    })
+    assert.equal(result.providerInput.question, question)
+    assert.deepEqual(result.providerInput.subjectAliases, [])
   }
 })
 

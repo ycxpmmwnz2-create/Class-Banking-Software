@@ -140,12 +140,15 @@ test('browser authority fields fail before tenant resolution', async () => {
 })
 
 test('a declared roster name or name token cannot reach the provider', async () => {
-  for (const leakedQuestion of [
-    'What category is GianMarco earning in?',
-    'What category is gianmarco earning in?',
-    'What category is GianMarcoBellini earning in?',
-    'What category is Gian\u200BMarco earning in?',
-    'What category is Gian-Marco earning in?',
+  for (const { leakedQuestion, sensitiveName } of [
+    { leakedQuestion: 'What category is GianMarco earning in?', sensitiveName: 'GianMarco' },
+    { leakedQuestion: 'What category is gianmarco earning in?', sensitiveName: 'GianMarco' },
+    { leakedQuestion: 'What category is GianMarcoBellini earning in?', sensitiveName: 'GianMarco Bellini' },
+    { leakedQuestion: 'What category is Gian\u200BMarco earning in?', sensitiveName: 'GianMarco' },
+    { leakedQuestion: 'What category is Gian-Marco earning in?', sensitiveName: 'GianMarco' },
+    { leakedQuestion: 'What is KimVan earning?', sensitiveName: 'Kim Van Lee' },
+    { leakedQuestion: 'What is VanLee earning?', sensitiveName: 'Kim Van Lee' },
+    { leakedQuestion: 'What is KimLee earning?', sensitiveName: 'Kim Van Lee' },
   ]) {
     const fixture = dependencies({
       async loadQuestionEvidence() {
@@ -153,6 +156,9 @@ test('a declared roster name or name token cannot reach the provider', async () 
         return {
           ...envelope(),
           providerInput: { ...envelope().providerInput, question: leakedQuestion },
+          sensitiveValues: envelope().sensitiveValues.map(entry => entry.kind === 'student-name'
+            ? { ...entry, value: sensitiveName }
+            : entry),
         }
       },
     })
@@ -162,6 +168,32 @@ test('a declared roster name or name token cannot reach the provider', async () 
       error => error instanceof InsightQuestionServiceError && error.category === 'evidence-not-deidentified',
     )
     assert.deepEqual(fixture.calls, ['tenant', 'evidence'])
+  }
+})
+
+test('ordinary words containing a declared name substring still reach the provider', async () => {
+  for (const question of [
+    'What is a benchmark total this week?',
+    'How much did the kitchen job pay out?',
+  ]) {
+    const fixture = dependencies({
+      async loadQuestionEvidence() {
+        fixture.calls.push('evidence')
+        return {
+          ...envelope(),
+          providerInput: { ...envelope().providerInput, question },
+          sensitiveValues: envelope().sensitiveValues.map(entry => entry.kind === 'student-name'
+            ? { ...entry, value: 'Mark A Chen' }
+            : entry),
+        }
+      },
+    })
+    const service = createInsightQuestionService(fixture.deps)
+    await service({ auth: { uid: 'teacher-a' }, data: request })
+    assert.deepEqual(
+      fixture.calls,
+      ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'price', 'commit'],
+    )
   }
 })
 

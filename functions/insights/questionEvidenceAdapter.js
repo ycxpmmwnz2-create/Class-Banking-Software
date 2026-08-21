@@ -227,9 +227,7 @@ function sanitizeQuestion({ question, students, aliasesByStudentId, mentionedStu
 
 function assertNoRosterNameLeak(question, students) {
   const normalizedQuestion = normalize(question)
-  const collapsedQuestion = collapseSensitiveText(
-    question.replace(/\[student(?:-[0-9]{3})?\]/giu, ''),
-  )
+  const questionWithoutAliases = question.replace(/\[student(?:-[0-9]{3})?\]/giu, '')
   for (const student of students) {
     if (containsPhrase(normalizedQuestion, normalize(student.name))) {
       fail('evidence-not-deidentified', 'The sanitized question contains a student name.')
@@ -240,13 +238,9 @@ function assertNoRosterNameLeak(question, students) {
         fail('evidence-not-deidentified', 'The sanitized question contains a student name token.')
       }
     }
-    const collapsedSensitiveValues = [
-      collapseSensitiveText(student.name),
-      ...nameTokens
-        .map(collapseSensitiveText)
-        .filter(value => value.length >= 4),
-    ].filter(Boolean)
-    if (collapsedSensitiveValues.some(value => collapsedQuestion.includes(value))) {
+    if (sensitiveNameSequences(student.name).some(sequence => (
+      containsSeparatorObscuredSequence(questionWithoutAliases, sequence)
+    ))) {
       fail('evidence-not-deidentified', 'The sanitized question contains an obscured student name.')
     }
   }
@@ -318,6 +312,29 @@ function normalize(value) {
 
 function collapseSensitiveText(value) {
   return normalize(value).replace(/[^\p{L}\p{N}]/gu, '')
+}
+
+function sensitiveNameSequences(value) {
+  const nameTokens = tokens(value).map(collapseSensitiveText).filter(Boolean)
+  const sequences = new Set(nameTokens.filter(token => token.length >= 2))
+  for (let index = 0; index < nameTokens.length - 1; index += 1) {
+    sequences.add(`${nameTokens[index]}${nameTokens[index + 1]}`)
+  }
+  if (nameTokens.length > 1) {
+    sequences.add(`${nameTokens[0]}${nameTokens.at(-1)}`)
+    sequences.add(nameTokens.join(''))
+  }
+  return [...sequences]
+}
+
+function containsSeparatorObscuredSequence(value, sequence) {
+  if (!sequence) return false
+  const characters = [...sequence].map(escapeRegExp)
+  const obscured = characters.join('[^\\p{L}\\p{N}]*')
+  return new RegExp(
+    `(^|[^\\p{L}\\p{N}])${obscured}(?=$|[^\\p{L}\\p{N}])`,
+    'u',
+  ).test(normalize(value))
 }
 
 function containsPhrase(haystack, needle) {

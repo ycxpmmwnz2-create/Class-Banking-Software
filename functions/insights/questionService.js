@@ -201,7 +201,7 @@ function validateEvidenceEnvelope(value) {
 function assertProviderInputIsDeidentified(providerInput, sensitiveValues) {
   const leaves = []
   collectStringLeaves(providerInput, leaves)
-  const collapsedLeaves = leaves.map(collapseProviderLeafForSensitiveScan)
+  const privacyLeaves = leaves.map(providerLeafForSensitiveScan)
   for (const entry of sensitiveValues) {
     if (
       !isPlainObject(entry) ||
@@ -230,16 +230,8 @@ function assertProviderInputIsDeidentified(providerInput, sensitiveValues) {
       }
     }
     if (entry.kind === 'student-name') {
-      const collapsedSensitiveValues = [
-        collapseSensitiveText(entry.value),
-        ...entry.value
-          .normalize('NFKC')
-          .split(/[^\p{L}\p{N}]+/u)
-          .map(collapseSensitiveText)
-          .filter(value => value.length >= 4),
-      ].filter(Boolean)
-      if (collapsedSensitiveValues.some(sensitive => (
-        collapsedLeaves.some(leaf => leaf.includes(sensitive))
+      if (sensitiveNameSequences(entry.value).some(sensitive => (
+        privacyLeaves.some(leaf => containsSeparatorObscuredSequence(leaf, sensitive))
       ))) {
         throw new InsightQuestionServiceError(
           'evidence-not-deidentified',
@@ -250,9 +242,9 @@ function assertProviderInputIsDeidentified(providerInput, sensitiveValues) {
   }
 }
 
-function collapseProviderLeafForSensitiveScan(value) {
+function providerLeafForSensitiveScan(value) {
   if (/^student-[0-9]{3}$/iu.test(value)) return ''
-  return collapseSensitiveText(value.replace(/\[student(?:-[0-9]{3})?\]/giu, ''))
+  return value.replace(/\[student(?:-[0-9]{3})?\]/giu, '')
 }
 
 function collapseSensitiveText(value) {
@@ -260,6 +252,38 @@ function collapseSensitiveText(value) {
     .normalize('NFKC')
     .toLocaleLowerCase('en-US')
     .replace(/[^\p{L}\p{N}]/gu, '')
+}
+
+function sensitiveNameSequences(value) {
+  const nameTokens = String(value)
+    .normalize('NFKC')
+    .toLocaleLowerCase('en-US')
+    .split(/[^\p{L}\p{N}]+/u)
+    .map(collapseSensitiveText)
+    .filter(Boolean)
+  const sequences = new Set(nameTokens.filter(token => token.length >= 2))
+  for (let index = 0; index < nameTokens.length - 1; index += 1) {
+    sequences.add(`${nameTokens[index]}${nameTokens[index + 1]}`)
+  }
+  if (nameTokens.length > 1) {
+    sequences.add(`${nameTokens[0]}${nameTokens.at(-1)}`)
+    sequences.add(nameTokens.join(''))
+  }
+  return [...sequences]
+}
+
+function containsSeparatorObscuredSequence(value, sequence) {
+  if (!sequence) return false
+  const characters = [...sequence].map(escapeRegExp)
+  const obscured = characters.join('[^\\p{L}\\p{N}]*')
+  return new RegExp(
+    `(^|[^\\p{L}\\p{N}])${obscured}(?=$|[^\\p{L}\\p{N}])`,
+    'u',
+  ).test(String(value).normalize('NFKC').toLocaleLowerCase('en-US'))
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function collectStringLeaves(value, output) {
