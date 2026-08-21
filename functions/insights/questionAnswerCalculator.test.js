@@ -366,6 +366,61 @@ test('bounds maximum-length ranked labels inside the public response contract', 
   assert.match(result.answer, /…/)
 })
 
+test('dynamically fits eight maximum-length student labels with every disclosure filter', () => {
+  const students = Array.from({ length: 8 }, (_, index) => ({
+    id: index + 1,
+    alias: `student-${String(index + 1).padStart(3, '0')}`,
+    name: String.fromCharCode(65 + index).repeat(120),
+    balance: 10,
+    frozen: true,
+  }))
+  const category = {
+    alias: 'category-001',
+    label: `Rent ${'R'.repeat(115)}`,
+  }
+  const transactions = students.map((student, index) => ({
+    id: index + 1,
+    studentId: student.id,
+    date: '2026-08-19T20:00:00.000Z',
+    type: index % 2 ? 'Add' : 'Subtract',
+    amount: 10,
+    categoryAlias: category.alias,
+    status: index % 3 ? 'Approved' : 'Pending',
+  }))
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: {
+        ...filters,
+        subjectAliases: students.map(student => student.alias),
+        categoryAlias: category.alias,
+        transactionType: 'any',
+        status: 'any',
+        timeBucket: 'afternoon',
+        studentState: 'frozen',
+      },
+      groupBy: 'student',
+      limit: 8,
+    }),
+    evidence: {
+      ...evidence,
+      participants: students.map(({ id, alias, name }) => ({ id, alias, name })),
+      students,
+      categories: [category],
+      transactions,
+    },
+  })
+  assert.ok(result.answer.length <= 800)
+  assert.equal(result.evidence.length, 8)
+  assert.ok(result.evidence.every(line => line.length <= 320))
+  assert.match(result.answer, /…/)
+  assert.match(result.answer, /earning \(Add\) and spending \(Subtract\)/)
+  assert.match(result.answer, /all approval statuses/)
+  assert.match(result.answer, /afternoon \(12:00 PM–4:59 PM\)/)
+  assert.match(result.answer, /current frozen students/)
+})
+
 test('discloses ties omitted at a non-leading cutoff', () => {
   const students = Array.from({ length: 10 }, (_, index) => ({
     id: index + 1,

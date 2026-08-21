@@ -10,6 +10,7 @@ const DAY_LABELS = Object.freeze(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'T
 const MAX_ANSWER_LENGTH = 800
 const MAX_EVIDENCE_LENGTH = 320
 const MAX_DISPLAY_LABEL_LENGTH = 48
+const RANKED_LABEL_LENGTHS = Object.freeze([48, 40, 32, 24, 16])
 
 export class InsightQuestionAnswerError extends Error {
   constructor(category, message) {
@@ -80,7 +81,7 @@ function calculateStudentQuery(plan, context) {
 function calculateTransactionQuery(plan, context) {
   let transactions = context.transactions
   const filters = plan.filters
-  let subjectName = null
+  let subjectNames = []
   if (filters.subjectAliases.length) {
     const selectedStudents = filters.subjectAliases.map(alias => {
       const student = context.participantsByAlias.get(alias)
@@ -89,7 +90,7 @@ function calculateTransactionQuery(plan, context) {
     })
     const selectedIds = new Set(selectedStudents.map(student => student.id))
     transactions = transactions.filter(transaction => selectedIds.has(transaction.studentId))
-    subjectName = summarizeLabels(selectedStudents.map(student => student.name))
+    subjectNames = selectedStudents.map(student => student.name)
   }
   if (filters.categoryAlias !== null) {
     if (!context.categoriesByAlias.has(filters.categoryAlias)) {
@@ -115,7 +116,7 @@ function calculateTransactionQuery(plan, context) {
     ))
   }
   if (plan.metric === 'amount-average' && transactions.length === 0) {
-    return renderRows({ rows: [], plan, context, noun: metricNoun(plan), subjectName })
+    return renderRows({ rows: [], plan, context, noun: metricNoun(plan), subjectNames })
   }
 
   const grouped = new Map()
@@ -142,10 +143,10 @@ function calculateTransactionQuery(plan, context) {
     ? null
     : context.categoriesByAlias.get(filters.categoryAlias)?.label
   const noun = categoryLabel ? `${displayLabel(categoryLabel, 80)} ${metricNoun(plan)}` : metricNoun(plan)
-  return renderRows({ rows, plan, context, noun, subjectName })
+  return renderRows({ rows, plan, context, noun, subjectNames })
 }
 
-function renderRows({ rows, plan, context, noun, subjectName = null }) {
+function renderRows({ rows, plan, context, noun, subjectNames = [] }) {
   const filterContext = describeQueryFilters(plan, context)
   if (!rows.length) {
     if (plan.dataset === 'students') {
@@ -174,23 +175,31 @@ function renderRows({ rows, plan, context, noun, subjectName = null }) {
 
   const direction = plan.order === 'lowest' ? 'lowest' : plan.order === 'highest' ? 'highest' : null
   const tied = direction && selected.length > 1 && selected.every(row => row.value === selected[0].value)
-  let summary
-  if (tied) {
-    const labels = joinLabels(selected.map(row => displayLabel(row.label)))
-    summary = `${labels} are tied for the ${direction} ${noun} at ${formatMetric(plan, selected[0].value, selected[0].count)}.`
-    if (omittedTies) summary += ` And ${omittedTies} more are tied at the cutoff.`
-  } else if (selected.length === 1) {
-    const row = selected[0]
-    summary = `${displayLabel(row.label)} has the ${direction ? `${direction} ` : ''}${noun}: ${formatMetric(plan, row.value, row.count)}.`
-  } else {
-    summary = `${direction ? capitalize(direction) : 'Chronological'} ${noun} results for the last ${context.periodDays} days: ${selected.map(row => `${displayLabel(row.label)} (${formatMetric(plan, row.value, row.count)})`).join(', ')}.`
-    if (omittedTies) summary += ` And ${omittedTies} more are tied at the cutoff.`
+  for (const labelLength of RANKED_LABEL_LENGTHS) {
+    const rankedFilterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
+    let summary
+    if (tied) {
+      const labels = joinLabels(selected.map(row => displayLabel(row.label, labelLength)))
+      summary = `${labels} are tied for the ${direction} ${noun} at ${formatMetric(plan, selected[0].value, selected[0].count)}.`
+      if (omittedTies) summary += ` And ${omittedTies} more are tied at the cutoff.`
+    } else if (selected.length === 1) {
+      const row = selected[0]
+      summary = `${displayLabel(row.label, labelLength)} has the ${direction ? `${direction} ` : ''}${noun}: ${formatMetric(plan, row.value, row.count)}.`
+    } else {
+      summary = `${direction ? capitalize(direction) : 'Chronological'} ${noun} results for the last ${context.periodDays} days: ${selected.map(row => `${displayLabel(row.label, labelLength)} (${formatMetric(plan, row.value, row.count)})`).join(', ')}.`
+      if (omittedTies) summary += ` And ${omittedTies} more are tied at the cutoff.`
+    }
+    if (subjectNames.length) {
+      const subjectName = summarizeLabels(subjectNames, { labelLength })
+      summary = `For ${subjectName}, ${summary.charAt(0).toLocaleLowerCase('en-US')}${summary.slice(1)}`
+    }
+    summary += ` This uses ${rankedFilterContext}.`
+    const evidence = selected.map(row => (
+      `${evidenceLine(row, plan, labelLength)} Included records: ${rankedFilterContext}.`
+    ))
+    if (responseWithinPublicBounds(summary, evidence)) return answer(summary, evidence)
   }
-  if (subjectName) summary = `For ${subjectName}, ${summary.charAt(0).toLocaleLowerCase('en-US')}${summary.slice(1)}`
-  summary += ` This uses ${filterContext}.`
-  return answer(summary, selected.map(row => (
-    `${evidenceLine(row, plan)} Included records: ${filterContext}.`
-  )))
+  fail('answer-unavailable', 'The calculated answer exceeds the public response bounds.')
 }
 
 function groupFor(transaction, groupBy, context) {
@@ -273,16 +282,16 @@ function includeTies(rows, limit) {
   return selected
 }
 
-function evidenceLine(row, plan) {
+function evidenceLine(row, plan, labelLength = MAX_DISPLAY_LABEL_LENGTH) {
   const metric = plan.metric
   if (plan.dataset === 'students') {
     if (metric === 'count') return `Matching students: ${row.value}.`
     if (metric === 'average-balance') return `Average current balance: ${money(row.value)} across ${row.count} ${row.count === 1 ? 'student' : 'students'}.`
-    return `${displayLabel(row.label)}: ${money(row.value)} current balance.`
+    return `${displayLabel(row.label, labelLength)}: ${money(row.value)} current balance.`
   }
   const count = `${row.count} matching ${row.count === 1 ? 'transaction' : 'transactions'}`
   if (metric === 'current-balance') return `${row.label}: ${money(row.value)} current balance.`
-  return `${displayLabel(row.label)}: ${formatMetric(plan, row.value, row.count)}; ${count}.`
+  return `${displayLabel(row.label, labelLength)}: ${formatMetric(plan, row.value, row.count)}; ${count}.`
 }
 
 function formatMetric(plan, value, count) {
@@ -406,14 +415,14 @@ function validatePlanForCalculation(plan) {
   if (coherenceError) fail('answer-unavailable', coherenceError)
 }
 
-function describeQueryFilters(plan, context) {
+function describeQueryFilters(plan, context, labelLength = 24) {
   if (plan.dataset === 'students') {
     const state = plan.filters.studentState === 'any'
       ? 'all current students'
       : `current ${plan.filters.studentState} students`
     if (!plan.filters.subjectAliases.length) return state
     const names = plan.filters.subjectAliases.map(alias => context.studentsByAlias.get(alias)?.name || alias)
-    return `${state}; selected ${summarizeLabels(names, { maximum: 2, labelLength: 24 })}`
+    return `${state}; selected ${summarizeLabels(names, { maximum: 2, labelLength })}`
   }
   const type = plan.filters.transactionType === 'Add'
     ? 'earning (Add) transactions'
@@ -425,11 +434,11 @@ function describeQueryFilters(plan, context) {
     : `${plan.filters.status.toLocaleLowerCase('en-US')} ${type}`]
   if (plan.filters.subjectAliases.length) {
     const names = plan.filters.subjectAliases.map(alias => context.participantsByAlias.get(alias)?.name || alias)
-    parts.push(`selected ${summarizeLabels(names, { maximum: 2, labelLength: 24 })}`)
+    parts.push(`selected ${summarizeLabels(names, { maximum: 2, labelLength })}`)
   }
   if (plan.filters.categoryAlias !== null) {
     const category = context.categoriesByAlias.get(plan.filters.categoryAlias)
-    parts.push(`category ${displayLabel(category?.label || plan.filters.categoryAlias, 24)}`)
+    parts.push(`category ${displayLabel(category?.label || plan.filters.categoryAlias, labelLength)}`)
   }
   if (plan.filters.timeBucket !== null) {
     parts.push(TIME_BUCKETS.find(bucket => bucket.id === plan.filters.timeBucket)?.label || plan.filters.timeBucket)
@@ -484,12 +493,18 @@ function hasExactKeys(value, expected) {
 }
 
 function answer(text, evidence) {
-  if (
+  if (!responseWithinPublicBounds(text, evidence)) {
+    fail('answer-unavailable', 'The calculated answer exceeds the public response bounds.')
+  }
+  return Object.freeze({ answer: text, evidence: Object.freeze(evidence) })
+}
+
+function responseWithinPublicBounds(text, evidence) {
+  return !(
     typeof text !== 'string' || text.length < 1 || text.length > MAX_ANSWER_LENGTH ||
     !Array.isArray(evidence) || evidence.length < 1 || evidence.length > 8 ||
     evidence.some(line => typeof line !== 'string' || line.length < 1 || line.length > MAX_EVIDENCE_LENGTH)
-  ) fail('answer-unavailable', 'The calculated answer exceeds the public response bounds.')
-  return Object.freeze({ answer: text, evidence: Object.freeze(evidence) })
+  )
 }
 
 function fail(category, message) {
