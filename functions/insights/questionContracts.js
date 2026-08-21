@@ -1,34 +1,34 @@
-export const INSIGHT_QUESTION_SCHEMA_VERSION = 1
+export const INSIGHT_QUESTION_SCHEMA_VERSION = 2
+export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 2
 
-export const INSIGHT_QUESTION_INTENTS = Object.freeze([
-  'student-top-earning-category',
-  'student-top-spending-category',
-  'class-top-earning-category',
-  'class-top-spending-category',
-  'student-peak-earning-time',
-  'student-peak-spending-time',
-  'class-peak-earning-time',
-  'class-peak-spending-time',
-  'student-current-balance',
-  'highest-current-balance',
-  'lowest-current-balance',
-  'student-total-earned',
-  'student-total-spent',
-  'student-net-change',
-  'class-total-earned',
-  'class-total-spent',
-  'class-net-change',
-  'pending-request-count',
-  'unsupported',
+export const INSIGHT_QUERY_DATASETS = Object.freeze(['transactions', 'students'])
+export const INSIGHT_QUERY_METRICS = Object.freeze([
+  'count',
+  'amount-total',
+  'amount-average',
+  'net-amount',
+  'current-balance',
+  'average-balance',
 ])
+export const INSIGHT_QUERY_GROUPS = Object.freeze([
+  'none',
+  'student',
+  'category',
+  'time-of-day',
+  'day-of-week',
+  'week',
+])
+export const INSIGHT_QUERY_ORDERS = Object.freeze(['highest', 'lowest', 'chronological'])
 
-const SUBJECT_INTENTS = new Set(INSIGHT_QUESTION_INTENTS.filter(intent => (
-  intent.startsWith('student-')
-)))
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/
 const SUBJECT_ALIAS_PATTERN = /^student-[0-9]{3}$/
+const CATEGORY_ALIAS_PATTERN = /^category-[0-9]{3}$/
 const SIGNATURE_PATTERN = /^[a-f0-9]{64}$/
 const PERIODS = Object.freeze([7, 30, 90])
+const TRANSACTION_TYPES = Object.freeze(['Add', 'Subtract', 'any'])
+const TRANSACTION_STATUSES = Object.freeze(['Approved', 'Pending', 'Denied', 'any'])
+const TIME_BUCKETS = Object.freeze(['morning', 'afternoon', 'evening', 'night'])
+const STUDENT_STATES = Object.freeze(['active', 'frozen', 'any'])
 
 export class InsightQuestionContractError extends Error {
   constructor(category, message) {
@@ -61,41 +61,27 @@ export function validateInsightQuestionRequest(value) {
   })
 }
 
-function canonicalTimeZone(value) {
-  const timeZone = boundedText(value, 1, 80, 'timeZone')
-  try {
-    return new Intl.DateTimeFormat('en-US', { timeZone }).resolvedOptions().timeZone
-  } catch {
-    fail('invalid-request', 'The question time zone is unsupported.')
-  }
-}
-
-export function validateQuestionInterpretation(value, allowedAliases) {
+export function validateQuestionInterpretation(value, allowed) {
   requireExactObject(
     value,
-    ['schemaVersion', 'intent', 'subjectAlias', 'usage'],
+    ['schemaVersion', 'kind', 'plan', 'usage'],
     'question interpretation',
     'invalid-provider-output',
   )
   if (
-    value.schemaVersion !== INSIGHT_QUESTION_SCHEMA_VERSION ||
-    !INSIGHT_QUESTION_INTENTS.includes(value.intent)
+    value.schemaVersion !== INSIGHT_QUERY_PLAN_SCHEMA_VERSION ||
+    !['query', 'unsupported'].includes(value.kind)
   ) {
-    fail('invalid-provider-output', 'The question intent is unsupported.')
+    fail('invalid-provider-output', 'The question interpretation is unsupported.')
   }
-  if (!Array.isArray(allowedAliases) || allowedAliases.some(alias => !SUBJECT_ALIAS_PATTERN.test(alias))) {
-    fail('invalid-provider-output', 'The allowed question subjects are malformed.')
-  }
-  const subjectAlias = validateIntentSubject(
-    value.intent,
-    value.subjectAlias,
-    allowedAliases,
-    'invalid-provider-output',
-  )
+  const aliases = validateAllowedAliases(allowed, 'invalid-provider-output')
+  const plan = value.kind === 'unsupported'
+    ? requireNullPlan(value.plan, 'invalid-provider-output')
+    : validateQueryPlan(value.plan, aliases, 'invalid-provider-output')
   return Object.freeze({
-    schemaVersion: INSIGHT_QUESTION_SCHEMA_VERSION,
-    intent: value.intent,
-    subjectAlias,
+    schemaVersion: INSIGHT_QUERY_PLAN_SCHEMA_VERSION,
+    kind: value.kind,
+    plan,
     usage: validateProviderUsage(value.usage),
   })
 }
@@ -109,35 +95,31 @@ export function validateCompletedQuestion(value, expected) {
       'periodDays',
       'evidenceSignature',
       'generatedAt',
-      'intent',
-      'subjectAlias',
+      'kind',
+      'plan',
       'usage',
     ],
     'completed question',
     'invalid-replay',
   )
   if (
-    value.schemaVersion !== INSIGHT_QUESTION_SCHEMA_VERSION ||
+    value.schemaVersion !== INSIGHT_QUERY_PLAN_SCHEMA_VERSION ||
     value.source !== 'provider-interpreted' ||
     value.periodDays !== expected.periodDays ||
     value.evidenceSignature !== expected.evidenceSignature ||
-    !SIGNATURE_PATTERN.test(value.evidenceSignature)
+    !SIGNATURE_PATTERN.test(value.evidenceSignature) ||
+    !['query', 'unsupported'].includes(value.kind)
   ) {
     fail('invalid-replay', 'The stored question does not match current evidence.')
   }
   requireIsoTimestamp(value.generatedAt, 'generatedAt', 'invalid-replay')
-  if (!INSIGHT_QUESTION_INTENTS.includes(value.intent)) {
-    fail('invalid-replay', 'The stored question intent is unsupported.')
-  }
+  const aliases = validateAllowedAliases(expected.allowedAliases, 'invalid-replay')
   return Object.freeze({
-    schemaVersion: INSIGHT_QUESTION_SCHEMA_VERSION,
-    intent: value.intent,
-    subjectAlias: validateIntentSubject(
-      value.intent,
-      value.subjectAlias,
-      expected.allowedAliases,
-      'invalid-replay',
-    ),
+    schemaVersion: INSIGHT_QUERY_PLAN_SCHEMA_VERSION,
+    kind: value.kind,
+    plan: value.kind === 'unsupported'
+      ? requireNullPlan(value.plan, 'invalid-replay')
+      : validateQueryPlan(value.plan, aliases, 'invalid-replay'),
     usage: validateBilledUsage(value.usage, 'invalid-replay'),
   })
 }
@@ -156,8 +138,8 @@ export function validateTeacherQuestionResponse(value) {
     fail('invalid-response', 'The question response metadata is malformed.')
   }
   requireIsoTimestamp(value.generatedAt, 'generatedAt', 'invalid-response')
-  const answer = boundedText(value.answer, 1, 500, 'answer', 'invalid-response')
-  if (!Array.isArray(value.evidence) || value.evidence.length < 1 || value.evidence.length > 4) {
+  const answer = boundedText(value.answer, 1, 800, 'answer', 'invalid-response')
+  if (!Array.isArray(value.evidence) || value.evidence.length < 1 || value.evidence.length > 8) {
     fail('invalid-response', 'The question evidence is malformed.')
   }
   return Object.freeze({
@@ -173,6 +155,110 @@ export function validateTeacherQuestionResponse(value) {
   })
 }
 
+function validateQueryPlan(value, allowed, category) {
+  requireExactObject(
+    value,
+    ['dataset', 'metric', 'filters', 'groupBy', 'order', 'limit'],
+    'question query plan',
+    category,
+  )
+  requireExactObject(
+    value.filters,
+    ['subjectAliases', 'categoryAlias', 'transactionType', 'status', 'timeBucket', 'studentState'],
+    'question query filters',
+    category,
+  )
+  if (
+    !INSIGHT_QUERY_DATASETS.includes(value.dataset) ||
+    !INSIGHT_QUERY_METRICS.includes(value.metric) ||
+    !INSIGHT_QUERY_GROUPS.includes(value.groupBy) ||
+    !INSIGHT_QUERY_ORDERS.includes(value.order) ||
+    !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 8 ||
+    !TRANSACTION_TYPES.includes(value.filters.transactionType) ||
+    !TRANSACTION_STATUSES.includes(value.filters.status) ||
+    !(value.filters.timeBucket === null || TIME_BUCKETS.includes(value.filters.timeBucket)) ||
+    !STUDENT_STATES.includes(value.filters.studentState)
+  ) {
+    fail(category, 'The question query plan contains an unsupported operation.')
+  }
+  if (
+    !Array.isArray(value.filters.subjectAliases) || value.filters.subjectAliases.length > 8 ||
+    value.filters.subjectAliases.some(alias => (
+      !SUBJECT_ALIAS_PATTERN.test(alias) || !allowed.studentAliases.includes(alias)
+    )) || new Set(value.filters.subjectAliases).size !== value.filters.subjectAliases.length ||
+    !(value.filters.categoryAlias === null || (
+      CATEGORY_ALIAS_PATTERN.test(value.filters.categoryAlias) &&
+      allowed.categoryAliases.includes(value.filters.categoryAlias)
+    ))
+  ) {
+    fail(category, 'The question query plan contains an unsupported alias.')
+  }
+  const coherenceError = questionQueryPlanCoherenceError(value)
+  if (coherenceError) fail(category, coherenceError)
+  return Object.freeze({
+    dataset: value.dataset,
+    metric: value.metric,
+    filters: Object.freeze({ ...value.filters }),
+    groupBy: value.groupBy,
+    order: value.order,
+    limit: value.limit,
+  })
+}
+
+export function questionQueryPlanCoherenceError(value) {
+  if (value.dataset === 'students') {
+    const isBalanceRanking = value.metric === 'current-balance' && value.groupBy === 'student'
+    const isStudentAggregate = ['count', 'average-balance'].includes(value.metric) && value.groupBy === 'none'
+    if (
+      (!isBalanceRanking && !isStudentAggregate) ||
+      value.filters.categoryAlias !== null || value.filters.transactionType !== 'any' ||
+      value.filters.status !== 'any' || value.filters.timeBucket !== null ||
+      value.order === 'chronological'
+    ) return 'The balance query plan is inconsistent.'
+    return null
+  }
+  if (['current-balance', 'average-balance'].includes(value.metric)) {
+    return 'A transaction query cannot read balances.'
+  }
+  if (value.metric === 'net-amount' && value.filters.transactionType !== 'any') {
+    return 'A net query cannot preselect one transaction type.'
+  }
+  const temporal = ['time-of-day', 'day-of-week', 'week'].includes(value.groupBy)
+  if (value.order === 'chronological' && !temporal) {
+    return 'Only a time grouping can be ordered chronologically.'
+  }
+  return null
+}
+
+function validateAllowedAliases(value, category) {
+  if (
+    !isPlainObject(value) || !hasExactKeys(value, ['studentAliases', 'categoryAliases']) ||
+    !Array.isArray(value.studentAliases) ||
+    value.studentAliases.some(alias => !SUBJECT_ALIAS_PATTERN.test(alias)) ||
+    new Set(value.studentAliases).size !== value.studentAliases.length ||
+    !Array.isArray(value.categoryAliases) ||
+    value.categoryAliases.some(alias => !CATEGORY_ALIAS_PATTERN.test(alias)) ||
+    new Set(value.categoryAliases).size !== value.categoryAliases.length
+  ) {
+    fail(category, 'The allowed question aliases are malformed.')
+  }
+  return value
+}
+
+function requireNullPlan(value, category) {
+  if (value !== null) fail(category, 'An unsupported question cannot contain a query plan.')
+  return null
+}
+
+function canonicalTimeZone(value) {
+  const timeZone = boundedText(value, 1, 80, 'timeZone')
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone }).resolvedOptions().timeZone
+  } catch {
+    fail('invalid-request', 'The question time zone is unsupported.')
+  }
+}
+
 function validateProviderUsage(value) {
   requireExactObject(
     value,
@@ -180,17 +266,7 @@ function validateProviderUsage(value) {
     'question usage',
     'invalid-provider-output',
   )
-  const result = {}
-  for (const field of ['inputTokens', 'outputTokens', 'thinkingTokens']) {
-    if (!Number.isSafeInteger(value[field]) || value[field] < 0) {
-      fail('invalid-provider-output', 'Question usage is malformed.')
-    }
-    result[field] = value[field]
-  }
-  if (result.outputTokens > 96 || result.thinkingTokens > 4_096) {
-    fail('invalid-provider-output', 'Question usage exceeds the reviewed limits.')
-  }
-  return Object.freeze(result)
+  return Object.freeze(validateTokenUsage(value, 'invalid-provider-output'))
 }
 
 function validateBilledUsage(value, category) {
@@ -200,34 +276,25 @@ function validateBilledUsage(value, category) {
     'question usage',
     category,
   )
+  const result = validateTokenUsage(value, category)
+  if (!Number.isSafeInteger(value.costMicroUsd) || value.costMicroUsd < 0 || value.costMicroUsd > 7_500_000) {
+    fail(category, 'Question usage exceeds the reviewed limits.')
+  }
+  return Object.freeze({ ...result, costMicroUsd: value.costMicroUsd })
+}
+
+function validateTokenUsage(value, category) {
   const result = {}
-  for (const field of ['inputTokens', 'outputTokens', 'thinkingTokens', 'costMicroUsd']) {
+  for (const field of ['inputTokens', 'outputTokens', 'thinkingTokens']) {
     if (!Number.isSafeInteger(value[field]) || value[field] < 0) {
       fail(category, 'Question usage is malformed.')
     }
     result[field] = value[field]
   }
-  if (
-    result.outputTokens > 96 ||
-    result.thinkingTokens > 4_096 ||
-    result.costMicroUsd > 7_500_000
-  ) {
+  if (result.outputTokens > 256 || result.thinkingTokens > 4_096) {
     fail(category, 'Question usage exceeds the reviewed limits.')
   }
-  return Object.freeze(result)
-}
-
-function validateIntentSubject(intent, subjectAlias, allowedAliases, category) {
-  if (SUBJECT_INTENTS.has(intent)) {
-    if (!SUBJECT_ALIAS_PATTERN.test(subjectAlias) || !allowedAliases.includes(subjectAlias)) {
-      fail(category, 'The question subject is unsupported.')
-    }
-    return subjectAlias
-  }
-  if (subjectAlias !== null) {
-    fail(category, 'A class-level question cannot select a student.')
-  }
-  return null
+  return result
 }
 
 function requireIsoTimestamp(value, label, category) {
@@ -243,11 +310,8 @@ function boundedText(value, minimum, maximum, label, category = 'invalid-request
     return codePoint === 127 || (codePoint < 32 && ![9, 10, 13].includes(codePoint))
   })
   if (
-    typeof value !== 'string' ||
-    value.length < minimum ||
-    value.length > maximum ||
-    value.trim() !== value ||
-    hasDisallowedControl
+    typeof value !== 'string' || value.length < minimum || value.length > maximum ||
+    value.trim() !== value || hasDisallowedControl
   ) {
     fail(category, `${label} is malformed.`)
   }

@@ -13,6 +13,7 @@ export const TENANT_A = Object.freeze({
   classroomName: "Synthetic Browser Room A",
   studentLoginCode: "AAAA-2345",
   studentName: "Avery Browser",
+  classmateName: "Casey Browser",
   foreignName: "Bailey Browser",
   reason: "Synthetic robotics reward",
 });
@@ -24,6 +25,7 @@ export const TENANT_B = Object.freeze({
   classroomName: "Synthetic Browser Room B",
   studentLoginCode: "BBBB-6789",
   studentName: "Bailey Browser",
+  classmateName: "Devon Browser",
   foreignName: "Avery Browser",
   reason: "Synthetic library reward",
 });
@@ -78,6 +80,7 @@ async function createUser(email, password) {
 }
 
 async function seedTenant(db, tenant, uid, studentId, transactionId) {
+  const classmateId = studentId + 100;
   const pendingTransaction = {
     id: transactionId,
     date: new Date(Date.now() - 60_000).toISOString(),
@@ -117,6 +120,34 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
     status: "Approved",
     source: "Teacher",
   };
+  const restroomTransactions = [
+    ...Array.from({ length: 3 }, (_, index) => ({
+      id: transactionId + 3 + index,
+      date: new Date(Date.now() - (240_000 + index * 60_000)).toISOString(),
+      studentId,
+      studentName: tenant.studentName,
+      type: "Subtract",
+      amount: 1,
+      reason: "Bathroom break",
+      memo: "",
+      category: "Bathroom break",
+      status: "Approved",
+      source: "Teacher",
+    })),
+    ...Array.from({ length: 2 }, (_, index) => ({
+      id: transactionId + 6 + index,
+      date: new Date(Date.now() - (480_000 + index * 60_000)).toISOString(),
+      studentId: classmateId,
+      studentName: tenant.classmateName,
+      type: "Subtract",
+      amount: 50,
+      reason: "Bathroom break",
+      memo: "",
+      category: "Bathroom break",
+      status: "Approved",
+      source: "Teacher",
+    })),
+  ];
   await db.doc(`teachers/${uid}`).set({
     uid,
     status: "active",
@@ -127,7 +158,7 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
     name: tenant.classroomName,
     studentLoginCode: tenant.studentLoginCode,
     schemaVersion: 1,
-    nextStudentNumber: studentId + 1,
+    nextStudentNumber: classmateId + 1,
     settings: { ...COMPLETE_SETTINGS },
     lastBackupAt: null,
     updatedAt: new Date().toISOString(),
@@ -142,9 +173,16 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
     name: tenant.studentName,
     balance: 45,
     frozen: false,
-    transactions: [pendingTransaction, earningTransaction, spendingTransaction],
+    transactions: [pendingTransaction, earningTransaction, spendingTransaction, ...restroomTransactions.slice(0, 3)],
   });
-  for (const transaction of [pendingTransaction, earningTransaction, spendingTransaction]) {
+  await db.doc(`classrooms/${tenant.classroomId}/students/${classmateId}`).set({
+    id: classmateId,
+    name: tenant.classmateName,
+    balance: 45,
+    frozen: false,
+    transactions: restroomTransactions.slice(3),
+  });
+  for (const transaction of [pendingTransaction, earningTransaction, spendingTransaction, ...restroomTransactions]) {
     await db.doc(`classrooms/${tenant.classroomId}/transactions/${transaction.id}`).set(transaction);
   }
 }

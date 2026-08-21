@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import { INSIGHT_QUESTION_SCHEMA_VERSION } from './questionContracts.js'
+import { INSIGHT_QUERY_PLAN_SCHEMA_VERSION } from './questionContracts.js'
 import { InsightIdentityError, validateInsightIdentity } from './identity.js'
 import { normalizeStoredTransactionDate } from './storedTransactionDate.js'
 
@@ -20,6 +20,7 @@ const TRANSACTION_KEYS = Object.freeze([
 ])
 const MAX_STUDENTS = 500
 const MAX_TRANSACTIONS = 20_000
+const MAX_CATEGORIES = 128
 const EMAIL_OR_URL_PATTERN = /(?:\bhttps?:\/\/|\bwww\.|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i
 const PHONE_PATTERN = /(?:\+?\d[\d\s().-]{7,}\d)/
 
@@ -96,33 +97,47 @@ export function createFirestoreQuestionEvidenceLoader({
       })
     })
 
-    const aliasesByStudentId = new Map(raw.students.map((student, index) => (
-      [student.id, `student-${String(index + 1).padStart(3, '0')}`]
-    )))
-    const mentionedStudentIds = resolveMentionedStudents(question, raw.students)
-    if (mentionedStudentIds.length > 1) {
-      fail('question-ambiguous', 'Ask about one student at a time and use the student’s full name.')
-    }
-    const mentionedAliases = mentionedStudentIds.map(id => aliasesByStudentId.get(id))
-    const sanitizedQuestion = sanitizeQuestion({
-      question,
-      students: raw.students,
-      aliasesByStudentId,
-      mentionedStudentIds,
-    })
-    assertNoRosterNameLeak(sanitizedQuestion, raw.students)
-
     const cutoff = generatedAt.getTime() - periodDays * 24 * 60 * 60 * 1000
     const periodTransactions = raw.transactions.filter(transaction => {
       const timestamp = Date.parse(transaction.date)
       return timestamp >= cutoff && timestamp <= generatedAt.getTime()
     })
+    const participants = buildParticipants(raw.students, periodTransactions)
+    const studentIdentities = buildStudentIdentities(raw.students, periodTransactions)
+    const aliasesByStudentId = new Map(participants.map((student, index) => (
+      [student.id, `student-${String(index + 1).padStart(3, '0')}`]
+    )))
+    const mentionedStudentIds = resolveMentionedStudents(question, studentIdentities)
+    if (mentionedStudentIds.length > 8) {
+      fail('question-ambiguous', 'Ask about no more than eight named students at a time.')
+    }
+    const mentionedAliases = mentionedStudentIds.map(id => aliasesByStudentId.get(id))
+    const sanitizedQuestion = sanitizeQuestion({
+      question,
+      students: studentIdentities,
+      aliasesByStudentId,
+      mentionedStudentIds,
+    })
+    assertNoRosterNameLeak(sanitizedQuestion, studentIdentities)
+
+    const categoryCatalog = buildCategoryCatalog(periodTransactions, studentIdentities)
+    const categoryAliasByKey = new Map(categoryCatalog.map(category => [category.key, category.alias]))
     const answerEvidence = Object.freeze({
+      participants: Object.freeze(participants.map(student => Object.freeze({
+        id: student.id,
+        alias: aliasesByStudentId.get(student.id),
+        name: student.name,
+      }))),
       students: Object.freeze(raw.students.map(student => Object.freeze({
         id: student.id,
         alias: aliasesByStudentId.get(student.id),
         name: student.name,
         balance: student.balance,
+        frozen: student.frozen,
+      }))),
+      categories: Object.freeze(categoryCatalog.map(category => Object.freeze({
+        alias: category.alias,
+        label: category.label,
       }))),
       transactions: Object.freeze(periodTransactions.map(transaction => Object.freeze({
         id: transaction.id,
@@ -130,30 +145,35 @@ export function createFirestoreQuestionEvidenceLoader({
         date: transaction.date,
         type: transaction.type,
         amount: transaction.amount,
-        category: normalizeDisplayCategory(transaction.category || transaction.reason),
+        categoryAlias: categoryAliasByKey.get(categoryKey(transaction.category)),
         status: transaction.status,
       }))),
       periodDays,
       timeZone,
     })
     const providerInput = Object.freeze({
-      schemaVersion: INSIGHT_QUESTION_SCHEMA_VERSION,
+      schemaVersion: INSIGHT_QUERY_PLAN_SCHEMA_VERSION,
       question: sanitizedQuestion,
       subjectAliases: Object.freeze(mentionedAliases),
+      categoryCatalog: Object.freeze(categoryCatalog.map(category => Object.freeze({
+        alias: category.alias,
+        label: category.label,
+        transactionTypes: category.transactionTypes,
+      }))),
       periodDays,
     })
     return Object.freeze({
       generatedAt: generatedAt.toISOString(),
       providerInput,
       answerEvidence,
-      allowedAliases: Object.freeze(mentionedAliases),
+      allowedAliases: Object.freeze({
+        studentAliases: Object.freeze(mentionedAliases),
+        categoryAliases: Object.freeze(categoryCatalog.map(category => category.alias)),
+      }),
       sensitiveValues: Object.freeze([
         Object.freeze({ kind: 'teacher-uid', value: teacher }),
         Object.freeze({ kind: 'classroom-id', value: classroom }),
-        ...raw.students.flatMap(student => [
-          Object.freeze({ kind: 'student-id', value: String(student.id) }),
-          Object.freeze({ kind: 'student-name', value: student.name }),
-        ]),
+        ...buildSensitiveStudentValues(raw.students, periodTransactions),
       ]),
       evidenceSignature: createHash('sha256').update(JSON.stringify({
         teacherUid: teacher,
@@ -168,12 +188,155 @@ export function createFirestoreQuestionEvidenceLoader({
   }
 }
 
+function buildParticipants(students, transactions) {
+  const currentById = new Map(students.map(student => [student.id, student]))
+  const historicalById = new Map()
+  for (const transaction of transactions) {
+    if (currentById.has(transaction.studentId) || !transaction.studentName.trim()) continue
+    const existing = historicalById.get(transaction.studentId)
+    if (
+      !existing ||
+      transaction.date > existing.date ||
+      (transaction.date === existing.date && transaction.id > existing.id)
+    ) {
+      historicalById.set(transaction.studentId, {
+        id: transaction.id,
+        date: transaction.date,
+        name: transaction.studentName.trim(),
+      })
+    }
+  }
+  const ids = new Set([
+    ...students.map(student => student.id),
+    ...transactions.map(transaction => transaction.studentId),
+  ])
+  if (ids.size > MAX_STUDENTS) {
+    fail('evidence-too-large', 'Classroom participant evidence exceeds the question read limit.')
+  }
+  return [...ids].sort((left, right) => left - right).map((id, index) => Object.freeze({
+    id,
+    name: currentById.get(id)?.name || historicalById.get(id)?.name ||
+      `Archived student ${String(index + 1).padStart(3, '0')}`,
+  }))
+}
+
+function buildStudentIdentities(students, transactions) {
+  const identities = new Map(students.map(student => [`${student.id}\u0000${student.name}`, {
+    id: student.id,
+    name: student.name,
+  }]))
+  for (const transaction of transactions) {
+    const name = transaction.studentName.trim()
+    if (name) identities.set(`${transaction.studentId}\u0000${name}`, {
+      id: transaction.studentId,
+      name,
+    })
+  }
+  if (identities.size > MAX_STUDENTS * 4) {
+    fail('evidence-too-large', 'Classroom identity evidence exceeds the question read limit.')
+  }
+  return [...identities.values()].sort((left, right) => (
+    left.id - right.id || left.name.localeCompare(right.name, 'en-US')
+  ))
+}
+
+function buildSensitiveStudentValues(students, transactions) {
+  const ids = new Set(students.map(student => String(student.id)))
+  const names = new Set(students.map(student => student.name))
+  for (const transaction of transactions) {
+    ids.add(String(transaction.studentId))
+    if (transaction.studentName) names.add(transaction.studentName)
+  }
+  if (ids.size > MAX_STUDENTS || names.size > MAX_STUDENTS * 2) {
+    fail('evidence-too-large', 'Classroom identity evidence exceeds the question read limit.')
+  }
+  return [
+    ...[...ids].sort().map(value => Object.freeze({ kind: 'student-id', value })),
+    ...[...names].sort((left, right) => left.localeCompare(right, 'en-US'))
+      .map(value => Object.freeze({ kind: 'student-name', value })),
+  ]
+}
+
+function buildCategoryCatalog(transactions, students) {
+  const byKey = new Map()
+  for (const transaction of transactions) {
+    const label = normalizeDisplayCategory(transaction.category)
+    const key = categoryKey(label)
+    const current = byKey.get(key) || { key, label, transactionTypes: new Set() }
+    current.transactionTypes.add(transaction.type)
+    byKey.set(key, current)
+  }
+  if (byKey.size > MAX_CATEGORIES) {
+    fail('evidence-too-large', 'Classroom evidence exceeds the category read limit.')
+  }
+  return [...byKey.values()]
+    .sort((left, right) => left.key.localeCompare(right.key, 'en-US'))
+    .map((category, index) => {
+      const aliasNumber = String(index + 1).padStart(3, '0')
+      return Object.freeze({
+        key: category.key,
+        alias: `category-${aliasNumber}`,
+        label: isProviderSafeCategoryLabel(category.label, students)
+          ? category.label
+          : neutralCategoryLabel(aliasNumber, students),
+        transactionTypes: Object.freeze([...category.transactionTypes].sort()),
+      })
+    })
+}
+
+function neutralCategoryLabel(aliasNumber, students) {
+  for (const prefix of ['Private category', 'Restricted label', 'Hidden entry', 'Opaque item']) {
+    const candidate = `${prefix} ${aliasNumber}`
+    if (isProviderSafeCategoryLabel(candidate, students)) return candidate
+  }
+  const encodedAlias = Number(aliasNumber).toString(2).replaceAll('0', '◇').replaceAll('1', '◆')
+  return `◆${encodedAlias}`
+}
+
+function isProviderSafeCategoryLabel(label, students) {
+  if (hasDisallowedControl(label) || EMAIL_OR_URL_PATTERN.test(label) || PHONE_PATTERN.test(label)) {
+    return false
+  }
+  try {
+    assertNoRosterNameLeak(label, students)
+    return true
+  } catch (error) {
+    if (error instanceof InsightQuestionEvidenceError && error.category === 'evidence-not-deidentified') {
+      return false
+    }
+    throw error
+  }
+}
+
+function hasDisallowedControl(value) {
+  return [...value].some(character => {
+    const codePoint = character.codePointAt(0)
+    return codePoint === 127 || codePoint < 32
+  })
+}
+
+function categoryKey(value) {
+  return normalizeDisplayCategory(value).normalize('NFKC').toLocaleLowerCase('en-US')
+}
+
 function resolveMentionedStudents(question, students) {
   const normalizedQuestion = normalize(question)
   const fullMatches = students.filter(student => (
     containsPhrase(normalizedQuestion, normalize(student.name))
   ))
-  if (fullMatches.length) return fullMatches.map(student => student.id)
+  if (fullMatches.length) {
+    const ownersByName = new Map()
+    for (const student of fullMatches) {
+      const name = normalize(student.name)
+      if (!ownersByName.has(name)) ownersByName.set(name, new Set())
+      ownersByName.get(name).add(student.id)
+    }
+    if ([...ownersByName.values()].some(owners => owners.size > 1)) {
+      fail('question-ambiguous', 'More than one student has that name.')
+    }
+    const matchedIds = [...new Set(fullMatches.map(student => student.id))]
+    return matchedIds
+  }
 
   const questionTokens = new Set(tokens(question))
   const tokenOwners = new Map()
@@ -270,7 +433,13 @@ function validateStudentSnapshot(snapshot) {
   if (snapshot.id !== String(id) || typeof value.balance !== 'number' || !Number.isFinite(value.balance)) {
     fail('evidence-malformed', 'A student record is malformed.')
   }
-  return Object.freeze({ id, name: boundedString(value.name, 1, 120, 'student name'), balance: value.balance })
+  if (typeof value.frozen !== 'boolean') fail('evidence-malformed', 'A student record is malformed.')
+  return Object.freeze({
+    id,
+    name: boundedString(value.name, 1, 120, 'student name'),
+    balance: value.balance,
+    frozen: value.frozen,
+  })
 }
 
 function validateTransactionSnapshot(snapshot, timeZone) {
@@ -298,6 +467,7 @@ function validateTransactionSnapshot(snapshot, timeZone) {
     amount: value.amount,
     category: boundedString(value.category, 0, 120, 'category'),
     reason: boundedString(value.reason, 0, 320, 'reason'),
+    studentName: boundedString(value.studentName, 0, 120, 'transaction student name'),
     status: value.status,
   })
 }

@@ -106,25 +106,67 @@ export function createVersion3GeminiEmulatorHandler({
   const questionProvider = Object.freeze({
     async interpret({ providerInput }) {
       const normalized = providerInput.question.toLocaleLowerCase('en-US')
-      const subjectAlias = providerInput.subjectAliases[0] || null
-      let intent = 'unsupported'
-      if (/categor/.test(normalized) && /(earn|add|gain)/.test(normalized)) {
-        intent = subjectAlias ? 'student-top-earning-category' : 'class-top-earning-category'
+      const subjectAliases = providerInput.subjectAliases
+      const category = providerInput.categoryCatalog.find(candidate => {
+        const label = candidate.label.toLocaleLowerCase('en-US')
+        return (/(restroom|bathroom)/.test(normalized) && /(restroom|bathroom)/.test(label)) ||
+          label.split(/[^a-z0-9]+/).filter(token => token.length >= 4).some(token => normalized.includes(token))
+      })
+      let plan = null
+      if (category && /(who|which student)/.test(normalized)) {
+        plan = queryPlan({
+          metric: /(money|amount|dollar)/.test(normalized) ? 'amount-total' : 'count',
+          categoryAlias: category.alias,
+          transactionType: 'Subtract',
+          groupBy: 'student',
+        })
+      } else if (/categor/.test(normalized) && /(earn|add|gain)/.test(normalized)) {
+        plan = queryPlan({ subjectAliases, transactionType: 'Add', groupBy: 'category' })
       } else if (/categor/.test(normalized) && /(spend|spent|los|subtract)/.test(normalized)) {
-        intent = subjectAlias ? 'student-top-spending-category' : 'class-top-spending-category'
+        plan = queryPlan({ subjectAliases, transactionType: 'Subtract', groupBy: 'category' })
       } else if (/(time|hour|day)/.test(normalized) && /(spend|spent|los|subtract)/.test(normalized)) {
-        intent = subjectAlias ? 'student-peak-spending-time' : 'class-peak-spending-time'
+        plan = queryPlan({ subjectAliases, transactionType: 'Subtract', groupBy: 'time-of-day' })
       } else if (/(time|hour|day)/.test(normalized) && /(earn|add|gain)/.test(normalized)) {
-        intent = subjectAlias ? 'student-peak-earning-time' : 'class-peak-earning-time'
-      } else if (/balance/.test(normalized) && subjectAlias) {
-        intent = 'student-current-balance'
+        plan = queryPlan({ subjectAliases, transactionType: 'Add', groupBy: 'time-of-day' })
+      } else if (/(how many students|student count|class size)/.test(normalized)) {
+        plan = {
+          dataset: 'students',
+          metric: 'count',
+          filters: {
+            subjectAliases: [],
+            categoryAlias: null,
+            transactionType: 'any',
+            status: 'any',
+            timeBucket: null,
+            studentState: /frozen/.test(normalized) ? 'frozen' : 'any',
+          },
+          groupBy: 'none',
+          order: 'highest',
+          limit: 1,
+        }
+      } else if (/balance/.test(normalized)) {
+        plan = {
+          dataset: 'students',
+          metric: /average|mean/.test(normalized) ? 'average-balance' : 'current-balance',
+          filters: {
+            subjectAliases,
+            categoryAlias: null,
+            transactionType: 'any',
+            status: 'any',
+            timeBucket: null,
+            studentState: /frozen/.test(normalized) ? 'frozen' : 'any',
+          },
+          groupBy: /average|mean/.test(normalized) ? 'none' : 'student',
+          order: /lowest/.test(normalized) ? 'lowest' : 'highest',
+          limit: subjectAliases.length ? 1 : 8,
+        }
       } else if (/pending/.test(normalized)) {
-        intent = 'pending-request-count'
+        plan = queryPlan({ metric: 'count', status: 'Pending', groupBy: 'none' })
       }
       return {
-        schemaVersion: 1,
-        intent,
-        subjectAlias: intent.startsWith('student-') ? subjectAlias : null,
+        schemaVersion: 2,
+        kind: plan ? 'query' : 'unsupported',
+        plan,
         usage: { inputTokens: 90, outputTokens: 18, thinkingTokens: 0 },
       }
     },
@@ -149,6 +191,24 @@ export function createVersion3GeminiEmulatorHandler({
     return request?.data?.kind === 'question'
       ? askQuestion(request)
       : analyzeInsights(request)
+  }
+}
+
+function queryPlan({
+  metric = 'amount-total',
+  subjectAliases = [],
+  categoryAlias = null,
+  transactionType = 'any',
+  status = 'Approved',
+  groupBy = 'none',
+} = {}) {
+  return {
+    dataset: 'transactions',
+    metric,
+    filters: { subjectAliases, categoryAlias, transactionType, status, timeBucket: null, studentState: 'any' },
+    groupBy,
+    order: 'highest',
+    limit: 1,
   }
 }
 

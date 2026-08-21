@@ -101,6 +101,35 @@ and keep Quick Insights and Deep Analysis as explicit teacher actions. Provider
 configuration, billing, Firebase environment selection, staging, and deployment
 remain separate authorization gates.
 
+## Grounded natural-question query engine
+
+The provider-backed teacher experience may include one plain-language question
+box, but it is not an open-ended chatbot and Gemini is not allowed to calculate
+or narrate a factual answer. The browser sends exactly `requestId`, `kind`,
+`periodDays`, `timeZone`, and the teacher's question. Functions resolves the
+active teacher and classroom, reads that tenant's bounded records, removes
+student identities from provider input, and sends only the sanitized question,
+up to eight opaque aliases for students named in the question, and a bounded
+category-label catalog.
+
+Gemini 3.6 Flash with minimal thinking may return only a versioned, read-only
+query plan. That plan can select the student or transaction dataset; choose a
+bounded count, total, average, net, or balance metric; filter by opaque student
+or category aliases, type, status, time bucket, or current frozen state; group
+by student, category, time of day, day of week, or week; and choose a bounded
+order and result limit. Functions validates every field and alias, calculates
+the result from server-owned evidence, handles ties, and returns only the
+calculated answer and short evidence lines.
+
+This supports natural questions such as who has the most restroom visits,
+which category a named student earns most in, when students lose the most
+money, how many requests are pending, current or average balances, class size,
+and frozen-account counts. A question is refused only when the bounded Morgan
+Bank records and operations genuinely cannot answer it. Raw transaction
+reasons, student names or IDs, tenant identifiers, balances, transaction rows,
+counts, and amounts never enter the provider request. The reviewed mixed-release
+guard for this contract is `gemini-3.6-flash-grounded-query-v1`.
+
 ## Verification for the first item
 
 Run, at minimum:
