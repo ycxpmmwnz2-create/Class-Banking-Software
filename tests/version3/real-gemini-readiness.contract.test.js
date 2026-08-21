@@ -53,7 +53,7 @@ test('live transport explicitly disables retries and keeps the dormant adapter p
   assert.match(transportSource, /retryOptions: Object\.freeze\(\{ attempts: 1 \}\)/)
   assert.match(transportSource, /timeout: 60_000/)
   assert.doesNotMatch(transportSource, /setTimeout|for\s*\(|while\s*\(/)
-  assert.match(liveRuntimeSource, /gemini-3\.5-flash-lite-live-v1/)
+  assert.match(liveRuntimeSource, /gemini-3\.6-flash-minimal-ai-insights-v2/)
 })
 
 test('historical readiness plan records the external cutover gates being implemented', () => {
@@ -73,8 +73,8 @@ test('deployment runbook records shared-codebase secret ordering without weakeni
   assert.match(deploymentRunbook, /does not authorize enabling/)
 })
 
-test('budget wording is truthful about the non-guaranteed combined target', () => {
-  assert.match(indexHtml, /Combined budget target/)
-  assert.match(indexHtml, /Not a guaranteed hard cap/)
-  assert.doesNotMatch(indexHtml, /Monthly maximum/)
+test('teacher UI is model-neutral and omits internal budget and provider details', () => {
+  assert.match(indexHtml, /<h2>AI Insights<\/h2>/)
+  assert.doesNotMatch(indexHtml, /Gemini allowance|Firebase allowance|Combined budget target|API cost/)
+  assert.doesNotMatch(indexHtml, /gemini-3\.|Flash-Lite|thinkingLevel/)
 })

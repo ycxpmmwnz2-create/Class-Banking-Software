@@ -1,5 +1,11 @@
 # Morgan Bank Version 3 — Real Gemini Readiness Plan
 
+> Historical checkpoint: this document records the original dormant
+> Flash-Lite readiness boundary. The later AI Insights experience replaces its
+> model, thinking ceiling, product wording, and question behavior through
+> `AI_INSIGHTS_EXPERIENCE_PLAN.md`; the privacy, one-attempt, cost-ledger, and
+> external-authorization gates remain in force.
+
 ## Readiness verdict
 
 The reviewed provider-independent and emulator-only layers are ready for a

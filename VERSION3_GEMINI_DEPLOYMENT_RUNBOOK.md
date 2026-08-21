@@ -6,6 +6,11 @@ This runbook records the deployment coupling introduced by the protected live
 Gemini callable. It does not authorize a secret change, Functions deployment,
 feature-gate activation, provider call, or production operation.
 
+The reviewed AI Insights experience requires release ID
+`gemini-3.6-flash-minimal-ai-insights-v2`. A deployment using another release
+ID stays fail-closed. Changing the deployed runtime flag or release ID remains
+a separate external-state authorization after code review.
+
 ## Shared-codebase secret requirement
 
 `functions/index.js` declares `GEMINI_API_KEY` with `defineSecret` and binds it

@@ -48,14 +48,15 @@ async function signIn(page, tenant) {
   await expect(page.locator(".activity-title").filter({ hasText: tenant.studentName }).first())
     .toBeVisible();
   await page.evaluate(() => window.setScreen("insights"));
-  await expect(page.getByTestId("provider-insights-controls")).toBeVisible();
+  await expect(page.getByTestId("provider-insights-action")).toBeVisible();
+  await expect(page.getByTestId("provider-question-submit")).toBeVisible();
   return uid;
 }
 
 async function startHeldQuickRequest(page) {
   const before = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.readyResponseCount());
   await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.holdNextResponse());
-  await page.getByTestId("provider-insights-quick").click();
+  await page.getByTestId("provider-insights-action").click();
   await expect(page.getByTestId("provider-insights-loading")).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__VERSION3_GEMINI_TEST__.readyResponseCount()), {
     timeout: 25_000,
@@ -108,16 +109,23 @@ test("authenticated click keeps browser storage unchanged, blocks duplicates, sa
   expect(await browserStorageSnapshot(page)).toEqual(storageBefore);
 });
 
-test("Deep uses the selected period and the exact three-field request", async ({ page }) => {
+test("Get More Insights uses the selected period and the same exact three-field boundary", async ({ page }) => {
   await openApp(page);
   await signIn(page, TENANT_A);
   await page.evaluate(() => window.setInsightsPeriod(90));
-  await page.getByTestId("provider-insights-deep").click();
+  await expect(page.getByTestId("provider-insights-action")).toHaveText("Get AI Insights");
+  await page.getByTestId("provider-insights-action").click();
+  await expect(page.getByTestId("provider-insights-report")).toContainText("last 90 days");
+  await expect(page.getByTestId("provider-insights-action")).toHaveText("Get More Insights");
+  await page.getByTestId("provider-insights-action").click();
   await expect(page.getByTestId("provider-insights-report")).toContainText("last 90 days");
   const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
-  expect(calls).toHaveLength(1);
-  expect(calls[0]).toMatchObject({ mode: "deep", periodDays: 90 });
-  expect(Object.keys(calls[0]).sort()).toEqual(["mode", "periodDays", "requestId"]);
+  expect(calls).toHaveLength(2);
+  expect(calls[0]).toMatchObject({ mode: "quick", periodDays: 90 });
+  expect(calls[1]).toMatchObject({ mode: "deep", periodDays: 90 });
+  for (const call of calls) {
+    expect(Object.keys(call).sort()).toEqual(["mode", "periodDays", "requestId"]);
+  }
 });
 
 test("logout makes a late AI result disappear", async ({ page }) => {
@@ -160,7 +168,7 @@ test("switching teachers discards the old result and the new teacher sees only t
   await releaseHeldResponses(page);
   await expect(page.getByTestId("provider-insights-report")).toHaveCount(0);
 
-  await page.getByTestId("provider-insights-quick").click();
+  await page.getByTestId("provider-insights-action").click();
   await expect(page.getByTestId("provider-insights-report")).toContainText(TENANT_B.studentName);
   await expect(page.getByTestId("provider-insights-report")).not.toContainText(TENANT_B.foreignName);
 });
@@ -170,7 +178,7 @@ test("a newer request wins and an older late result cannot replace it", async ({
   await signIn(page, TENANT_A);
   await startHeldQuickRequest(page);
   await page.evaluate(() => window.setInsightsPeriod(7));
-  await page.getByTestId("provider-insights-quick").click();
+  await page.getByTestId("provider-insights-action").click();
   await expect(page.getByTestId("provider-insights-report")).toContainText("last 7 days");
   const beforeRelease = await page.getByTestId("provider-insights-report").innerText();
   await releaseHeldResponses(page);
@@ -182,10 +190,64 @@ test("a malformed response is rejected with bounded text and no raw detail", asy
   await openApp(page);
   await signIn(page, TENANT_A);
   await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.corruptNextResponse());
-  await page.getByTestId("provider-insights-quick").click();
+  await page.getByTestId("provider-insights-action").click();
   await expect(page.getByTestId("provider-insights-error")).toContainText(
     "AI test insights could not be loaded.",
   );
   await expect(page.getByTestId("provider-insights-error")).not.toContainText("unexpected");
   await expect(page.getByTestId("provider-insights-error")).not.toContainText("invalid-response");
+});
+
+test("opening AI Insights makes no request until the teacher clicks", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  expect(await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.callCount())).toBe(0);
+  await page.waitForTimeout(250);
+  expect(await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.callCount())).toBe(0);
+});
+
+test("teacher question uses the exact five-field request and renders a server-calculated answer", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  const storageBefore = await browserStorageSnapshot(page);
+  await page.locator("#providerQuestionInput").fill(
+    `What category is ${TENANT_A.studentName} earning the most money in?`,
+  );
+  await page.getByTestId("provider-question-submit").click();
+  await expect(page.getByTestId("provider-question-result")).toContainText(TENANT_A.studentName);
+  await expect(page.getByTestId("provider-question-result")).toContainText("Class job");
+  await expect(page.getByTestId("provider-question-result")).toContainText("$12.00");
+  await expect(page.getByTestId("provider-question-result")).not.toContainText(TENANT_A.foreignName);
+
+  const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
+  expect(calls).toHaveLength(1);
+  expect(Object.keys(calls[0]).sort()).toEqual([
+    "kind",
+    "periodDays",
+    "question",
+    "requestId",
+    "timeZone",
+  ]);
+  expect(calls[0]).toMatchObject({ kind: "question", periodDays: 30 });
+  expect(calls[0].question).toContain(TENANT_A.studentName);
+  expect(await browserStorageSnapshot(page)).toEqual(storageBefore);
+});
+
+test("changing the period discards a late question answer", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  await page.locator("#providerQuestionInput").fill(
+    `What category is ${TENANT_A.studentName} earning the most money in?`,
+  );
+  const before = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.readyResponseCount());
+  await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.holdNextResponse());
+  await page.getByTestId("provider-question-submit").click();
+  await expect(page.getByTestId("provider-question-loading")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__VERSION3_GEMINI_TEST__.readyResponseCount()), {
+    timeout: 25_000,
+  }).toBe(before + 1);
+  await page.evaluate(() => window.setInsightsPeriod(7));
+  await releaseHeldResponses(page);
+  await expect(page.getByTestId("provider-question-result")).toHaveCount(0);
+  await expect(page.getByText("7 days", { exact: true })).toHaveAttribute("aria-pressed", "true");
 });

@@ -393,27 +393,6 @@
       white-space: nowrap;
     }
 
-    .insights-budget-row {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-    }
-
-    .insights-budget-item {
-      min-width: 0;
-      padding: 14px 16px;
-      border-radius: 16px;
-      background: rgba(239, 250, 248, 0.88);
-      border: 1px solid rgba(169, 211, 207, 0.72);
-    }
-
-    .insights-budget-item strong {
-      display: block;
-      margin-top: 4px;
-      font-size: 22px;
-      letter-spacing: -0.03em;
-    }
-
     .insights-report-header {
       display: flex;
       align-items: flex-start;
@@ -433,19 +412,35 @@
       line-height: 1.4;
     }
 
-    .insights-local-badge {
-      flex: 0 0 auto;
-      padding: 7px 10px;
-      border-radius: 999px;
-      background: rgba(94, 199, 194, 0.16);
-      color: var(--teal-dark);
-      font-size: 12px;
-      font-weight: 900;
-    }
-
     .insights-list {
       display: grid;
       gap: 10px;
+    }
+
+    .insights-question-card textarea {
+      min-height: 96px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .insights-question-actions {
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .insights-question-actions button {
+      margin: 0;
+    }
+
+    .insights-question-asked {
+      margin-top: 6px;
+      color: var(--muted);
+      font-weight: 760;
+      line-height: 1.45;
+    }
+
+    .insights-question-evidence {
+      display: grid;
+      gap: 5px;
     }
 
     .insight-observation {
@@ -1058,10 +1053,10 @@
         flex-direction: column;
       }
       .insights-dashboard-row > button { align-self: flex-start; }
-      .insights-budget-row { grid-template-columns: 1fr; }
       .insights-actions { display: grid; grid-template-columns: 1fr; }
       .insights-actions button { width: 100%; }
-      .insights-local-badge { align-self: flex-start; }
+      .insights-question-actions { display: grid; }
+      .insights-question-actions button { width: 100%; }
       .student-login-info-row { align-items: stretch; }
       .student-login-info-code {
         width: 100%;
@@ -1129,8 +1124,8 @@ import { sortStudentsByName } from "./src/phase2b/studentDisplay.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { MAX_RENT_AMOUNT, projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 import { sanitizeLegacyBackup } from "./src/legacy/backupImport.js";
-import { buildClassInsightsReport, buildInsightsDataSignature, INSIGHTS_BUDGETS, INSIGHTS_PERIODS } from "./src/insights/classInsights.js";
-import { VERSION3_GEMINI_BROWSER_PROJECT_ID, createProviderInsightsBrowserClient, mapProviderInsightsError, resolveLiveProviderInsightsBrowserActivation, resolveProviderInsightsBrowserActivation } from "./src/insights/providerInsightsClient.js";
+import { buildInsightsDataSignature } from "./src/insights/classInsights.js";
+import { PROVIDER_INSIGHTS_PERIODS, VERSION3_GEMINI_BROWSER_PROJECT_ID, createProviderInsightsBrowserClient, mapProviderInsightsError, resolveLiveProviderInsightsBrowserActivation, resolveProviderInsightsBrowserActivation } from "./src/insights/providerInsightsClient.js";
 
 const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLED === "true";
     const VERSION3_GEMINI_BROWSER_BUILD_ENABLED =
@@ -1201,9 +1196,6 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let teacherProfileStudentId = null;
     let message = "";
     let insightsPeriodDays = 30;
-    let insightsMode = "quick";
-    let insightsReport = null;
-    let insightsDataSignature = null;
     let providerInsightsEnabled = false;
     let providerInsightsClient = null;
     let providerInsightsEnvironment = "disabled";
@@ -1215,6 +1207,15 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let providerInsightsDataSignature = null;
     let providerInsightsCapturedIdentity = null;
     let providerInsightsRequestVersion = 0;
+    let providerQuestionDraft = "";
+    let providerQuestionSubmitted = "";
+    let providerQuestionResult = null;
+    let providerQuestionLoading = false;
+    let providerQuestionError = "";
+    let providerQuestionRetryRequest = null;
+    let providerQuestionDataSignature = null;
+    let providerQuestionCapturedIdentity = null;
+    let providerQuestionRequestVersion = 0;
     let studentClassroomCodeDraft = "";
     let studentLoginIdDraft = "";
     // The validated signed-out login locator for this browser, or null. It holds
@@ -1776,31 +1777,11 @@ function toggleStudentDropdown() {
     function setInsightsPeriod(days) {
       if (!requireTeacher()) return;
       const nextDays = Number(days);
-      if (!INSIGHTS_PERIODS.includes(nextDays)) return;
+      if (!PROVIDER_INSIGHTS_PERIODS.includes(nextDays)) return;
       if (nextDays !== insightsPeriodDays) {
         insightsPeriodDays = nextDays;
-        insightsReport = null;
-        insightsDataSignature = null;
         resetProviderInsightsState();
       }
-      screen = "insights";
-      render();
-    }
-
-    function generateLocalInsights(mode) {
-      if (!requireTeacher()) return;
-      resetProviderInsightsState();
-      insightsMode = mode === "deep" ? "deep" : "quick";
-      const currentDataSignature = currentInsightsDataSignature();
-      const nextReport = buildClassInsightsReport({
-        students: data.students,
-        transactions: data.transactions,
-        days: insightsPeriodDays,
-        mode: insightsMode,
-        now: new Date(),
-      });
-      insightsReport = nextReport;
-      insightsDataSignature = currentDataSignature;
       screen = "insights";
       render();
     }
@@ -1812,13 +1793,6 @@ function toggleStudentDropdown() {
       });
     }
 
-    function discardStaleInsightsReport() {
-      if (!insightsReport) return;
-      if (insightsDataSignature === currentInsightsDataSignature()) return;
-      insightsReport = null;
-      insightsDataSignature = null;
-    }
-
     function resetProviderInsightsState() {
       providerInsightsRequestVersion += 1;
       providerInsightsMode = "quick";
@@ -1828,6 +1802,15 @@ function toggleStudentDropdown() {
       providerInsightsRetryRequest = null;
       providerInsightsDataSignature = null;
       providerInsightsCapturedIdentity = null;
+      providerQuestionRequestVersion += 1;
+      providerQuestionDraft = "";
+      providerQuestionSubmitted = "";
+      providerQuestionResult = null;
+      providerQuestionLoading = false;
+      providerQuestionError = "";
+      providerQuestionRetryRequest = null;
+      providerQuestionDataSignature = null;
+      providerQuestionCapturedIdentity = null;
     }
 
     function providerInsightsContextIsCurrent({
@@ -1849,18 +1832,27 @@ function toggleStudentDropdown() {
     }
 
     function discardStaleProviderInsights() {
-      if (!providerInsightsReport && !providerInsightsLoading && !providerInsightsError) return;
-      if (
+      const hasInsightsState = providerInsightsReport || providerInsightsLoading || providerInsightsError;
+      const hasQuestionState = providerQuestionResult || providerQuestionLoading || providerQuestionError;
+      if (!hasInsightsState && !hasQuestionState) return;
+      const dataSignature = currentInsightsDataSignature();
+      const insightsCurrent = !hasInsightsState || (
         providerInsightsCapturedIdentity
-        && providerInsightsDataSignature === currentInsightsDataSignature()
+        && providerInsightsDataSignature === dataSignature
         && v2TenantSession.validateCapturedIdentity(providerInsightsCapturedIdentity)
-      ) return;
+      );
+      const questionCurrent = !hasQuestionState || (
+        providerQuestionCapturedIdentity
+        && providerQuestionDataSignature === dataSignature
+        && v2TenantSession.validateCapturedIdentity(providerQuestionCapturedIdentity)
+      );
+      if (insightsCurrent && questionCurrent) return;
       resetProviderInsightsState();
     }
 
     async function generateProviderInsights(mode, retry = false) {
       if (!providerInsightsEnabled || !providerInsightsClient || !requireTeacher()) return;
-      if (providerInsightsLoading) return;
+      if (providerInsightsLoading || providerQuestionLoading) return;
       const acceptedMode = mode === "deep" ? "deep" : "quick";
       const periodDays = insightsPeriodDays;
       const dataSignature = currentInsightsDataSignature();
@@ -1949,6 +1941,120 @@ function toggleStudentDropdown() {
       void generateProviderInsights(mode, true);
     }
 
+    function setProviderQuestionDraft(value) {
+      if (!requireTeacher()) return;
+      providerQuestionDraft = String(value).slice(0, 500);
+    }
+
+    function providerQuestionContextIsCurrent({
+      capturedIdentity,
+      dataSignature,
+      periodDays,
+      requestVersion,
+    }) {
+      return providerInsightsEnabled
+        && IS_MULTI_TEACHER_V2_ENABLED
+        && isTeacher
+        && providerQuestionRequestVersion === requestVersion
+        && insightsPeriodDays === periodDays
+        && providerQuestionDataSignature === dataSignature
+        && v2TenantSession.validateCapturedIdentity(capturedIdentity)
+        && currentInsightsDataSignature() === dataSignature;
+    }
+
+    async function askProviderQuestion(retry = false) {
+      if (!providerInsightsEnabled || !providerInsightsClient || !requireTeacher()) return;
+      if (providerInsightsLoading || providerQuestionLoading) return;
+      const periodDays = insightsPeriodDays;
+      const dataSignature = currentInsightsDataSignature();
+      const capturedIdentity = v2TenantSession.captureIdentity();
+
+      let request;
+      if (retry) {
+        const retryState = providerQuestionRetryRequest;
+        if (
+          !retryState
+          || retryState.periodDays !== periodDays
+          || retryState.dataSignature !== dataSignature
+          || !v2TenantSession.validateCapturedIdentity(retryState.capturedIdentity)
+        ) {
+          resetProviderInsightsState();
+          render();
+          return;
+        }
+        request = retryState.request;
+      } else {
+        const questionElement = document.getElementById("providerQuestionInput");
+        const question = String(questionElement?.value ?? providerQuestionDraft).trim();
+        if (question.length < 3 || question.length > 500) {
+          providerQuestionError = "Type a question between 3 and 500 characters.";
+          render();
+          return;
+        }
+        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        request = {
+          requestId: providerInsightsClient.newRequestId(),
+          kind: "question",
+          periodDays,
+          timeZone,
+          question,
+        };
+      }
+
+      providerQuestionRequestVersion += 1;
+      const requestVersion = providerQuestionRequestVersion;
+      providerQuestionSubmitted = request.question;
+      providerQuestionDraft = request.question;
+      providerQuestionResult = null;
+      providerQuestionLoading = true;
+      providerQuestionError = "";
+      providerQuestionRetryRequest = null;
+      providerQuestionDataSignature = dataSignature;
+      providerQuestionCapturedIdentity = capturedIdentity;
+      screen = "insights";
+      render();
+
+      try {
+        const result = await providerInsightsClient.ask(request);
+        if (!providerQuestionContextIsCurrent({
+          capturedIdentity,
+          dataSignature,
+          periodDays,
+          requestVersion,
+        })) return;
+        providerQuestionResult = result;
+      } catch (error) {
+        if (!providerQuestionContextIsCurrent({
+          capturedIdentity,
+          dataSignature,
+          periodDays,
+          requestVersion,
+        })) return;
+        const safeError = mapProviderInsightsError(error, {
+          testMode: providerInsightsEnvironment === "emulator",
+        });
+        providerQuestionError = safeError.message;
+        if (safeError.ambiguous) {
+          providerQuestionRetryRequest = {
+            request,
+            periodDays,
+            dataSignature,
+            capturedIdentity,
+          };
+        }
+      } finally {
+        if (providerQuestionRequestVersion === requestVersion) {
+          providerQuestionLoading = false;
+          render();
+        }
+      }
+    }
+
+    function retryProviderQuestion() {
+      if (!providerQuestionRetryRequest) return;
+      void askProviderQuestion(true);
+    }
+
     function changeProviderInsightsLocalDataForTest() {
       if (!providerInsightsEnabled || !requireTeacher() || data.students.length < 1) return;
       data = {
@@ -1966,16 +2072,6 @@ function toggleStudentDropdown() {
       return report.orderedObservationIds.map(id => byId.get(id));
     }
 
-    function providerGroupHtml(group, report) {
-      const byId = new Map(report.observations.map(observation => [observation.id, observation]));
-      const titles = group.observationIds.map(id => byId.get(id)?.title).filter(Boolean);
-      return `
-        <div class="insight-evidence">
-          <strong>${escapeHtml(group.label)}</strong>: ${titles.map(escapeHtml).join(" · ")}
-        </div>
-      `;
-    }
-
     function insightsObservationHtml(observation) {
       return `
         <article class="insight-observation" data-priority="${escapeHtml(observation.priority)}">
@@ -1990,15 +2086,6 @@ function toggleStudentDropdown() {
     function formattedInsightsGeneratedAt(value) {
       const date = new Date(value);
       return Number.isFinite(date.getTime()) ? date.toLocaleString() : "Just now";
-    }
-
-    function formattedInsightsCurrency(value) {
-      return Number(value).toLocaleString("en-US", {
-        style: "currency",
-        currency: "USD",
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      });
     }
 
     let profileLoginIdStatus = "Checking...";
@@ -4001,7 +4088,6 @@ link.click();
       if (screen !== "studentProfile" || !isTeacher) {
         clearTemporaryProfileStudentPin();
       }
-      discardStaleInsightsReport();
       discardStaleProviderInsights();
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         const state = v2TenantSession.getState();
@@ -4231,14 +4317,14 @@ link.click();
             <div class="insights-dashboard-row">
               <div class="insights-dashboard-copy">
                 <span class="insights-eyebrow">Insights</span>
-                <h2>${insightsReport
-                  ? escapeHtml(insightsReport.observations[0]?.title || "Your latest analysis is ready")
+                <h2>${providerInsightsReport
+                  ? escapeHtml(orderedProviderObservations(providerInsightsReport)[0]?.title || "Your latest AI insights are ready")
                   : "See what changed without crowding the dashboard"}</h2>
-                <p>${insightsReport
-                  ? `${escapeHtml(insightsReport.observations[0]?.summary || "Open Insights to review the latest local analysis.")} · ${insightsReport.totalObservationCount} ${insightsReport.totalObservationCount === 1 ? "observation" : "observations"} available · Generated ${escapeHtml(formattedInsightsGeneratedAt(insightsReport.generatedAt))}.`
-                  : "Open one calm, focused view for balance anomalies, timing patterns, and classwide changes."}</p>
+                <p>${providerInsightsReport
+                  ? `${escapeHtml(orderedProviderObservations(providerInsightsReport)[0]?.summary || "Open AI Insights to review the latest analysis.")} · ${providerInsightsReport.observations.length} ${providerInsightsReport.observations.length === 1 ? "insight" : "insights"} available · Generated ${escapeHtml(formattedInsightsGeneratedAt(providerInsightsReport.generatedAt))}.`
+                  : "Open one calm, focused view for meaningful classroom patterns and questions about your data."}</p>
               </div>
-              <button class="primary" onclick="setScreen('insights')">${insightsReport ? "View Insights" : "Open Insights"}</button>
+              <button class="primary" onclick="setScreen('insights')">${providerInsightsReport ? "View AI Insights" : "Open AI Insights"}</button>
             </div>
           </div>
 
@@ -4353,23 +4439,22 @@ ${transactionTarget !== "whole" ? `
       }
 
       if (screen === "insights" && isTeacher) {
-        const reportLabel = insightsReport?.mode === "deep" ? "Deep Analysis" : "Quick Insights";
-        const providerIsEmulator = providerInsightsEnvironment === "emulator";
-        const providerReportLabel = providerInsightsReport?.mode === "deep"
-          ? (providerIsEmulator ? "AI Test Deep Analysis" : "Gemini Deep Analysis")
-          : (providerIsEmulator ? "AI Test Quick Insights" : "Gemini Quick Insights");
+        const nextInsightsMode = providerInsightsReport?.mode === "quick" ? "deep" : "quick";
+        const nextInsightsLabel = providerInsightsReport?.mode === "quick"
+          ? "Get More Insights"
+          : (providerInsightsReport ? "Refresh AI Insights" : "Get AI Insights");
         html += `
           <div class="insights-shell">
             <section class="card insights-intro">
-              <span class="insights-eyebrow">Morgan Bank Version 3</span>
-              <h2>Insights</h2>
-              <p>Notice meaningful balance changes, request patterns, and classroom timing without turning the page into a wall of data.</p>
+              <span class="insights-eyebrow">Morgan Bank</span>
+              <h2>AI Insights</h2>
+              <p>Find meaningful classroom patterns and ask clear questions about your Morgan Bank data.</p>
 
               <div class="insights-controls no-print">
                 <div>
                   <span class="insights-eyebrow" style="margin-bottom: 8px;">Time period</span>
                   <div class="insights-periods" role="group" aria-label="Insights time period">
-                    ${INSIGHTS_PERIODS.map(days => `
+                    ${PROVIDER_INSIGHTS_PERIODS.map(days => `
                       <button
                         type="button"
                         class="${insightsPeriodDays === days ? "active" : ""}"
@@ -4381,71 +4466,27 @@ ${transactionTarget !== "whole" ? `
                 <div class="insights-actions">
                   <button
                     type="button"
-                    class="${insightsReport?.mode === "quick" ? "primary" : ""}"
-                    onclick="generateLocalInsights('quick')">Quick Insights</button>
-                  <button
-                    type="button"
-                    class="${insightsReport?.mode === "deep" ? "primary" : ""}"
-                    onclick="generateLocalInsights('deep')">Deep Analysis</button>
+                    data-testid="provider-insights-action"
+                    class="primary"
+                    onclick="generateProviderInsights('${nextInsightsMode}')"
+                    ${!providerInsightsEnabled || providerInsightsLoading || providerQuestionLoading ? "disabled" : ""}>${escapeHtml(nextInsightsLabel)}</button>
                 </div>
               </div>
-              <p class="small-note">Analysis runs locally · No additional Gemini or Firebase call · $0.00 API cost</p>
-              ${providerInsightsEnabled ? `
-                <div class="insights-controls no-print" data-testid="provider-insights-controls" style="margin-top: 16px;">
-                  <div>
-                    <span class="insights-eyebrow">${providerIsEmulator ? "Emulator-only AI test" : "Gemini-assisted Insights"}</span>
-                    <p class="small-note" style="margin-bottom: 0;">${providerIsEmulator
-                      ? "Fake classroom data and a fake AI provider only. Nothing is deployed."
-                      : "Uses server-deidentified classroom patterns. Student names, IDs, login information, and PINs are never sent to Gemini."}</p>
-                  </div>
-                  <div class="insights-actions">
-                    <button
-                      type="button"
-                      data-testid="provider-insights-quick"
-                      class="${providerInsightsReport?.mode === "quick" ? "primary" : ""}"
-                      onclick="generateProviderInsights('quick')"
-                      ${providerInsightsLoading ? "disabled" : ""}>${providerIsEmulator ? "AI Test Quick" : "Gemini Quick"}</button>
-                    <button
-                      type="button"
-                      data-testid="provider-insights-deep"
-                      class="${providerInsightsReport?.mode === "deep" ? "primary" : ""}"
-                      onclick="generateProviderInsights('deep')"
-                      ${providerInsightsLoading ? "disabled" : ""}>${providerIsEmulator ? "AI Test Deep" : "Gemini Deep"}</button>
-                  </div>
-                </div>
+              ${!providerInsightsEnabled ? `
+                <p class="small-note" role="status">AI Insights are currently unavailable for this classroom.</p>
               ` : ""}
-            </section>
-
-            <section class="card" aria-label="Monthly technology allowances">
-              <div class="insights-budget-row">
-                <div class="insights-budget-item">
-                  <span class="insights-eyebrow">Gemini allowance</span>
-                  <strong>$${INSIGHTS_BUDGETS.geminiMonthlyUsd.toFixed(2)}</strong>
-                  <div class="small-note">${providerIsEmulator ? "$0.00 used by this local foundation" : "Protected by the server-side monthly allowance ledger"}</div>
-                </div>
-                <div class="insights-budget-item">
-                  <span class="insights-eyebrow">Firebase allowance</span>
-                  <strong>$${INSIGHTS_BUDGETS.firebaseMonthlyUsd.toFixed(2)}</strong>
-                  <div class="small-note">Kept separate from Gemini</div>
-                </div>
-                <div class="insights-budget-item">
-                  <span class="insights-eyebrow">Combined budget target</span>
-                  <strong>$${INSIGHTS_BUDGETS.combinedMonthlyUsd.toFixed(2)}</strong>
-                  <div class="small-note">Planning target · Not a guaranteed hard cap</div>
-                </div>
-              </div>
             </section>
 
             ${providerInsightsEnabled && providerInsightsLoading ? `
               <section class="card" aria-live="polite" data-testid="provider-insights-loading">
-                <span class="insights-eyebrow">${providerIsEmulator ? "AI test" : "Gemini-assisted analysis"}</span>
+                <span class="insights-eyebrow">AI Insights</span>
                 <h2 style="margin-top: 6px;">Checking the classroom patterns…</h2>
               </section>
             ` : ""}
 
             ${providerInsightsEnabled && providerInsightsError ? `
               <section class="card" role="alert" data-testid="provider-insights-error">
-                <span class="insights-eyebrow">${providerIsEmulator ? "AI test unavailable" : "Gemini-assisted analysis unavailable"}</span>
+                <span class="insights-eyebrow">AI Insights unavailable</span>
                 <p>${escapeHtml(providerInsightsError)}</p>
                 ${providerInsightsRetryRequest ? `
                   <button type="button" data-testid="provider-insights-retry" onclick="retryProviderInsights()">Retry same request</button>
@@ -4457,67 +4498,81 @@ ${transactionTarget !== "whole" ? `
               <section class="card" aria-live="polite" data-testid="provider-insights-report">
                 <div class="insights-report-header">
                   <div>
-                    <span class="insights-eyebrow">${escapeHtml(providerReportLabel)}</span>
-                    <h2>${providerInsightsReport.observations.length} ${providerInsightsReport.observations.length === 1 ? "observation" : "observations"} from the last ${providerInsightsReport.periodDays} days</h2>
+                    <span class="insights-eyebrow">AI Insights</span>
+                    <h2>${providerInsightsReport.observations.length} ${providerInsightsReport.observations.length === 1 ? "insight" : "insights"} from the last ${providerInsightsReport.periodDays} days</h2>
                     <div class="insights-report-meta">
                       Generated ${escapeHtml(formattedInsightsGeneratedAt(providerInsightsReport.generatedAt))}
-                      · ${providerIsEmulator ? "Fake-provider test cost" : "Gemini API cost"} $${(providerInsightsReport.usage.costMicroUsd / 1_000_000).toFixed(6)}
                     </div>
                   </div>
-                  <span class="insights-local-badge">${providerIsEmulator ? "Emulator AI test" : "Gemini assisted"}</span>
                 </div>
                 <div class="insights-list">
                   ${orderedProviderObservations(providerInsightsReport).map(insightsObservationHtml).join("")}
                 </div>
-                ${providerInsightsReport.groups.length ? `
-                  <div data-testid="provider-insights-groups" style="margin-top: 14px;">
-                    <span class="insights-eyebrow">Suggested order</span>
-                    ${providerInsightsReport.groups.map(group => providerGroupHtml(group, providerInsightsReport)).join("")}
-                  </div>
-                ` : ""}
-                ${providerInsightsReport.teacherQuestions.length ? `
-                  <div data-testid="provider-insights-questions" style="margin-top: 14px;">
-                    <span class="insights-eyebrow">Questions for the teacher</span>
-                    ${providerInsightsReport.teacherQuestions.map(question => `
-                      <div class="insight-evidence">${escapeHtml(question.text)}</div>
-                    `).join("")}
-                  </div>
+              </section>
+            ` : ""}
+
+            ${!providerInsightsReport && !providerInsightsLoading && !providerInsightsError ? `
+              <section class="card">
+                <span class="insights-eyebrow">Ready when you are</span>
+                <h2 style="margin-top: 6px;">Get a focused look at your classroom data</h2>
+                <p style="margin: 0; max-width: 680px; color: var(--muted); font-weight: 720; line-height: 1.5;">
+                  Choose a time period, then get the most useful AI insights. You can ask for more after the first results.
+                </p>
+              </section>
+            ` : ""}
+
+            <section class="card insights-question-card" data-testid="provider-question-card">
+              <span class="insights-eyebrow">Ask Morgan Bank</span>
+              <h2 style="margin: 6px 0 8px;">Ask a question about your class data</h2>
+              <p class="small-note">Morgan Bank calculates and verifies the answer from this classroom’s records for the selected time period.</p>
+              <label for="providerQuestionInput">Your question</label>
+              <textarea
+                id="providerQuestionInput"
+                maxlength="500"
+                oninput="setProviderQuestionDraft(this.value)"
+                placeholder="Example: What category is GianMarco earning the most money in?">${escapeHtml(providerQuestionDraft)}</textarea>
+              <div class="insights-question-actions no-print">
+                <button
+                  type="button"
+                  class="primary"
+                  data-testid="provider-question-submit"
+                  onclick="askProviderQuestion()"
+                  ${!providerInsightsEnabled || providerInsightsLoading || providerQuestionLoading ? "disabled" : ""}>Ask AI Insights</button>
+              </div>
+            </section>
+
+            ${providerQuestionLoading ? `
+              <section class="card" aria-live="polite" data-testid="provider-question-loading">
+                <span class="insights-eyebrow">AI Insights</span>
+                <h2 style="margin-top: 6px;">Checking the classroom records…</h2>
+              </section>
+            ` : ""}
+
+            ${providerQuestionError ? `
+              <section class="card" role="alert" data-testid="provider-question-error">
+                <span class="insights-eyebrow">Could not answer that question</span>
+                <p>${escapeHtml(providerQuestionError)}</p>
+                ${providerQuestionRetryRequest ? `
+                  <button type="button" data-testid="provider-question-retry" onclick="retryProviderQuestion()">Retry same question</button>
                 ` : ""}
               </section>
             ` : ""}
 
-            ${insightsReport ? `
-              <section class="card" aria-live="polite">
-                <div class="insights-report-header">
-                  <div>
-                    <span class="insights-eyebrow">${escapeHtml(reportLabel)}</span>
-                    <h2>${insightsReport.totalObservationCount} ${insightsReport.totalObservationCount === 1 ? "observation" : "observations"} from the last ${insightsReport.days} days</h2>
-                    <div class="insights-report-meta">
-                      Generated ${escapeHtml(formattedInsightsGeneratedAt(insightsReport.generatedAt))}
-                      · ${insightsReport.metrics.transactionCount} valid ${insightsReport.metrics.transactionCount === 1 ? "transaction" : "transactions"}
-                      · Class cash ${formattedInsightsCurrency(insightsReport.metrics.totalClassCash)}
-                    </div>
-                  </div>
-                  <span class="insights-local-badge">Local analysis</span>
+            ${providerQuestionResult ? `
+              <section class="card" aria-live="polite" data-testid="provider-question-result">
+                <span class="insights-eyebrow">Your question</span>
+                <div class="insights-question-asked">${escapeHtml(providerQuestionSubmitted)}</div>
+                <h2 style="margin: 14px 0 8px;">${escapeHtml(providerQuestionResult.answer)}</h2>
+                <div class="insights-question-evidence">
+                  ${providerQuestionResult.evidence.map(item => `
+                    <div class="insight-evidence">${escapeHtml(item)}</div>
+                  `).join("")}
                 </div>
-                <div class="insights-list">
-                  ${insightsReport.observations.map(insightsObservationHtml).join("")}
+                <div class="insights-report-meta" style="margin-top: 12px;">
+                  Answered ${escapeHtml(formattedInsightsGeneratedAt(providerQuestionResult.generatedAt))}
                 </div>
-                ${insightsReport.mode === "quick" && insightsReport.totalObservationCount > insightsReport.observations.length ? `
-                  <button type="button" class="link-button" onclick="generateLocalInsights('deep')">
-                    View ${insightsReport.totalObservationCount - insightsReport.observations.length} more in Deep Analysis
-                  </button>
-                ` : ""}
               </section>
-            ` : `
-              <section class="card">
-                <span class="insights-eyebrow">Ready when you are</span>
-                <h2 style="margin-top: 6px;">Choose the depth that fits the moment</h2>
-                <p style="margin: 0; max-width: 680px; color: var(--muted); font-weight: 720; line-height: 1.5;">
-                  Quick Insights keeps the result to the most important items. Deep Analysis examines the same classroom period and reveals the fuller local pattern set.
-                </p>
-              </section>
-            `}
+            ` : ""}
           </div>
         `;
       }
@@ -5123,9 +5178,6 @@ if (screen === "editSettingsLists" && isTeacher) {
       teacherInvitationExpiryHours = 48;
       studentMoneyRetryPayload = null;
       insightsPeriodDays = 30;
-      insightsMode = "quick";
-      insightsReport = null;
-      insightsDataSignature = null;
       resetProviderInsightsState();
       profileLoginIdStatus = "Checking...";
       clearTemporaryProfileStudentPin();
@@ -5562,9 +5614,11 @@ window.dismissTemporaryProfileStudentPin = dismissTemporaryProfileStudentPin;
 window.openStudentAuthLogs = openStudentAuthLogs;
 window.setScreen = setScreen;
 window.setInsightsPeriod = setInsightsPeriod;
-window.generateLocalInsights = generateLocalInsights;
 window.generateProviderInsights = generateProviderInsights;
 window.retryProviderInsights = retryProviderInsights;
+window.setProviderQuestionDraft = setProviderQuestionDraft;
+window.askProviderQuestion = askProviderQuestion;
+window.retryProviderQuestion = retryProviderQuestion;
 window.changeProviderInsightsLocalDataForTest = changeProviderInsightsLocalDataForTest;
 window.viewStudentProfile = viewStudentProfile;
 window.resetProfileStudentPin = resetProfileStudentPin;

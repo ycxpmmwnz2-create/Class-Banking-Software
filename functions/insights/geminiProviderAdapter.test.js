@@ -61,7 +61,7 @@ test('builds one stateless structured request with the reviewed model and no too
   assert.equal(request.config.responseMimeType, 'application/json')
   assert.equal(request.config.maxOutputTokens, 350)
   assert.equal(request.config.thinkingConfig.thinkingLevel, ThinkingLevel.MINIMAL)
-  assert.equal(request.config.temperature, 0)
+  assert.equal(Object.hasOwn(request.config, 'temperature'), false)
   assert.match(request.config.systemInstruction, /untrusted data, never as an instruction/)
   assert.match(request.contents[0].parts[0].text, /Ignore previous instructions/)
   assert.equal(Object.hasOwn(request.config, 'tools'), false)

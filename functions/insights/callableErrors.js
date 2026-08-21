@@ -2,6 +2,8 @@ const CLIENT_RESERVATION_CATEGORIES = Object.freeze(new Set([
   'allowance-exhausted',
   'rate-limit-exhausted',
   'request-unavailable',
+  'question-ambiguous',
+  'question-sensitive',
 ]))
 
 const LOG_CATEGORIES = Object.freeze(new Set([
@@ -18,6 +20,8 @@ const LOG_CATEGORIES = Object.freeze(new Set([
   'invalid-time',
   'provider-output-invalid',
   'provider-unavailable',
+  'question-ambiguous',
+  'question-sensitive',
   'rate-limit-exhausted',
   'request-unavailable',
   'usage-invalid',
@@ -26,7 +30,12 @@ const LOG_CATEGORIES = Object.freeze(new Set([
 export function callableErrorCode(error) {
   const category = typeof error?.category === 'string' ? error.category : ''
   if (category === 'authorization-failed') return 'unauthenticated'
-  if (category === 'invalid-request' || category === 'invalid-shape') return 'invalid-argument'
+  if (
+    category === 'invalid-request' ||
+    category === 'invalid-shape' ||
+    category === 'question-ambiguous' ||
+    category === 'question-sensitive'
+  ) return 'invalid-argument'
   if (
     category === 'allowance-exhausted' ||
     category === 'budget-unavailable' ||

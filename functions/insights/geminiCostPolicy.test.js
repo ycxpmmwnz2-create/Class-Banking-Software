@@ -35,13 +35,13 @@ function factPacket(summary = 'One verified request met the local threshold.') {
   }
 }
 
-test('pins the reviewed Gemini 3.5 Flash-Lite standard paid-tier rate card', () => {
+test('pins regular Gemini 3.6 Flash at the conservative post-promotion ceiling', () => {
   assert.deepEqual(GEMINI_RATE_CARD, {
-    id: 'gemini-3.5-flash-lite-standard-2026-08-19',
-    model: 'gemini-3.5-flash-lite',
-    effectiveDate: '2026-08-19',
-    inputMicroUsdPerMillionTokens: 300_000,
-    billedOutputMicroUsdPerMillionTokens: 2_500_000,
+    id: 'gemini-3.6-flash-standard-ceiling-2027-01-01',
+    model: 'gemini-3.6-flash',
+    effectiveDate: '2027-01-01',
+    inputMicroUsdPerMillionTokens: 1_500_000,
+    billedOutputMicroUsdPerMillionTokens: 7_500_000,
   })
 })
 
@@ -61,7 +61,7 @@ test('worst-case quote covers the complete serialized request plus safety margin
   const conservativeInputTokens = Buffer.byteLength(JSON.stringify(request), 'utf8') + 1_024
   const expectedWorstCaseCostMicroUsd = Math.ceil((
     conservativeInputTokens * GEMINI_RATE_CARD.inputMicroUsdPerMillionTokens +
-    (profile.maxOutputTokens + 65_536) *
+    (profile.maxOutputTokens + 4_096) *
       GEMINI_RATE_CARD.billedOutputMicroUsdPerMillionTokens
   ) / 1_000_000)
   const maximumAcceptedActualCostMicroUsd = priceGeminiActualUsage({
@@ -70,7 +70,7 @@ test('worst-case quote covers the complete serialized request plus safety margin
     usage: {
       inputTokens: conservativeInputTokens,
       outputTokens: profile.maxOutputTokens,
-      thinkingTokens: 65_536,
+      thinkingTokens: 4_096,
     },
   })
 
@@ -91,7 +91,7 @@ test('actual price bills visible and thinking output at the same output rate', (
       thinkingTokens: 200,
     },
   })
-  assert.equal(cost, 301_000)
+  assert.equal(cost, 1_503_000)
 })
 
 test('actual usage cannot exceed either visible or conservative thinking reservation', () => {
@@ -99,7 +99,7 @@ test('actual usage cannot exceed either visible or conservative thinking reserva
     () => priceGeminiActualUsage({
       rateCardId: GEMINI_RATE_CARD.id,
       modeProfile: insightModeProfile('quick'),
-      usage: { inputTokens: 100, outputTokens: 300, thinkingTokens: 65_537 },
+      usage: { inputTokens: 100, outputTokens: 300, thinkingTokens: 4_097 },
     }),
     error => error instanceof GeminiCostPolicyError && error.category === 'invalid-usage',
   )
