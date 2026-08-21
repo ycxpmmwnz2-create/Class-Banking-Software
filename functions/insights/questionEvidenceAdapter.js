@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 
 import { INSIGHT_QUESTION_SCHEMA_VERSION } from './questionContracts.js'
 import { InsightIdentityError, validateInsightIdentity } from './identity.js'
+import { normalizeStoredTransactionDate } from './storedTransactionDate.js'
 
 const STUDENT_KEYS = Object.freeze(['balance', 'frozen', 'id', 'name', 'transactions'])
 const TRANSACTION_KEYS = Object.freeze([
@@ -88,7 +89,9 @@ export function createFirestoreQuestionEvidenceLoader({
       return Object.freeze({
         students: Object.freeze(studentsSnapshot.docs.map(validateStudentSnapshot)
           .sort((left, right) => left.id - right.id)),
-        transactions: Object.freeze(transactionsSnapshot.docs.map(validateTransactionSnapshot)
+        transactions: Object.freeze(transactionsSnapshot.docs.map(snapshot => (
+          validateTransactionSnapshot(snapshot, timeZone)
+        ))
           .sort((left, right) => left.id - right.id)),
       })
     })
@@ -270,16 +273,15 @@ function validateStudentSnapshot(snapshot) {
   return Object.freeze({ id, name: boundedString(value.name, 1, 120, 'student name'), balance: value.balance })
 }
 
-function validateTransactionSnapshot(snapshot) {
+function validateTransactionSnapshot(snapshot, timeZone) {
   const value = snapshot?.data?.()
   if (!isPlainObject(value) || !hasExactKeys(value, TRANSACTION_KEYS)) fail('evidence-malformed', 'A transaction record is malformed.')
   const id = positiveInteger(value.id, 'transaction id')
   const studentId = positiveInteger(value.studentId, 'transaction student id')
-  const parsedDate = new Date(value.date)
+  const date = normalizeStoredTransactionDate(value.date, { timeZone })
   if (
     snapshot.id !== String(id) ||
-    !Number.isFinite(parsedDate.getTime()) ||
-    parsedDate.toISOString() !== value.date ||
+    !date ||
     !['Add', 'Subtract'].includes(value.type) ||
     !['Pending', 'Approved', 'Denied'].includes(value.status) ||
     typeof value.amount !== 'number' ||
@@ -291,7 +293,7 @@ function validateTransactionSnapshot(snapshot) {
   return Object.freeze({
     id,
     studentId,
-    date: value.date,
+    date,
     type: value.type,
     amount: value.amount,
     category: boundedString(value.category, 0, 120, 'category'),

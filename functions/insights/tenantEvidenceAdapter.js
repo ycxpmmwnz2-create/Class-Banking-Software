@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { InsightIdentityError, validateInsightIdentity } from './identity.js'
+import { normalizeStoredTransactionDate } from './storedTransactionDate.js'
 
 const EVIDENCE_SCHEMA_VERSION = 1
 const STUDENT_KEYS = Object.freeze(['balance', 'frozen', 'id', 'name', 'transactions'])
@@ -196,9 +197,9 @@ function validateTransactionSnapshot(snapshot) {
   if (snapshot.id !== String(id)) {
     fail('evidence-malformed', 'A transaction record path is inconsistent.')
   }
-  const date = boundedString(value.date, 1, 40, 'transaction date')
-  const parsedDate = new Date(date)
-  if (!Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString() !== date) {
+  const storedDate = boundedString(value.date, 1, 40, 'transaction date')
+  const date = normalizeStoredTransactionDate(storedDate)
+  if (!date) {
     fail('evidence-malformed', 'A transaction date is not canonical ISO time.')
   }
   if (

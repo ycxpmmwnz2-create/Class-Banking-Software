@@ -195,6 +195,40 @@ test('the signature is stable across read order and changes with relevant eviden
   assert.notEqual(original.evidenceSignature, changed.evidenceSignature)
 })
 
+test('normalizes the exact legacy browser date before filtering and signing evidence', async () => {
+  const legacy = fixture({
+    'classrooms/class-a/transactions/101': transaction({ date: '8/19/2026, 4:00:00 PM' }),
+  })
+  const canonical = fixture({
+    'classrooms/class-a/transactions/101': transaction({ date: '2026-08-19T16:00:00.000Z' }),
+  })
+  const loadFrom = data => createFirestoreTenantEvidenceLoader({
+    firestore: createFirestoreDouble(data).firestore,
+    calculateReport: buildClassInsightsReport,
+    now: () => NOW,
+  })({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30 })
+
+  const legacyEvidence = await loadFrom(legacy)
+  const canonicalEvidence = await loadFrom(canonical)
+  assert.deepEqual(legacyEvidence.analysisEvidence, canonicalEvidence.analysisEvidence)
+  assert.deepEqual(legacyEvidence.displayEvidence, canonicalEvidence.displayEvidence)
+  assert.equal(legacyEvidence.evidenceSignature, canonicalEvidence.evidenceSignature)
+})
+
+test('rejects parseable transaction date shapes that Morgan Bank never persisted', async () => {
+  const load = createFirestoreTenantEvidenceLoader({
+    firestore: createFirestoreDouble(fixture({
+      'classrooms/class-a/transactions/101': transaction({ date: '2026-08-19T16:00:00Z' }),
+    })).firestore,
+    calculateReport: buildClassInsightsReport,
+    now: () => NOW,
+  })
+  await assert.rejects(
+    load({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30 }),
+    error => error instanceof TenantEvidenceAdapterError && error.category === 'evidence-malformed',
+  )
+})
+
 test('a broken reciprocal foundation fails before any classroom collection read', async () => {
   const fake = createFirestoreDouble(fixture({
     'classrooms/class-a': { ownerUid: 'teacher-b', version: 1 },

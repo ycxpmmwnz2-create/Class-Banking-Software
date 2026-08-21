@@ -115,6 +115,41 @@ test('replaces a full or unique partial roster name before constructing provider
   }
 })
 
+test('normalizes the exact legacy browser date using the teacher time zone', async () => {
+  const envelope = await loader(fixture({
+    'classrooms/class-a/transactions/101': {
+      ...fixture()['classrooms/class-a/transactions/101'],
+      date: '8/19/2026, 10:00:00 AM',
+    },
+  }))({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'When is the class earning the most money?',
+  })
+  assert.equal(envelope.answerEvidence.transactions[0].date, '2026-08-19T16:00:00.000Z')
+})
+
+test('rejects parseable date shapes outside the stored Morgan Bank contract', async () => {
+  const load = loader(fixture({
+    'classrooms/class-a/transactions/101': {
+      ...fixture()['classrooms/class-a/transactions/101'],
+      date: '2026-08-19T16:00:00Z',
+    },
+  }))
+  await assert.rejects(
+    load({
+      teacherUid: 'teacher-a',
+      classroomId: 'class-a',
+      periodDays: 30,
+      timeZone: 'America/Denver',
+      question: 'When is the class earning the most money?',
+    }),
+    error => error instanceof InsightQuestionEvidenceError && error.category === 'evidence-malformed',
+  )
+})
+
 test('separator-obscured roster names fail before provider input can be constructed', async () => {
   for (const question of [
     'What category is GianMarcoBellini earning the most money in?',
