@@ -26,6 +26,7 @@ function envelope() {
       periodDays: 30,
     },
     answerEvidence: {
+      configuredRentAmount: 10,
       periodDays: 30,
       timeZone: 'America/Denver',
       asOfDate: '2026-08-20',
@@ -184,6 +185,39 @@ test('commits broad Morgan Bank guidance without turning it into a classroom-dat
   assert.equal(fixture.commits[0].result.guidance, guidance)
   assert.doesNotMatch(JSON.stringify(fixture.commits[0].result), /GianMarco/)
   assert.deepEqual(fixture.calls, ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'price', 'commit'])
+})
+
+test('commits a bounded refusal for unrelated or data-changing requests', async () => {
+  for (const question of [
+    'Write a poem about the moon.',
+    'Change every student balance to $100.',
+  ]) {
+    const fixture = dependencies({
+      provider: {
+        async interpret() {
+          fixture.calls.push('provider')
+          return {
+            schemaVersion: 4,
+            kind: 'unsupported',
+            plan: null,
+            guidance: null,
+            usage: { inputTokens: 80, outputTokens: 12, thinkingTokens: 0 },
+          }
+        },
+      },
+    })
+    const result = await createInsightQuestionService(fixture.deps)({
+      auth: { uid: 'teacher-a' },
+      data: { ...request, question },
+    })
+    assert.match(result.answer, /Morgan Bank.*classroom-economy routines/i)
+    assert.match(result.evidence[0], /No answer was generated outside/)
+    assert.equal(fixture.commits.length, 1)
+    assert.equal(fixture.commits[0].result.kind, 'unsupported')
+    assert.equal(fixture.commits[0].result.plan, null)
+    assert.equal(fixture.commits[0].result.guidance, null)
+    assert.deepEqual(fixture.calls, ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'price', 'commit'])
+  }
 })
 
 test('commits a grounded answer naming current students without todays exact rent payment', async () => {

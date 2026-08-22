@@ -176,6 +176,10 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
     lastBackupAt: null,
     updatedAt: new Date().toISOString(),
   });
+  await db.doc(`classrooms/${tenant.classroomId}/studentDisplay/rent`).set({
+    rentAmount: 10,
+    updatedAt: new Date().toISOString(),
+  });
   await db.doc(`classroomLoginCodes/${tenant.studentLoginCode.replace("-", "")}`).set({
     classroomId: tenant.classroomId,
     ownerUid: uid,

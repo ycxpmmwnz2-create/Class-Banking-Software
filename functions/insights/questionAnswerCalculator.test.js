@@ -4,6 +4,7 @@ import test from 'node:test'
 import { calculateQuestionAnswer, InsightQuestionAnswerError } from './questionAnswerCalculator.js'
 
 const evidence = {
+  configuredRentAmount: 10,
   periodDays: 30,
   timeZone: 'America/Denver',
   asOfDate: '2026-08-20',
@@ -176,6 +177,32 @@ test('lists current students without an approved exact rent payment today', () =
   })
   assert.match(allPaid.answer, /^No\. All 4 current students have a matching rent payment\./)
   assert.match(allPaid.evidence[0], /students without a match: 0/)
+
+  const configuredAmount = calculateQuestionAnswer({
+    kind: 'query',
+    plan: {
+      operation: 'students-without-transactions',
+      subjectAliases: [],
+      categoryAlias: null,
+      purpose: 'rent',
+      transactionType: 'Subtract',
+      status: 'Approved',
+      dateScope: 'today',
+      amountExact: null,
+      studentState: 'any',
+      limit: 8,
+    },
+    evidence: {
+      ...evidence,
+      participants,
+      students,
+      categories: [...evidence.categories, rentCategory],
+      transactions: rentTransactions,
+    },
+  })
+  assert.match(configuredAmount.answer, /^Yes\. 3 of 4 current students/)
+  assert.match(configuredAmount.answer, /configured rent amount of \$10\.00/)
+  assert.doesNotMatch(configuredAmount.answer, /Genesis.*no matching/)
 })
 
 test('calculates a named student category ranking without sending facts to the model', () => {
@@ -357,6 +384,11 @@ test('unknown aliases and malformed evidence fail closed', () => {
       ],
     },
   }), InsightQuestionAnswerError)
+  assert.throws(() => calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({}),
+    evidence: { ...evidence, configuredRentAmount: 10.5 },
+  }), InsightQuestionAnswerError)
 })
 
 test('large ties stay explicit without exceeding the public evidence bound', () => {
@@ -493,6 +525,39 @@ test('bounds maximum-length ranked labels inside the public response contract', 
   assert.equal(result.evidence.length, 8)
   assert.ok(result.evidence.every(line => line.length <= 320))
   assert.match(result.answer, /…/)
+})
+
+test('reserves public response space while fitting combined ranked guidance', () => {
+  const categories = Array.from({ length: 8 }, (_, index) => ({
+    alias: `category-${String(index + 1).padStart(3, '0')}`,
+    label: `${String(index + 1).padStart(3, '0')}-${'Long category label '.repeat(8)}`.slice(0, 120),
+  }))
+  const transactions = categories.map((category, index) => ({
+    id: index + 200,
+    studentId: 1,
+    date: '2026-08-19T15:00:00.000Z',
+    type: 'Add',
+    amount: 100 - index,
+    categoryAlias: category.alias,
+    purpose: 'other',
+    status: 'Approved',
+  }))
+  const guidance = 'Review the result privately and use a consistent classroom routine. '.padEnd(240, 'Keep choices predictable. ').slice(0, 240)
+  const result = calculateQuestionAnswer({
+    kind: 'query-and-guidance',
+    plan: plan({
+      filters: { ...filters, subjectAliases: ['student-001'], transactionType: 'Add' },
+      groupBy: 'category',
+      limit: 8,
+    }),
+    guidance,
+    evidence: { ...evidence, categories, transactions },
+  })
+  assert.ok(result.answer.length <= 800)
+  assert.match(result.answer, /General Morgan Bank guidance:/)
+  assert.match(result.answer, /…/)
+  assert.equal(result.evidence.length, 8)
+  assert.ok(result.evidence.every(line => line.length <= 320))
 })
 
 test('dynamically fits ranked, aggregate, and empty results with every disclosure filter', () => {

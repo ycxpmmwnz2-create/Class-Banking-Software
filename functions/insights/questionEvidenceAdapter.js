@@ -18,9 +18,11 @@ const TRANSACTION_KEYS = Object.freeze([
   'studentName',
   'type',
 ])
+const RENT_KEYS = Object.freeze(['rentAmount', 'updatedAt'])
 const MAX_STUDENTS = 500
 const MAX_TRANSACTIONS = 20_000
 const MAX_CATEGORIES = 128
+const MAX_RENT_AMOUNT = 1_000_000
 const EMAIL_OR_URL_PATTERN = /(?:\bhttps?:\/\/|\bwww\.|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i
 const PHONE_PATTERN = /(?:\+?\d[\d\s().-]{7,}\d)/
 
@@ -79,6 +81,9 @@ export function createFirestoreQuestionEvidenceLoader({
         teacherUid: teacher,
         classroomId: classroom,
       })
+      const rentSnapshot = await transaction.get(
+        classroomRef.collection('studentDisplay').doc('rent'),
+      )
       const studentsSnapshot = await transaction.get(
         classroomRef.collection('students').limit(MAX_STUDENTS + 1),
       )
@@ -89,6 +94,7 @@ export function createFirestoreQuestionEvidenceLoader({
         fail('evidence-too-large', 'Classroom evidence exceeds the question read limit.')
       }
       return Object.freeze({
+        configuredRentAmount: validateRentSnapshot(rentSnapshot),
         students: Object.freeze(studentsSnapshot.docs.map(validateStudentSnapshot)
           .sort((left, right) => left.id - right.id)),
         transactions: Object.freeze(transactionsSnapshot.docs.map(snapshot => (
@@ -124,6 +130,7 @@ export function createFirestoreQuestionEvidenceLoader({
     const categoryCatalog = buildCategoryCatalog(periodTransactions, studentIdentities)
     const categoryAliasByKey = new Map(categoryCatalog.map(category => [category.key, category.alias]))
     const answerEvidence = Object.freeze({
+      configuredRentAmount: raw.configuredRentAmount,
       participants: Object.freeze(participants.map(student => Object.freeze({
         id: student.id,
         alias: aliasesByStudentId.get(student.id),
@@ -185,6 +192,7 @@ export function createFirestoreQuestionEvidenceLoader({
         periodDays,
         timeZone,
         asOfDate,
+        configuredRentAmount: raw.configuredRentAmount,
         students: raw.students,
         transactions: periodTransactions,
       })).digest('hex'),
@@ -196,7 +204,9 @@ function transactionPurpose(transaction) {
   const labels = [transaction.category, transaction.reason].map(value => (
     normalizeDisplayCategory(value).normalize('NFKC').toLocaleLowerCase('en-US')
   ))
-  return labels.some(label => label === 'rent' || label === 'desk rent') ? 'rent' : 'other'
+  return labels.some(label => /(^|[^\p{L}\p{N}])rent(?=$|[^\p{L}\p{N}])/u.test(label))
+    ? 'rent'
+    : 'other'
 }
 
 function localDateKey(date, timeZone) {
@@ -462,6 +472,20 @@ function validateStudentSnapshot(snapshot) {
     balance: value.balance,
     frozen: value.frozen,
   })
+}
+
+function validateRentSnapshot(snapshot) {
+  if (!snapshot?.exists) return 0
+  const value = snapshot.data?.()
+  if (
+    !isPlainObject(value) || !hasExactKeys(value, RENT_KEYS) ||
+    !Number.isSafeInteger(value.rentAmount) ||
+    value.rentAmount < 0 || value.rentAmount > MAX_RENT_AMOUNT ||
+    typeof value.updatedAt !== 'string' ||
+    value.updatedAt.length < 1 || value.updatedAt.length > 80 ||
+    !Number.isFinite(Date.parse(value.updatedAt))
+  ) fail('evidence-malformed', 'The classroom rent record is malformed.')
+  return value.rentAmount
 }
 
 function validateTransactionSnapshot(snapshot, timeZone) {

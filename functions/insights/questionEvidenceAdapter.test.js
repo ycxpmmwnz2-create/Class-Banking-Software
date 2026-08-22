@@ -12,6 +12,10 @@ function fixture(overrides = {}) {
   return {
     'teachers/teacher-a': { uid: 'teacher-a', status: 'active', classroomId: 'class-a' },
     'classrooms/class-a': { ownerUid: 'teacher-a' },
+    'classrooms/class-a/studentDisplay/rent': {
+      rentAmount: 10,
+      updatedAt: '2026-08-20T17:00:00.000Z',
+    },
     'classrooms/class-a/students/1': {
       id: 1,
       name: 'GianMarco Bellini',
@@ -123,6 +127,8 @@ test('replaces a full or unique partial roster name before constructing provider
     assert.equal(envelope.answerEvidence.students[0].name, 'GianMarco Bellini')
     assert.equal(envelope.answerEvidence.transactions[0].categoryAlias, 'category-001')
     assert.equal(envelope.answerEvidence.transactions[0].purpose, 'other')
+    assert.equal(envelope.answerEvidence.configuredRentAmount, 10)
+    assert.equal(Object.hasOwn(envelope.providerInput, 'configuredRentAmount'), false)
     assert.equal(envelope.answerEvidence.asOfDate, '2026-08-20')
     assert.match(envelope.evidenceSignature, /^[a-f0-9]{64}$/)
   }
@@ -156,6 +162,29 @@ test('classifies a V2 blank-category Rent reason only in server answer evidence'
   assert.doesNotMatch(JSON.stringify(envelope.providerInput), /GianMarco|Sofia|teacher-a|class-a/)
 })
 
+test('classifies a renamed rent-like category without exposing the configured rent amount', async () => {
+  const base = fixture()['classrooms/class-a/transactions/101']
+  const envelope = await loader(fixture({
+    'classrooms/class-a/transactions/101': {
+      ...base,
+      date: '2026-08-20T16:00:00.000Z',
+      type: 'Subtract',
+      amount: 10,
+      reason: 'Monthly payment',
+      category: 'Monthly Class Rent',
+    },
+  }))({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'Which students did not pay rent today?',
+  })
+  assert.equal(envelope.answerEvidence.transactions[0].purpose, 'rent')
+  assert.equal(envelope.answerEvidence.configuredRentAmount, 10)
+  assert.doesNotMatch(JSON.stringify(envelope.providerInput), /configuredRentAmount|rentAmount|\$10|teacher-a|class-a/)
+})
+
 test('binds today questions to the classroom local date without exposing it to the provider', async () => {
   const input = {
     teacherUid: 'teacher-a',
@@ -170,6 +199,36 @@ test('binds today questions to the classroom local date without exposing it to t
   assert.equal(next.answerEvidence.asOfDate, '2026-08-21')
   assert.notEqual(first.evidenceSignature, next.evidenceSignature)
   assert.equal(Object.hasOwn(first.providerInput, 'asOfDate'), false)
+})
+
+test('binds the configured rent amount into server evidence and replay identity', async () => {
+  const input = {
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'Which students did not pay rent today?',
+  }
+  const first = await loader(fixture())(input)
+  const changed = await loader(fixture({
+    'classrooms/class-a/studentDisplay/rent': {
+      rentAmount: 15,
+      updatedAt: '2026-08-20T17:30:00.000Z',
+    },
+  }))(input)
+  assert.equal(first.answerEvidence.configuredRentAmount, 10)
+  assert.equal(changed.answerEvidence.configuredRentAmount, 15)
+  assert.notEqual(first.evidenceSignature, changed.evidenceSignature)
+  assert.deepEqual(first.providerInput, changed.providerInput)
+  await assert.rejects(
+    loader(fixture({
+      'classrooms/class-a/studentDisplay/rent': {
+        rentAmount: 10.5,
+        updatedAt: '2026-08-20T17:30:00.000Z',
+      },
+    }))(input),
+    error => error instanceof InsightQuestionEvidenceError && error.category === 'evidence-malformed',
+  )
 })
 
 test('provider receives only a bounded category catalog and never raw transaction reasons or facts', async () => {
@@ -545,6 +604,7 @@ test('reads only the active reciprocal tenant and bounds the period server-side'
   assert.deepEqual(fake.reads, [
     'teachers/teacher-a',
     'classrooms/class-a',
+    'classrooms/class-a/studentDisplay/rent',
     'classrooms/class-a/students|limit=501',
     'classrooms/class-a/transactions|limit=20001',
   ])

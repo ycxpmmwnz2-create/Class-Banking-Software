@@ -114,7 +114,12 @@ export function createVersion3GeminiEmulatorHandler({
       })
       let plan = null
       let guidance = null
-      if (/(did not|didn't|not pay|unpaid)/.test(normalized) && /rent/.test(normalized)) {
+      const asksToChangeData = /^(?:please\s+)?(?:change|set|delete|transfer|freeze|unfreeze|approve|deny)\b/.test(normalized)
+      if (asksToChangeData) {
+        // The production contract routes data mutations to unsupported. Keep the
+        // browser double honest instead of accidentally treating "change every
+        // balance" as a read-only balance query.
+      } else if (/(did not|didn't|not pay|unpaid)/.test(normalized) && /rent/.test(normalized)) {
         const amount = normalized.match(/\$\s*(\d+(?:\.\d+)?)/)?.[1]
         plan = {
           operation: 'students-without-transactions',

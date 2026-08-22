@@ -44,10 +44,10 @@ export function calculateQuestionAnswer({ kind, plan, guidance = null, evidence 
   if (kind === 'query-and-guidance') {
     const guidanceText = validateGuidanceForCalculation(guidance, 240)
     validatePlanForCalculation(plan)
-    const calculated = calculateQueryAnswer(plan, context)
-    return answer(
-      `${calculated.answer} General Morgan Bank guidance: ${guidanceText}`,
-      calculated.evidence,
+    return calculateQueryAnswer(
+      plan,
+      context,
+      ` General Morgan Bank guidance: ${guidanceText}`,
     )
   }
   if (kind !== 'query') fail('answer-unavailable', 'The interpreted question is unsupported.')
@@ -56,12 +56,12 @@ export function calculateQuestionAnswer({ kind, plan, guidance = null, evidence 
   return calculateQueryAnswer(plan, context)
 }
 
-function calculateQueryAnswer(plan, context) {
+function calculateQueryAnswer(plan, context, answerSuffix = '') {
   if (plan.operation === 'students-without-transactions') {
-    return calculateStudentsWithoutTransactions(plan, context)
+    return calculateStudentsWithoutTransactions(plan, context, answerSuffix)
   }
-  if (plan.dataset === 'students') return calculateStudentQuery(plan, context)
-  return calculateTransactionQuery(plan, context)
+  if (plan.dataset === 'students') return calculateStudentQuery(plan, context, answerSuffix)
+  return calculateTransactionQuery(plan, context, answerSuffix)
 }
 
 function validateGuidanceForCalculation(value, maximum = 480) {
@@ -79,7 +79,7 @@ function validateGuidanceForCalculation(value, maximum = 480) {
   return value
 }
 
-function calculateStudentsWithoutTransactions(plan, context) {
+function calculateStudentsWithoutTransactions(plan, context, answerSuffix) {
   let students = context.students
   if (plan.subjectAliases.length) {
     students = plan.subjectAliases.map(alias => {
@@ -114,18 +114,23 @@ function calculateStudentsWithoutTransactions(plan, context) {
       localDateKey(transaction.date, context.timeZone) === context.asOfDate
     ))
   }
-  if (plan.amountExact !== null) {
-    transactions = transactions.filter(transaction => transaction.amount === plan.amountExact)
+  const amount = plan.amountExact ?? (
+    plan.purpose === 'rent' && context.configuredRentAmount > 0
+      ? context.configuredRentAmount
+      : null
+  )
+  if (amount !== null) {
+    transactions = transactions.filter(transaction => transaction.amount === amount)
   }
 
   const matchingStudentIds = new Set(transactions.map(transaction => transaction.studentId))
   const missing = students
     .filter(student => !matchingStudentIds.has(student.id))
     .sort((left, right) => left.name.localeCompare(right.name, 'en-US') || left.id - right.id)
-  return renderStudentsWithoutTransactions({ plan, context, students, missing })
+  return renderStudentsWithoutTransactions({ plan, context, students, missing, answerSuffix })
 }
 
-function renderStudentsWithoutTransactions({ plan, context, students, missing }) {
+function renderStudentsWithoutTransactions({ plan, context, students, missing, answerSuffix }) {
   return fitResponseWithinPublicBounds(labelLength => {
     const filterContext = describeMissingTransactionFilters(plan, context, Math.min(24, labelLength))
     const matchLabel = plan.purpose === 'rent' ? 'rent payment' : 'transaction'
@@ -151,10 +156,10 @@ function renderStudentsWithoutTransactions({ plan, context, students, missing })
         `${displayLabel(student.name, labelLength)}: no matching ${matchLabel}. Checked ${filterContext}.`
       )),
     }
-  })
+  }, answerSuffix)
 }
 
-function calculateStudentQuery(plan, context) {
+function calculateStudentQuery(plan, context, answerSuffix) {
   let students = context.students
   if (plan.filters.subjectAliases.length) {
     students = plan.filters.subjectAliases.map(alias => {
@@ -173,10 +178,11 @@ function calculateStudentQuery(plan, context) {
       plan,
       context,
       noun: plan.filters.studentState === 'any' ? 'student count' : `${plan.filters.studentState} student count`,
+      answerSuffix,
     })
   }
   if (plan.metric === 'average-balance') {
-    if (!students.length) return renderRows({ rows: [], plan, context, noun: 'average current balance' })
+    if (!students.length) return renderRows({ rows: [], plan, context, noun: 'average current balance', answerSuffix })
     const average = students.reduce((total, student) => total + student.balance, 0) / students.length
     if (!Number.isFinite(average)) fail('answer-unavailable', 'The average balance exceeds safe precision.')
     return renderRows({
@@ -184,6 +190,7 @@ function calculateStudentQuery(plan, context) {
       plan,
       context,
       noun: 'average current balance',
+      answerSuffix,
     })
   }
   const rows = students.map(student => ({
@@ -193,10 +200,10 @@ function calculateStudentQuery(plan, context) {
     count: 1,
     chronological: student.alias,
   }))
-  return renderRows({ rows, plan, context, noun: 'current balance' })
+  return renderRows({ rows, plan, context, noun: 'current balance', answerSuffix })
 }
 
-function calculateTransactionQuery(plan, context) {
+function calculateTransactionQuery(plan, context, answerSuffix) {
   let transactions = context.transactions
   const filters = plan.filters
   let subjectNames = []
@@ -234,7 +241,7 @@ function calculateTransactionQuery(plan, context) {
     ))
   }
   if (plan.metric === 'amount-average' && transactions.length === 0) {
-    return renderRows({ rows: [], plan, context, noun: metricNoun(plan), subjectNames })
+    return renderRows({ rows: [], plan, context, noun: metricNoun(plan), subjectNames, answerSuffix })
   }
 
   const grouped = new Map()
@@ -261,10 +268,10 @@ function calculateTransactionQuery(plan, context) {
     ? null
     : context.categoriesByAlias.get(filters.categoryAlias)?.label
   const noun = categoryLabel ? `${displayLabel(categoryLabel, 80)} ${metricNoun(plan)}` : metricNoun(plan)
-  return renderRows({ rows, plan, context, noun, subjectNames })
+  return renderRows({ rows, plan, context, noun, subjectNames, answerSuffix })
 }
 
-function renderRows({ rows, plan, context, noun, subjectNames = [] }) {
+function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix = '' }) {
   if (!rows.length) {
     return fitResponseWithinPublicBounds(labelLength => {
       const filterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
@@ -278,7 +285,7 @@ function renderRows({ rows, plan, context, noun, subjectNames = [] }) {
         text: `No matching records were found in the last ${context.periodDays} days. This uses ${filterContext}.`,
         evidence: [`Matching records: 0. Included records: ${filterContext}.`],
       }
-    })
+    }, answerSuffix)
   }
   const sorted = sortRows(rows, plan.order)
   const tiedRows = includeTies(sorted, plan.limit)
@@ -293,7 +300,7 @@ function renderRows({ rows, plan, context, noun, subjectNames = [] }) {
         text: `The ${noun} is ${formatMetric(plan, row.value, row.count)}${periodSuffix}. This uses ${filterContext}.`,
         evidence: [`${evidenceLine(row, plan, labelLength)} Included records: ${filterContext}.`],
       }
-    })
+    }, answerSuffix)
   }
 
   const direction = plan.order === 'lowest' ? 'lowest' : plan.order === 'highest' ? 'highest' : null
@@ -321,7 +328,7 @@ function renderRows({ rows, plan, context, noun, subjectNames = [] }) {
       `${evidenceLine(row, plan, labelLength)} Included records: ${rankedFilterContext}.`
     ))
     return { text: summary, evidence }
-  })
+  }, answerSuffix)
 }
 
 function groupFor(transaction, groupBy, context) {
@@ -455,6 +462,8 @@ function validateEvidence(value) {
     !value || typeof value !== 'object' || !Array.isArray(value.participants) ||
     !Array.isArray(value.students) ||
     !Array.isArray(value.categories) || !Array.isArray(value.transactions) ||
+    !Number.isSafeInteger(value.configuredRentAmount) ||
+    value.configuredRentAmount < 0 || value.configuredRentAmount > 1_000_000 ||
     ![7, 30, 90].includes(value.periodDays) || typeof value.timeZone !== 'string' ||
     typeof value.asOfDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.asOfDate)
   ) fail('answer-unavailable', 'The server answer evidence is malformed.')
@@ -595,7 +604,11 @@ function describeMissingTransactionFilters(plan, context, labelLength = 24) {
     const category = context.categoriesByAlias.get(plan.categoryAlias)
     parts.push(`category ${displayLabel(category?.label || plan.categoryAlias, labelLength)}`)
   }
-  if (plan.amountExact !== null) parts.push(`exactly ${money(plan.amountExact)}`)
+  if (plan.amountExact !== null) {
+    parts.push(`exactly ${money(plan.amountExact)}`)
+  } else if (plan.purpose === 'rent' && context.configuredRentAmount > 0) {
+    parts.push(`the configured rent amount of ${money(context.configuredRentAmount)}`)
+  }
   if (plan.dateScope === 'today') {
     parts.push(`today (${context.asOfDate} in ${context.timeZone})`)
   } else {
@@ -695,10 +708,11 @@ function answer(text, evidence) {
   return Object.freeze({ answer: text, evidence: Object.freeze(evidence) })
 }
 
-function fitResponseWithinPublicBounds(render) {
+function fitResponseWithinPublicBounds(render, answerSuffix = '') {
   for (const labelLength of RESPONSE_LABEL_LENGTHS) {
     const { text, evidence } = render(labelLength)
-    if (responseWithinPublicBounds(text, evidence)) return answer(text, evidence)
+    const combinedText = `${text}${answerSuffix}`
+    if (responseWithinPublicBounds(combinedText, evidence)) return answer(combinedText, evidence)
   }
   fail('answer-unavailable', 'The calculated answer exceeds the public response bounds.')
 }

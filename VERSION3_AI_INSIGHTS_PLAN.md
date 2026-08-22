@@ -125,14 +125,17 @@ calculated answer and short evidence lines.
 
 Plan schema version 4 also permits one separate negative-match operation for
 current students without transactions matching allowlisted criteria. It can
-filter by opaque named-student or category aliases, the built-in rent purpose,
-transaction type and status, an exact amount, the selected period or the
-classroom-local current date, current student state, and a bounded display
-limit. The rent purpose is derived server-side from the exact built-in `Rent`
-and `Desk rent` labels, including V2 student transactions whose stored category
-is blank; raw reasons remain outside provider input. The classroom-local date
-is bound into the evidence signature so a completed `today` request cannot be
-replayed across local midnight.
+filter by opaque named-student or category aliases, the server-derived rent
+purpose, transaction type and status, an exact amount, the selected period or
+the classroom-local current date, current student state, and a bounded display
+limit. Rent is recognized from a standalone `rent` word in a transaction's
+category or reason, so built-in `Rent` and `Desk rent`, renamed labels such as
+`Monthly Class Rent`, and V2 blank-category rent reasons remain usable. When a
+rent question omits an amount, Functions applies the server-read configured
+classroom rent amount. Neither that amount nor raw reasons enter provider input,
+and the amount is bound into the evidence signature. The classroom-local date
+is also bound into the signature so a completed `today` request cannot replay
+across local midnight.
 
 For a conceptual Morgan Bank question that does not require a claim about the
 current records, the same strict schema permits one bounded guidance paragraph.

@@ -259,6 +259,18 @@ test("rent question names current students without an approved exact payment tod
   expect(calls[0].question).toBe("Who did not pay $10 in rent today?");
 });
 
+test("rent question without a typed amount uses the server-owned configured rent", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  await page.locator("#providerQuestionInput").fill("Who did not pay rent today?");
+  await page.getByTestId("provider-question-submit").click();
+  const result = page.getByTestId("provider-question-result");
+  await expect(result).toContainText(TENANT_A.classmateName);
+  await expect(result).toContainText("configured rent amount of $10.00");
+  await expect(result).not.toContainText(TENANT_A.studentName);
+  await expect(result).not.toContainText(TENANT_A.foreignName);
+});
+
 test("Morgan Bank guidance question receives useful domain help without claiming classroom facts", async ({ page }) => {
   await openApp(page);
   await signIn(page, TENANT_A);
@@ -299,6 +311,23 @@ test("one question can combine a calculated classroom answer with general Morgan
   const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
   expect(calls).toHaveLength(1);
   expect(calls[0].question).toBe(question);
+});
+
+test("unrelated and data-changing requests receive the bounded unsupported response", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  for (const question of [
+    "Write a poem about the moon.",
+    "Change every student balance to $100.",
+  ]) {
+    await page.locator("#providerQuestionInput").fill(question);
+    await page.getByTestId("provider-question-submit").click();
+    const result = page.getByTestId("provider-question-result");
+    await expect(result).toContainText("I can help with Morgan Bank");
+    await expect(result).toContainText("No answer was generated outside");
+    await expect(result).not.toContainText(TENANT_A.studentName);
+    await expect(result).not.toContainText(TENANT_A.foreignName);
+  }
 });
 
 test("changing the period discards a late question answer", async ({ page }) => {
