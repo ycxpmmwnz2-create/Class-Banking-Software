@@ -91,6 +91,30 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     )
   }
 
+  test('transaction category menus are alphabetical and Technology is Add-only', async ({ page }) => {
+    await gotoApp(page)
+    await signInTeacher(page, TENANT_A)
+    await waitForQuiescence(page)
+    await page.evaluate(() => window.setScreen('teacher'))
+
+    await expect(page.locator('#transactionReason option')).toHaveText([
+      'Class Job',
+      'Earned Class Cash in Specials',
+      'Going Above and Beyond',
+      'Homework',
+      'Positive Consequence',
+      'Showing Work',
+      "Teacher's Choice",
+      'Technology',
+    ])
+
+    await page.evaluate(() => window.setCustomTransactionMode('Subtract'))
+    await expect(page.locator('#transactionReason option')).toHaveText([
+      'Rent',
+      "Teacher's Choice",
+    ])
+  })
+
   test('student classroom code supports typing with or without the separator and pasting', async ({ page }) => {
     await gotoApp(page)
     await waitForQuiescence(page)

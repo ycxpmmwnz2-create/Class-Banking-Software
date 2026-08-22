@@ -21,8 +21,7 @@ export const DEFAULT_ADD_MONEY_CATEGORIES = Object.freeze([
 
 function hasSameCategories(categories, expected) {
   if (!Array.isArray(categories) || categories.length !== expected.length) return false;
-  const categorySet = new Set(categories);
-  return categorySet.size === expected.length && expected.every(category => categorySet.has(category));
+  return expected.every((category, index) => categories[index] === category);
 }
 
 export function effectiveAddMoneyCategories(categories) {
@@ -33,5 +32,7 @@ export function effectiveAddMoneyCategories(categories) {
 }
 
 export function sortTransactionCategories(categories) {
-  return [...categories].sort((left, right) => left.localeCompare(right));
+  return categories
+    .filter(category => typeof category === "string")
+    .sort((left, right) => left.localeCompare(right));
 }

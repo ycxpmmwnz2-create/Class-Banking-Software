@@ -17,7 +17,7 @@ const STUDENT_MONEY_THROTTLE_WINDOW_MS = 5 * 60 * 1000
 const MAX_STUDENT_MONEY_SUBMISSIONS_PER_WINDOW = 10
 const STUDENT_MONEY_THROTTLE_NAMESPACE = 'student-money-submission'
 
-const LEGACY_DEFAULT_ADD_MONEY_CATEGORIES = Object.freeze([
+export const LEGACY_DEFAULT_ADD_MONEY_CATEGORIES = Object.freeze([
   'Homework',
   'Class Job',
   'Positive Consequence',
@@ -27,20 +27,22 @@ const LEGACY_DEFAULT_ADD_MONEY_CATEGORIES = Object.freeze([
   "Teacher's Choice",
 ])
 
+export const DEFAULT_STUDENT_ADD_MONEY_CATEGORIES = Object.freeze([
+  'Class Job',
+  'Earned Class Cash in Specials',
+  'Going Above and Beyond',
+  'Homework',
+  'Positive Consequence',
+  'Showing Work',
+  "Teacher's Choice",
+  'Technology',
+])
+
 const DEFAULT_STUDENT_MONEY_SETTINGS = Object.freeze({
   studentRequestsEnabled: true,
   studentAddRequestsEnabled: true,
   studentSubtractRequestsEnabled: true,
-  addMoneyCategories: Object.freeze([
-    'Class Job',
-    'Earned Class Cash in Specials',
-    'Going Above and Beyond',
-    'Homework',
-    'Positive Consequence',
-    'Showing Work',
-    "Teacher's Choice",
-    'Technology',
-  ]),
+  addMoneyCategories: DEFAULT_STUDENT_ADD_MONEY_CATEGORIES,
   subtractMoneyCategories: Object.freeze([
     'Rent',
     'Restroom',
@@ -54,9 +56,9 @@ const DEFAULT_STUDENT_MONEY_SETTINGS = Object.freeze({
 
 function usesLegacyDefaultAddMoneyCategories(categories) {
   if (categories.length !== LEGACY_DEFAULT_ADD_MONEY_CATEGORIES.length) return false
-  const categorySet = new Set(categories)
-  return categorySet.size === LEGACY_DEFAULT_ADD_MONEY_CATEGORIES.length &&
-    LEGACY_DEFAULT_ADD_MONEY_CATEGORIES.every(category => categorySet.has(category))
+  return LEGACY_DEFAULT_ADD_MONEY_CATEGORIES.every(
+    (category, index) => categories[index] === category,
+  )
 }
 
 const TRANSACTION_KEYS = Object.freeze([

@@ -5003,11 +5003,11 @@ if (screen === "editSettingsLists" && isTeacher) {
 
       <h3>Add Money Categories</h3>
 <label for="addMoneyCategoryList">One add-money category per line</label>
-<textarea id="addMoneyCategoryList">${escapeHtml(sortTransactionCategories(effectiveAddMoneyCategories(data.settings.addMoneyCategories)).join("\n"))}</textarea>
+<textarea id="addMoneyCategoryList">${escapeHtml(effectiveAddMoneyCategories(data.settings.addMoneyCategories).join("\n"))}</textarea>
 
 <h3>Subtract Money Categories</h3>
 <label for="subtractMoneyCategoryList">One subtract-money category per line</label>
-<textarea id="subtractMoneyCategoryList">${escapeHtml(sortTransactionCategories(data.settings.subtractMoneyCategories).join("\n"))}</textarea>
+<textarea id="subtractMoneyCategoryList">${escapeHtml(data.settings.subtractMoneyCategories.join("\n"))}</textarea>
 
 <h3>Purchase Choices</h3>
 <label for="purchaseCategoryList">One purchase choice per line</label>
