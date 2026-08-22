@@ -398,14 +398,18 @@ test("ready teacher header shows only the resolved tenant classroom code", async
   expect(mobileHeader.pageOverflows).toBe(false);
   await page.setViewportSize({ width: 1280, height: 720 });
   const loginInfo = page.locator(".student-login-info");
-  await expect(loginInfo).toContainText("Student Login Information");
+  await expect(loginInfo).toContainText("Student Login");
   await expect(loginInfo.locator("#teacherStudentClassroomCode")).toHaveText(TENANT_A.studentLoginCode);
-  const desktopLoginRentLayout = await page.locator(".teacher-login-rent-row").evaluate(row => {
+  const desktopTopRowLayout = await page.locator(".teacher-dashboard-top-row").evaluate(row => {
     const login = row.querySelector(".student-login-info");
     const rent = row.querySelector("#teacherRentCard");
-    if (!login || !rent) throw new Error("teacher login and rent cards did not render");
+    const insights = row.querySelector(".insights-dashboard-card");
+    if (!login || !rent || !insights) {
+      throw new Error("teacher login, rent, and AI Insights cards did not render");
+    }
     const loginRect = login.getBoundingClientRect();
     const rentRect = rent.getBoundingClientRect();
+    const insightsRect = insights.getBoundingClientRect();
     const rentDisplay = rent.querySelector("#teacherRentDisplay");
     if (!rentDisplay) throw new Error("teacher rent display did not render");
     const originalRentText = rentDisplay.textContent;
@@ -413,36 +417,107 @@ test("ready teacher header shows only the resolved tenant classroom code", async
     const maximumRentFits = rent.scrollWidth <= rent.clientWidth;
     rentDisplay.textContent = originalRentText;
     return {
-      sameRow: Math.abs(loginRect.top - rentRect.top) <= 1,
-      rentOnRight: rentRect.left > loginRect.right,
-      rentFraction: rentRect.width / (loginRect.width + rentRect.width),
+      sameRow:
+        Math.abs(loginRect.top - rentRect.top) <= 1 &&
+        Math.abs(rentRect.top - insightsRect.top) <= 1,
+      correctOrder: rentRect.left > loginRect.left && insightsRect.left > rentRect.left,
+      equalWidths:
+        Math.abs(loginRect.width - rentRect.width) <= 1 &&
+        Math.abs(rentRect.width - insightsRect.width) <= 1,
       maximumRentFits,
     };
   });
-  expect(desktopLoginRentLayout.sameRow).toBe(true);
-  expect(desktopLoginRentLayout.rentOnRight).toBe(true);
-  expect(desktopLoginRentLayout.rentFraction).toBeGreaterThan(0.24);
-  expect(desktopLoginRentLayout.rentFraction).toBeLessThan(0.26);
-  expect(desktopLoginRentLayout.maximumRentFits).toBe(true);
+  expect(desktopTopRowLayout.sameRow).toBe(true);
+  expect(desktopTopRowLayout.correctOrder).toBe(true);
+  expect(desktopTopRowLayout.equalWidths).toBe(true);
+  expect(desktopTopRowLayout.maximumRentFits).toBe(true);
+  await expect(page.locator(".insights-dashboard-card")).toContainText(
+    "Review classroom patterns and ask questions about your data. Open the AI Insights tab for full details."
+  );
+  await expect(page.getByText("See what changed without crowding the dashboard")).toHaveCount(0);
+  await expect(page.getByText("Open one calm, focused view", { exact: false })).toHaveCount(0);
+  await expect(page.locator(".dashboard-snapshot-metric")).toHaveCount(5);
+  await expect(page.locator(".dashboard-snapshot")).toContainText("Class Snapshot");
+  await expect(page.locator(".dashboard-snapshot-details")).not.toHaveAttribute("open", "");
 
-  await page.emulateMedia({ media: "print" });
-  expect(await page.locator(".teacher-login-rent-row").evaluate(row => getComputedStyle(row).display)).toBe("none");
-  await page.emulateMedia({ media: "screen" });
-
-  await page.setViewportSize({ width: 900, height: 900 });
-  const compactLoginRentLayout = await page.locator(".teacher-login-rent-row").evaluate(row => {
-    const login = row.querySelector(".student-login-info");
-    const rent = row.querySelector("#teacherRentCard");
-    if (!login || !rent) throw new Error("teacher login and rent cards did not render");
-    const loginRect = login.getBoundingClientRect();
-    const rentRect = rent.getBoundingClientRect();
+  const workspaceAndHistory = await page.evaluate(() => {
+    const workspace = document.querySelector(".dashboard-workspace");
+    const history = document.querySelector(".dashboard-history-disclosure");
+    if (!workspace || !history) throw new Error("dashboard workspace or transaction history did not render");
+    const workspaceRect = workspace.getBoundingClientRect();
+    const historyRect = history.getBoundingClientRect();
     return {
-      rentBelowLogin: rentRect.top >= loginRect.bottom,
-      equalWidth: Math.abs(loginRect.width - rentRect.width) <= 1,
+      historyFollowsWorkspace: historyRect.top >= workspaceRect.bottom,
+      collapsedHistoryHeight: historyRect.height,
     };
   });
-  expect(compactLoginRentLayout.rentBelowLogin).toBe(true);
-  expect(compactLoginRentLayout.equalWidth).toBe(true);
+  expect(workspaceAndHistory.historyFollowsWorkspace).toBe(true);
+  expect(workspaceAndHistory.collapsedHistoryHeight).toBeLessThan(100);
+  await expect(page.getByTestId("dashboard-quick-cash")).toBeVisible();
+  await expect(page.getByTestId("dashboard-custom-transaction")).toHaveCount(0);
+
+  await page.getByRole("tab", { name: "Custom Transaction" }).click();
+  await expect(page.getByTestId("dashboard-custom-transaction")).toBeVisible();
+  await expect(page.getByTestId("dashboard-quick-cash")).toHaveCount(0);
+  await page.getByRole("tab", { name: "Quick Cash" }).click();
+  await expect(page.getByTestId("dashboard-quick-cash")).toBeVisible();
+
+  const transactionHistory = page.getByTestId("dashboard-transactions");
+  await expect(transactionHistory).not.toHaveAttribute("open", "");
+  await page.getByRole("button", { name: "View transaction history" }).click();
+  await expect(transactionHistory).toHaveAttribute("open", "");
+
+  await page.emulateMedia({ media: "print" });
+  expect(await page.locator(".teacher-dashboard-top-row").evaluate(row => getComputedStyle(row).display)).toBe("none");
+  await page.emulateMedia({ media: "screen" });
+
+  await page.setViewportSize({ width: 736, height: 900 });
+  const tabletTopRowLayout = await page.locator(".teacher-dashboard-top-row").evaluate(row => {
+    const login = row.querySelector(".student-login-info");
+    const rent = row.querySelector("#teacherRentCard");
+    const insights = row.querySelector(".insights-dashboard-card");
+    if (!login || !rent || !insights) {
+      throw new Error("teacher login, rent, and AI Insights cards did not render");
+    }
+    const loginRect = login.getBoundingClientRect();
+    const rentRect = rent.getBoundingClientRect();
+    const insightsRect = insights.getBoundingClientRect();
+    return {
+      sameRow:
+        Math.abs(loginRect.top - rentRect.top) <= 1 &&
+        Math.abs(rentRect.top - insightsRect.top) <= 1,
+      equalWidths:
+        Math.abs(loginRect.width - rentRect.width) <= 1 &&
+        Math.abs(rentRect.width - insightsRect.width) <= 1,
+      pageOverflows: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    };
+  });
+  expect(tabletTopRowLayout.sameRow).toBe(true);
+  expect(tabletTopRowLayout.equalWidths).toBe(true);
+  expect(tabletTopRowLayout.pageOverflows).toBe(false);
+
+  await page.setViewportSize({ width: 390, height: 900 });
+  const phoneTopRowLayout = await page.locator(".teacher-dashboard-top-row").evaluate(row => {
+    const login = row.querySelector(".student-login-info");
+    const rent = row.querySelector("#teacherRentCard");
+    const insights = row.querySelector(".insights-dashboard-card");
+    if (!login || !rent || !insights) {
+      throw new Error("teacher login, rent, and AI Insights cards did not render");
+    }
+    const loginRect = login.getBoundingClientRect();
+    const rentRect = rent.getBoundingClientRect();
+    const insightsRect = insights.getBoundingClientRect();
+    return {
+      stacked: rentRect.top >= loginRect.bottom && insightsRect.top >= rentRect.bottom,
+      equalWidths:
+        Math.abs(loginRect.width - rentRect.width) <= 1 &&
+        Math.abs(rentRect.width - insightsRect.width) <= 1,
+      pageOverflows: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    };
+  });
+  expect(phoneTopRowLayout.stacked).toBe(true);
+  expect(phoneTopRowLayout.equalWidths).toBe(true);
+  expect(phoneTopRowLayout.pageOverflows).toBe(false);
   await page.setViewportSize({ width: 1280, height: 720 });
 
   await loginInfo.getByRole("button", { name: "Copy classroom code" }).click();

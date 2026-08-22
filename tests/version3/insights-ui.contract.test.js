@@ -18,6 +18,22 @@ test("source contract: AI Insights is teacher-only and immediately after Dashboa
   assert.match(indexHtml, /async function askProviderQuestion\(retry = false\)/);
 });
 
+test("source contract: Dashboard places concise AI guidance beside login information and rent", () => {
+  assert.match(
+    indexHtml,
+    /class="teacher-dashboard-top-row[\s\S]*?class="teacher-dashboard-essential student-login-info"[\s\S]*?id="teacherRentCard"[\s\S]*?class="teacher-dashboard-essential insights-dashboard-card"/,
+  );
+  assert.match(indexHtml, /grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/);
+  assert.match(indexHtml, /<span class="insights-eyebrow">Classroom patterns<\/span>/);
+  assert.match(indexHtml, /<h2>AI Insights<\/h2>/);
+  assert.match(
+    indexHtml,
+    /<p>Review classroom patterns and ask questions about your data\. Open the AI Insights tab for full details\.<\/p>/,
+  );
+  assert.doesNotMatch(indexHtml, /See what changed without crowding the dashboard/);
+  assert.doesNotMatch(indexHtml, /Open one calm, focused view/);
+});
+
 test("source contract: the page exposes one model-neutral initial/more flow and only three periods", () => {
   assert.match(indexHtml, /<h2>AI Insights<\/h2>/);
   assert.match(indexHtml, /Get AI Insights/);

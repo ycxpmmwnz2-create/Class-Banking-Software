@@ -2696,10 +2696,15 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.notEqual(teacherEnd, -1, "the teacher dashboard block must have a bounded source range");
     const teacherBlock = source.slice(teacherStart, teacherEnd);
 
-    assert.match(teacherBlock, /<h2>Student Login Information<\/h2>/);
+    assert.match(teacherBlock, /<h2>Student Login<\/h2>/);
     assert.match(
       teacherBlock,
-      /id="teacherStudentClassroomCode"[^>]*>\$\{escapeHtml\(resolvedStudentLoginCode\(\)\)\}<\/span>/,
+      /const studentLoginCode = resolvedStudentLoginCode\(\);/,
+      "the dashboard card must read the authoritatively resolved code once per render"
+    );
+    assert.match(
+      teacherBlock,
+      /id="teacherStudentClassroomCode"[^>]*>\$\{escapeHtml\(studentLoginCode\)\}<\/span>/,
       "the dashboard card must use the escaped, authoritatively resolved code"
     );
     assert.match(teacherBlock, /onclick="copyStudentClassroomCode\(\)"/);
@@ -2710,74 +2715,82 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
-  test("SOURCE GUARD: teacher login information and rent share a responsive three-to-one row", () => {
+  test("SOURCE GUARD: teacher login information, rent, and AI Insights share responsive thirds", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
-    function assertTeacherLoginRentSourceContract(candidate) {
+    function assertTeacherDashboardTopRowSourceContract(candidate) {
       const teacherStart = candidate.indexOf('if (screen === "teacher" && isTeacher) {');
       const teacherEnd = candidate.indexOf('\n      if (screen === "approvals"', teacherStart);
       assert.notEqual(teacherStart, -1, "the teacher dashboard block must exist");
       assert.notEqual(teacherEnd, -1, "the teacher dashboard block must have a bounded source range");
       const teacherBlock = candidate.slice(teacherStart, teacherEnd);
 
-      const rowStart = teacherBlock.indexOf('<div class="teacher-login-rent-row no-print">');
+      const rowStart = teacherBlock.indexOf('<div class="teacher-dashboard-top-row ${studentLoginCode');
       const rowEnd = teacherBlock.indexOf('\n          </div>', rowStart);
-      assert.notEqual(rowStart, -1, "the teacher-only login and rent row must exist and stay print-hidden");
-      assert.notEqual(rowEnd, -1, "the teacher-only login and rent row must have a bounded source range");
+      assert.notEqual(rowStart, -1, "the teacher-only dashboard top row must exist and stay print-hidden");
+      assert.notEqual(rowEnd, -1, "the teacher-only dashboard top row must have a bounded source range");
       const rowBlock = teacherBlock.slice(rowStart, rowEnd);
       assert.match(
         rowBlock,
-        /<div class="card no-print student-login-info">[\s\S]*?<div id="teacherRentCard" class="card no-print soft-card teacher-rent-card">/,
-        "the bounded teacher-only row must contain login information first and rent second"
+        /<section class="teacher-dashboard-essential student-login-info">[\s\S]*?<section id="teacherRentCard" class="teacher-dashboard-essential teacher-rent-card">[\s\S]*?<section class="teacher-dashboard-essential insights-dashboard-card">/,
+        "the bounded teacher-only row must contain login information, rent, and AI Insights in that order"
       );
 
-      const desktopRuleStart = candidate.indexOf(".teacher-login-rent-row {");
+      const desktopRuleStart = candidate.indexOf(".teacher-dashboard-top-row {");
       const desktopRuleEnd = candidate.indexOf("\n    }", desktopRuleStart);
-      assert.notEqual(desktopRuleStart, -1, "the desktop login and rent rule must exist");
-      assert.notEqual(desktopRuleEnd, -1, "the desktop login and rent rule must be bounded");
+      assert.notEqual(desktopRuleStart, -1, "the desktop dashboard top-row rule must exist");
+      assert.notEqual(desktopRuleEnd, -1, "the desktop dashboard top-row rule must be bounded");
       assert.match(
         candidate.slice(desktopRuleStart, desktopRuleEnd),
-        /grid-template-columns:\s*minmax\(0, 3fr\) minmax\(220px, 1fr\);/,
-        "the desktop row must give login information three quarters and rent one quarter"
+        /grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\);/,
+        "the desktop row must give all three cards equal width"
       );
 
-      const compactStart = candidate.indexOf("@media (max-width: 1000px) {");
-      const compactEnd = candidate.indexOf("\n    @media (max-width: 700px)", compactStart);
-      assert.notEqual(compactStart, -1, "the compact breakpoint must exist");
-      assert.notEqual(compactEnd, -1, "the compact breakpoint must have a bounded source range");
+      const mediumStart = candidate.indexOf("@media (max-width: 1000px) {");
+      const mediumEnd = candidate.indexOf("\n    @media (max-width: 700px)", mediumStart);
+      assert.notEqual(mediumStart, -1, "the medium breakpoint must exist");
+      assert.notEqual(mediumEnd, -1, "the medium breakpoint must have a bounded source range");
+      assert.doesNotMatch(
+        candidate.slice(mediumStart, mediumEnd),
+        /\.teacher-dashboard-top-row,[\s\S]*?grid-template-columns: 1fr;/,
+        "the three essentials must remain in equal thirds above phone width"
+      );
+
+      const compactStart = candidate.indexOf("@media (max-width: 700px) {");
+      const compactEnd = candidate.indexOf("\n  </style>", compactStart);
+      assert.notEqual(compactStart, -1, "the phone breakpoint must exist");
+      assert.notEqual(compactEnd, -1, "the phone breakpoint must have a bounded source range");
       assert.match(
         candidate.slice(compactStart, compactEnd),
-        /\.teacher-login-rent-row \{ grid-template-columns: 1fr; \}/,
-        "the shared row must stack inside the 1000px breakpoint"
+        /\.teacher-dashboard-top-row,\s*\.teacher-dashboard-top-row--without-login \{ grid-template-columns: 1fr; \}/,
+        "the dashboard essentials must stack at the phone breakpoint"
       );
     }
 
-    assertTeacherLoginRentSourceContract(source);
+    assertTeacherDashboardTopRowSourceContract(source);
 
-    const breakpointMovedTo700 = source
-      .replace('      .teacher-login-rent-row { grid-template-columns: 1fr; }\n', "")
+    const breakpointMovedTo1000 = source
       .replace(
-        "    @media (max-width: 700px) {",
-        "    @media (max-width: 700px) {\n      .teacher-login-rent-row { grid-template-columns: 1fr; }"
-      );
-    assert.throws(
-      () => assertTeacherLoginRentSourceContract(breakpointMovedTo700),
-      /shared row must stack inside the 1000px breakpoint/,
-      "moving the stack rule to a narrower breakpoint must fail the source contract"
-    );
-
-    const rentMovedOutsideRow = source
-      .replace(
-        '            ` : ""}\n\n            <div id="teacherRentCard"',
-        '            ` : ""}\n          </div>\n\n            <div id="teacherRentCard"'
+        '      .teacher-dashboard-top-row,\n      .teacher-dashboard-top-row--without-login { grid-template-columns: 1fr; }\n',
+        ""
       )
       .replace(
-        '            </div>\n          </div>\n\n          <div class="card no-print dashboard-insights">',
-        '            </div>\n\n          <div class="card no-print dashboard-insights">'
+        "    @media (max-width: 1000px) {",
+        "    @media (max-width: 1000px) {\n      .teacher-dashboard-top-row,\n      .teacher-dashboard-top-row--without-login { grid-template-columns: 1fr; }"
       );
     assert.throws(
-      () => assertTeacherLoginRentSourceContract(rentMovedOutsideRow),
-      /bounded teacher-only row must contain login information first and rent second/,
-      "moving rent outside the shared row must fail the source contract"
+      () => assertTeacherDashboardTopRowSourceContract(breakpointMovedTo1000),
+      /three essentials must remain in equal thirds above phone width/,
+      "stacking the essentials too early must fail the source contract"
+    );
+
+    const insightsRemovedFromRow = source.replace(
+      '            <section class="teacher-dashboard-essential insights-dashboard-card">',
+      '            <section class="teacher-dashboard-essential moved-insights-dashboard-card">'
+    );
+    assert.throws(
+      () => assertTeacherDashboardTopRowSourceContract(insightsRemovedFromRow),
+      /bounded teacher-only row must contain login information, rent, and AI Insights in that order/,
+      "removing or moving AI Insights outside the shared row must fail the source contract"
     );
   });
 
@@ -3095,13 +3108,13 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
 
   test("custom transaction student checkboxes use the alphabetical display copy", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
-    const customTransactionStart = source.indexOf('<h2>Custom Transaction</h2>');
-    const recentTransactionsStart = source.indexOf('<h2>Recent Transactions</h2>', customTransactionStart);
+    const customTransactionStart = source.indexOf('data-testid="dashboard-custom-transaction"');
+    const transactionHistoryStart = source.indexOf('<h2>Transaction History</h2>', customTransactionStart);
 
-    assert.ok(customTransactionStart >= 0, "custom transaction card must exist");
-    assert.ok(recentTransactionsStart > customTransactionStart, "custom transaction card must have a bounded end");
+    assert.ok(customTransactionStart >= 0, "custom transaction tool must exist");
+    assert.ok(transactionHistoryStart > customTransactionStart, "custom transaction tool must have a bounded end");
 
-    const customTransactionSource = source.slice(customTransactionStart, recentTransactionsStart);
+    const customTransactionSource = source.slice(customTransactionStart, transactionHistoryStart);
     assert.match(
       customTransactionSource,
       /sortStudentsByName\(data\.students\)\.map\(student\s*=>/,
@@ -3124,9 +3137,24 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.match(source, /let teacherTransactionsExpanded = false;/);
     assert.match(
       source,
-      /<details[\s\S]*?data-testid="dashboard-transactions"[\s\S]*?\$\{teacherTransactionsExpanded \? "open" : ""\}[\s\S]*?<h2>Recent Transactions<\/h2>/
+      /<\/section>\s*<details[\s\S]*?class="card dashboard-disclosure dashboard-transaction-disclosure dashboard-history-disclosure"[\s\S]*?data-testid="dashboard-transactions"[\s\S]*?\$\{teacherTransactionsExpanded \? "open" : ""\}[\s\S]*?<h2>Transaction History<\/h2>/
     );
     assert.match(source, /ontoggle="setDashboardSectionExpanded\('transactions', this\.open\)"/);
+    assert.match(source, /function openDashboardTransactions\(\) \{\s*if \(!requireTeacher\(\)\) return;\s*teacherTransactionsExpanded = true;\s*render\(\);/);
+  });
+
+  test("dashboard cash tools share one persistent tabbed workspace", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    assert.match(source, /let dashboardMoneyTool = "quick";/);
+    assert.match(
+      source,
+      /function setDashboardMoneyTool\(tool\) \{\s*if \(!requireTeacher\(\)\) return;\s*if \(tool !== "quick" && tool !== "custom"\) return;/,
+      "the view-only tool switch must remain teacher-gated and allowlisted"
+    );
+    assert.match(source, /role="tablist" aria-label="Transaction tool"/);
+    assert.match(source, /data-testid="dashboard-quick-cash"/);
+    assert.match(source, /data-testid="dashboard-custom-transaction"/);
+    assert.match(source, /dashboardMoneyTool = "quick";\s*insightsPeriodDays = 30;/);
   });
 
   test("student authorization logs live under Settings and export only redacted CSV fields", () => {

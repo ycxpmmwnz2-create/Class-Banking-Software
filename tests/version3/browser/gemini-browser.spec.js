@@ -214,6 +214,7 @@ test("teacher cleanup keeps the Dashboard compact and moves authorization logs u
   await openApp(page);
   await signIn(page, TENANT_A);
   await page.evaluate(() => window.setScreen("teacher"));
+  await page.getByRole("tab", { name: "Custom Transaction" }).click();
 
   const studentPicker = page.getByTestId("dashboard-student-picker");
   const transactions = page.getByTestId("dashboard-transactions");

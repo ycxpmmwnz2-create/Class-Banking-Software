@@ -333,62 +333,110 @@
       font-size: 20px;
     }
 
-    .dashboard-insights {
-      padding: 14px 16px;
+    .dashboard-snapshot {
+      padding: 14px 18px;
       margin-bottom: 12px;
+      background: rgba(239, 250, 248, 0.82);
     }
 
-    .dashboard-insights h2 {
-      margin-bottom: 10px;
-      font-size: 20px;
-    }
-
-    .dashboard-insights .stats {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-      margin-bottom: 0;
-    }
-
-    .dashboard-insights .stat-box {
-      display: flex;
-      align-items: center;
-      min-height: 54px;
-      padding: 10px 12px;
-      border-radius: var(--radius-sm);
-      box-shadow: 0 3px 10px rgba(18, 50, 58, 0.05);
-      font-size: 15px;
-      line-height: 1.25;
-    }
-
-    .insights-dashboard-card {
-      margin-bottom: 16px;
-      padding: 18px 20px;
-      background: linear-gradient(135deg, rgba(239, 250, 248, 0.96), rgba(217, 241, 238, 0.96));
-      overflow: hidden;
-    }
-
-    .insights-dashboard-row {
+    .dashboard-section-heading {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 18px;
+      gap: 12px;
+      margin-bottom: 10px;
     }
 
-    .insights-dashboard-copy {
-      min-width: 0;
-      max-width: 760px;
+    .dashboard-section-heading h2 {
+      margin: 0;
+      font-size: 20px;
     }
+
+    .dashboard-section-heading span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .dashboard-snapshot-metrics {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+
+    .dashboard-snapshot-metric {
+      min-width: 0;
+      padding: 4px 16px;
+    }
+
+    .dashboard-snapshot-metric:first-child { padding-left: 0; }
+
+    .dashboard-snapshot-metric + .dashboard-snapshot-metric {
+      border-left: 1px solid rgba(36, 148, 144, 0.18);
+    }
+
+    .dashboard-snapshot-metric strong,
+    .dashboard-snapshot-metric span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .dashboard-snapshot-metric strong {
+      font-size: 21px;
+      letter-spacing: -0.03em;
+    }
+
+    .dashboard-snapshot-metric span {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .dashboard-snapshot-details {
+      margin-top: 10px;
+      border: 0;
+      border-top: 1px solid rgba(36, 148, 144, 0.14);
+      border-radius: 0;
+      overflow: visible;
+      background: transparent;
+    }
+
+    .dashboard-snapshot-details > summary {
+      padding: 9px 0 0;
+      color: var(--teal-dark);
+      font-size: 12px;
+    }
+
+    .dashboard-snapshot-details > summary::after {
+      padding: 3px 8px;
+      font-size: 11px;
+    }
+
+    .dashboard-snapshot-detail-list {
+      display: flex;
+      gap: 8px 18px;
+      flex-wrap: wrap;
+      padding-top: 10px;
+      color: #29464e;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .insights-dashboard-copy { min-width: 0; }
 
     .insights-dashboard-copy h2 {
       margin: 3px 0 6px;
-      font-size: 21px;
+      font-size: 20px;
     }
 
     .insights-dashboard-copy p {
       margin: 0;
       color: var(--muted);
+      font-size: 13px;
       font-weight: 750;
-      line-height: 1.45;
+      line-height: 1.42;
     }
 
     .insights-eyebrow {
@@ -553,56 +601,118 @@
       line-height: 1.4;
     }
 
-    .student-login-info {
-      border: 2px solid rgba(36, 148, 144, 0.42);
+    .teacher-dashboard-top-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      overflow: hidden;
+      border: 1px solid rgba(36, 148, 144, 0.2);
+      border-radius: var(--radius-lg);
       margin-bottom: 12px;
+      background: rgba(239, 250, 248, 0.9);
+      box-shadow: var(--shadow-soft);
     }
 
-    .student-login-info h2 {
-      margin-bottom: 8px;
+    .teacher-dashboard-top-row--without-login {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .student-login-info-row {
+    .teacher-dashboard-essential {
+      display: flex;
+      min-width: 0;
+      min-height: 174px;
+      flex-direction: column;
+      padding: 16px;
+    }
+
+    .teacher-dashboard-essential + .teacher-dashboard-essential {
+      border-left: 1px solid rgba(36, 148, 144, 0.18);
+    }
+
+    .teacher-dashboard-essential h2 {
+      margin: 3px 0 6px;
+      font-size: 20px;
+    }
+
+    .teacher-dashboard-essential p {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 750;
+      line-height: 1.42;
+    }
+
+    .dashboard-essential-action {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 8px;
       flex-wrap: wrap;
-      margin-top: 12px;
+      margin-top: auto;
+    }
+
+    .dashboard-essential-action .primary { margin-top: 0; }
+
+    .student-login-info {
+      background: rgba(247, 253, 252, 0.82);
     }
 
     .student-login-info-code {
       display: inline-block;
-      padding: 10px 14px;
+      padding: 8px 10px;
       border: 1px solid rgba(36, 148, 144, 0.35);
       border-radius: var(--radius-sm);
       background: white;
       color: var(--teal-dark);
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 24px;
+      font-size: 17px;
       font-weight: 950;
       letter-spacing: 0.08em;
       -webkit-user-select: all;
       user-select: all;
     }
 
-    .teacher-login-rent-row {
+    .teacher-rent-card {
+      background: rgba(228, 246, 243, 0.72);
+    }
+
+    .teacher-rent-card .big-balance {
+      margin: 0 0 5px;
+      font-size: 32px;
+    }
+
+    .dashboard-rent-disclosure {
+      border: 0;
+      margin-top: auto;
+      overflow: visible;
+      background: transparent;
+    }
+
+    .dashboard-rent-disclosure > summary {
+      width: fit-content;
+      border: 1px solid rgba(36, 148, 144, 0.3);
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: #edf9f8;
+      color: var(--teal-dark);
+      font-size: 12px;
+    }
+
+    .dashboard-rent-disclosure > summary::after { display: none; }
+
+    .dashboard-rent-editor {
       display: grid;
-      grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr);
-      gap: 16px;
-      align-items: stretch;
-      margin-bottom: 12px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+      padding-top: 10px;
     }
 
-    .teacher-login-rent-row > .card {
-      margin-bottom: 0;
-    }
+    .dashboard-rent-editor label { grid-column: 1 / -1; }
 
-    .teacher-login-rent-row > .teacher-rent-card:only-child {
-      grid-column: 1 / -1;
-    }
+    .dashboard-rent-editor input,
+    .dashboard-rent-editor button { margin: 0; }
 
-    .teacher-login-rent-row > .teacher-rent-card .big-balance {
-      font-size: clamp(28px, 2.6vw, 44px);
+    .insights-dashboard-card {
+      background: linear-gradient(135deg, rgba(239, 250, 248, 0.96), rgba(217, 241, 238, 0.96));
     }
 
     .grid {
@@ -814,6 +924,111 @@
     .quick-btn.subtract {
       background: var(--coral);
       color: var(--text);
+    }
+
+    .dashboard-workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.75fr);
+      gap: 16px;
+      align-items: start;
+      margin-bottom: 12px;
+    }
+
+    .dashboard-workspace > * { min-width: 0; }
+
+    .dashboard-money-panel,
+    .dashboard-activity-panel { margin-bottom: 0; }
+
+    .dashboard-work-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .dashboard-work-header h2,
+    .dashboard-activity-panel h2 {
+      margin: 3px 0 0;
+      font-size: 21px;
+    }
+
+    .dashboard-money-tabs {
+      display: flex;
+      gap: 4px;
+      border-radius: 999px;
+      padding: 4px;
+      background: rgba(36, 148, 144, 0.1);
+    }
+
+    .dashboard-money-tab {
+      border: 0;
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: transparent;
+      box-shadow: none;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .dashboard-money-tab:hover {
+      transform: none;
+      box-shadow: none;
+    }
+
+    .dashboard-money-tab.active {
+      background: white;
+      color: var(--teal-dark);
+      box-shadow: 0 2px 7px rgba(18, 50, 58, 0.08);
+    }
+
+    .dashboard-money-note {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 750;
+      line-height: 1.4;
+    }
+
+    .dashboard-quick-cash-actions {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .dashboard-quick-cash-actions .quick-btn {
+      border-radius: 14px;
+      padding: 14px 5px;
+      font-size: 17px;
+    }
+
+    .dashboard-custom-transaction .transaction-form {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .dashboard-activity-panel .activity-list { gap: 8px; }
+
+    .dashboard-activity-panel .activity-item {
+      padding: 10px;
+      border-radius: 14px;
+    }
+
+    .dashboard-activity-panel .activity-title { font-size: 14px; }
+    .dashboard-activity-panel .activity-sub { font-size: 12px; }
+
+    .dashboard-activity-footer {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(36, 148, 144, 0.14);
+    }
+
+    .dashboard-activity-footer button { margin: 0; }
+
+    .dashboard-transaction-disclosure.card {
+      margin-bottom: 0;
     }
 
     .balance-card {
@@ -1034,9 +1249,29 @@
 
     .print-only { display: none; }
 
+    .luther-ai-credit {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 16px 4px 0;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+
+    .luther-ai-credit img {
+      display: block;
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+    }
+
+    .luther-ai-credit strong { color: var(--text); }
+
     @media print {
       body { background: #dff3f0; padding: 16px; }
       .no-print { display: none !important; }
+      .luther-ai-credit { display: none; }
       .print-only { display: block; }
       .card { border: none; padding: 0; box-shadow: none; }
       table { min-width: 0; font-size: 14px; }
@@ -1045,9 +1280,13 @@
 
     @media (max-width: 1000px) {
       .stats { grid-template-columns: repeat(2, 1fr); }
-      .dashboard-insights .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .teacher-login-rent-row { grid-template-columns: 1fr; }
-      .teacher-login-rent-row > .teacher-rent-card .big-balance { font-size: clamp(42px, 8vw, 70px); }
+      .dashboard-snapshot-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .dashboard-snapshot-metric:nth-child(4) {
+        border-left: 0;
+        padding-left: 0;
+      }
+      .dashboard-snapshot-metric:nth-child(n + 4) { margin-top: 12px; }
+      .dashboard-workspace { grid-template-columns: 1fr; }
       .insights-controls { grid-template-columns: 1fr; align-items: stretch; }
       .insights-actions { justify-content: flex-start; }
       .grid { grid-template-columns: minmax(0, 1fr); }
@@ -1098,6 +1337,32 @@
       .hero-meta-item { text-align: left; }
       .center-logo-wrap { margin-bottom: 12px; }
       .center-logo { width: min(150px, 48vw); }
+      .luther-ai-credit { justify-content: center; }
+      .teacher-dashboard-top-row,
+      .teacher-dashboard-top-row--without-login { grid-template-columns: 1fr; }
+      .teacher-dashboard-essential { min-height: 0; }
+      .teacher-dashboard-essential + .teacher-dashboard-essential {
+        border-top: 1px solid rgba(36, 148, 144, 0.18);
+        border-left: 0;
+      }
+      .dashboard-snapshot-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .dashboard-snapshot-metric:nth-child(3),
+      .dashboard-snapshot-metric:nth-child(5) {
+        border-left: 0;
+        padding-left: 0;
+      }
+      .dashboard-snapshot-metric:nth-child(4) {
+        border-left: 1px solid rgba(36, 148, 144, 0.18);
+        padding-left: 16px;
+      }
+      .dashboard-snapshot-metric:nth-child(n + 3) { margin-top: 12px; }
+      .dashboard-work-header {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .dashboard-money-tabs { width: 100%; }
+      .dashboard-money-tab { flex: 1; }
+      .dashboard-quick-cash-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .brand-mark { width: 40px; height: 40px; }
       .brand-name { font-size: 18px; }
       .button-bar {
@@ -1125,25 +1390,18 @@
         border-radius: 20px;
       }
       .stats { grid-template-columns: 1fr; }
-      .dashboard-insights .stats { grid-template-columns: 1fr; }
-      .dashboard-insights { padding: 12px; }
-      .dashboard-insights .stat-box { min-height: 48px; }
-      .insights-dashboard-row,
       .insights-report-header {
         align-items: stretch;
         flex-direction: column;
       }
-      .insights-dashboard-row > button { align-self: flex-start; }
       .insights-actions { display: grid; grid-template-columns: 1fr; }
       .insights-actions button { width: 100%; }
       .insights-question-actions { display: grid; }
       .insights-question-actions button { width: 100%; }
-      .student-login-info-row { align-items: stretch; }
       .student-login-info-code {
         width: 100%;
         text-align: center;
       }
-      .student-login-info-row button { width: 100%; }
       .quick-cash-grid {
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 8px;
@@ -1552,11 +1810,31 @@ let transactionTarget = "selected";
 let teacherTransactionFilter = "all";
 let teacherStudentListExpanded = false;
 let teacherTransactionsExpanded = false;
+let dashboardMoneyTool = "quick";
 
 function setDashboardSectionExpanded(section, expanded) {
   if (!requireTeacher()) return;
   if (section === "students") teacherStudentListExpanded = Boolean(expanded);
   if (section === "transactions") teacherTransactionsExpanded = Boolean(expanded);
+}
+
+function setDashboardMoneyTool(tool) {
+  if (!requireTeacher()) return;
+  if (tool !== "quick" && tool !== "custom") return;
+  dashboardMoneyTool = tool;
+  render();
+}
+
+function openDashboardTransactions() {
+  if (!requireTeacher()) return;
+  teacherTransactionsExpanded = true;
+  render();
+  requestAnimationFrame(() => {
+    document.querySelector('[data-testid="dashboard-transactions"]')?.scrollIntoView({
+      behavior: "smooth",
+      block: "start"
+    });
+  });
 }
 
 function setTransactionTarget(value) {
@@ -1876,6 +2154,7 @@ function toggleStudentDropdown() {
       if (newScreen === "teacher" && screen !== "teacher") {
         teacherStudentListExpanded = false;
         teacherTransactionsExpanded = false;
+        dashboardMoneyTool = "quick";
       }
       screen = newScreen;
       render();
@@ -4379,187 +4658,218 @@ link.click();
       }
 
       if (screen === "teacher" && isTeacher) {
+        const studentLoginCode = resolvedStudentLoginCode();
         html += `
-          <div class="teacher-login-rent-row no-print">
-            ${resolvedStudentLoginCode() ? `
-            <div class="card no-print student-login-info">
-              <h2>Student Login Information</h2>
-              <p>Share this classroom code with your students. After a successful login, Morgan Bank can remember the code and that student's login ID on that browser, so the student signs in with just a PIN next time. PINs are never saved.</p>
-              <div class="student-login-info-row">
-                <span>Classroom code:</span>
-                <span id="teacherStudentClassroomCode" class="student-login-info-code">${escapeHtml(resolvedStudentLoginCode())}</span>
+          <div class="teacher-dashboard-top-row ${studentLoginCode ? "" : "teacher-dashboard-top-row--without-login"} no-print">
+            ${studentLoginCode ? `
+            <section class="teacher-dashboard-essential student-login-info">
+              <span class="insights-eyebrow">Class access</span>
+              <h2>Student Login</h2>
+              <p>Share the classroom code or login link. Morgan Bank can remember the code and login ID on that browser; PINs are never saved.</p>
+              <div class="dashboard-essential-action">
+                <span id="teacherStudentClassroomCode" class="student-login-info-code">${escapeHtml(studentLoginCode)}</span>
                 <button type="button" class="primary" onclick="copyStudentClassroomCode()" aria-label="Copy classroom code">Copy code</button>
-                <button type="button" class="primary" onclick="copyStudentClassroomLoginLink()" aria-label="Copy student login link">Copy student login link</button>
+                <button type="button" onclick="copyStudentClassroomLoginLink()" aria-label="Copy student login link">Copy login link</button>
               </div>
-            </div>
+            </section>
             ` : ""}
 
-            <div id="teacherRentCard" class="card no-print soft-card teacher-rent-card">
+            <section id="teacherRentCard" class="teacher-dashboard-essential teacher-rent-card">
+              <span class="insights-eyebrow">Class setting</span>
               <h2>Class Rent</h2>
               <div id="teacherRentDisplay" class="big-balance">${dollars(data.settings.rentAmount)}</div>
-              <p class="small-note">This amount is displayed to students. Saving it does not charge accounts or create transactions.</p>
-              <label for="teacherRentAmount">Rent amount</label>
-              <input
-                id="teacherRentAmount"
-                type="number"
-                min="0"
-                max="${MAX_RENT_AMOUNT}"
-                step="1"
-                inputmode="numeric"
-                value="${data.settings.rentAmount}"
-                ${rentUpdatePending ? "disabled" : ""}
-              />
-              <button class="primary" onclick="saveRentAmount()" ${rentUpdatePending ? "disabled" : ""}>
-                ${rentUpdatePending ? "Saving Rent..." : "Save Rent"}
-              </button>
-            </div>
-          </div>
-
-          <div class="card no-print dashboard-insights">
-            <h2>Dashboard Insights</h2>
-            <div class="stats">
-              <div class="stat-box">Class Cash: ${dollars(totalCash)}</div>
-              <div class="stat-box">Students: ${data.students.length}</div>
-              <div class="stat-box">Pending Credits: ${pendingTransactions.filter(t => t.type === "Add").length}</div>
-              <div class="stat-box">Student Debits: ${data.transactions.filter(transaction => transaction.source === "Student" && transaction.type === "Subtract").length}</div>
-              <div class="stat-box">Approved: ${approvedTransactions.length}</div>
-              <div class="stat-box">Frozen Accounts: ${frozenAccountCount}</div>
-              <div class="stat-box">
-                Highest Balance: ${highestBalanceStudent
-                  ? `${escapeHtml(highestBalanceStudent.name)} — ${dollars(highestBalanceStudent.balance)}`
-                  : "No students"}
-              </div>
-              <div class="stat-box">
-                Lowest Balance: ${lowestBalanceStudent
-                  ? `${escapeHtml(lowestBalanceStudent.name)} — ${dollars(lowestBalanceStudent.balance)}`
-                  : "No students"}
-              </div>
-              <div class="stat-box">Transactions Today: ${transactionsToday}</div>
-            </div>
-          </div>
-
-          <div class="card no-print insights-dashboard-card">
-            <div class="insights-dashboard-row">
-              <div class="insights-dashboard-copy">
-                <span class="insights-eyebrow">Insights</span>
-                <h2>${providerInsightsReport
-                  ? escapeHtml(orderedProviderObservations(providerInsightsReport)[0]?.title || "Your latest AI insights are ready")
-                  : "See what changed without crowding the dashboard"}</h2>
-                <p>${providerInsightsReport
-                  ? `${escapeHtml(orderedProviderObservations(providerInsightsReport)[0]?.summary || "Open AI Insights to review the latest analysis.")} · ${providerInsightsReport.observations.length} ${providerInsightsReport.observations.length === 1 ? "insight" : "insights"} available · Generated ${escapeHtml(formattedInsightsGeneratedAt(providerInsightsReport.generatedAt))}.`
-                  : "Open one calm, focused view for meaningful classroom patterns and questions about your data."}</p>
-              </div>
-              <button class="primary" onclick="setScreen('insights')">${providerInsightsReport ? "View AI Insights" : "Open AI Insights"}</button>
-            </div>
-          </div>
-
-          <div class="wide-grid">
-            <div class="card soft-card">
-              <h2>Quick Cash</h2>
-              <div class="lock-note">Choose a student, then tap one button. Built for classroom speed.</div>
-              ${data.students.length === 0 ? `
-                <div class="empty">Add students on the Roster page first.</div>
-              ` : `
-                <label for="quickStudent">Student</label>
-                <select id="quickStudent">${studentOptions}</select>
-
-                <h3>Add Money</h3>
-                <div class="quick-cash-grid">
-                  <button class="quick-btn" onclick="quickCash('Add', 1)">+$1</button>
-                  <button class="quick-btn" onclick="quickCash('Add', 5)">+$5</button>
-                  <button class="quick-btn" onclick="quickCash('Add', 10)">+$10</button>
+              <p>This amount is displayed to students. Changing it does not charge accounts or create transactions.</p>
+              <details class="dashboard-disclosure dashboard-rent-disclosure">
+                <summary>Change rent</summary>
+                <div class="dashboard-rent-editor">
+                  <label for="teacherRentAmount">Rent amount</label>
+                  <input
+                    id="teacherRentAmount"
+                    type="number"
+                    min="0"
+                    max="${MAX_RENT_AMOUNT}"
+                    step="1"
+                    inputmode="numeric"
+                    value="${data.settings.rentAmount}"
+                    ${rentUpdatePending ? "disabled" : ""}
+                  />
+                  <button class="primary" onclick="saveRentAmount()" ${rentUpdatePending ? "disabled" : ""}>
+                    ${rentUpdatePending ? "Saving Rent..." : "Save Rent"}
+                  </button>
                 </div>
+              </details>
+            </section>
 
-                <h3>Subtract Money</h3>
-                <div class="quick-cash-grid">
-                  <button class="quick-btn subtract" onclick="quickCash('Subtract', 1)">-$1</button>
-                  <button class="quick-btn subtract" onclick="quickCash('Subtract', 5)">-$5</button>
-                  <button class="quick-btn subtract" onclick="quickCash('Subtract', 10)">-$10</button>
+            <section class="teacher-dashboard-essential insights-dashboard-card">
+              <div class="insights-dashboard-copy">
+                <span class="insights-eyebrow">Classroom patterns</span>
+                <h2>AI Insights</h2>
+                <p>Review classroom patterns and ask questions about your data. Open the AI Insights tab for full details.</p>
+              </div>
+              <div class="dashboard-essential-action">
+                <button class="primary" onclick="setScreen('insights')">${providerInsightsReport ? "View AI Insights" : "Open AI Insights"}</button>
+              </div>
+            </section>
+          </div>
+
+          <section class="card no-print dashboard-snapshot">
+            <div class="dashboard-section-heading">
+              <h2>Class Snapshot</h2>
+              <span>Today</span>
+            </div>
+            <div class="dashboard-snapshot-metrics">
+              <div class="dashboard-snapshot-metric"><strong>${dollars(totalCash)}</strong><span>Class cash</span></div>
+              <div class="dashboard-snapshot-metric"><strong>${data.students.length}</strong><span>Students</span></div>
+              <div class="dashboard-snapshot-metric"><strong>${pendingTransactions.filter(t => t.type === "Add").length}</strong><span>Pending credits</span></div>
+              <div class="dashboard-snapshot-metric"><strong>${frozenAccountCount}</strong><span>Frozen accounts</span></div>
+              <div class="dashboard-snapshot-metric"><strong>${transactionsToday}</strong><span>Transactions today</span></div>
+            </div>
+            <details class="dashboard-disclosure dashboard-snapshot-details">
+              <summary>More class details</summary>
+              <div class="dashboard-snapshot-detail-list">
+                <span>Student debits: ${data.transactions.filter(transaction => transaction.source === "Student" && transaction.type === "Subtract").length}</span>
+                <span>Approved: ${approvedTransactions.length}</span>
+                <span>Highest balance: ${highestBalanceStudent
+                  ? `${escapeHtml(highestBalanceStudent.name)} — ${dollars(highestBalanceStudent.balance)}`
+                  : "No students"}</span>
+                <span>Lowest balance: ${lowestBalanceStudent
+                  ? `${escapeHtml(lowestBalanceStudent.name)} — ${dollars(lowestBalanceStudent.balance)}`
+                  : "No students"}</span>
+              </div>
+            </details>
+          </section>
+
+          <section class="dashboard-workspace">
+            <div class="card dashboard-money-panel">
+              <div class="dashboard-work-header">
+                <div>
+                  <span class="insights-eyebrow">Daily tools</span>
+                  <h2>Move Class Cash</h2>
+                </div>
+                <div class="dashboard-money-tabs" role="tablist" aria-label="Transaction tool">
+                  <button
+                    id="dashboardQuickCashTab"
+                    type="button"
+                    class="dashboard-money-tab ${dashboardMoneyTool === "quick" ? "active" : ""}"
+                    role="tab"
+                    aria-controls="dashboardQuickCashPanel"
+                    aria-selected="${dashboardMoneyTool === "quick"}"
+                    onclick="setDashboardMoneyTool('quick')">Quick Cash</button>
+                  <button
+                    id="dashboardCustomTransactionTab"
+                    type="button"
+                    class="dashboard-money-tab ${dashboardMoneyTool === "custom" ? "active" : ""}"
+                    role="tab"
+                    aria-controls="dashboardCustomTransactionPanel"
+                    aria-selected="${dashboardMoneyTool === "custom"}"
+                    onclick="setDashboardMoneyTool('custom')">Custom Transaction</button>
+                </div>
+              </div>
+
+              ${dashboardMoneyTool === "quick" ? `
+                <div id="dashboardQuickCashPanel" role="tabpanel" aria-labelledby="dashboardQuickCashTab" data-testid="dashboard-quick-cash">
+                  <p class="dashboard-money-note">Choose a student, then tap one amount for a fast classroom transaction.</p>
+                  ${data.students.length === 0 ? `
+                    <div class="empty">Add students on the Roster page first.</div>
+                  ` : `
+                    <label for="quickStudent">Student</label>
+                    <select id="quickStudent">${studentOptions}</select>
+                    <div class="dashboard-quick-cash-actions">
+                      <button class="quick-btn" onclick="quickCash('Add', 1)">+$1</button>
+                      <button class="quick-btn" onclick="quickCash('Add', 5)">+$5</button>
+                      <button class="quick-btn" onclick="quickCash('Add', 10)">+$10</button>
+                      <button class="quick-btn subtract" onclick="quickCash('Subtract', 1)">-$1</button>
+                      <button class="quick-btn subtract" onclick="quickCash('Subtract', 5)">-$5</button>
+                      <button class="quick-btn subtract" onclick="quickCash('Subtract', 10)">-$10</button>
+                    </div>
+                  `}
+                </div>
+              ` : `
+                <div id="dashboardCustomTransactionPanel" class="dashboard-custom-transaction" role="tabpanel" aria-labelledby="dashboardCustomTransactionTab" data-testid="dashboard-custom-transaction">
+                  <p class="dashboard-money-note">Choose whether to add or subtract money. Teacher’s Choice includes an optional memo.</p>
+                  ${data.students.length === 0 ? `
+                    <div class="empty">Add students on the Roster page first.</div>
+                  ` : `
+                    <div class="transaction-form">
+                      <input id="transactionType" type="hidden" value="Add" />
+
+                      <label>Transaction type</label>
+                      <div class="segmented-control">
+                        <button id="addModeButton" class="segment-button active" onclick="setCustomTransactionMode('Add')">Add Money</button>
+                        <button id="subtractModeButton" class="segment-button" onclick="setCustomTransactionMode('Subtract')">Subtract Money</button>
+                      </div>
+
+                      <label for="transactionTarget">Who gets this transaction?</label>
+                      <select id="transactionTarget" onchange="setTransactionTarget(this.value)">
+                        <option value="selected" ${transactionTarget === "selected" ? "selected" : ""}>Selected Students</option>
+                        <option value="whole" ${transactionTarget === "whole" ? "selected" : ""}>Whole Class</option>
+                      </select>
+
+                      ${transactionTarget !== "whole" ? `
+                        <details
+                          class="dashboard-disclosure student-picker-disclosure full-row"
+                          data-testid="dashboard-student-picker"
+                          ontoggle="setDashboardSectionExpanded('students', this.open)"
+                          ${teacherStudentListExpanded ? "open" : ""}>
+                          <summary>
+                            <span>Choose students</span>
+                            <span class="dashboard-disclosure-meta">${data.students.length} in class</span>
+                          </summary>
+                          <div class="student-check-list" style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
+                            ${sortStudentsByName(data.students).map(student => `
+                              <label class="student-check-item" style="display: flex; align-items: center; gap: 10px; width: 100%;">
+                                <input
+                                  type="checkbox"
+                                  class="student-check"
+                                  value="${student.id}"
+                                  style="width: 18px; height: 18px; margin: 0;" />
+                                <span>${escapeHtml(student.name)}</span>
+                              </label>
+                            `).join("")}
+                          </div>
+                        </details>
+                      ` : ""}
+
+                      <label for="transactionAmount">Amount</label>
+                      <input id="transactionAmount" type="number" min="1" value="1" />
+
+                      <label for="transactionReason">Category</label>
+                      <select id="transactionReason" onchange="toggleTeacherChoiceMemo()">${categoryOptions(effectiveAddMoneyCategories(data.settings.addMoneyCategories), "Homework")}</select>
+
+                      <div id="teacherChoiceMemoWrap" class="teacher-choice-memo full-row">
+                        <label for="teacherChoiceMemo">Teacher’s Choice memo</label>
+                        <input id="teacherChoiceMemo" placeholder="Optional reason or memo" />
+                      </div>
+
+                      <button id="customTransactionButton" class="primary full-row" onclick="saveTeacherTransaction()">Add Money</button>
+                    </div>
+                  `}
                 </div>
               `}
             </div>
 
-            <div class="card">
+            <aside class="card dashboard-activity-panel">
+              <span class="insights-eyebrow">Latest</span>
               <h2>Recent Activity</h2>
               ${recentActivity()}
-            </div>
-          </div>
+              <div class="dashboard-activity-footer no-print">
+                <button type="button" onclick="openDashboardTransactions()">View transaction history</button>
+              </div>
+            </aside>
+          </section>
 
-          <div class="grid">
-            <div class="card">
- <h2>Custom Transaction</h2>
-<div class="lock-note">Choose whether you are adding or subtracting money first. Teacher’s Choice gives you an optional memo box.</div>
-
-${data.students.length === 0 ? `
-  <div class="empty">Add students on the Roster page first.</div>
-` : `
-<div class="transaction-form" style="display: flex; flex-direction: column; gap: 12px;">
-    <input id="transactionType" type="hidden" value="Add" />
-
-    <label>Transaction type</label>
-    <div class="segmented-control">
-      <button id="addModeButton" class="segment-button active" onclick="setCustomTransactionMode('Add')">Add Money</button>
-      <button id="subtractModeButton" class="segment-button" onclick="setCustomTransactionMode('Subtract')">Subtract Money</button>
-    </div>
-<label for="transactionTarget">Who gets this transaction?</label>
-<select id="transactionTarget" onchange="setTransactionTarget(this.value)">
-  <option value="selected" ${transactionTarget === "selected" ? "selected" : ""}>Selected Students</option>
-  <option value="whole" ${transactionTarget === "whole" ? "selected" : ""}>Whole Class</option>
-</select>
-
-${transactionTarget !== "whole" ? `
-  <details
-    class="dashboard-disclosure student-picker-disclosure full-row"
-    data-testid="dashboard-student-picker"
-    ontoggle="setDashboardSectionExpanded('students', this.open)"
-    ${teacherStudentListExpanded ? "open" : ""}>
-    <summary>
-      <span>Choose students</span>
-      <span class="dashboard-disclosure-meta">${data.students.length} in class</span>
-    </summary>
-    <div class="student-check-list" style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
-      ${sortStudentsByName(data.students).map(student => `
-        <label class="student-check-item" style="display: flex; align-items: center; gap: 10px; width: 100%;">
-          <input
-            type="checkbox"
-            class="student-check"
-            value="${student.id}"
-            style="width: 18px; height: 18px; margin: 0;" />
-          <span>${escapeHtml(student.name)}</span>
-        </label>
-      `).join("")}
-    </div>
-  </details>
-` : ""}
-
-    <label for="transactionAmount">Amount</label>
-    <input id="transactionAmount" type="number" min="1" value="1" />
-
-    <label for="transactionReason">Category</label>
-    <select id="transactionReason" onchange="toggleTeacherChoiceMemo()">${categoryOptions(effectiveAddMoneyCategories(data.settings.addMoneyCategories), "Homework")}</select>
-
-    <div id="teacherChoiceMemoWrap" class="teacher-choice-memo full-row">
-      <label for="teacherChoiceMemo">Teacher’s Choice memo</label>
-      <input id="teacherChoiceMemo" placeholder="Optional reason or memo" />
-    </div>
-
-    <button id="customTransactionButton" class="primary full-row" onclick="saveTeacherTransaction()">Add Money</button>
-  </div>
-`}
-            </div>
-
-            <details
-              class="card dashboard-disclosure dashboard-transaction-disclosure"
-              data-testid="dashboard-transactions"
-              ontoggle="setDashboardSectionExpanded('transactions', this.open)"
-              ${teacherTransactionsExpanded ? "open" : ""}>
-              <summary>
-                <span class="dashboard-disclosure-summary">
-                  <h2>Recent Transactions</h2>
-                  <span class="dashboard-disclosure-meta">${Math.min(filteredTeacherTransactions().length, 25)} shown · ${data.transactions.length} total</span>
-                </span>
-              </summary>
-              <div class="dashboard-disclosure-content">
+          <details
+            class="card dashboard-disclosure dashboard-transaction-disclosure dashboard-history-disclosure"
+            data-testid="dashboard-transactions"
+            ontoggle="setDashboardSectionExpanded('transactions', this.open)"
+            ${teacherTransactionsExpanded ? "open" : ""}>
+            <summary>
+              <span class="dashboard-disclosure-summary">
+                <h2>Transaction History</h2>
+                <span class="dashboard-disclosure-meta">Collapsed by default · ${Math.min(filteredTeacherTransactions().length, 25)} shown · ${data.transactions.length} total</span>
+              </span>
+            </summary>
+            <div class="dashboard-disclosure-content">
               <div class="no-print transaction-filter-controls" style="max-width: 280px;">
                 <label for="teacherTransactionFilter">Filter transactions</label>
                 <select id="teacherTransactionFilter" onchange="setTeacherTransactionFilter(this.value)">
@@ -4578,9 +4888,8 @@ ${transactionTarget !== "whole" ? `
                 <button onclick="exportTransactionsCsv('current')">Export Current Filter</button>
               </div>
               ${transactionTable(filteredTeacherTransactions().slice(0, 25), true)}
-              </div>
-            </details>
-          </div>
+            </div>
+          </details>
         `;
       }
 
@@ -5250,6 +5559,15 @@ if (screen === "editSettingsLists" && isTeacher) {
         `;
       }
 
+      if (isTeacher || (screen === "student" && student)) {
+        html += `
+          <footer class="luther-ai-credit" aria-label="AI insights credit">
+            <img src="/luther-ai-logo.png" alt="" aria-hidden="true" />
+            <span>AI content is generated by <strong>Luther AI</strong>.</span>
+          </footer>
+        `;
+      }
+
       document.getElementById("app").innerHTML = html;
     }
 
@@ -5326,6 +5644,7 @@ if (screen === "editSettingsLists" && isTeacher) {
       studentMoneyRetryPayload = null;
       teacherStudentListExpanded = false;
       teacherTransactionsExpanded = false;
+      dashboardMoneyTool = "quick";
       insightsPeriodDays = 30;
       resetProviderInsightsState();
       profileLoginIdStatus = "Checking...";
@@ -5764,6 +6083,8 @@ window.openStudentAuthLogs = openStudentAuthLogs;
 window.downloadStudentAuthLogsCsv = downloadStudentAuthLogsCsv;
 window.setScreen = setScreen;
 window.setDashboardSectionExpanded = setDashboardSectionExpanded;
+window.setDashboardMoneyTool = setDashboardMoneyTool;
+window.openDashboardTransactions = openDashboardTransactions;
 window.setInsightsPeriod = setInsightsPeriod;
 window.generateProviderInsights = generateProviderInsights;
 window.retryProviderInsights = retryProviderInsights;

@@ -96,6 +96,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await signInTeacher(page, TENANT_A)
     await waitForQuiescence(page)
     await page.evaluate(() => window.setScreen('teacher'))
+    await page.getByRole('tab', { name: 'Custom Transaction' }).click()
 
     await expect(page.locator('#transactionReason option')).toHaveText([
       'Class Job',
@@ -469,8 +470,10 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await waitForQuiescence(page)
 
     await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${TENANT_A.rentAmount}`)
+    await page.getByText('Change rent', { exact: true }).click()
     await expect(page.locator('#teacherRentAmount')).toHaveValue(String(TENANT_A.rentAmount))
-    const classCashBefore = await page.getByText(/^Class Cash:/).textContent()
+    const classCashMetric = page.locator('.dashboard-snapshot-metric').filter({ hasText: 'Class cash' })
+    const classCashBefore = await classCashMetric.textContent()
     const savesBefore = await page.evaluate(
       () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
     )
@@ -481,6 +484,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await expect(page.locator('#teacherRentDisplay')).toHaveText(`$${TENANT_A.rentAmount}`)
 
     const updatedRent = 35
+    await page.getByText('Change rent', { exact: true }).click()
     await page.locator('#teacherRentAmount').fill(String(updatedRent).padStart(4, '0'))
     await page.getByRole('button', { name: 'Save Rent' }).click()
     await expect.poll(() => page.evaluate(
@@ -490,7 +494,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await expect(page.getByText(
       `Rent updated to $${updatedRent}. No student balances were changed.`,
     )).toBeVisible()
-    expect(await page.getByText(/^Class Cash:/).textContent()).toBe(classCashBefore)
+    expect(await classCashMetric.textContent()).toBe(classCashBefore)
 
     await logout(page)
     await activateThroughProductionUi(page, TENANT_A, '2468')
@@ -518,6 +522,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     const restoreSavesBefore = await page.evaluate(
       () => window.__PHASE2B_TEST__.eventTypes().filter(type => type === 'saveAdapter:done').length,
     )
+    await page.getByText('Change rent', { exact: true }).click()
     await page.locator('#teacherRentAmount').fill(String(TENANT_A.rentAmount))
     await page.getByRole('button', { name: 'Save Rent' }).click()
     await expect.poll(() => page.evaluate(
@@ -586,6 +591,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
       .toBeVisible()
 
     await page.evaluate(() => window.setScreen('teacher'))
+    await page.evaluate(() => window.openDashboardTransactions())
     const approvedSubtractRow = page.locator('tr').filter({ hasText: 'Rent' })
     await expect(approvedSubtractRow).toHaveCount(1)
     await expect(approvedSubtractRow.getByRole('cell', { name: 'Subtract', exact: true }))
@@ -655,6 +661,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
       await expect(rosterRow.getByText('Status: Active', { exact: true })).toBeVisible()
 
       await page.evaluate(() => window.setScreen('teacher'))
+      await page.evaluate(() => window.openDashboardTransactions())
       const submittedRow = page.locator('tr')
         .filter({ hasText: 'Rent' })
         .filter({ hasText: '$1' })
@@ -1056,6 +1063,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await expect(page.locator(`#name-${TENANT_A.sharedStudentId}`)).toBeVisible()
 
     await page.evaluate(() => window.setScreen('teacher'))
+    await page.evaluate(() => window.openDashboardTransactions())
     await expect(page.getByRole('cell', { name: TENANT_A.transactionMarker, exact: true })).toBeVisible()
 
     // A successful later UI save proves decomposition also accepts the
