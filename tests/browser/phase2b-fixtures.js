@@ -126,7 +126,7 @@ const COMPLETE_SETTINGS = {
     "Earned Class Cash in Specials",
     "Teacher's Choice"
   ],
-  subtractMoneyCategories: ["Rent", "Teacher's Choice"]
+  subtractMoneyCategories: ["Teacher's Choice", "Rent"]
 };
 
 const AUTH_BASE = `http://${EMULATOR_HOST}:${AUTH_PORT}/identitytoolkit.googleapis.com/v1`;
