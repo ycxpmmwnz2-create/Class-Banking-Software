@@ -4,10 +4,24 @@ import test from 'node:test'
 import { hashSha256 } from '../phase2b/identityNormalization.js'
 import { deriveDeterministicStudentAuthUid } from '../phase2b/scopedCredentialProjection.js'
 import {
+  DEFAULT_ADD_MONEY_CATEGORIES,
+  LEGACY_DEFAULT_ADD_MONEY_CATEGORIES as CLIENT_LEGACY_DEFAULT_ADD_MONEY_CATEGORIES,
+} from '../../src/phase2b/transactionCategoryDisplay.js'
+import {
+  DEFAULT_STUDENT_ADD_MONEY_CATEGORIES,
+  LEGACY_DEFAULT_ADD_MONEY_CATEGORIES,
   StudentMoneyError,
   submitStudentTransactionV2CallableHandler,
   submitStudentTransactionV2Service,
 } from './studentMoney.js'
+
+test('client and server standard Add Money category lists stay aligned', () => {
+  assert.deepEqual(DEFAULT_STUDENT_ADD_MONEY_CATEGORIES, DEFAULT_ADD_MONEY_CATEGORIES)
+  assert.deepEqual(
+    LEGACY_DEFAULT_ADD_MONEY_CATEGORIES,
+    CLIENT_LEGACY_DEFAULT_ADD_MONEY_CATEGORIES,
+  )
+})
 
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
@@ -430,6 +444,13 @@ test('settings, frozen state, reason allowlists, and balance are enforced server
       { type: 'Add', amount: 1, reason: 'Homework' }, 'failed-precondition'],
     ['unknown add reason', foundation(),
       { type: 'Add', amount: 1, reason: 'Forged' }, 'invalid-argument'],
+    ['custom add list excludes Technology', foundation({ classroom: { settings: { addMoneyCategories: ['Homework'] } } }),
+      { type: 'Add', amount: 1, reason: 'Technology' }, 'invalid-argument'],
+    ['removing Technology from the new standard list is honored', foundation({ classroom: { settings: {
+      addMoneyCategories: DEFAULT_STUDENT_ADD_MONEY_CATEGORIES.filter(category => category !== 'Technology'),
+    } } }), { type: 'Add', amount: 1, reason: 'Technology' }, 'invalid-argument'],
+    ['Technology is not a subtract reason', foundation(),
+      { type: 'Subtract', amount: 1, reason: 'Technology' }, 'invalid-argument'],
     ['teacher choice', foundation(),
       { type: 'Subtract', amount: 1, reason: "Teacher's Choice" }, 'invalid-argument'],
     ['insufficient balance', foundation(),
@@ -450,6 +471,26 @@ test('settings, frozen state, reason allowlists, and balance are enforced server
       },
     )
     assert.deepEqual(Object.fromEntries(firestore.store), docs, label)
+  }
+})
+
+test('Technology is allowed for the current and former standard add-money lists', async () => {
+  const classrooms = [
+    foundation(),
+    foundation({ classroom: { settings: {
+      addMoneyCategories: [...LEGACY_DEFAULT_ADD_MONEY_CATEGORIES],
+    } } }),
+  ]
+
+  for (const [index, docs] of classrooms.entries()) {
+    const firestore = createMockFirestore(docs)
+    const result = await submitStudentTransactionV2Service(
+      { transactionId: 1700000000100 + index, type: 'Add', amount: 1, reason: 'Technology' },
+      { firestore, auth: studentAuth },
+    )
+
+    assert.equal(result.transaction.reason, 'Technology')
+    assert.equal(result.transaction.status, 'Pending')
   }
 })
 

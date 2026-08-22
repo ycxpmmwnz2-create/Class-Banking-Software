@@ -117,8 +117,16 @@ const COMPLETE_SETTINGS = {
   requireTeacherApproval: true,
   reasons: ["Weekly payday", "Class job", "Other"],
   purchaseCategories: ["School Store", "Other"],
-  addMoneyCategories: ["Homework", "Teacher's Choice"],
-  subtractMoneyCategories: ["Rent", "Teacher's Choice"]
+  addMoneyCategories: [
+    "Homework",
+    "Class Job",
+    "Positive Consequence",
+    "Going Above and Beyond",
+    "Showing Work",
+    "Earned Class Cash in Specials",
+    "Teacher's Choice"
+  ],
+  subtractMoneyCategories: ["Teacher's Choice", "Rent"]
 };
 
 const AUTH_BASE = `http://${EMULATOR_HOST}:${AUTH_PORT}/identitytoolkit.googleapis.com/v1`;

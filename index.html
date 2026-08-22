@@ -1121,6 +1121,7 @@ import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache
 import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateStudentPinDirectoryFetch, orchestrateStudentTransaction, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, reconcileStudentPinDirectory, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
 import { formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
 import { sortStudentsByName } from "./src/phase2b/studentDisplay.js";
+import { DEFAULT_ADD_MONEY_CATEGORIES, effectiveAddMoneyCategories, sortTransactionCategories } from "./src/phase2b/transactionCategoryDisplay.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { MAX_RENT_AMOUNT, projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 import { sanitizeLegacyBackup } from "./src/legacy/backupImport.js";
@@ -1159,15 +1160,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
         "Road Runner Tickets",
         "Other"
       ],
-      addMoneyCategories: [
-        "Homework",
-        "Class Job",
-        "Positive Consequence",
-        "Going Above and Beyond",
-        "Showing Work",
-        "Earned Class Cash in Specials",
-        "Teacher's Choice"
-      ],
+      addMoneyCategories: [...DEFAULT_ADD_MONEY_CATEGORIES],
       subtractMoneyCategories: [
         "Rent",
         "Restroom",
@@ -3415,7 +3408,7 @@ link.click();
     }
 
     function categoryOptions(categories, selectedCategory) {
-      return categories.map(category =>
+      return sortTransactionCategories(categories).map(category =>
         `<option value="${escapeHtml(category)}" ${selectedCategory === category ? "selected" : ""}>${escapeHtml(category)}</option>`
       ).join("");
     }
@@ -3435,7 +3428,7 @@ link.click();
       subtractButton.classList.toggle("active", type === "Subtract");
 
       const categories = type === "Add"
-        ? data.settings.addMoneyCategories
+        ? effectiveAddMoneyCategories(data.settings.addMoneyCategories)
         : data.settings.subtractMoneyCategories;
 
       categorySelect.innerHTML = categoryOptions(categories, "");
@@ -3454,10 +3447,10 @@ link.click();
     }
     function studentCategoryOptions(type) {
       const categories = type === "Add"
-        ? data.settings.addMoneyCategories
+        ? effectiveAddMoneyCategories(data.settings.addMoneyCategories)
         : data.settings.subtractMoneyCategories;
 
-      return categories
+      return sortTransactionCategories(categories)
         .filter(category => category !== "Teacher's Choice")
         .map(category => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`)
         .join("");
@@ -4403,7 +4396,7 @@ ${transactionTarget !== "whole" ? `
     <input id="transactionAmount" type="number" min="1" value="1" />
 
     <label for="transactionReason">Category</label>
-    <select id="transactionReason" onchange="toggleTeacherChoiceMemo()">${categoryOptions(data.settings.addMoneyCategories, "Homework")}</select>
+    <select id="transactionReason" onchange="toggleTeacherChoiceMemo()">${categoryOptions(effectiveAddMoneyCategories(data.settings.addMoneyCategories), "Homework")}</select>
 
     <div id="teacherChoiceMemoWrap" class="teacher-choice-memo full-row">
       <label for="teacherChoiceMemo">Teacher’s Choice memo</label>
@@ -5010,7 +5003,7 @@ if (screen === "editSettingsLists" && isTeacher) {
 
       <h3>Add Money Categories</h3>
 <label for="addMoneyCategoryList">One add-money category per line</label>
-<textarea id="addMoneyCategoryList">${escapeHtml(data.settings.addMoneyCategories.join("\n"))}</textarea>
+<textarea id="addMoneyCategoryList">${escapeHtml(effectiveAddMoneyCategories(data.settings.addMoneyCategories).join("\n"))}</textarea>
 
 <h3>Subtract Money Categories</h3>
 <label for="subtractMoneyCategoryList">One subtract-money category per line</label>
