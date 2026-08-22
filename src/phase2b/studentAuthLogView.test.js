@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildStudentAuthLogsCsv,
   formatStudentAuthLogTimestamp,
   studentAuthLogOutcomeLabel,
   studentAuthLogResultLabel,
@@ -61,4 +62,32 @@ test("resolves a student name from the teacher roster without requiring a login 
   );
   assert.equal(studentAuthLogStudentLabel({}, students), "Unknown student");
   assert.equal(studentAuthLogStudentLabel({ studentId: {} }, students), "Unknown student");
+});
+
+test("builds a redacted spreadsheet-safe CSV from the visible auth-log fields", () => {
+  const timestamp = Date.UTC(2026, 0, 2, 3, 4, 5);
+  const csv = buildStudentAuthLogsCsv([
+    {
+      timestamp,
+      studentId: "1",
+      success: true,
+      outcome: "success",
+      loginId: "must-not-export",
+      pin: "1234"
+    },
+    {
+      timestamp,
+      studentId: "2",
+      success: false,
+      outcome: "invalid_credentials"
+    }
+  ], [
+    { id: 1, name: "Meda" },
+    { id: 2, name: "=FORMULA" }
+  ]);
+
+  assert.ok(csv.startsWith("\uFEFF\"Time\",\"Student\",\"Result\",\"Details\""));
+  assert.match(csv, /Meda \(ID 1\).*Success.*Authenticated/);
+  assert.match(csv, /'=FORMULA \(ID 2\).*Failure.*Invalid credentials/);
+  assert.doesNotMatch(csv, /must-not-export|1234/);
 });

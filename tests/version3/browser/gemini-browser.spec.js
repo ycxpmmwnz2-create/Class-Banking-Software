@@ -210,6 +210,31 @@ test("opening AI Insights makes no request until the teacher clicks", async ({ p
   expect(await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.callCount())).toBe(0);
 });
 
+test("teacher cleanup keeps the Dashboard compact and moves authorization logs under Settings", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  await page.evaluate(() => window.setScreen("teacher"));
+
+  const studentPicker = page.getByTestId("dashboard-student-picker");
+  const transactions = page.getByTestId("dashboard-transactions");
+  await expect(studentPicker).not.toHaveAttribute("open", "");
+  await expect(transactions).not.toHaveAttribute("open", "");
+
+  await studentPicker.locator("summary").click();
+  await expect(studentPicker).toHaveAttribute("open", "");
+  await expect(studentPicker.locator(".student-check").first()).toBeVisible();
+
+  await transactions.locator("summary").click();
+  await expect(transactions).toHaveAttribute("open", "");
+  await expect(transactions.getByLabel("Filter transactions")).toBeVisible();
+
+  await expect(page.getByRole("button", { name: "Student Auth Logs" })).toHaveCount(0);
+  await page.evaluate(() => window.setScreen("settings"));
+  await expect(page.getByRole("heading", { name: "Student Authorization Logs" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "View Authorization Logs" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download CSV" })).toBeVisible();
+});
+
 test("natural restroom question uses the exact five-field request and ranks visits by count", async ({ page }) => {
   await openApp(page);
   await signIn(page, TENANT_A);

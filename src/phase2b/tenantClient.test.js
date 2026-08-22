@@ -3112,6 +3112,43 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       /data\.students\.sort\(/,
       "the stored roster must never be sorted in place"
     );
+    assert.match(
+      customTransactionSource,
+      /<details[\s\S]*?data-testid="dashboard-student-picker"[\s\S]*?\$\{teacherStudentListExpanded \? "open" : ""\}/,
+      "the class list must use a disclosure that is closed by default"
+    );
+  });
+
+  test("dashboard transactions are collapsible and closed by default", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    assert.match(source, /let teacherTransactionsExpanded = false;/);
+    assert.match(
+      source,
+      /<details[\s\S]*?data-testid="dashboard-transactions"[\s\S]*?\$\{teacherTransactionsExpanded \? "open" : ""\}[\s\S]*?<h2>Recent Transactions<\/h2>/
+    );
+    assert.match(source, /ontoggle="setDashboardSectionExpanded\('transactions', this\.open\)"/);
+  });
+
+  test("student authorization logs live under Settings and export only redacted CSV fields", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const navigationStart = source.indexOf('<div class="button-bar no-print">');
+    const navigationEnd = source.indexOf('</div>', navigationStart);
+    const navigation = source.slice(navigationStart, navigationEnd);
+    assert.doesNotMatch(navigation, /Student Auth Logs|Student Authorization Logs/);
+
+    const settingsStart = source.indexOf('if (screen === "settings" && isTeacher)');
+    const credentialsStart = source.indexOf('if (screen === "credentials" && isTeacher)', settingsStart);
+    const settings = source.slice(settingsStart, credentialsStart);
+    assert.match(settings, /<h3>Student Authorization Logs<\/h3>/);
+    assert.match(settings, /onclick="openStudentAuthLogs\(\)"/);
+    assert.match(settings, /onclick="downloadStudentAuthLogsCsv\(\)"/);
+
+    const exportStart = source.indexOf('async function downloadStudentAuthLogsCsv()');
+    const exportEnd = source.indexOf('\n    /**', exportStart);
+    const exportBlock = source.slice(exportStart, exportEnd);
+    assert.match(exportBlock, /buildStudentAuthLogsCsv\(studentAuthLogs, data\.students\)/);
+    assert.match(exportBlock, /text\/csv;charset=utf-8/);
+    assert.doesNotMatch(exportBlock, /loginId|pin/i);
   });
 
   test("Quick Cash student options use the alphabetical display copy", () => {
