@@ -430,6 +430,10 @@ test('settings, frozen state, reason allowlists, and balance are enforced server
       { type: 'Add', amount: 1, reason: 'Homework' }, 'failed-precondition'],
     ['unknown add reason', foundation(),
       { type: 'Add', amount: 1, reason: 'Forged' }, 'invalid-argument'],
+    ['custom add list excludes Technology', foundation({ classroom: { settings: { addMoneyCategories: ['Homework'] } } }),
+      { type: 'Add', amount: 1, reason: 'Technology' }, 'invalid-argument'],
+    ['Technology is not a subtract reason', foundation(),
+      { type: 'Subtract', amount: 1, reason: 'Technology' }, 'invalid-argument'],
     ['teacher choice', foundation(),
       { type: 'Subtract', amount: 1, reason: "Teacher's Choice" }, 'invalid-argument'],
     ['insufficient balance', foundation(),
@@ -450,6 +454,33 @@ test('settings, frozen state, reason allowlists, and balance are enforced server
       },
     )
     assert.deepEqual(Object.fromEntries(firestore.store), docs, label)
+  }
+})
+
+test('Technology is allowed for the current and former standard add-money lists', async () => {
+  const formerStandardCategories = [
+    'Homework',
+    'Class Job',
+    'Positive Consequence',
+    'Going Above and Beyond',
+    'Showing Work',
+    'Earned Class Cash in Specials',
+    "Teacher's Choice",
+  ]
+  const classrooms = [
+    foundation(),
+    foundation({ classroom: { settings: { addMoneyCategories: formerStandardCategories } } }),
+  ]
+
+  for (const [index, docs] of classrooms.entries()) {
+    const firestore = createMockFirestore(docs)
+    const result = await submitStudentTransactionV2Service(
+      { transactionId: 1700000000100 + index, type: 'Add', amount: 1, reason: 'Technology' },
+      { firestore, auth: studentAuth },
+    )
+
+    assert.equal(result.transaction.reason, 'Technology')
+    assert.equal(result.transaction.status, 'Pending')
   }
 })
 
