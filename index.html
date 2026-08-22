@@ -201,6 +201,84 @@
       margin-bottom: 18px;
     }
 
+    .dashboard-disclosure {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: rgba(243, 251, 250, 0.72);
+      overflow: hidden;
+    }
+
+    .dashboard-disclosure > summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      cursor: pointer;
+      font-weight: 900;
+      list-style: none;
+    }
+
+    .dashboard-disclosure > summary::-webkit-details-marker { display: none; }
+
+    .dashboard-disclosure > summary::after {
+      content: "Show";
+      flex: 0 0 auto;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: rgba(35, 143, 140, 0.1);
+      color: var(--teal-dark);
+      font-size: 12px;
+    }
+
+    .dashboard-disclosure[open] > summary::after { content: "Hide"; }
+
+    .dashboard-disclosure > summary:hover {
+      background: rgba(94, 199, 194, 0.08);
+    }
+
+    .dashboard-disclosure-summary {
+      min-width: 0;
+    }
+
+    .dashboard-disclosure-summary h2 {
+      margin: 0;
+    }
+
+    .dashboard-disclosure-meta {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .dashboard-disclosure-content {
+      padding: 4px 14px 14px;
+    }
+
+    .student-picker-disclosure {
+      width: 100%;
+    }
+
+    .student-picker-disclosure .student-check-list {
+      max-height: 320px;
+      overflow-y: auto;
+      padding: 4px 2px;
+    }
+
+    .dashboard-transaction-disclosure.card {
+      padding: 0;
+    }
+
+    .dashboard-transaction-disclosure > summary {
+      padding: 20px;
+    }
+
+    .dashboard-transaction-disclosure .dashboard-disclosure-content {
+      padding: 0 20px 20px;
+    }
+
     button {
       padding: 11px 14px;
       border-radius: 999px;
@@ -1031,6 +1109,9 @@
         min-height: 44px;
       }
       .transaction-export-buttons > button { flex-basis: 100%; }
+      .dashboard-disclosure > summary,
+      .dashboard-transaction-disclosure > summary { padding: 12px; }
+      .dashboard-transaction-disclosure .dashboard-disclosure-content { padding: 0 12px 12px; }
       .grid {
         grid-template-columns: minmax(0, 1fr);
         gap: 12px;
@@ -1119,7 +1200,7 @@ import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
 import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateStudentPinDirectoryFetch, orchestrateStudentTransaction, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, reconcileStudentPinDirectory, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
-import { formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
+import { buildStudentAuthLogsCsv, formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
 import { sortStudentsByName } from "./src/phase2b/studentDisplay.js";
 import { DEFAULT_ADD_MONEY_CATEGORIES, effectiveAddMoneyCategories, sortTransactionCategories } from "./src/phase2b/transactionCategoryDisplay.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
@@ -1469,6 +1550,14 @@ let messageTimeout;
 }
 let transactionTarget = "selected";
 let teacherTransactionFilter = "all";
+let teacherStudentListExpanded = false;
+let teacherTransactionsExpanded = false;
+
+function setDashboardSectionExpanded(section, expanded) {
+  if (!requireTeacher()) return;
+  if (section === "students") teacherStudentListExpanded = Boolean(expanded);
+  if (section === "transactions") teacherTransactionsExpanded = Boolean(expanded);
+}
 
 function setTransactionTarget(value) {
   if (!requireTeacher()) return;
@@ -1560,10 +1649,10 @@ function toggleStudentDropdown() {
   if (!menu) return;
   menu.classList.toggle("open");
 }
-    async function openStudentAuthLogs() {
+    async function openStudentAuthLogs({ navigate = true } = {}) {
       if (!requireTeacher()) return;
 
-      screen = "studentAuthLogs";
+      if (navigate) screen = "studentAuthLogs";
       studentAuthLogsLoading = true;
       studentAuthLogsError = "";
       render();
@@ -1573,7 +1662,13 @@ function toggleStudentDropdown() {
           return;
         }
         const classroomId = v2TenantSession.classroomId;
-        if (!classroomId) return;
+        if (!classroomId) {
+          studentAuthLogs = [];
+          studentAuthLogsError = "Could not load student authorization logs.";
+          studentAuthLogsLoading = false;
+          render();
+          return false;
+        }
 
         const captured = v2TenantSession.captureIdentity();
         const fetchFn = async () => {
@@ -1588,15 +1683,15 @@ function toggleStudentDropdown() {
           studentAuthLogs = logs;
         };
         const res = await orchestrateAuthLogsFetch(v2TenantSession, fetchFn, applyFn);
-        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+        if (!v2TenantSession.validateCapturedIdentity(captured)) return false;
 
         if (!res.executed) {
           studentAuthLogs = [];
-          studentAuthLogsError = res.error || "Could not load student auth logs.";
+          studentAuthLogsError = res.error || "Could not load student authorization logs.";
         }
         studentAuthLogsLoading = false;
         render();
-        return;
+        return res.executed;
       }
 
       try {
@@ -1609,11 +1704,31 @@ function toggleStudentDropdown() {
       } catch (error) {
         console.error("Student auth log load failed:", error);
         studentAuthLogs = [];
-        studentAuthLogsError = "Could not load student auth logs.";
+        studentAuthLogsError = "Could not load student authorization logs.";
       } finally {
         studentAuthLogsLoading = false;
         render();
       }
+      return !studentAuthLogsError;
+    }
+
+    async function downloadStudentAuthLogsCsv() {
+      if (!requireTeacher() || studentAuthLogsLoading) return;
+      const loaded = await openStudentAuthLogs({ navigate: false });
+      if (!loaded) return;
+      if (studentAuthLogs.length === 0) {
+        showMessage("No student authorization logs to download.");
+        return;
+      }
+
+      const csv = buildStudentAuthLogsCsv(studentAuthLogs, data.students);
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `morgan-bank-student-authorization-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
     }
 
     /**
@@ -1758,6 +1873,10 @@ function toggleStudentDropdown() {
 
     function setScreen(newScreen) {
       if (newScreen !== "studentProfile") clearTemporaryProfileStudentPin();
+      if (newScreen === "teacher" && screen !== "teacher") {
+        teacherStudentListExpanded = false;
+        teacherTransactionsExpanded = false;
+      }
       screen = newScreen;
       render();
       // Fetched only when Credentials is actually opened, so a teacher who never
@@ -2043,6 +2162,18 @@ function toggleStudentDropdown() {
           render();
         }
       }
+    }
+
+    function submitProviderQuestion() {
+      if (!requireTeacher()) return;
+      if (!providerInsightsEnabled || !providerInsightsClient) {
+        providerQuestionResult = null;
+        providerQuestionRetryRequest = null;
+        providerQuestionError = "AI Insights could not start in this browser. Refresh the page and try again. If it is still unavailable, allow Morgan Bank's security check in your browser's site controls.";
+        render();
+        return;
+      }
+      void askProviderQuestion();
     }
 
     function retryProviderQuestion() {
@@ -4186,7 +4317,6 @@ link.click();
             ${isTeacher ? `<button onclick="setScreen('settings')">Settings</button>` : ""}
             ${isTeacher ? `<button onclick="setScreen('credentials')">Credentials</button>` : ""}
             ${isTeacher && isPlatformAdmin ? `<button onclick="setScreen('teacherInvitations')">Teacher Invitations</button>` : ""}
-            ${isTeacher ? `<button onclick="openStudentAuthLogs()">Student Auth Logs</button>` : ""}
             
             <button onclick="logout()">Log Out</button>
           </div>
@@ -4378,18 +4508,28 @@ ${data.students.length === 0 ? `
 </select>
 
 ${transactionTarget !== "whole" ? `
-  <div class="student-check-list full-row" style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
-    ${sortStudentsByName(data.students).map(student => `
-      <label class="student-check-item" style="display: flex; align-items: center; gap: 10px; width: 100%;">
-        <input
-          type="checkbox"
-          class="student-check"
-          value="${student.id}"
-          style="width: 18px; height: 18px; margin: 0;" />
-        <span>${escapeHtml(student.name)}</span>
-      </label>
-    `).join("")}
-  </div>
+  <details
+    class="dashboard-disclosure student-picker-disclosure full-row"
+    data-testid="dashboard-student-picker"
+    ontoggle="setDashboardSectionExpanded('students', this.open)"
+    ${teacherStudentListExpanded ? "open" : ""}>
+    <summary>
+      <span>Choose students</span>
+      <span class="dashboard-disclosure-meta">${data.students.length} in class</span>
+    </summary>
+    <div class="student-check-list" style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
+      ${sortStudentsByName(data.students).map(student => `
+        <label class="student-check-item" style="display: flex; align-items: center; gap: 10px; width: 100%;">
+          <input
+            type="checkbox"
+            class="student-check"
+            value="${student.id}"
+            style="width: 18px; height: 18px; margin: 0;" />
+          <span>${escapeHtml(student.name)}</span>
+        </label>
+      `).join("")}
+    </div>
+  </details>
 ` : ""}
 
     <label for="transactionAmount">Amount</label>
@@ -4408,8 +4548,18 @@ ${transactionTarget !== "whole" ? `
 `}
             </div>
 
-            <div class="card">
-              <h2>Recent Transactions</h2>
+            <details
+              class="card dashboard-disclosure dashboard-transaction-disclosure"
+              data-testid="dashboard-transactions"
+              ontoggle="setDashboardSectionExpanded('transactions', this.open)"
+              ${teacherTransactionsExpanded ? "open" : ""}>
+              <summary>
+                <span class="dashboard-disclosure-summary">
+                  <h2>Recent Transactions</h2>
+                  <span class="dashboard-disclosure-meta">${Math.min(filteredTeacherTransactions().length, 25)} shown · ${data.transactions.length} total</span>
+                </span>
+              </summary>
+              <div class="dashboard-disclosure-content">
               <div class="no-print transaction-filter-controls" style="max-width: 280px;">
                 <label for="teacherTransactionFilter">Filter transactions</label>
                 <select id="teacherTransactionFilter" onchange="setTeacherTransactionFilter(this.value)">
@@ -4428,7 +4578,8 @@ ${transactionTarget !== "whole" ? `
                 <button onclick="exportTransactionsCsv('current')">Export Current Filter</button>
               </div>
               ${transactionTable(filteredTeacherTransactions().slice(0, 25), true)}
-            </div>
+              </div>
+            </details>
           </div>
         `;
       }
@@ -4521,8 +4672,8 @@ ${transactionTarget !== "whole" ? `
                   type="button"
                   class="primary"
                   data-testid="provider-question-submit"
-                  onclick="askProviderQuestion()"
-                  ${!providerInsightsEnabled || providerInsightsLoading || providerQuestionLoading ? "disabled" : ""}>Ask AI Insights</button>
+                  onclick="submitProviderQuestion()"
+                  ${providerInsightsLoading || providerQuestionLoading ? "disabled" : ""}>Ask AI Insights</button>
               </div>
             </section>
 
@@ -4838,6 +4989,13 @@ ${transactionTarget !== "whole" ? `
 
               <button onclick="clearLoginHistory()">Clear All Login History</button>
 
+              <h3>Student Authorization Logs</h3>
+              <div class="lock-note">Review or download the most recent 25 server-recorded student login attempts. Login IDs and PINs are not stored in this log.</div>
+              <div class="button-bar" style="margin-bottom: 18px;">
+                <button onclick="openStudentAuthLogs()" ${studentAuthLogsLoading ? "disabled" : ""}>View Authorization Logs</button>
+                <button onclick="downloadStudentAuthLogsCsv()" ${studentAuthLogsLoading ? "disabled" : ""}>Download CSV</button>
+              </div>
+
               <h3>Cleanup</h3>
               ${IS_MULTI_TEACHER_V2_ENABLED ? `
               <p class="small-note">Transaction-history clearing and full classroom reset are unavailable in this version because student and transaction deletion must be completed by a separately reviewed server workflow.</p>
@@ -4987,11 +5145,15 @@ ${transactionTarget !== "whole" ? `
       if (screen === "studentAuthLogs" && isTeacher) {
         html += `
           <div class="card">
-            <h2>Student Auth Logs</h2>
+            <h2>Student Authorization Logs</h2>
             <p class="small-note">Most recent 25 server-recorded student login attempts.</p>
             <p class="small-note">Login IDs and PINs are not stored in this log.</p>
             ${studentAuthLogTable()}
-            <button onclick="openStudentAuthLogs()" ${studentAuthLogsLoading ? "disabled" : ""}>Refresh</button>
+            <div class="button-bar" style="margin-top: 14px;">
+              <button onclick="setScreen('settings')">Back to Settings</button>
+              <button onclick="openStudentAuthLogs()" ${studentAuthLogsLoading ? "disabled" : ""}>Refresh</button>
+              <button onclick="downloadStudentAuthLogsCsv()" ${studentAuthLogsLoading ? "disabled" : ""}>Download CSV</button>
+            </div>
           </div>
         `;
       }
@@ -5162,6 +5324,8 @@ if (screen === "editSettingsLists" && isTeacher) {
       teacherInvitationEmailDraft = "";
       teacherInvitationExpiryHours = 48;
       studentMoneyRetryPayload = null;
+      teacherStudentListExpanded = false;
+      teacherTransactionsExpanded = false;
       insightsPeriodDays = 30;
       resetProviderInsightsState();
       profileLoginIdStatus = "Checking...";
@@ -5597,12 +5761,15 @@ window.copyProfileNewStudentPin = copyProfileNewStudentPin;
 window.copyTemporaryProfileStudentPin = copyTemporaryProfileStudentPin;
 window.dismissTemporaryProfileStudentPin = dismissTemporaryProfileStudentPin;
 window.openStudentAuthLogs = openStudentAuthLogs;
+window.downloadStudentAuthLogsCsv = downloadStudentAuthLogsCsv;
 window.setScreen = setScreen;
+window.setDashboardSectionExpanded = setDashboardSectionExpanded;
 window.setInsightsPeriod = setInsightsPeriod;
 window.generateProviderInsights = generateProviderInsights;
 window.retryProviderInsights = retryProviderInsights;
 window.setProviderQuestionDraft = setProviderQuestionDraft;
 window.askProviderQuestion = askProviderQuestion;
+window.submitProviderQuestion = submitProviderQuestion;
 window.retryProviderQuestion = retryProviderQuestion;
 window.changeProviderInsightsLocalDataForTest = changeProviderInsightsLocalDataForTest;
 window.viewStudentProfile = viewStudentProfile;

@@ -61,3 +61,25 @@ export function studentAuthLogStudentLabel(log, students) {
     ? `${studentName} (ID ${studentId})`
     : `Student ID ${studentId}`;
 }
+
+function csvCell(value) {
+  let text = String(value ?? "");
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+/**
+ * Builds a spreadsheet-safe export from the same deliberately redacted fields
+ * shown in the teacher UI. Raw login IDs and PINs are never accepted or read.
+ */
+export function buildStudentAuthLogsCsv(logs, students) {
+  const headers = ["Time", "Student", "Result", "Details"];
+  const rows = (Array.isArray(logs) ? logs : []).map(log => [
+    formatStudentAuthLogTimestamp(log?.timestamp),
+    studentAuthLogStudentLabel(log, students),
+    studentAuthLogResultLabel(log?.success),
+    studentAuthLogOutcomeLabel(log)
+  ].map(csvCell).join(","));
+
+  return "\uFEFF" + [headers.map(csvCell).join(","), ...rows].join("\r\n");
+}
