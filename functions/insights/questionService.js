@@ -102,6 +102,7 @@ export function createInsightQuestionService(dependencies) {
         calculated: calculateGroundedAnswer({
           kind: replay.kind,
           plan: replay.plan,
+          guidance: replay.guidance,
           evidence: envelope.answerEvidence,
         }),
         envelope,
@@ -121,6 +122,7 @@ export function createInsightQuestionService(dependencies) {
       const calculated = calculateGroundedAnswer({
         kind: interpretation.kind,
         plan: interpretation.plan,
+        guidance: interpretation.guidance,
         evidence: envelope.answerEvidence,
       })
       const actualCostMicroUsd = validateActualCost(
@@ -142,6 +144,7 @@ export function createInsightQuestionService(dependencies) {
         generatedAt: now.toISOString(),
         kind: interpretation.kind,
         plan: interpretation.plan,
+        guidance: interpretation.guidance,
         usage: billedUsage,
       })
       const teacherResponse = buildTeacherResponse({

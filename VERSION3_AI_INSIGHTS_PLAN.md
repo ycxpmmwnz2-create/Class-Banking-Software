@@ -101,19 +101,21 @@ and keep Quick Insights and Deep Analysis as explicit teacher actions. Provider
 configuration, billing, Firebase environment selection, staging, and deployment
 remain separate authorization gates.
 
-## Grounded natural-question query engine
+## Morgan Bank assistant and grounded natural-question engine
 
-The provider-backed teacher experience may include one plain-language question
-box, but it is not an open-ended chatbot and Gemini is not allowed to calculate
-or narrate a factual answer. The browser sends exactly `requestId`, `kind`,
+The provider-backed teacher experience includes one plain-language Morgan Bank
+assistant box. It can answer broadly within Morgan Bank and classroom-economy
+teaching, but Gemini is not allowed to calculate or narrate a factual claim
+about the current classroom. The browser sends exactly `requestId`, `kind`,
 `periodDays`, `timeZone`, and the teacher's question. Functions resolves the
 active teacher and classroom, reads that tenant's bounded records, removes
 student identities from provider input, and sends only the sanitized question,
 up to eight opaque aliases for students named in the question, and a bounded
 category-label catalog.
 
-Gemini 3.6 Flash with minimal thinking may return only a versioned, read-only
-query plan. That plan can select the student or transaction dataset; choose a
+For a classroom-data question, Gemini 3.6 Flash with minimal thinking may
+return only a versioned, read-only query plan. That plan can select the student
+or transaction dataset; choose a
 bounded count, total, average, net, or balance metric; filter by opaque student
 or category aliases, type, status, time bucket, or current frozen state; group
 by student, category, time of day, day of week, or week; and choose a bounded
@@ -121,14 +123,48 @@ order and result limit. Functions validates every field and alias, calculates
 the result from server-owned evidence, handles ties, and returns only the
 calculated answer and short evidence lines.
 
+Plan schema version 4 also permits one separate negative-match operation for
+current students without transactions matching allowlisted criteria. It can
+filter by opaque named-student or category aliases, the server-derived rent
+purpose, transaction type and status, an exact amount, the selected period or
+the classroom-local current date, current student state, and a bounded display
+limit. Rent is recognized from a standalone `rent` word in a transaction's
+category or reason, so built-in `Rent` and `Desk rent`, renamed labels such as
+`Monthly Class Rent`, and V2 blank-category rent reasons remain usable. When a
+rent question omits an amount, Functions applies the server-read configured
+classroom rent amount. Neither that amount nor raw reasons enter provider input,
+and the amount is bound into the evidence signature. The classroom-local date
+is also bound into the signature so a completed `today` request cannot replay
+across local midnight.
+
+For a conceptual Morgan Bank question that does not require a claim about the
+current records, the same strict schema permits one bounded guidance paragraph.
+The provider receives authoritative product context and may explain features,
+suggest classroom-economy routines, or offer teacher-facing ideas. Guidance
+cannot claim that records were inspected, characterize a current student,
+claim that data was changed, include a URL, or repeat opaque aliases. The
+server labels the result as general Morgan Bank guidance and states that no
+classroom records were used to make a factual claim. Requests outside Morgan
+Bank and classroom-economy teaching, requests to change data, and questions
+requiring unavailable information remain unsupported.
+
+One question may also request a classroom fact and advice together. In that
+case the provider returns the same bounded data plan plus a shorter,
+result-independent guidance paragraph. Functions calculates the factual part,
+labels the advice as general Morgan Bank guidance, validates the combined
+public response bounds, and exposes nothing if the combined answer is unsafe or
+too large.
+
 This supports natural questions such as who has the most restroom visits,
 which category a named student earns most in, when students lose the most
-money, how many requests are pending, current or average balances, class size,
-and frozen-account counts. A question is refused only when the bounded Morgan
-Bank records and operations genuinely cannot answer it. Raw transaction
+money, how many requests are pending, which current students did not make an
+exact rent payment today, current or average balances, class size, frozen-account
+counts, how to establish a saving routine, or ways to introduce class rent.
+A question is refused only when neither the bounded records nor the Morgan Bank
+assistant context can answer it safely. Raw transaction
 reasons, student names or IDs, tenant identifiers, balances, transaction rows,
 counts, and amounts never enter the provider request. The reviewed mixed-release
-guard for this contract is `gemini-3.6-flash-grounded-query-v1`.
+guard for this contract is `gemini-3.6-flash-morgan-bank-assistant-v3`.
 
 ## Verification for the first item
 

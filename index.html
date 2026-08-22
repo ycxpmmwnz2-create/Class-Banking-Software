@@ -4513,26 +4513,16 @@ ${transactionTarget !== "whole" ? `
               </section>
             ` : ""}
 
-            ${!providerInsightsReport && !providerInsightsLoading && !providerInsightsError ? `
-              <section class="card">
-                <span class="insights-eyebrow">Ready when you are</span>
-                <h2 style="margin-top: 6px;">Get a focused look at your classroom data</h2>
-                <p style="margin: 0; max-width: 680px; color: var(--muted); font-weight: 720; line-height: 1.5;">
-                  Choose a time period, then get the most useful AI insights. You can ask for more after the first results.
-                </p>
-              </section>
-            ` : ""}
-
             <section class="card insights-question-card" data-testid="provider-question-card">
               <span class="insights-eyebrow">Ask Morgan Bank</span>
-              <h2 style="margin: 6px 0 8px;">Ask a question about your class data</h2>
-              <p class="small-note">Ask naturally. AI understands the question, and Morgan Bank calculates the answer from this classroom’s balances, transaction categories, amounts, statuses, and times.</p>
+              <h2 style="margin: 6px 0 8px;">Ask Morgan Bank a question</h2>
+              <p class="small-note">Ask naturally about your classroom records, Morgan Bank features, or classroom-economy ideas. Record-based answers are calculated from this classroom’s data.</p>
               <label for="providerQuestionInput">Your question</label>
               <textarea
                 id="providerQuestionInput"
                 maxlength="500"
                 oninput="setProviderQuestionDraft(this.value)"
-                placeholder="Example: Who has used the restroom the most?">${escapeHtml(providerQuestionDraft)}</textarea>
+                placeholder="Example: Who did not pay rent today, or how can I encourage saving?">${escapeHtml(providerQuestionDraft)}</textarea>
               <div class="insights-question-actions no-print">
                 <button
                   type="button"

@@ -4,8 +4,10 @@ import test from 'node:test'
 import { calculateQuestionAnswer, InsightQuestionAnswerError } from './questionAnswerCalculator.js'
 
 const evidence = {
+  configuredRentAmount: 10,
   periodDays: 30,
   timeZone: 'America/Denver',
+  asOfDate: '2026-08-20',
   participants: [
     { id: 1, alias: 'student-001', name: 'Genesis' },
     { id: 2, alias: 'student-002', name: 'Sofia' },
@@ -22,15 +24,15 @@ const evidence = {
     { alias: 'category-003', label: 'Store' },
   ],
   transactions: [
-    { id: 1, studentId: 1, date: '2026-08-19T15:00:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', status: 'Approved' },
-    { id: 2, studentId: 1, date: '2026-08-19T16:00:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', status: 'Approved' },
-    { id: 3, studentId: 1, date: '2026-08-19T17:00:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', status: 'Approved' },
-    { id: 4, studentId: 2, date: '2026-08-19T20:00:00.000Z', type: 'Subtract', amount: 100, categoryAlias: 'category-001', status: 'Approved' },
-    { id: 5, studentId: 2, date: '2026-08-19T20:30:00.000Z', type: 'Subtract', amount: 100, categoryAlias: 'category-001', status: 'Approved' },
-    { id: 6, studentId: 1, date: '2026-08-19T21:00:00.000Z', type: 'Add', amount: 12, categoryAlias: 'category-002', status: 'Approved' },
-    { id: 7, studentId: 1, date: '2026-08-19T22:00:00.000Z', type: 'Add', amount: 8, categoryAlias: 'category-002', status: 'Approved' },
-    { id: 8, studentId: 1, date: '2026-08-19T23:00:00.000Z', type: 'Add', amount: 15, categoryAlias: 'category-003', status: 'Approved' },
-    { id: 9, studentId: 3, date: '2026-08-19T20:00:00.000Z', type: 'Subtract', amount: 500, categoryAlias: 'category-001', status: 'Pending' },
+    { id: 1, studentId: 1, date: '2026-08-19T15:00:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', purpose: 'other', status: 'Approved' },
+    { id: 2, studentId: 1, date: '2026-08-19T16:00:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', purpose: 'other', status: 'Approved' },
+    { id: 3, studentId: 1, date: '2026-08-19T17:00:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', purpose: 'other', status: 'Approved' },
+    { id: 4, studentId: 2, date: '2026-08-19T20:00:00.000Z', type: 'Subtract', amount: 100, categoryAlias: 'category-001', purpose: 'other', status: 'Approved' },
+    { id: 5, studentId: 2, date: '2026-08-19T20:30:00.000Z', type: 'Subtract', amount: 100, categoryAlias: 'category-001', purpose: 'other', status: 'Approved' },
+    { id: 6, studentId: 1, date: '2026-08-19T21:00:00.000Z', type: 'Add', amount: 12, categoryAlias: 'category-002', purpose: 'other', status: 'Approved' },
+    { id: 7, studentId: 1, date: '2026-08-19T22:00:00.000Z', type: 'Add', amount: 8, categoryAlias: 'category-002', purpose: 'other', status: 'Approved' },
+    { id: 8, studentId: 1, date: '2026-08-19T23:00:00.000Z', type: 'Add', amount: 15, categoryAlias: 'category-003', purpose: 'other', status: 'Approved' },
+    { id: 9, studentId: 3, date: '2026-08-19T20:00:00.000Z', type: 'Subtract', amount: 500, categoryAlias: 'category-001', purpose: 'other', status: 'Pending' },
   ],
 }
 
@@ -61,10 +63,10 @@ test('answers from historical transactions after a student leaves the current ro
     ],
     transactions: [
       ...evidence.transactions,
-      { id: 10, studentId: 4, date: '2026-08-19T16:30:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', status: 'Approved' },
-      { id: 11, studentId: 4, date: '2026-08-19T17:30:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', status: 'Approved' },
-      { id: 12, studentId: 4, date: '2026-08-19T18:30:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', status: 'Approved' },
-      { id: 13, studentId: 4, date: '2026-08-19T19:30:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', status: 'Approved' },
+      { id: 10, studentId: 4, date: '2026-08-19T16:30:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', purpose: 'other', status: 'Approved' },
+      { id: 11, studentId: 4, date: '2026-08-19T17:30:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', purpose: 'other', status: 'Approved' },
+      { id: 12, studentId: 4, date: '2026-08-19T18:30:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', purpose: 'other', status: 'Approved' },
+      { id: 13, studentId: 4, date: '2026-08-19T19:30:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', purpose: 'other', status: 'Approved' },
     ],
   }
   const result = calculateQuestionAnswer({
@@ -96,6 +98,113 @@ test('answers restroom visits by approved transaction count rather than dollars 
   assert.match(result.evidence[0], /approved spending \(Subtract\) transactions/)
 })
 
+test('lists current students without an approved exact rent payment today', () => {
+  const students = [
+    ...evidence.students,
+    { id: 4, alias: 'student-004', name: 'Ava', balance: 30, frozen: false },
+  ]
+  const participants = students.map(({ id, alias, name }) => ({ id, alias, name }))
+  const rentCategory = { alias: 'category-004', label: 'Uncategorized' }
+  const rentTransactions = [
+    { id: 101, studentId: 1, date: '2026-08-20T16:00:00.000Z', type: 'Subtract', amount: 10, categoryAlias: rentCategory.alias, purpose: 'rent', status: 'Approved' },
+    { id: 102, studentId: 2, date: '2026-08-20T16:05:00.000Z', type: 'Subtract', amount: 5, categoryAlias: rentCategory.alias, purpose: 'rent', status: 'Approved' },
+    { id: 103, studentId: 3, date: '2026-08-19T16:10:00.000Z', type: 'Subtract', amount: 10, categoryAlias: rentCategory.alias, purpose: 'rent', status: 'Approved' },
+    { id: 104, studentId: 4, date: '2026-08-20T16:15:00.000Z', type: 'Subtract', amount: 10, categoryAlias: rentCategory.alias, purpose: 'rent', status: 'Pending' },
+  ]
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: {
+      operation: 'students-without-transactions',
+      subjectAliases: [],
+      categoryAlias: null,
+      purpose: 'rent',
+      transactionType: 'Subtract',
+      status: 'Approved',
+      dateScope: 'today',
+      amountExact: 10,
+      studentState: 'any',
+      limit: 8,
+    },
+    evidence: {
+      ...evidence,
+      participants,
+      students,
+      categories: [...evidence.categories, rentCategory],
+      transactions: rentTransactions,
+    },
+  })
+  assert.match(result.answer, /^Yes\. 3 of 4 current students/)
+  assert.match(result.answer, /Ava.*Mateo.*Sofia/)
+  assert.doesNotMatch(result.answer, /Genesis.*no matching/)
+  for (const text of [result.answer, ...result.evidence]) {
+    assert.match(text, /approved spending \(Subtract\) transactions/)
+    assert.match(text, /rent payments/)
+    assert.match(text, /exactly \$10\.00/)
+    assert.match(text, /today \(2026-08-20 in America\/Denver\)/)
+    assert.match(text, /all current students/)
+  }
+
+  const allPaid = calculateQuestionAnswer({
+    kind: 'query',
+    plan: {
+      operation: 'students-without-transactions',
+      subjectAliases: [],
+      categoryAlias: null,
+      purpose: 'rent',
+      transactionType: 'Subtract',
+      status: 'Approved',
+      dateScope: 'today',
+      amountExact: 10,
+      studentState: 'any',
+      limit: 8,
+    },
+    evidence: {
+      ...evidence,
+      participants,
+      students,
+      categories: [...evidence.categories, rentCategory],
+      transactions: students.map((student, index) => ({
+        id: 201 + index,
+        studentId: student.id,
+        date: '2026-08-20T17:00:00.000Z',
+        type: 'Subtract',
+        amount: 10,
+        categoryAlias: rentCategory.alias,
+        purpose: 'rent',
+        status: 'Approved',
+      })),
+    },
+  })
+  assert.match(allPaid.answer, /^No\. All 4 current students have a matching rent payment\./)
+  assert.match(allPaid.evidence[0], /students without a match: 0/)
+
+  const configuredAmount = calculateQuestionAnswer({
+    kind: 'query',
+    plan: {
+      operation: 'students-without-transactions',
+      subjectAliases: [],
+      categoryAlias: null,
+      purpose: 'rent',
+      transactionType: 'Subtract',
+      status: 'Approved',
+      dateScope: 'today',
+      amountExact: null,
+      studentState: 'any',
+      limit: 8,
+    },
+    evidence: {
+      ...evidence,
+      participants,
+      students,
+      categories: [...evidence.categories, rentCategory],
+      transactions: rentTransactions,
+    },
+  })
+  assert.match(configuredAmount.answer, /^Yes\. 3 of 4 current students/)
+  assert.match(configuredAmount.answer, /configured rent amount of \$10\.00/)
+  assert.doesNotMatch(configuredAmount.answer, /Genesis.*no matching/)
+})
+
 test('calculates a named student category ranking without sending facts to the model', () => {
   const result = calculateQuestionAnswer({
     kind: 'query',
@@ -124,7 +233,52 @@ test('preserves ties, status filters, balance rankings, and grounded unsupported
   assert.doesNotMatch(JSON.stringify(balanceResult), /\$500/)
 
   const unsupported = calculateQuestionAnswer({ kind: 'unsupported', plan: null, evidence })
-  assert.match(unsupported.answer, /do not contain the information needed/)
+  assert.match(unsupported.answer, /Morgan Bank.*classroom-economy routines/i)
+})
+
+test('returns bounded Morgan Bank guidance without claiming it came from classroom records', () => {
+  const guidance = 'Use consistent earning categories, invite students to set a savings goal, and review the routine before optional classroom purchases.'
+  const result = calculateQuestionAnswer({
+    kind: 'guidance',
+    plan: null,
+    guidance,
+    evidence,
+  })
+  assert.equal(result.answer, guidance)
+  assert.deepEqual(result.evidence, [
+    'General Morgan Bank guidance; no classroom records were used to make a factual claim.',
+  ])
+  for (const invalid of [
+    'Ask student-001 to save more each week.',
+    'Read https://example.com for classroom banking ideas.',
+    'Too short.',
+  ]) {
+    assert.throws(() => calculateQuestionAnswer({
+      kind: 'guidance',
+      plan: null,
+      guidance: invalid,
+      evidence,
+    }), InsightQuestionAnswerError)
+  }
+})
+
+test('combines calculated classroom facts with clearly labeled general Morgan Bank guidance', () => {
+  const guidance = 'Review the result privately and offer a consistent earning routine so students can choose a realistic next goal.'
+  const result = calculateQuestionAnswer({
+    kind: 'query-and-guidance',
+    plan: plan({
+      metric: 'count',
+      filters: { ...filters, categoryAlias: 'category-001', transactionType: 'Subtract' },
+      groupBy: 'student',
+      limit: 1,
+    }),
+    guidance,
+    evidence,
+  })
+  assert.match(result.answer, /^Genesis has the highest Bathroom break transaction count: 3 transactions\./)
+  assert.match(result.answer, /General Morgan Bank guidance: Review the result privately/)
+  assert.ok(result.answer.length <= 800)
+  assert.match(result.evidence[0], /Included records:/)
 })
 
 test('answers broad roster questions about student count, frozen accounts, and average balance', () => {
@@ -230,6 +384,11 @@ test('unknown aliases and malformed evidence fail closed', () => {
       ],
     },
   }), InsightQuestionAnswerError)
+  assert.throws(() => calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({}),
+    evidence: { ...evidence, configuredRentAmount: 10.5 },
+  }), InsightQuestionAnswerError)
 })
 
 test('large ties stay explicit without exceeding the public evidence bound', () => {
@@ -247,6 +406,7 @@ test('large ties stay explicit without exceeding the public evidence bound', () 
     type: 'Subtract',
     amount: 1,
     categoryAlias: 'category-001',
+    purpose: 'other',
     status: 'Approved',
   }))
   const result = calculateQuestionAnswer({
@@ -349,6 +509,7 @@ test('bounds maximum-length ranked labels inside the public response contract', 
     type: 'Add',
     amount: 100 - index,
     categoryAlias: category.alias,
+    purpose: 'other',
     status: 'Approved',
   }))
   const result = calculateQuestionAnswer({
@@ -364,6 +525,39 @@ test('bounds maximum-length ranked labels inside the public response contract', 
   assert.equal(result.evidence.length, 8)
   assert.ok(result.evidence.every(line => line.length <= 320))
   assert.match(result.answer, /…/)
+})
+
+test('reserves public response space while fitting combined ranked guidance', () => {
+  const categories = Array.from({ length: 8 }, (_, index) => ({
+    alias: `category-${String(index + 1).padStart(3, '0')}`,
+    label: `${String(index + 1).padStart(3, '0')}-${'Long category label '.repeat(8)}`.slice(0, 120),
+  }))
+  const transactions = categories.map((category, index) => ({
+    id: index + 200,
+    studentId: 1,
+    date: '2026-08-19T15:00:00.000Z',
+    type: 'Add',
+    amount: 100 - index,
+    categoryAlias: category.alias,
+    purpose: 'other',
+    status: 'Approved',
+  }))
+  const guidance = 'Review the result privately and use a consistent classroom routine. '.padEnd(240, 'Keep choices predictable. ').slice(0, 240)
+  const result = calculateQuestionAnswer({
+    kind: 'query-and-guidance',
+    plan: plan({
+      filters: { ...filters, subjectAliases: ['student-001'], transactionType: 'Add' },
+      groupBy: 'category',
+      limit: 8,
+    }),
+    guidance,
+    evidence: { ...evidence, categories, transactions },
+  })
+  assert.ok(result.answer.length <= 800)
+  assert.match(result.answer, /General Morgan Bank guidance:/)
+  assert.match(result.answer, /…/)
+  assert.equal(result.evidence.length, 8)
+  assert.ok(result.evidence.every(line => line.length <= 320))
 })
 
 test('dynamically fits ranked, aggregate, and empty results with every disclosure filter', () => {
@@ -385,6 +579,7 @@ test('dynamically fits ranked, aggregate, and empty results with every disclosur
     type: index % 2 ? 'Add' : 'Subtract',
     amount: 10,
     categoryAlias: category.alias,
+    purpose: 'other',
     status: index % 3 ? 'Approved' : 'Pending',
   }))
   const queryFilters = {
@@ -446,8 +641,8 @@ test('discloses ties omitted at a non-leading cutoff', () => {
     frozen: false,
   }))
   const transactions = [
-    { id: 1, studentId: 1, date: '2026-08-19T15:00:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', status: 'Approved' },
-    { id: 2, studentId: 1, date: '2026-08-19T16:00:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', status: 'Approved' },
+    { id: 1, studentId: 1, date: '2026-08-19T15:00:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', purpose: 'other', status: 'Approved' },
+    { id: 2, studentId: 1, date: '2026-08-19T16:00:00.000Z', type: 'Subtract', amount: 1, categoryAlias: 'category-001', purpose: 'other', status: 'Approved' },
     ...students.slice(1).map((student, index) => ({
       id: index + 3,
       studentId: student.id,
@@ -455,6 +650,7 @@ test('discloses ties omitted at a non-leading cutoff', () => {
       type: 'Subtract',
       amount: 1,
       categoryAlias: 'category-001',
+      purpose: 'other',
       status: 'Approved',
     })),
   ]

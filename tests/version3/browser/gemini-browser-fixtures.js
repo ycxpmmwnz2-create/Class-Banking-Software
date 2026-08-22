@@ -148,6 +148,19 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
       source: "Teacher",
     })),
   ];
+  const rentTransaction = {
+    id: transactionId + 8,
+    date: new Date(Date.now() - 30_000).toISOString(),
+    studentId,
+    studentName: tenant.studentName,
+    type: "Subtract",
+    amount: 10,
+    reason: "Rent",
+    memo: "",
+    category: "",
+    status: "Approved",
+    source: "Student",
+  };
   await db.doc(`teachers/${uid}`).set({
     uid,
     status: "active",
@@ -163,6 +176,10 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
     lastBackupAt: null,
     updatedAt: new Date().toISOString(),
   });
+  await db.doc(`classrooms/${tenant.classroomId}/studentDisplay/rent`).set({
+    rentAmount: 10,
+    updatedAt: new Date().toISOString(),
+  });
   await db.doc(`classroomLoginCodes/${tenant.studentLoginCode.replace("-", "")}`).set({
     classroomId: tenant.classroomId,
     ownerUid: uid,
@@ -173,7 +190,7 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
     name: tenant.studentName,
     balance: 45,
     frozen: false,
-    transactions: [pendingTransaction, earningTransaction, spendingTransaction, ...restroomTransactions.slice(0, 3)],
+    transactions: [pendingTransaction, earningTransaction, spendingTransaction, rentTransaction, ...restroomTransactions.slice(0, 3)],
   });
   await db.doc(`classrooms/${tenant.classroomId}/students/${classmateId}`).set({
     id: classmateId,
@@ -182,7 +199,7 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
     frozen: false,
     transactions: restroomTransactions.slice(3),
   });
-  for (const transaction of [pendingTransaction, earningTransaction, spendingTransaction, ...restroomTransactions]) {
+  for (const transaction of [pendingTransaction, earningTransaction, spendingTransaction, rentTransaction, ...restroomTransactions]) {
     await db.doc(`classrooms/${tenant.classroomId}/transactions/${transaction.id}`).set(transaction);
   }
 }

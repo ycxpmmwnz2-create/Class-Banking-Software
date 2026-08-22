@@ -50,9 +50,10 @@ test('server question request has exactly five browser fields and validates IANA
 
 test('provider may return only a bounded query plan using server allowlisted aliases', () => {
   const interpretation = {
-    schemaVersion: 2,
+    schemaVersion: 4,
     kind: 'query',
     plan: restroomPlan,
+    guidance: null,
     usage,
   }
   assert.deepEqual(validateQuestionInterpretation(interpretation, allowed), interpretation)
@@ -65,15 +66,68 @@ test('provider may return only a bounded query plan using server allowlisted ali
     plan: { ...restroomPlan, writeOperation: 'delete' },
   }, allowed), InsightQuestionContractError)
   assert.deepEqual(validateQuestionInterpretation({
-    schemaVersion: 2,
+    schemaVersion: 4,
     kind: 'unsupported',
     plan: null,
+    guidance: null,
     usage,
   }, allowed).plan, null)
 })
 
+test('provider may return bounded Morgan Bank guidance but cannot mix it with a data plan', () => {
+  const guidance = 'Use a predictable weekly savings routine and let students set a small classroom goal before choosing optional purchases.'
+  assert.deepEqual(validateQuestionInterpretation({
+    schemaVersion: 4,
+    kind: 'guidance',
+    plan: null,
+    guidance,
+    usage,
+  }, allowed), {
+    schemaVersion: 4,
+    kind: 'guidance',
+    plan: null,
+    guidance,
+    usage,
+  })
+  for (const invalid of [
+    { kind: 'guidance', plan: restroomPlan, guidance },
+    { kind: 'guidance', plan: null, guidance: 'See https://example.com for help.' },
+    { kind: 'guidance', plan: null, guidance: 'Ask student-001 to save more each week.' },
+    { kind: 'guidance', plan: null, guidance: 'Too short.' },
+    { kind: 'query', plan: restroomPlan, guidance },
+    { kind: 'unsupported', plan: null, guidance },
+  ]) {
+    assert.throws(() => validateQuestionInterpretation({
+      schemaVersion: 4,
+      ...invalid,
+      usage,
+    }, allowed), InsightQuestionContractError)
+  }
+})
+
+test('provider can pair a grounded plan with short result-independent guidance', () => {
+  const guidance = 'Review the result privately and use a consistent earning routine to help students set a realistic next goal.'
+  const combined = validateQuestionInterpretation({
+    schemaVersion: 4,
+    kind: 'query-and-guidance',
+    plan: restroomPlan,
+    guidance,
+    usage,
+  }, allowed)
+  assert.equal(combined.kind, 'query-and-guidance')
+  assert.deepEqual(combined.plan, restroomPlan)
+  assert.equal(combined.guidance, guidance)
+  assert.throws(() => validateQuestionInterpretation({
+    schemaVersion: 4,
+    kind: 'query-and-guidance',
+    plan: restroomPlan,
+    guidance: 'A'.repeat(241),
+    usage,
+  }, allowed), InsightQuestionContractError)
+})
+
 test('cross-field rules reject nonsensical balance, net, and chronological plans', () => {
-  const wrap = plan => ({ schemaVersion: 2, kind: 'query', plan, usage })
+  const wrap = plan => ({ schemaVersion: 4, kind: 'query', plan, guidance: null, usage })
   assert.throws(() => validateQuestionInterpretation(wrap({
     ...restroomPlan,
     dataset: 'students',
@@ -106,22 +160,24 @@ test('student dataset permits roster counts and balance analysis without exposin
     limit: 1,
   }
   assert.deepEqual(validateQuestionInterpretation({
-    schemaVersion: 2,
+    schemaVersion: 4,
     kind: 'query',
     plan: studentCount,
+    guidance: null,
     usage,
   }, allowed).plan, studentCount)
 })
 
 test('completed replay is pinned to schema, evidence signature, and current aliases', () => {
   const completed = {
-    schemaVersion: 2,
+    schemaVersion: 4,
     source: 'provider-interpreted',
     periodDays: 30,
     evidenceSignature: 'a'.repeat(64),
     generatedAt: '2026-08-20T18:00:00.000Z',
     kind: 'query',
     plan: restroomPlan,
+    guidance: null,
     usage: { ...usage, costMicroUsd: 500 },
   }
   assert.deepEqual(validateCompletedQuestion(completed, {
@@ -134,6 +190,70 @@ test('completed replay is pinned to schema, evidence signature, and current alia
     evidenceSignature: 'b'.repeat(64),
     allowedAliases: allowed,
   }), InsightQuestionContractError)
+})
+
+test('completed guidance replay is schema-bound and contains no data plan', () => {
+  const guidance = 'Use a short weekly balance check-in and ask students to name one saving goal before they choose an optional purchase.'
+  const completed = {
+    schemaVersion: 4,
+    source: 'provider-interpreted',
+    periodDays: 30,
+    evidenceSignature: 'a'.repeat(64),
+    generatedAt: '2026-08-20T18:00:00.000Z',
+    kind: 'guidance',
+    plan: null,
+    guidance,
+    usage: { ...usage, costMicroUsd: 500 },
+  }
+  assert.equal(validateCompletedQuestion(completed, {
+    periodDays: 30,
+    evidenceSignature: 'a'.repeat(64),
+    allowedAliases: allowed,
+  }).guidance, guidance)
+  assert.throws(() => validateCompletedQuestion({
+    ...completed,
+    plan: restroomPlan,
+  }, {
+    periodDays: 30,
+    evidenceSignature: 'a'.repeat(64),
+    allowedAliases: allowed,
+  }), InsightQuestionContractError)
+})
+
+test('provider can request current students without exact matching rent payments today', () => {
+  const plan = {
+    operation: 'students-without-transactions',
+    subjectAliases: [],
+    categoryAlias: null,
+    purpose: 'rent',
+    transactionType: 'Subtract',
+    status: 'Approved',
+    dateScope: 'today',
+    amountExact: 10,
+    studentState: 'any',
+    limit: 8,
+  }
+  assert.deepEqual(validateQuestionInterpretation({
+    schemaVersion: 4,
+    kind: 'query',
+    plan,
+    guidance: null,
+    usage,
+  }, allowed).plan, plan)
+  for (const invalidPlan of [
+    { ...plan, transactionType: 'Add' },
+    { ...plan, categoryAlias: 'category-001' },
+    { ...plan, amountExact: 0 },
+    { ...plan, subjectAliases: ['student-999'] },
+  ]) {
+    assert.throws(() => validateQuestionInterpretation({
+      schemaVersion: 4,
+      kind: 'query',
+      plan: invalidPlan,
+      guidance: null,
+      usage,
+    }, allowed), InsightQuestionContractError)
+  }
 })
 
 test('teacher response accepts only calculated answer text, bounded evidence, and billed usage', () => {
