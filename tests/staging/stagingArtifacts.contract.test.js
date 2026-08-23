@@ -20,6 +20,29 @@ describe("staging deployment artifacts", () => {
     assert.equal(raw.includes("credential"), false);
   });
 
+  test("production and staging Hosting use safe ordered cache policies", async () => {
+    for (const filename of ["firebase.json", "firebase.staging.json"]) {
+      const config = JSON.parse(await readFile(new URL(filename, REPO_ROOT), "utf8"));
+      assert.deepEqual(config.hosting.headers, [
+        {
+          source: "**",
+          headers: [{ key: "Cache-Control", value: "no-cache" }]
+        },
+        {
+          source: "/assets/**",
+          headers: [{
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable"
+          }]
+        },
+        {
+          source: "**/*.@(png|webp|svg)",
+          headers: [{ key: "Cache-Control", value: "public, max-age=86400" }]
+        }
+      ]);
+    }
+  });
+
   test("the staging warning is static, outside the render root, and enabled only by the resolved tier", async () => {
     const source = await readFile(new URL("index.html", REPO_ROOT), "utf8");
     const bannerStart = source.indexOf('<div id="stagingDeploymentBanner"');
