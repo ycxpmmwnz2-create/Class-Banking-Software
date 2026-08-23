@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, connectAuthEmulator } from "firebase/auth";
-import { getFirestore, initializeFirestore, connectFirestoreEmulator } from "firebase/firestore";
+import { getFirestore, initializeFirestore, connectFirestoreEmulator } from "firebase/firestore/lite";
 import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
 import { resolveFirebaseBuildConfiguration } from "./firebaseConfig.js";
 import { VERSION3_GEMINI_LIVE_PROJECT_IDS } from "../insights/providerInsightsClient.js";

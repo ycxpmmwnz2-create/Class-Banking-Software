@@ -1453,7 +1453,7 @@
   <script type="module">
 import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured, firebaseDeploymentTier, providerAppCheckReadyPromise } from "./src/firebase/firebase.js";
 import { browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider, inMemoryPersistence, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
-import { collection, doc, getDoc, getDocs, limit, orderBy, query, runTransaction, setDoc } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, runTransaction, setDoc } from "firebase/firestore/lite";
 import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
 import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
