@@ -90,6 +90,11 @@ test("production-form artifact hard-disables assisted activation and keeps its c
     assert.match(artifact, /!providerInsightsEnabled \|\| providerInsightsLoading \|\| providerQuestionLoading/);
     assert.match(artifact, /data-testid="provider-insights-action"/);
     assert.match(artifact, /data-testid="provider-question-submit"/);
+    assert.doesNotMatch(
+      artifact,
+      /ReCaptchaEnterpriseProvider|getLimitedUseTokenFn/,
+      "the default production artifact must not ship the disabled App Check implementation",
+    );
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }
@@ -119,10 +124,6 @@ test("authorized live artifact requires verified App Check, V2, and limited-use 
       { cwd: REPO_ROOT, env, encoding: "utf8", stdio: "pipe" },
     );
     const artifact = collectJavaScript(outDir);
-    assert.match(
-      artifact,
-      /var providerAppCheckRequested = firebaseBuildEnvironment\.VITE_VERSION3_GEMINI_LIVE === "true";/,
-    );
     assert.match(artifact, new RegExp(siteKey));
     assert.match(artifact, /new ReCaptchaEnterpriseProvider\(key\)/);
     assert.match(artifact, /const tokenResult = await getLimitedUseTokenFn\(/);

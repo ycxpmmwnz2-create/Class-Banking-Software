@@ -3,7 +3,6 @@ import { getAuth, connectAuthEmulator } from "firebase/auth";
 import { getFirestore, initializeFirestore, connectFirestoreEmulator } from "firebase/firestore";
 import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
 import { resolveFirebaseBuildConfiguration } from "./firebaseConfig.js";
-import { initializeProviderAppCheckAndVerify } from "./providerAppCheck.js";
 import { VERSION3_GEMINI_LIVE_PROJECT_IDS } from "../insights/providerInsightsClient.js";
 
 const firebaseBuildEnvironment = import.meta.env || {};
@@ -22,10 +21,9 @@ if (isStagingDeployment && typeof document !== "undefined") {
 }
 
 let app = initializeApp(firebaseConfig);
-const providerAppCheckRequested =
-  firebaseBuildEnvironment.VITE_VERSION3_GEMINI_LIVE === "true";
-let providerAppCheckReadyPromise = Promise.resolve(false);
-if (providerAppCheckRequested) {
+const providerAppCheckReadyPromise = (async () => {
+  if (import.meta.env?.VITE_VERSION3_GEMINI_LIVE !== "true") return false;
+
   const expectedProjectId = VERSION3_GEMINI_LIVE_PROJECT_IDS[firebaseDeploymentTier];
   const buildProjectId = firebaseBuildEnvironment.VITE_VERSION3_GEMINI_PROJECT_ID;
   const siteKey = firebaseBuildEnvironment.VITE_FIREBASE_APP_CHECK_SITE_KEY;
@@ -38,21 +36,25 @@ if (providerAppCheckRequested) {
     && buildProjectId === expectedProjectId
     && validSiteKey
   ) {
-    providerAppCheckReadyPromise = initializeProviderAppCheckAndVerify({
-      app,
-      siteKey,
-    }).catch(() => {
+    try {
+      const { initializeProviderAppCheckAndVerify } = await import("./providerAppCheck.build.js");
+      return await initializeProviderAppCheckAndVerify({
+        app,
+        siteKey,
+      });
+    } catch {
       globalThis.console.warn("Gemini App Check initialization refused.", {
         category: "invalid-runtime",
       });
       return false;
-    });
+    }
   } else {
     globalThis.console.warn("Gemini App Check configuration refused.", {
       category: "invalid-runtime",
     });
+    return false;
   }
-}
+})();
 export { providerAppCheckReadyPromise };
 let auth = getAuth(app);
 let db = getFirestore(app);
