@@ -154,6 +154,19 @@ describe("Phase 2B Item 10: build artifact composition", () => {
     }
   });
 
+  test("both builds copy the external Morgan Bank logo byte-for-byte", () => {
+    const sourceLogo = readFileSync(join(REPO_ROOT, "public", "morgan-bank-logo.webp"));
+    for (const [label, buildDir] of [["default-off", offBuildDir], ["gate-on", onBuildDir]]) {
+      const builtLogo = join(buildDir, "morgan-bank-logo.webp");
+      assert.ok(existsSync(builtLogo), `${label}: build emitted no morgan-bank-logo.webp`);
+      assert.deepEqual(
+        readFileSync(builtLogo),
+        sourceLogo,
+        `${label}: built Morgan Bank logo must exactly match public/morgan-bank-logo.webp`
+      );
+    }
+  });
+
   test("default-off omits every operational V2 transport and persistence marker", () => {
     const src = combined(offFiles);
     for (const marker of OPERATIONAL_MARKERS) {

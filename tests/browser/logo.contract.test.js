@@ -5,26 +5,10 @@ import assert from "node:assert/strict";
 
 const indexHtml = readFileSync(join(process.cwd(), "index.html"), "utf8");
 const faviconSvg = readFileSync(join(process.cwd(), "public", "favicon.svg"), "utf8");
+const morganBankLogo = readFileSync(join(process.cwd(), "public", "morgan-bank-logo.webp"));
 const lutherAiLogo = readFileSync(join(process.cwd(), "public", "luther-ai-logo.png"));
 
-function embeddedLogoBase64(source) {
-  const matches = [...source.matchAll(
-    /<img class="center-logo" src="data:image\/webp;base64,([^"]+)" alt="Morgan Bank logo">/g
-  )];
-
-  assert.equal(matches.length, 1, "index.html must contain exactly one embedded Morgan Bank logo");
-  return matches[0][1];
-}
-
-function assertCompleteWebp(base64) {
-  assert.match(base64, /^[A-Za-z0-9+/]+={0,2}$/, "logo must contain valid Base64 characters");
-
-  const bytes = Buffer.from(base64, "base64");
-  assert.equal(
-    bytes.toString("base64"),
-    base64,
-    "logo Base64 must decode without ignored or malformed input"
-  );
+function assertCompleteWebp(bytes) {
   assert.equal(bytes.subarray(0, 4).toString("ascii"), "RIFF", "logo must be a RIFF file");
   assert.equal(bytes.subarray(8, 12).toString("ascii"), "WEBP", "logo must be a WebP file");
   assert.equal(
@@ -49,17 +33,24 @@ function assertCompleteWebp(base64) {
   assert.equal(imageChunkFound, true, "logo must contain a WebP image chunk");
 }
 
-test("embedded Morgan Bank logo is a complete, internally consistent WebP", () => {
-  assertCompleteWebp(embeddedLogoBase64(indexHtml));
+test("external Morgan Bank logo is a complete, internally consistent WebP", () => {
+  assertCompleteWebp(morganBankLogo);
+  assert.ok(morganBankLogo.length <= 15_000, "Morgan Bank logo must remain compact");
+  assert.match(
+    indexHtml,
+    /<img class="center-logo" src="\/morgan-bank-logo\.webp" width="900" height="501" alt="Morgan Bank logo">/,
+    "the hero must request the cacheable external logo with intrinsic dimensions"
+  );
+  assert.doesNotMatch(indexHtml, /data:image\/webp;base64,/, "the hero logo must not remain in JavaScript");
 });
 
 test("logo integrity check rejects the demonstrated two-character data loss", () => {
-  const intact = embeddedLogoBase64(indexHtml);
+  const intact = morganBankLogo.toString("base64");
   const historicalRepairPoint = "WhkgUzSdE3";
   assert.ok(intact.includes(historicalRepairPoint), "test fixture must contain the repaired bytes");
   const truncated = intact.replace(historicalRepairPoint, "WhkgSdE3");
 
-  assert.throws(() => assertCompleteWebp(truncated), assert.AssertionError);
+  assert.throws(() => assertCompleteWebp(Buffer.from(truncated, "base64")), assert.AssertionError);
 });
 
 test("the document links a Morgan Bank favicon instead of the stock Vite mark", () => {
