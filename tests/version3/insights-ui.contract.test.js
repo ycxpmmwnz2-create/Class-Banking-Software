@@ -34,10 +34,14 @@ test("source contract: Dashboard places concise AI guidance beside login informa
   assert.doesNotMatch(indexHtml, /Open one calm, focused view/);
 });
 
-test("source contract: the page exposes one model-neutral initial/more flow and only three periods", () => {
+test("source contract: the page exposes teacher-selected quick questions and only three periods", () => {
   assert.match(indexHtml, /<h2>AI Insights<\/h2>/);
-  assert.match(indexHtml, /Get AI Insights/);
-  assert.match(indexHtml, /Get More Insights/);
+  assert.match(indexHtml, /aria-label="Quick insight questions"/);
+  for (const label of ["Lowest balances", "Spending patterns", "Rent check", "Repeated requests"]) {
+    assert.match(indexHtml, new RegExp(label));
+  }
+  assert.equal(indexHtml.match(/data-testid="provider-quick-question"/g)?.length, 1);
+  assert.doesNotMatch(indexHtml, /provider-insights-action|Get AI Insights|Get More Insights/);
   assert.match(providerClientSource, /PROVIDER_INSIGHTS_PERIODS = Object\.freeze\(\[7, 30, 90\]\)/);
   for (const forbidden of [
     /Gemini Quick/,
@@ -56,10 +60,11 @@ test("source contract: production has no local analysis call site or fallback", 
   assert.doesNotMatch(indexHtml, /buildClassInsightsReport|generateLocalInsights|insightsReport/);
   assert.doesNotMatch(indexHtml, /Analysis runs locally|Local analysis|\$0\.00 API cost/);
   assert.match(indexHtml, /AI Insights are currently unavailable for this classroom/);
-  assert.match(indexHtml, /providerInsightsClient\.analyze\(request\)/);
+  assert.doesNotMatch(indexHtml, /providerInsightsClient\.analyze\(request\)|generateProviderInsights/);
+  assert.match(indexHtml, /providerInsightsClient\.ask\(request\)/);
 });
 
-test("source contract: Q&A is explicit, exact-shaped, period-bound, and never automatic", () => {
+test("source contract: Q&A is explicit, paragraph-shaped, period-bound, and never automatic", () => {
   assert.match(indexHtml, /data-testid="provider-question-submit"/);
   assert.match(indexHtml, /onclick="submitProviderQuestion\(\)"/);
   assert.match(indexHtml, /onclick="retryProviderQuestion\(\)"/);
@@ -69,8 +74,19 @@ test("source contract: Q&A is explicit, exact-shaped, period-bound, and never au
   );
   assert.match(
     indexHtml,
-    /data-testid="provider-question-submit"[\s\S]*?\$\{providerInsightsLoading \|\| providerQuestionLoading \? "disabled" : ""\}/,
+    /data-testid="provider-question-submit"[\s\S]*?\$\{providerQuestionLoading \? "disabled" : ""\}/,
   );
+  assert.match(indexHtml, /aria-keyshortcuts="Enter"/);
+  assert.match(indexHtml, /onkeydown="handleProviderQuestionKeyDown\(event\)"/);
+  assert.match(
+    indexHtml,
+    /function handleProviderQuestionKeyDown\(event\) \{[\s\S]*?event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.isComposing[\s\S]*?event\.preventDefault\(\);[\s\S]*?submitProviderQuestion\(\);/,
+  );
+  assert.match(indexHtml, /providerQuestionResult = result;\s*providerQuestionDraft = "";/);
+  assert.match(indexHtml, /<p class="insights-answer-copy">\$\{escapeHtml\(providerQuestionResult\.answer\)\}<\/p>/);
+  assert.match(indexHtml, /\.insights-answer-copy\s*\{[\s\S]*?white-space: pre-line;/);
+  assert.match(indexHtml, /<details class="insights-answer-details">[\s\S]*?<summary>How this was calculated<\/summary>/);
+  assert.doesNotMatch(indexHtml, /class="insight-observation"/);
   assert.match(indexHtml, /Who did not pay rent today, or how can I encourage saving\?/);
   assert.match(indexHtml, /Morgan Bank features, or classroom-economy ideas/);
   assert.doesNotMatch(indexHtml, /Get a focused look at your classroom data|Ready when you are/);
@@ -79,8 +95,8 @@ test("source contract: Q&A is explicit, exact-shaped, period-bound, and never au
   assert.match(providerClientSource, /async ask\(request\)[\s\S]*?callable\(accepted\)/);
   assert.equal(
     indexHtml.match(/\bsubmitProviderQuestion\(\)/g)?.length,
-    2,
-    "the explicit submit wrapper may appear only in its definition and button click handler",
+    3,
+    "the explicit submit wrapper may appear only in its definition, Enter handler, and button click handler",
   );
   assert.equal(
     indexHtml.match(/askProviderQuestion\(/g)?.length,
@@ -94,7 +110,7 @@ test("source contract: Q&A is explicit, exact-shaped, period-bound, and never au
   );
 });
 
-test("source contract: tenant and data changes discard both generated insights and answers", () => {
+test("source contract: tenant and data changes discard question answers", () => {
   assert.match(indexHtml, /providerQuestionDataSignature === dataSignature/);
   assert.match(indexHtml, /v2TenantSession\.validateCapturedIdentity\(providerQuestionCapturedIdentity\)/);
   assert.match(indexHtml, /providerQuestionRequestVersion \+= 1;/);

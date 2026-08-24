@@ -209,6 +209,15 @@ test("question boundary accepts only the exact teacher text, period, and IANA ti
   assert.throws(() => validateProviderQuestionResponse(questionResponse({ periodDays: 7 }), request), /metadata/);
 });
 
+test("question response accepts a bounded full-roster answer but rejects oversized text", () => {
+  assert.equal(validateProviderQuestionResponse(questionResponse({
+    answer: "A".repeat(80_000),
+  })).answer.length, 80_000);
+  assert.throws(() => validateProviderQuestionResponse(questionResponse({
+    answer: "A".repeat(80_001),
+  })), /answer is malformed/);
+});
+
 test("maps errors to short allowlisted messages and marks only ambiguous outcomes retryable", () => {
   assert.deepEqual(mapProviderInsightsError({ code: "functions/unavailable", message: "raw" }), {
     ambiguous: true,

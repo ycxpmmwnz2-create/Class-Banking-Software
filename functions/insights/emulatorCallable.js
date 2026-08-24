@@ -119,6 +119,11 @@ export function createVersion3GeminiEmulatorHandler({
         // The production contract routes data mutations to unsupported. Keep the
         // browser double honest instead of accidentally treating "change every
         // balance" as a read-only balance query.
+      } else if (
+        /(?:list|show|give)(?:\s+for\s+me)?\s+(?:each|every|all)/.test(normalized) &&
+        /student/.test(normalized) && /balance/.test(normalized)
+      ) {
+        plan = { operation: 'list-student-balances' }
       } else if (/(did not|didn't|not pay|unpaid)/.test(normalized) && /rent/.test(normalized)) {
         const amount = normalized.match(/\$\s*(\d+(?:\.\d+)?)/)?.[1]
         plan = {

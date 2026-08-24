@@ -10,12 +10,13 @@ const [indexHtml, browserClient, providerAppCheck, browserViteConfig, packageJso
   readFile(new URL("../../package.json", import.meta.url), "utf8"),
 ]);
 
-test("source contract: assisted controls are default-off and locked to the one demo project", () => {
+test("source contract: assisted question controls are default-off and locked to the one demo project", () => {
   assert.match(indexHtml, /VITE_VERSION3_GEMINI_BROWSER_TEST === "true"/);
   assert.match(indexHtml, /runtimeConfig: window\.VERSION3_GEMINI_BROWSER_TEST_CONFIG/);
   assert.match(indexHtml, /&& app\.options\.projectId === VERSION3_GEMINI_BROWSER_PROJECT_ID/);
-  assert.match(indexHtml, /data-testid="provider-insights-action"/);
-  assert.match(indexHtml, /!providerInsightsEnabled \|\| providerInsightsLoading \|\| providerQuestionLoading \? "disabled"/);
+  assert.match(indexHtml, /data-testid="provider-question-submit"/);
+  assert.match(indexHtml, /data-testid="provider-quick-question"/);
+  assert.match(indexHtml, /!providerInsightsEnabled \|\| providerQuestionLoading \? "disabled"/);
   assert.match(browserClient, /demo-morgan-bank-version3-gemini-callable-browser/);
   assert.match(browserViteConfig, /VITE_VERSION3_GEMINI_BROWSER_TEST/);
   assert.doesNotMatch(browserViteConfig, /morgan-bank-staging|["']morgan-bank["']/);
@@ -36,30 +37,30 @@ test("source contract: live assisted controls are exact-project, V2, and verifie
   assert.doesNotMatch(indexHtml, /GEMINI_API_KEY/);
 });
 
-test("source contract: browser request carries only analysis controls and a validated time zone", () => {
-  assert.match(browserClient, /REQUEST_FIELDS = Object\.freeze\(\["requestId", "mode", "periodDays", "timeZone"\]\)/);
+test("source contract: browser request carries only the teacher question controls and a validated time zone", () => {
+  assert.match(browserClient, /QUESTION_REQUEST_FIELDS = Object\.freeze\(\[[\s\S]*?"requestId",[\s\S]*?"kind",[\s\S]*?"periodDays",[\s\S]*?"timeZone",[\s\S]*?"question",/);
   assert.match(
     indexHtml,
-    /try \{\s*if \(!request\) \{\s*request = \{\s*requestId: providerInsightsClient\.newRequestId\(\),\s*mode: acceptedMode,\s*periodDays,\s*timeZone,\s*\};/,
+    /request = \{\s*requestId: providerInsightsClient\.newRequestId\(\),\s*kind: "question",\s*periodDays,\s*timeZone,\s*question,\s*\};/,
   );
   const requestBody = indexHtml.match(
-    /request = \{\s*([\s\S]*?)\s*\};\s*\}\s*const result = await providerInsightsClient\.analyze\(request\);/,
+    /request = \{\s*([\s\S]*?)\s*\};\s*\}\s*providerQuestionRequestVersion \+= 1;/,
   )?.[1];
-  assert.ok(requestBody, "the new-request object must remain directly attached to the analyzed request");
+  assert.ok(requestBody, "the new-request object must remain directly attached to the question request");
   assert.deepEqual(
     [...requestBody.matchAll(/^\s*([A-Za-z][A-Za-z0-9]*)(?::|,)/gm)].map(match => match[1]),
-    ["requestId", "mode", "periodDays", "timeZone"],
+    ["requestId", "kind", "periodDays", "timeZone", "question"],
   );
   assert.match(indexHtml, /Intl\.DateTimeFormat\(\)\.resolvedOptions\(\)\.timeZone \|\| "UTC"/);
   assert.match(browserClient, /resolvedOptions\(\)\.timeZone/);
 });
 
 test("source contract: assisted state is in memory, reset with tenant state, and stale-checked", () => {
-  assert.match(indexHtml, /function resetProviderInsightsState\(\)[\s\S]*?providerInsightsReport = null;[\s\S]*?providerInsightsRetryRequest = null;/);
+  assert.match(indexHtml, /function resetProviderInsightsState\(\)[\s\S]*?providerQuestionResult = null;[\s\S]*?providerQuestionRetryRequest = null;/);
   assert.match(indexHtml, /function resetAllGlobalState\(\)[\s\S]*?resetProviderInsightsState\(\);/);
   assert.match(indexHtml, /v2TenantSession\.validateCapturedIdentity\(capturedIdentity\)/);
   assert.match(indexHtml, /currentInsightsDataSignature\(\) === dataSignature/);
-  assert.match(indexHtml, /providerInsightsRequestVersion === requestVersion/);
+  assert.match(indexHtml, /providerQuestionRequestVersion === requestVersion/);
   assert.match(
     indexHtml,
     /function changeProviderInsightsLocalDataForTest\(\) \{\s*if \(!providerInsightsEnabled \|\| !requireTeacher\(\)/,
@@ -79,8 +80,9 @@ test("source contract: test tenant loading cannot become browser authority for t
 test("source contract: production has no local fallback and the UI stays model-neutral", () => {
   assert.doesNotMatch(indexHtml, /generateLocalInsights|buildClassInsightsReport|Analysis runs locally|Local analysis/);
   assert.match(indexHtml, /AI Insights are currently unavailable for this classroom/);
-  assert.match(indexHtml, /Get AI Insights/);
-  assert.match(indexHtml, /Get More Insights/);
+  assert.match(indexHtml, /Quick insight questions/);
+  assert.match(indexHtml, /Ask AI Insights/);
+  assert.doesNotMatch(indexHtml, /Get AI Insights|Get More Insights|provider-insights-action/);
   assert.doesNotMatch(indexHtml, /Gemini Quick|Gemini Deep|API cost|Gemini allowance/);
 });
 

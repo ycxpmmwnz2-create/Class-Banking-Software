@@ -34,6 +34,7 @@ const DATE_SCOPES = Object.freeze(['period', 'today'])
 const MAX_EXACT_AMOUNT = 1_000_000
 const MIN_GUIDANCE_LENGTH = 20
 const MAX_GUIDANCE_LENGTH = 480
+const MAX_TEACHER_QUESTION_ANSWER_LENGTH = 80_000
 const PROVIDER_ALIAS_PATTERN = /(?:student|category)-[0-9]{3}/iu
 const PROVIDER_PLACEHOLDER_PATTERN = /\[(?:student|category)(?:-[0-9]{3})?\]/iu
 const URL_PATTERN = /(?:https?:\/\/|www\.)/iu
@@ -162,7 +163,13 @@ export function validateTeacherQuestionResponse(value) {
     fail('invalid-response', 'The question response metadata is malformed.')
   }
   requireIsoTimestamp(value.generatedAt, 'generatedAt', 'invalid-response')
-  const answer = boundedText(value.answer, 1, 800, 'answer', 'invalid-response')
+  const answer = boundedText(
+    value.answer,
+    1,
+    MAX_TEACHER_QUESTION_ANSWER_LENGTH,
+    'answer',
+    'invalid-response',
+  )
   if (!Array.isArray(value.evidence) || value.evidence.length < 1 || value.evidence.length > 8) {
     fail('invalid-response', 'The question evidence is malformed.')
   }
@@ -181,9 +188,20 @@ export function validateTeacherQuestionResponse(value) {
 
 function validateQuestionPlan(value, allowed, category) {
   if (isPlainObject(value) && Object.hasOwn(value, 'operation')) {
+    if (value.operation === 'list-student-balances') {
+      return validateStudentBalanceListPlan(value, category)
+    }
     return validateMissingTransactionPlan(value, allowed, category)
   }
   return validateQueryPlan(value, allowed, category)
+}
+
+function validateStudentBalanceListPlan(value, category) {
+  requireExactObject(value, ['operation'], 'student balance list plan', category)
+  if (value.operation !== 'list-student-balances') {
+    fail(category, 'The student balance list plan contains an unsupported operation.')
+  }
+  return Object.freeze({ operation: 'list-student-balances' })
 }
 
 function validateQueryPlan(value, allowed, category) {

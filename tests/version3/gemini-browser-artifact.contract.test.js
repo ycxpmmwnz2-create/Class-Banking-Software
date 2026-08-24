@@ -87,9 +87,10 @@ test("production-form artifact hard-disables assisted activation and keeps its c
       2,
       "the artifact may initialize and combine the two reviewed gates, but must not re-enable it elsewhere",
     );
-    assert.match(artifact, /!providerInsightsEnabled \|\| providerInsightsLoading \|\| providerQuestionLoading/);
-    assert.match(artifact, /data-testid="provider-insights-action"/);
+    assert.match(artifact, /!providerInsightsEnabled \|\| providerQuestionLoading/);
+    assert.match(artifact, /data-testid="provider-quick-question"/);
     assert.match(artifact, /data-testid="provider-question-submit"/);
+    assert.doesNotMatch(artifact, /data-testid="provider-insights-action"/);
     assert.doesNotMatch(
       artifact,
       /ReCaptchaEnterpriseProvider|getLimitedUseTokenFn/,

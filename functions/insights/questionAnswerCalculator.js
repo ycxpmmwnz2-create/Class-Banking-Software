@@ -8,6 +8,7 @@ const TIME_BUCKETS = Object.freeze([
 ])
 const DAY_LABELS = Object.freeze(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'])
 const MAX_ANSWER_LENGTH = 800
+const MAX_STUDENT_BALANCE_LIST_ANSWER_LENGTH = 80_000
 const MAX_EVIDENCE_LENGTH = 320
 const MAX_DISPLAY_LABEL_LENGTH = 48
 const RESPONSE_LABEL_LENGTHS = Object.freeze([48, 40, 32, 24, 16])
@@ -57,11 +58,34 @@ export function calculateQuestionAnswer({ kind, plan, guidance = null, evidence 
 }
 
 function calculateQueryAnswer(plan, context, answerSuffix = '') {
+  if (plan.operation === 'list-student-balances') {
+    return calculateStudentBalanceList(context, answerSuffix)
+  }
   if (plan.operation === 'students-without-transactions') {
     return calculateStudentsWithoutTransactions(plan, context, answerSuffix)
   }
   if (plan.dataset === 'students') return calculateStudentQuery(plan, context, answerSuffix)
   return calculateTransactionQuery(plan, context, answerSuffix)
+}
+
+function calculateStudentBalanceList(context, answerSuffix) {
+  const students = [...context.students].sort((left, right) => (
+    left.name.localeCompare(right.name, 'en-US') || left.id - right.id
+  ))
+  if (!students.length) {
+    return answer(
+      `There are no current students in this classroom.${answerSuffix}`,
+      ['Current roster students checked: 0.'],
+    )
+  }
+  const balances = students.map(student => (
+    `${displayLabel(student.name, 120)}: ${money(student.balance)}`
+  )).join('\n')
+  return answer(
+    `Current balances for all ${students.length} ${students.length === 1 ? 'student' : 'students'}:\n${balances}${answerSuffix}`,
+    [`Current roster students checked: ${students.length}; every current balance is included.`],
+    MAX_STUDENT_BALANCE_LIST_ANSWER_LENGTH,
+  )
 }
 
 function validateGuidanceForCalculation(value, maximum = 480) {
@@ -530,6 +554,12 @@ function validateEvidence(value) {
 
 function validatePlanForCalculation(plan) {
   if (isPlainObject(plan) && Object.hasOwn(plan, 'operation')) {
+    if (plan.operation === 'list-student-balances') {
+      if (!hasExactKeys(plan, ['operation'])) {
+        fail('answer-unavailable', 'The student balance list plan is malformed.')
+      }
+      return
+    }
     validateMissingTransactionPlanForCalculation(plan)
     return
   }
@@ -701,8 +731,8 @@ function hasExactKeys(value, expected) {
   return actual.length === wanted.length && actual.every((field, index) => field === wanted[index])
 }
 
-function answer(text, evidence) {
-  if (!responseWithinPublicBounds(text, evidence)) {
+function answer(text, evidence, maximumAnswerLength = MAX_ANSWER_LENGTH) {
+  if (!responseWithinPublicBounds(text, evidence, maximumAnswerLength)) {
     fail('answer-unavailable', 'The calculated answer exceeds the public response bounds.')
   }
   return Object.freeze({ answer: text, evidence: Object.freeze(evidence) })
@@ -717,9 +747,9 @@ function fitResponseWithinPublicBounds(render, answerSuffix = '') {
   fail('answer-unavailable', 'The calculated answer exceeds the public response bounds.')
 }
 
-function responseWithinPublicBounds(text, evidence) {
+function responseWithinPublicBounds(text, evidence, maximumAnswerLength = MAX_ANSWER_LENGTH) {
   return !(
-    typeof text !== 'string' || text.length < 1 || text.length > MAX_ANSWER_LENGTH ||
+    typeof text !== 'string' || text.length < 1 || text.length > maximumAnswerLength ||
     !Array.isArray(evidence) || evidence.length < 1 || evidence.length > 8 ||
     evidence.some(line => typeof line !== 'string' || line.length < 1 || line.length > MAX_EVIDENCE_LENGTH)
   )

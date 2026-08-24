@@ -28,6 +28,7 @@ const SYSTEM_INSTRUCTION = [
   'For visits, uses, occurrences, frequency, or how many times, use metric count. For money, use amount-total unless average or net is explicitly requested.',
   'For who, group by student. For which category, group by category. For when, select the most precise supported time grouping.',
   'Use dataset students for roster size, frozen accounts, current balances, or average balance. Use dataset transactions for earning, spending, categories, requests, and times.',
+  'When the teacher asks to list each or all current students with their current balances, use operation list-student-balances instead of a ranked student query.',
   'Use status Approved unless the teacher explicitly asks about pending, denied, or all statuses.',
   'Use transactionType Subtract for spending, losing money, purchases, or use of a paid category; Add for earning or receiving; otherwise any.',
   'For which current students did not have a matching transaction, use operation students-without-transactions instead of the ordinary dataset query plan.',
@@ -115,6 +116,14 @@ const MISSING_TRANSACTION_PLAN_SCHEMA = Object.freeze({
     limit: Object.freeze({ type: 'integer', minimum: 1, maximum: 8 }),
   }),
 })
+const STUDENT_BALANCE_LIST_PLAN_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  required: Object.freeze(['operation']),
+  properties: Object.freeze({
+    operation: Object.freeze({ type: 'string', enum: Object.freeze(['list-student-balances']) }),
+  }),
+})
 const RESPONSE_JSON_SCHEMA = Object.freeze({
   type: 'object',
   additionalProperties: false,
@@ -129,7 +138,12 @@ const RESPONSE_JSON_SCHEMA = Object.freeze({
       enum: Object.freeze(['query', 'guidance', 'query-and-guidance', 'unsupported']),
     }),
     plan: Object.freeze({
-      anyOf: Object.freeze([PLAN_SCHEMA, MISSING_TRANSACTION_PLAN_SCHEMA, Object.freeze({ type: 'null' })]),
+      anyOf: Object.freeze([
+        PLAN_SCHEMA,
+        MISSING_TRANSACTION_PLAN_SCHEMA,
+        STUDENT_BALANCE_LIST_PLAN_SCHEMA,
+        Object.freeze({ type: 'null' }),
+      ]),
     }),
     guidance: Object.freeze({
       anyOf: Object.freeze([

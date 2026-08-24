@@ -243,7 +243,7 @@ export function validateProviderQuestionResponse(value, expected = {}) {
     fail("invalid-response", "Question response metadata is malformed.");
   }
   validateIsoTimestamp(value.generatedAt, "generatedAt");
-  const answer = boundedText(value.answer, 1, 800, "answer");
+  const answer = boundedText(value.answer, 1, 80_000, "answer");
   if (!Array.isArray(value.evidence) || value.evidence.length < 1 || value.evidence.length > 8) {
     fail("invalid-response", "Question evidence is malformed.");
   }

@@ -475,10 +475,6 @@
     }
 
     .insights-controls {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 20px;
-      align-items: end;
       margin-top: 26px;
     }
 
@@ -507,40 +503,11 @@
       box-shadow: 0 4px 12px rgba(18, 50, 58, 0.09);
     }
 
-    .insights-actions {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-      gap: 8px;
-    }
-
-    .insights-actions button {
-      margin: 0;
-      white-space: nowrap;
-    }
-
-    .insights-report-header {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 18px;
-    }
-
-    .insights-report-header h2 {
-      margin: 4px 0 5px;
-    }
-
     .insights-report-meta {
       color: var(--muted);
       font-size: 13px;
       font-weight: 750;
       line-height: 1.4;
-    }
-
-    .insights-list {
-      display: grid;
-      gap: 10px;
     }
 
     .insights-question-card textarea {
@@ -557,6 +524,21 @@
       margin: 0;
     }
 
+    .insights-quick-questions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px 0 16px;
+    }
+
+    .insights-quick-questions button {
+      margin: 0;
+      border: 1px solid rgba(36, 148, 144, 0.32);
+      background: rgba(255, 255, 255, 0.7);
+      color: var(--teal-dark);
+      box-shadow: none;
+    }
+
     .insights-question-asked {
       margin-top: 6px;
       color: var(--muted);
@@ -564,33 +546,31 @@
       line-height: 1.45;
     }
 
+    .insights-answer-copy {
+      margin: 14px 0 0;
+      color: #29464e;
+      font-weight: 720;
+      font-size: 17px;
+      line-height: 1.6;
+      white-space: pre-line;
+    }
+
+    .insights-answer-details {
+      margin-top: 14px;
+      border-top: 1px solid rgba(169, 211, 207, 0.72);
+      padding-top: 10px;
+    }
+
+    .insights-answer-details summary {
+      color: var(--teal-dark);
+      cursor: pointer;
+      font-weight: 850;
+    }
+
     .insights-question-evidence {
       display: grid;
       gap: 5px;
-    }
-
-    .insight-observation {
-      padding: 17px 18px;
-      border-radius: 18px;
-      border: 1px solid rgba(169, 211, 207, 0.72);
-      background: rgba(239, 250, 248, 0.82);
-    }
-
-    .insight-observation[data-priority="attention"] {
-      border-color: rgba(222, 132, 103, 0.48);
-      background: rgba(255, 244, 239, 0.72);
-    }
-
-    .insight-observation h3 {
-      margin: 5px 0 7px;
-      font-size: 19px;
-    }
-
-    .insight-observation p {
-      margin: 0;
-      color: #29464e;
-      font-weight: 720;
-      line-height: 1.45;
+      margin-top: 9px;
     }
 
     .insight-evidence {
@@ -1287,8 +1267,6 @@
       }
       .dashboard-snapshot-metric:nth-child(n + 4) { margin-top: 12px; }
       .dashboard-workspace { grid-template-columns: 1fr; }
-      .insights-controls { grid-template-columns: 1fr; align-items: stretch; }
-      .insights-actions { justify-content: flex-start; }
       .grid { grid-template-columns: minmax(0, 1fr); }
       .wide-grid { grid-template-columns: 1fr; }
       .hero {
@@ -1390,12 +1368,8 @@
         border-radius: 20px;
       }
       .stats { grid-template-columns: 1fr; }
-      .insights-report-header {
-        align-items: stretch;
-        flex-direction: column;
-      }
-      .insights-actions { display: grid; grid-template-columns: 1fr; }
-      .insights-actions button { width: 100%; }
+      .insights-quick-questions { display: grid; grid-template-columns: 1fr; }
+      .insights-quick-questions button { width: 100%; }
       .insights-question-actions { display: grid; }
       .insights-question-actions button { width: 100%; }
       .student-login-info-code {
@@ -1531,14 +1505,24 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let providerInsightsEnabled = false;
     let providerInsightsClient = null;
     let providerInsightsEnvironment = "disabled";
-    let providerInsightsMode = "quick";
-    let providerInsightsReport = null;
-    let providerInsightsLoading = false;
-    let providerInsightsError = "";
-    let providerInsightsRetryRequest = null;
-    let providerInsightsDataSignature = null;
-    let providerInsightsCapturedIdentity = null;
-    let providerInsightsRequestVersion = 0;
+    const PROVIDER_QUICK_QUESTIONS = Object.freeze([
+      Object.freeze({
+        label: "Lowest balances",
+        question: "Who currently has the lowest balance?",
+      }),
+      Object.freeze({
+        label: "Spending patterns",
+        question: "What category are students spending the most money in?",
+      }),
+      Object.freeze({
+        label: "Rent check",
+        question: "Which students did not pay rent today?",
+      }),
+      Object.freeze({
+        label: "Repeated requests",
+        question: "Who has submitted the most pending Add Money requests?",
+      }),
+    ]);
     let providerQuestionDraft = "";
     let providerQuestionSubmitted = "";
     let providerQuestionResult = null;
@@ -2185,14 +2169,6 @@ function toggleStudentDropdown() {
     }
 
     function resetProviderInsightsState() {
-      providerInsightsRequestVersion += 1;
-      providerInsightsMode = "quick";
-      providerInsightsReport = null;
-      providerInsightsLoading = false;
-      providerInsightsError = "";
-      providerInsightsRetryRequest = null;
-      providerInsightsDataSignature = null;
-      providerInsightsCapturedIdentity = null;
       providerQuestionRequestVersion += 1;
       providerQuestionDraft = "";
       providerQuestionSubmitted = "";
@@ -2204,139 +2180,42 @@ function toggleStudentDropdown() {
       providerQuestionCapturedIdentity = null;
     }
 
-    function providerInsightsContextIsCurrent({
-      capturedIdentity,
-      dataSignature,
-      mode,
-      periodDays,
-      requestVersion,
-    }) {
-      return providerInsightsEnabled
-        && IS_MULTI_TEACHER_V2_ENABLED
-        && isTeacher
-        && providerInsightsRequestVersion === requestVersion
-        && providerInsightsMode === mode
-        && insightsPeriodDays === periodDays
-        && providerInsightsDataSignature === dataSignature
-        && v2TenantSession.validateCapturedIdentity(capturedIdentity)
-        && currentInsightsDataSignature() === dataSignature;
-    }
-
     function discardStaleProviderInsights() {
-      const hasInsightsState = providerInsightsReport || providerInsightsLoading || providerInsightsError;
       const hasQuestionState = providerQuestionResult || providerQuestionLoading || providerQuestionError;
-      if (!hasInsightsState && !hasQuestionState) return;
+      if (!hasQuestionState) return;
       const dataSignature = currentInsightsDataSignature();
-      const insightsCurrent = !hasInsightsState || (
-        providerInsightsCapturedIdentity
-        && providerInsightsDataSignature === dataSignature
-        && v2TenantSession.validateCapturedIdentity(providerInsightsCapturedIdentity)
-      );
-      const questionCurrent = !hasQuestionState || (
+      const questionCurrent = (
         providerQuestionCapturedIdentity
         && providerQuestionDataSignature === dataSignature
         && v2TenantSession.validateCapturedIdentity(providerQuestionCapturedIdentity)
       );
-      if (insightsCurrent && questionCurrent) return;
+      if (questionCurrent) return;
       resetProviderInsightsState();
-    }
-
-    async function generateProviderInsights(mode, retry = false) {
-      if (!providerInsightsEnabled || !providerInsightsClient || !requireTeacher()) return;
-      if (providerInsightsLoading || providerQuestionLoading) return;
-      const acceptedMode = mode === "deep" ? "deep" : "quick";
-      const periodDays = insightsPeriodDays;
-      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-      const dataSignature = currentInsightsDataSignature();
-      const capturedIdentity = v2TenantSession.captureIdentity();
-
-      let request;
-      if (retry) {
-        const retryState = providerInsightsRetryRequest;
-        if (
-          !retryState
-          || retryState.mode !== acceptedMode
-          || retryState.periodDays !== periodDays
-          || retryState.dataSignature !== dataSignature
-          || !v2TenantSession.validateCapturedIdentity(retryState.capturedIdentity)
-        ) {
-          resetProviderInsightsState();
-          render();
-          return;
-        }
-        request = retryState.request;
-      } else {
-        request = null;
-      }
-
-      providerInsightsRequestVersion += 1;
-      const requestVersion = providerInsightsRequestVersion;
-      providerInsightsMode = acceptedMode;
-      providerInsightsReport = null;
-      providerInsightsLoading = true;
-      providerInsightsError = "";
-      providerInsightsRetryRequest = null;
-      providerInsightsDataSignature = dataSignature;
-      providerInsightsCapturedIdentity = capturedIdentity;
-      screen = "insights";
-      render();
-
-      try {
-        if (!request) {
-          request = {
-            requestId: providerInsightsClient.newRequestId(),
-            mode: acceptedMode,
-            periodDays,
-            timeZone,
-          };
-        }
-        const result = await providerInsightsClient.analyze(request);
-        if (!providerInsightsContextIsCurrent({
-          capturedIdentity,
-          dataSignature,
-          mode: acceptedMode,
-          periodDays,
-          requestVersion,
-        })) return;
-        providerInsightsReport = result;
-      } catch (error) {
-        if (!providerInsightsContextIsCurrent({
-          capturedIdentity,
-          dataSignature,
-          mode: acceptedMode,
-          periodDays,
-          requestVersion,
-        })) return;
-        const safeError = mapProviderInsightsError(error, {
-          testMode: providerInsightsEnvironment === "emulator",
-        });
-        providerInsightsError = safeError.message;
-        if (safeError.ambiguous) {
-          providerInsightsRetryRequest = {
-            request,
-            mode: acceptedMode,
-            periodDays,
-            dataSignature,
-            capturedIdentity,
-          };
-        }
-      } finally {
-        if (providerInsightsRequestVersion === requestVersion) {
-          providerInsightsLoading = false;
-          render();
-        }
-      }
-    }
-
-    function retryProviderInsights() {
-      const mode = providerInsightsRetryRequest?.mode;
-      if (!mode) return;
-      void generateProviderInsights(mode, true);
     }
 
     function setProviderQuestionDraft(value) {
       if (!requireTeacher()) return;
       providerQuestionDraft = String(value).slice(0, 500);
+    }
+
+    function selectProviderQuickQuestion(index) {
+      if (!requireTeacher() || providerQuestionLoading) return;
+      const selected = PROVIDER_QUICK_QUESTIONS[Number(index)];
+      if (!selected) return;
+      providerQuestionDraft = selected.question;
+      providerQuestionError = "";
+      render();
+      const questionElement = document.getElementById("providerQuestionInput");
+      if (questionElement) {
+        questionElement.focus();
+        questionElement.setSelectionRange(questionElement.value.length, questionElement.value.length);
+      }
+    }
+
+    function handleProviderQuestionKeyDown(event) {
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+      event.preventDefault();
+      submitProviderQuestion();
     }
 
     function providerQuestionContextIsCurrent({
@@ -2357,7 +2236,7 @@ function toggleStudentDropdown() {
 
     async function askProviderQuestion(retry = false) {
       if (!providerInsightsEnabled || !providerInsightsClient || !requireTeacher()) return;
-      if (providerInsightsLoading || providerQuestionLoading) return;
+      if (providerQuestionLoading) return;
       const periodDays = insightsPeriodDays;
       const dataSignature = currentInsightsDataSignature();
       const capturedIdentity = v2TenantSession.captureIdentity();
@@ -2416,6 +2295,7 @@ function toggleStudentDropdown() {
           requestVersion,
         })) return;
         providerQuestionResult = result;
+        providerQuestionDraft = "";
       } catch (error) {
         if (!providerQuestionContextIsCurrent({
           capturedIdentity,
@@ -2469,23 +2349,6 @@ function toggleStudentDropdown() {
           : student),
       };
       render();
-    }
-
-    function orderedProviderObservations(report) {
-      if (!report) return [];
-      const byId = new Map(report.observations.map(observation => [observation.id, observation]));
-      return report.orderedObservationIds.map(id => byId.get(id));
-    }
-
-    function insightsObservationHtml(observation) {
-      return `
-        <article class="insight-observation" data-priority="${escapeHtml(observation.priority)}">
-          <span class="insights-eyebrow">${escapeHtml(observation.category)}</span>
-          <h3>${escapeHtml(observation.title)}</h3>
-          <p>${escapeHtml(observation.summary)}</p>
-          <div class="insight-evidence">${escapeHtml(observation.evidence)}</div>
-        </article>
-      `;
     }
 
     function formattedInsightsGeneratedAt(value) {
@@ -4707,7 +4570,7 @@ link.click();
                 <p>Review classroom patterns and ask questions about your data. Open the AI Insights tab for full details.</p>
               </div>
               <div class="dashboard-essential-action">
-                <button class="primary" onclick="setScreen('insights')">${providerInsightsReport ? "View AI Insights" : "Open AI Insights"}</button>
+                <button class="primary" onclick="setScreen('insights')">Open AI Insights</button>
               </div>
             </section>
           </div>
@@ -4894,10 +4757,6 @@ link.click();
       }
 
       if (screen === "insights" && isTeacher) {
-        const nextInsightsMode = providerInsightsReport?.mode === "quick" ? "deep" : "quick";
-        const nextInsightsLabel = providerInsightsReport?.mode === "quick"
-          ? "Get More Insights"
-          : (providerInsightsReport ? "Refresh AI Insights" : "Get AI Insights");
         html += `
           <div class="insights-shell">
             <section class="card insights-intro">
@@ -4918,63 +4777,32 @@ link.click();
                     `).join("")}
                   </div>
                 </div>
-                <div class="insights-actions">
-                  <button
-                    type="button"
-                    data-testid="provider-insights-action"
-                    class="primary"
-                    onclick="generateProviderInsights('${nextInsightsMode}')"
-                    ${!providerInsightsEnabled || providerInsightsLoading || providerQuestionLoading ? "disabled" : ""}>${escapeHtml(nextInsightsLabel)}</button>
-                </div>
               </div>
               ${!providerInsightsEnabled ? `
                 <p class="small-note" role="status">AI Insights are currently unavailable for this classroom.</p>
               ` : ""}
             </section>
 
-            ${providerInsightsEnabled && providerInsightsLoading ? `
-              <section class="card" aria-live="polite" data-testid="provider-insights-loading">
-                <span class="insights-eyebrow">AI Insights</span>
-                <h2 style="margin-top: 6px;">Checking the classroom patterns…</h2>
-              </section>
-            ` : ""}
-
-            ${providerInsightsEnabled && providerInsightsError ? `
-              <section class="card" role="alert" data-testid="provider-insights-error">
-                <span class="insights-eyebrow">AI Insights unavailable</span>
-                <p>${escapeHtml(providerInsightsError)}</p>
-                ${providerInsightsRetryRequest ? `
-                  <button type="button" data-testid="provider-insights-retry" onclick="retryProviderInsights()">Retry same request</button>
-                ` : ""}
-              </section>
-            ` : ""}
-
-            ${providerInsightsEnabled && providerInsightsReport ? `
-              <section class="card" aria-live="polite" data-testid="provider-insights-report">
-                <div class="insights-report-header">
-                  <div>
-                    <span class="insights-eyebrow">AI Insights</span>
-                    <h2>${providerInsightsReport.observations.length} ${providerInsightsReport.observations.length === 1 ? "insight" : "insights"} from the last ${providerInsightsReport.periodDays} days</h2>
-                    <div class="insights-report-meta">
-                      Generated ${escapeHtml(formattedInsightsGeneratedAt(providerInsightsReport.generatedAt))}
-                    </div>
-                  </div>
-                </div>
-                <div class="insights-list">
-                  ${orderedProviderObservations(providerInsightsReport).map(insightsObservationHtml).join("")}
-                </div>
-              </section>
-            ` : ""}
-
             <section class="card insights-question-card" data-testid="provider-question-card">
               <span class="insights-eyebrow">Ask Morgan Bank</span>
               <h2 style="margin: 6px 0 8px;">Ask Morgan Bank a question</h2>
               <p class="small-note">Ask naturally about your classroom records, Morgan Bank features, or classroom-economy ideas. Record-based answers are calculated from this classroom’s data.</p>
+              <div class="insights-quick-questions no-print" aria-label="Quick insight questions">
+                ${PROVIDER_QUICK_QUESTIONS.map((item, index) => `
+                  <button
+                    type="button"
+                    data-testid="provider-quick-question"
+                    onclick="selectProviderQuickQuestion(${index})"
+                    ${!providerInsightsEnabled || providerQuestionLoading ? "disabled" : ""}>${escapeHtml(item.label)}</button>
+                `).join("")}
+              </div>
               <label for="providerQuestionInput">Your question</label>
               <textarea
                 id="providerQuestionInput"
+                aria-keyshortcuts="Enter"
                 maxlength="500"
                 oninput="setProviderQuestionDraft(this.value)"
+                onkeydown="handleProviderQuestionKeyDown(event)"
                 placeholder="Example: Who did not pay rent today, or how can I encourage saving?">${escapeHtml(providerQuestionDraft)}</textarea>
               <div class="insights-question-actions no-print">
                 <button
@@ -4982,7 +4810,7 @@ link.click();
                   class="primary"
                   data-testid="provider-question-submit"
                   onclick="submitProviderQuestion()"
-                  ${providerInsightsLoading || providerQuestionLoading ? "disabled" : ""}>Ask AI Insights</button>
+                  ${providerQuestionLoading ? "disabled" : ""}>Ask AI Insights</button>
               </div>
             </section>
 
@@ -5007,12 +4835,15 @@ link.click();
               <section class="card" aria-live="polite" data-testid="provider-question-result">
                 <span class="insights-eyebrow">Your question</span>
                 <div class="insights-question-asked">${escapeHtml(providerQuestionSubmitted)}</div>
-                <h2 style="margin: 14px 0 8px;">${escapeHtml(providerQuestionResult.answer)}</h2>
-                <div class="insights-question-evidence">
-                  ${providerQuestionResult.evidence.map(item => `
-                    <div class="insight-evidence">${escapeHtml(item)}</div>
-                  `).join("")}
-                </div>
+                <p class="insights-answer-copy">${escapeHtml(providerQuestionResult.answer)}</p>
+                <details class="insights-answer-details">
+                  <summary>How this was calculated</summary>
+                  <div class="insights-question-evidence">
+                    ${providerQuestionResult.evidence.map(item => `
+                      <div class="insight-evidence">${escapeHtml(item)}</div>
+                    `).join("")}
+                  </div>
+                </details>
                 <div class="insights-report-meta" style="margin-top: 12px;">
                   Answered ${escapeHtml(formattedInsightsGeneratedAt(providerQuestionResult.generatedAt))}
                 </div>
@@ -6086,9 +5917,9 @@ window.setDashboardSectionExpanded = setDashboardSectionExpanded;
 window.setDashboardMoneyTool = setDashboardMoneyTool;
 window.openDashboardTransactions = openDashboardTransactions;
 window.setInsightsPeriod = setInsightsPeriod;
-window.generateProviderInsights = generateProviderInsights;
-window.retryProviderInsights = retryProviderInsights;
 window.setProviderQuestionDraft = setProviderQuestionDraft;
+window.selectProviderQuickQuestion = selectProviderQuickQuestion;
+window.handleProviderQuestionKeyDown = handleProviderQuestionKeyDown;
 window.askProviderQuestion = askProviderQuestion;
 window.submitProviderQuestion = submitProviderQuestion;
 window.retryProviderQuestion = retryProviderQuestion;

@@ -256,6 +256,29 @@ test('provider can request current students without exact matching rent payments
   }
 })
 
+test('provider can request one exact read-only plan for every current student balance', () => {
+  const plan = { operation: 'list-student-balances' }
+  assert.deepEqual(validateQuestionInterpretation({
+    schemaVersion: 4,
+    kind: 'query',
+    plan,
+    guidance: null,
+    usage,
+  }, allowed).plan, plan)
+  for (const invalidPlan of [
+    { ...plan, limit: 8 },
+    { operation: 'list-all-transactions' },
+  ]) {
+    assert.throws(() => validateQuestionInterpretation({
+      schemaVersion: 4,
+      kind: 'query',
+      plan: invalidPlan,
+      guidance: null,
+      usage,
+    }, allowed), InsightQuestionContractError)
+  }
+})
+
 test('teacher response accepts only calculated answer text, bounded evidence, and billed usage', () => {
   const response = {
     schemaVersion: 2,
@@ -269,4 +292,12 @@ test('teacher response accepts only calculated answer text, bounded evidence, an
   assert.deepEqual(validateTeacherQuestionResponse(response), response)
   assert.throws(() => validateTeacherQuestionResponse({ ...response, schemaVersion: 1 }), InsightQuestionContractError)
   assert.throws(() => validateTeacherQuestionResponse({ ...response, rawProviderText: 'no' }), InsightQuestionContractError)
+  assert.equal(validateTeacherQuestionResponse({
+    ...response,
+    answer: 'A'.repeat(80_000),
+  }).answer.length, 80_000)
+  assert.throws(() => validateTeacherQuestionResponse({
+    ...response,
+    answer: 'A'.repeat(80_001),
+  }), InsightQuestionContractError)
 })

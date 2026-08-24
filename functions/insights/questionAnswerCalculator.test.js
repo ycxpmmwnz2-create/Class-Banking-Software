@@ -98,6 +98,63 @@ test('answers restroom visits by approved transaction count rather than dollars 
   assert.match(result.evidence[0], /approved spending \(Subtract\) transactions/)
 })
 
+test('lists every current student balance alphabetically in one bounded answer', () => {
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: { operation: 'list-student-balances' },
+    evidence,
+  })
+  assert.equal(
+    result.answer,
+    'Current balances for all 3 students:\nGenesis: $42.00\nMateo: $75.00\nSofia: $75.00',
+  )
+  assert.deepEqual(result.evidence, [
+    'Current roster students checked: 3; every current balance is included.',
+  ])
+
+  const empty = calculateQuestionAnswer({
+    kind: 'query',
+    plan: { operation: 'list-student-balances' },
+    evidence: { ...evidence, participants: [], students: [], transactions: [] },
+  })
+  assert.equal(empty.answer, 'There are no current students in this classroom.')
+  assert.throws(() => calculateQuestionAnswer({
+    kind: 'query',
+    plan: { operation: 'list-student-balances', limit: 8 },
+    evidence,
+  }), InsightQuestionAnswerError)
+})
+
+test('full balance list includes the maximum bounded 500-student roster without truncation', () => {
+  const students = Array.from({ length: 500 }, (_, index) => {
+    const id = index + 1
+    const suffix = String(id).padStart(3, '0')
+    return {
+      id,
+      alias: `student-${suffix}`,
+      name: `${'Student name '.repeat(9)}${suffix}`.slice(0, 120),
+      balance: Number.MAX_SAFE_INTEGER,
+      frozen: false,
+    }
+  })
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: { operation: 'list-student-balances' },
+    evidence: {
+      ...evidence,
+      participants: students.map(({ id, alias, name }) => ({ id, alias, name })),
+      students,
+      transactions: [],
+    },
+  })
+  assert.match(result.answer, /^Current balances for all 500 students:/)
+  assert.ok(result.answer.length > 800)
+  assert.ok(result.answer.length <= 80_000)
+  for (const student of students) {
+    assert.ok(result.answer.includes(`${student.name}: $9,007,199,254,740,991.00`))
+  }
+})
+
 test('lists current students without an approved exact rent payment today', () => {
   const students = [
     ...evidence.students,
