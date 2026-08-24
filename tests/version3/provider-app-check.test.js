@@ -2,8 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { initializeProviderAppCheckAndVerify } from "../../src/firebase/providerAppCheck.js";
+import {
+  initializeProviderAppCheckAndVerify as initializeDefaultBuildProviderAppCheck
+} from "../../src/firebase/providerAppCheck.build.js";
 
 const SITE_KEY = "test-only-recaptcha-enterprise-site-key";
+
+test("default-build provider App Check stub fails closed", async () => {
+  assert.equal(await initializeDefaultBuildProviderAppCheck(), false);
+});
 
 test("provider App Check readiness requires a successful limited-use token exchange", async () => {
   const app = { name: "test-app" };

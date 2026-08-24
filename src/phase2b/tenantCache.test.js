@@ -17,7 +17,8 @@ import {
   PENDING_INVALIDATION_KEY,
   MAX_PENDING_DIGESTS,
   readPendingInvalidation,
-  isUidQuarantined
+  isUidQuarantined,
+  classifyOfflineFailure
 } from "./tenantCache.js";
 import { TenantSession, SESSION_STATES } from "./tenantSession.js";
 
@@ -90,6 +91,27 @@ describe("TenantCache Module Specifications", () => {
       return cap && cap.epoch === 5 && cap.uid === "teacher_uid_1" && cap.role === "teacher" && cap.classroomId === "room_1";
     }
   };
+
+  test("classifyOfflineFailure recognizes only transport-shaped Firestore Lite unknown failures", () => {
+    assert.equal(
+      classifyOfflineFailure({
+        code: "unknown",
+        message: "Request failed with error: undefined"
+      }),
+      true
+    );
+    assert.equal(
+      classifyOfflineFailure({ code: "unknown", message: "Unexpected application failure" }),
+      false
+    );
+    assert.equal(
+      classifyOfflineFailure({
+        code: "permission-denied",
+        message: "Request failed with error: denied"
+      }),
+      false
+    );
+  });
 
   test("computeSha256Digest matches standard SHA-256 known-answer test vectors", () => {
     const digestAbc = computeSha256Digest("abc");

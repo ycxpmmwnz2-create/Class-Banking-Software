@@ -36,10 +36,11 @@ const providerAppCheckReadyPromise = (async () => {
     && buildProjectId === expectedProjectId
     && validSiteKey
   ) {
+    const appCheckApp = app;
     try {
       const { initializeProviderAppCheckAndVerify } = await import("./providerAppCheck.build.js");
       return await initializeProviderAppCheckAndVerify({
-        app,
+        app: appCheckApp,
         siteKey,
       });
     } catch {

@@ -239,6 +239,7 @@ export function classifyOfflineFailure(error) {
   if (
     rawCode === "unavailable" ||
     rawCode === "deadline-exceeded" ||
+    (rawCode === "unknown" && msg.startsWith("request failed with error:")) ||
     msg.includes("offline") ||
     msg.includes("network") ||
     msg.includes("failed to fetch")

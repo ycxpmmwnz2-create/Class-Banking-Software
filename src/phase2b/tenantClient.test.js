@@ -1048,6 +1048,23 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.equal(transientRes.executed, true);
     assert.equal(transientRes.isOffline, true);
     assert.deepEqual(transientRes.data, { secret: "teacher-1-roster" });
+
+    // Firestore Lite reports fetch/transport failures as `unknown` with this
+    // stable SDK message shape. That exact combination remains cache-eligible,
+    // while unrelated `unknown` failures continue to fail closed.
+    const liteTransientSession = readySessionWithCache();
+    const liteTransientRes = await loadClassroomDataWithCacheFallback(liteTransientSession, {
+      loadNetworkFn: async () => {
+        const err = new Error("Request failed with error: undefined");
+        err.code = "unknown";
+        throw err;
+      },
+      storageAdapter: storage,
+      projectId: PROJECT_ID
+    });
+    assert.equal(liteTransientRes.executed, true);
+    assert.equal(liteTransientRes.isOffline, true);
+    assert.deepEqual(liteTransientRes.data, { secret: "teacher-1-roster" });
   });
 
   test("3. USE THE REAL V2 PIN CALLABLE CONTRACT: resetStudentPinV2 called with exact payload { studentId, newPin } and no classroomId", async () => {

@@ -29,15 +29,18 @@ describe("staging deployment artifacts", () => {
           headers: [{ key: "Cache-Control", value: "no-cache" }]
         },
         {
+          source: "**/*.@(png|webp|svg)",
+          headers: [{
+            key: "Cache-Control",
+            value: "public, max-age=86400"
+          }]
+        },
+        {
           source: "/assets/**",
           headers: [{
             key: "Cache-Control",
             value: "public, max-age=31536000, immutable"
           }]
-        },
-        {
-          source: "**/*.@(png|webp|svg)",
-          headers: [{ key: "Cache-Control", value: "public, max-age=86400" }]
         }
       ]);
     }
@@ -85,5 +88,28 @@ describe("staging deployment artifacts", () => {
     );
     assert.match(source, /deploymentTier: MORGAN_BANK_DEPLOYMENT_TIER\.value\(\)/);
     assert.match(source, /stagingProjectId: MORGAN_BANK_STAGING_PROJECT_ID\.value\(\)/);
+  });
+
+  test("Phase 2B demo Functions discovery is complete, non-interactive, and excluded from deployments", async () => {
+    const demoEnvironmentFiles = [
+      "functions/.env.demo-morgan-bank-phase2b-server-test",
+      "functions/.env.demo-morgan-bank-phase2b-server-off-test"
+    ];
+
+    for (const filename of demoEnvironmentFiles) {
+      const raw = await readFile(new URL(filename, REPO_ROOT), "utf8");
+      assert.match(raw, /^VERSION3_GEMINI_ENABLED=false$/m);
+      assert.match(raw, /^VERSION3_GEMINI_RELEASE_ID=disabled-phase2b-emulator$/m);
+      assert.match(raw, /^GEMINI_API_KEY=test-only-unused-demo-key$/m);
+      assert.equal(raw.includes("morgan-bank.web.app"), false);
+    }
+
+    for (const filename of ["firebase.json", "firebase.staging.json"]) {
+      const config = JSON.parse(await readFile(new URL(filename, REPO_ROOT), "utf8"));
+      assert.ok(
+        config.functions[0].ignore.includes(".env.demo-*"),
+        `${filename} must exclude demo parameter files from deployments`
+      );
+    }
   });
 });
