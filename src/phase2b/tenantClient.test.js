@@ -2119,6 +2119,20 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
+  test("SOURCE GUARD: ACTIVE remains a blocking state and never falls through to the login screen", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+    const activeAt = source.indexOf("state === SESSION_STATES.ACTIVE");
+    const classroomLoadingAt = source.indexOf("state === SESSION_STATES.CLASSROOM_LOADING");
+    assert.notEqual(activeAt, -1, "render() must explicitly handle the resolved-but-not-loaded ACTIVE state");
+    assert.notEqual(classroomLoadingAt, -1, "render() must retain the classroom-loading guard");
+    assert.ok(activeAt < classroomLoadingAt, "ACTIVE must be blocked before later render branches can reach login content");
+
+    const activeBlock = source.slice(activeAt, classroomLoadingAt);
+    assert.match(activeBlock, /Loading Classroom Data\.\.\./, "ACTIVE must render a blocking classroom-load card");
+    assert.match(activeBlock, /\breturn;/, "ACTIVE must return before the ordinary login/dashboard renderer");
+    assert.doesNotMatch(activeBlock, /loginTeacher|loginStudent|Teacher Login/, "ACTIVE must not render login controls");
+  });
+
   test("SOURCE GUARD: completed onboarding replaces the pending message only after the classroom is READY", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const onboardingStart = source.indexOf("async function submitV2Onboarding() {");

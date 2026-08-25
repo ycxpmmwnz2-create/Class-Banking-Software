@@ -5,7 +5,7 @@ import { getAuth } from 'firebase-admin/auth'
 import { getFirestore } from 'firebase-admin/firestore'
 import { HttpsError, onCall } from 'firebase-functions/v2/https'
 import { onDocumentWritten } from 'firebase-functions/v2/firestore'
-import { defineBoolean, defineSecret, defineString } from 'firebase-functions/params'
+import { defineBoolean, defineSecret, defineString, projectID } from 'firebase-functions/params'
 
 import { ensureTeacherClassroomForCaller } from './phase1/ensureTeacherClassroom.js'
 import { resetStudentPinForTeacher } from './resetStudentPin.js'
@@ -29,13 +29,15 @@ import {
 } from './phase3/studentLifecycle.js'
 import { listStudentPinsV2CallableHandler } from './phase3/studentPinDirectory.js'
 import { submitStudentTransactionV2CallableHandler } from './phase3/studentMoney.js'
-import { assertV2GateAllowed } from './phase3/productionEnvironment.js'
+import {
+  ALLOWED_PRODUCTION_PROJECT_ID,
+  assertV2GateAllowed,
+} from './phase3/productionEnvironment.js'
 import {
   callableErrorCode,
   callableErrorDetails,
   callableLogCategory,
 } from './insights/callableErrors.js'
-import { createVersion3GeminiLiveHandler } from './insights/liveCallable.js'
 import {
   assertVersion3GeminiLiveRuntime,
 } from './insights/liveRuntime.js'
@@ -51,6 +53,10 @@ export const MULTI_TEACHER_V2_RELEASE_ID = defineString('MULTI_TEACHER_V2_RELEAS
 export const MORGAN_BANK_DEPLOYMENT_TIER = defineString('MORGAN_BANK_DEPLOYMENT_TIER', {
   default: 'production',
 })
+
+const RESOLVE_TEACHER_TENANT_MIN_INSTANCES = projectID
+  .equals(ALLOWED_PRODUCTION_PROJECT_ID)
+  .thenElse(1, 0)
 
 export const MORGAN_BANK_STAGING_PROJECT_ID = defineString('MORGAN_BANK_STAGING_PROJECT_ID', {
   default: '',
@@ -177,7 +183,9 @@ export const ensureTeacherClassroom = onCall(async (request) => {
 })
 
 // V2 exports
-export const resolveTeacherTenantV2 = onCall(async (request) => {
+export const resolveTeacherTenantV2 = onCall({
+  minInstances: RESOLVE_TEACHER_TENANT_MIN_INSTANCES,
+}, async (request) => {
   assertV2Invocation('resolveTeacherTenantV2')
   return resolveTeacherTenantCallable(request, {
     firestore: getFirestore(),
@@ -286,6 +294,7 @@ export const analyzeTeacherInsightsV3 = onCall({
       adminProjectId: getApps()[0]?.options?.projectId,
       apiKey,
     })
+    const { createVersion3GeminiLiveHandler } = await import('./insights/liveCallable.js')
     const analyze = createVersion3GeminiLiveHandler({
       firestore: getFirestore(),
       apiKey,

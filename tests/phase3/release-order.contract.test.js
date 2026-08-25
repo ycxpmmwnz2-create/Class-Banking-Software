@@ -511,6 +511,24 @@ function assertOrderedMarkers(source, markers, description) {
 }
 
 describe('Phase 3 release-order source contract', () => {
+  it('keeps one production-only warm instance for the teacher tenant resolver', () => {
+    assert.match(
+      functionsIndex,
+      /const RESOLVE_TEACHER_TENANT_MIN_INSTANCES = projectID\s*\.equals\(ALLOWED_PRODUCTION_PROJECT_ID\)\s*\.thenElse\(1, 0\)/,
+      'only the exact production project may retain one warm resolver',
+    )
+    assert.match(
+      functionsIndex,
+      /export const resolveTeacherTenantV2\s*=\s*onCall\(\{\s*minInstances:\s*RESOLVE_TEACHER_TENANT_MIN_INSTANCES,\s*\},\s*async \(request\) => \{/,
+      'only the teacher tenant resolver may consume the production-only setting',
+    )
+    assert.equal(
+      [...functionsIndex.matchAll(/\bminInstances\s*:/g)].length,
+      1,
+      'no other callable may gain an always-warm instance without separate approval',
+    )
+  })
+
   it('boundary: production documents bind the exact code-pinned V2 Functions release ID', () => {
     const releaseId = reviewedV2FunctionsReleaseId()
     for (const [label, steps] of [

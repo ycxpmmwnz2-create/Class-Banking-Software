@@ -274,13 +274,20 @@ test('source contract: V2 gates secret access and the live gate precedes Firesto
   const v2Gate = callable.indexOf("assertV2Invocation('analyzeTeacherInsightsV3')")
   const secretRead = callable.indexOf('GEMINI_API_KEY.value()')
   const liveGate = callable.indexOf('assertVersion3GeminiLiveRuntime({')
+  const liveModuleLoad = callable.indexOf("await import('./insights/liveCallable.js')")
   const firestoreRead = callable.indexOf('firestore: getFirestore()')
   const providerCall = callable.indexOf('return await analyze(')
   assert.ok(v2Gate >= 0)
   assert.ok(v2Gate < secretRead)
   assert.ok(secretRead < liveGate)
+  assert.ok(liveGate < liveModuleLoad)
+  assert.ok(liveModuleLoad < firestoreRead)
   assert.ok(liveGate < firestoreRead)
   assert.ok(firestoreRead < providerCall)
+  assert.doesNotMatch(
+    functionsIndexSource,
+    /import\s+\{\s*createVersion3GeminiLiveHandler\s*\}\s+from\s+'\.\/insights\/liveCallable\.js'/,
+  )
   assert.match(functionsIndexSource, /VERSION3_GEMINI_ENABLED = defineBoolean\([\s\S]*?default: false/)
   assert.match(functionsIndexSource, /VERSION3_GEMINI_RELEASE_ID = defineString\([\s\S]*?default: ''/)
   assert.doesNotMatch(callable, /error\?\.message|console\.(?:log|error)\(error/)
@@ -290,6 +297,15 @@ test('runtime contract: default Functions exports the protected live callable', 
   const functionsExports = await import('../../functions/index.js')
   assert.equal(Object.hasOwn(functionsExports, 'analyzeTeacherInsightsV3'), true)
   assert.equal(Object.hasOwn(functionsExports, 'GEMINI_API_KEY'), true)
+})
+
+test('runtime contract: the tenant resolver stays warm only in production', async () => {
+  const functionsExports = await import('../../functions/index.js')
+  const minInstances = functionsExports.resolveTeacherTenantV2.__endpoint?.minInstances
+  assert.equal(
+    JSON.parse(JSON.stringify(minInstances)),
+    'params.PROJECT_ID == "morgan-bank" ? 1 : 0',
+  )
 })
 
 test('runtime contract: dedicated callable entrypoint refuses non-emulator discovery', () => {

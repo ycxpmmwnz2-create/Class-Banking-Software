@@ -72,6 +72,30 @@ const FORBIDDEN_IN_EVERY_BUILD = [
 // the scanned artifact is the actual app and not an empty or truncated bundle.
 const V1_SENTINEL = "mrMorganClassCashDataV5";
 
+const PRECONNECT_ORIGINS = [
+  "https://securetoken.googleapis.com",
+  "https://firestore.googleapis.com",
+  "https://us-central1-morgan-bank.cloudfunctions.net"
+];
+
+const STAGING_PROJECT_ID = "morgan-bank-staging-test";
+const STAGING_PRECONNECT_ORIGINS = [
+  "https://securetoken.googleapis.com",
+  "https://firestore.googleapis.com",
+  `https://us-central1-${STAGING_PROJECT_ID}.cloudfunctions.net`
+];
+
+const STAGING_BUILD_ENV = {
+  VITE_MORGAN_BANK_DEPLOYMENT_TIER: "staging",
+  VITE_MULTI_TEACHER_V2_ENABLED: "true",
+  VITE_FIREBASE_API_KEY: "staging-test-api-key",
+  VITE_FIREBASE_AUTH_DOMAIN: `${STAGING_PROJECT_ID}.firebaseapp.com`,
+  VITE_FIREBASE_PROJECT_ID: STAGING_PROJECT_ID,
+  VITE_FIREBASE_STORAGE_BUCKET: `${STAGING_PROJECT_ID}.firebasestorage.app`,
+  VITE_FIREBASE_MESSAGING_SENDER_ID: "123456789012",
+  VITE_FIREBASE_APP_ID: "1:123456789012:web:abcdef123456"
+};
+
 const REPO_ROOT = process.cwd();
 const tempDirs = [];
 
@@ -106,6 +130,7 @@ function combined(files) {
 describe("Phase 2B Item 10: build artifact composition", () => {
   let offBuildDir;
   let onBuildDir;
+  let stagingBuildDir;
   let offFiles;
   let onFiles;
 
@@ -117,6 +142,7 @@ describe("Phase 2B Item 10: build artifact composition", () => {
     delete offEnv.VITE_MULTI_TEACHER_V2_ENABLED;
     offBuildDir = buildInto("off", { ...offEnv, VITE_MULTI_TEACHER_V2_ENABLED: undefined });
     onBuildDir = buildInto("on", { VITE_MULTI_TEACHER_V2_ENABLED: "true" });
+    stagingBuildDir = buildInto("staging", STAGING_BUILD_ENV);
     offFiles = collectJs(offBuildDir);
     onFiles = collectJs(onBuildDir);
   });
@@ -165,6 +191,44 @@ describe("Phase 2B Item 10: build artifact composition", () => {
         `${label}: built Morgan Bank logo must exactly match public/morgan-bank-logo.webp`
       );
     }
+  });
+
+  test("both builds preconnect only to the three reviewed startup origins", () => {
+    for (const [label, buildDir] of [["default-off", offBuildDir], ["gate-on", onBuildDir]]) {
+      const html = readFileSync(join(buildDir, "index.html"), "utf8");
+      const tags = html.match(/<link\b[^>]*\brel=["']preconnect["'][^>]*>/g) || [];
+      const origins = tags.map((tag) => {
+        assert.match(tag, /\bcrossorigin(?:\s|=|\/|>)/, `${label}: every preconnect must be cross-origin safe`);
+        const href = tag.match(/\bhref=["']([^"']+)["']/);
+        assert.ok(href, `${label}: every preconnect must have an href`);
+        return href[1];
+      });
+      assert.deepEqual(
+        origins,
+        PRECONNECT_ORIGINS,
+        `${label}: startup preconnects must remain limited to the reviewed Firebase origins`
+      );
+    }
+  });
+
+  test("the staging build preconnects to its own Functions project and never production", () => {
+    const html = readFileSync(join(stagingBuildDir, "index.html"), "utf8");
+    const tags = html.match(/<link\b[^>]*\brel=["']preconnect["'][^>]*>/g) || [];
+    const origins = tags.map((tag) => {
+      assert.match(tag, /\bcrossorigin(?:\s|=|\/|>)/, "every staging preconnect must be cross-origin safe");
+      const href = tag.match(/\bhref=["']([^"']+)["']/);
+      assert.ok(href, "every staging preconnect must have an href");
+      return href[1];
+    });
+
+    assert.deepEqual(origins, STAGING_PRECONNECT_ORIGINS);
+    assert.equal(html.includes("us-central1-morgan-bank.cloudfunctions.net"), false);
+  });
+
+  test("the source HTML used by emulator browser tests contains no deployed Functions origin", () => {
+    const html = readFileSync(join(REPO_ROOT, "index.html"), "utf8");
+    assert.match(html, /<!-- VITE_FIREBASE_FUNCTIONS_PRECONNECT -->/);
+    assert.equal(html.includes("cloudfunctions.net"), false);
   });
 
   test("default-off omits every operational V2 transport and persistence marker", () => {

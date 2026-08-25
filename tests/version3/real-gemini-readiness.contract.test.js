@@ -28,7 +28,14 @@ const [
 
 test('real Gemini layer is server-only, pinned, and absent from the emulator entry point', () => {
   assert.equal(JSON.parse(functionsPackage).dependencies['@google/genai'], '2.18.0')
-  assert.match(functionsIndex, /createVersion3GeminiLiveHandler/)
+  assert.match(
+    functionsIndex,
+    /const \{ createVersion3GeminiLiveHandler \} = await import\('\.\/insights\/liveCallable\.js'\)/,
+  )
+  assert.doesNotMatch(
+    functionsIndex,
+    /import\s+\{\s*createVersion3GeminiLiveHandler\s*\}\s+from\s+'\.\/insights\/liveCallable\.js'/,
+  )
   assert.match(functionsIndex, /defineSecret\('GEMINI_API_KEY'\)/)
   assert.match(functionsIndex, /enforceAppCheck: true/)
   assert.match(functionsIndex, /consumeAppCheckToken: true/)

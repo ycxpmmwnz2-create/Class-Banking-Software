@@ -4,6 +4,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="preconnect" href="https://securetoken.googleapis.com" crossorigin />
+  <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin />
+  <!-- VITE_FIREBASE_FUNCTIONS_PRECONNECT -->
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <title>Mr. Morgan's Class Cash</title>
 
@@ -4365,6 +4368,10 @@ link.click();
         }
         if (state === SESSION_STATES.RESOLVING) {
           document.getElementById("app").innerHTML = `<div class="card hero"><h2>Resolving Tenant...</h2><p class="tagline">Connecting to classroom tenant...</p></div>`;
+          return;
+        }
+        if (state === SESSION_STATES.ACTIVE) {
+          document.getElementById("app").innerHTML = `<div class="card hero"><h2>Loading Classroom Data...</h2><p class="tagline">Preparing the resolved classroom...</p></div>`;
           return;
         }
         if (state === SESSION_STATES.ONBOARDING_REQUIRED || state === SESSION_STATES.ONBOARDING) {
