@@ -60,6 +60,11 @@ test('maps only allowlisted callable error categories', () => {
   assert.deepEqual(callableErrorDetails({ category: 'request-unavailable' }), {
     category: 'request-unavailable',
   })
+  for (const category of ['evidence-unavailable', 'provider-output-invalid', 'answer-unavailable']) {
+    assert.equal(callableErrorCode({ category }), 'internal')
+    assert.deepEqual(callableErrorDetails({ category }), { category })
+    assert.equal(callableLogCategory({ category }), category)
+  }
   assert.equal(callableErrorDetails({ category: 'private-internal-detail' }), undefined)
   assert.equal(callableLogCategory({ category: 'budget-unavailable' }), 'budget-unavailable')
   assert.equal(callableLogCategory({ category: 'rate-limit-exhausted' }), 'rate-limit-exhausted')

@@ -134,10 +134,8 @@ function calculateStudentsWithoutTransactions(plan, context, answerSuffix) {
   if (plan.status !== 'any') {
     transactions = transactions.filter(transaction => transaction.status === plan.status)
   }
-  if (plan.dateScope === 'today') {
-    transactions = transactions.filter(transaction => (
-      localDateKey(transaction.date, context.timeZone) === context.asOfDate
-    ))
+  if (plan.dateScope !== 'period') {
+    transactions = transactions.filter(transaction => matchesDateScope(transaction, plan.dateScope, context))
   }
   const amount = plan.amountExact ?? (
     plan.purpose === 'rent' && context.configuredRentAmount > 0
@@ -254,6 +252,9 @@ function calculateTransactionQuery(plan, context, answerSuffix) {
   if (filters.status !== 'any') {
     transactions = transactions.filter(transaction => transaction.status === filters.status)
   }
+  if (filters.dateScope !== 'period') {
+    transactions = transactions.filter(transaction => matchesDateScope(transaction, filters.dateScope, context))
+  }
   if (filters.studentState !== 'any') {
     const frozen = filters.studentState === 'frozen'
     transactions = transactions.filter(transaction => (
@@ -270,6 +271,11 @@ function calculateTransactionQuery(plan, context, answerSuffix) {
   }
 
   const grouped = new Map()
+  if (plan.groupBy === 'calendar-day' && plan.metric === 'count') {
+    for (const group of calendarDayGroupsForScope(filters.dateScope, context)) {
+      grouped.set(group.key, { ...group, transactions: [] })
+    }
+  }
   for (const transaction of transactions) {
     const group = groupFor(transaction, plan.groupBy, context)
     const row = grouped.get(group.key) || {
@@ -307,18 +313,21 @@ function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix
         }
       }
       return {
-        text: `No matching records were found in the last ${context.periodDays} days. This uses ${filterContext}.`,
+        text: `No matching records were found for ${describeDateScope(plan.filters.dateScope, context)}. This uses ${filterContext}.`,
         evidence: [`Matching records: 0. Included records: ${filterContext}.`],
       }
     }, answerSuffix)
   }
   const sorted = sortRows(rows, plan.order)
-  const tiedRows = includeTies(sorted, plan.limit)
+  const scopeBoundCalendarDays = plan.groupBy === 'calendar-day' && plan.filters.dateScope !== 'period'
+  const tiedRows = scopeBoundCalendarDays ? sorted : includeTies(sorted, plan.limit)
   const selected = tiedRows.slice(0, 8)
   const omittedTies = tiedRows.length - selected.length
   if (plan.groupBy === 'none') {
     const row = selected[0]
-    const periodSuffix = plan.dataset === 'students' ? '' : ` for the last ${context.periodDays} days`
+    const periodSuffix = plan.dataset === 'students'
+      ? ''
+      : ` for ${describeDateScope(plan.filters.dateScope, context)}`
     return fitResponseWithinPublicBounds(labelLength => {
       const filterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
       return {
@@ -341,12 +350,15 @@ function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix
       const row = selected[0]
       summary = `${displayLabel(row.label, labelLength)} has the ${direction ? `${direction} ` : ''}${noun}: ${formatMetric(plan, row.value, row.count)}.`
     } else {
-      summary = `${direction ? capitalize(direction) : 'Chronological'} ${noun} results for the last ${context.periodDays} days: ${selected.map(row => `${displayLabel(row.label, labelLength)} (${formatMetric(plan, row.value, row.count)})`).join(', ')}.`
+      summary = `${direction ? capitalize(direction) : 'Chronological'} ${noun} results for ${describeDateScope(plan.filters.dateScope, context)}: ${selected.map(row => `${displayLabel(row.label, labelLength)} (${formatMetric(plan, row.value, row.count)})`).join(', ')}.`
       if (omittedTies) summary += ` And ${omittedTies} more are tied at the cutoff.`
     }
     if (subjectNames.length) {
       const subjectName = summarizeLabels(subjectNames, { labelLength })
-      summary = `For ${subjectName}, ${summary.charAt(0).toLocaleLowerCase('en-US')}${summary.slice(1)}`
+      const subjectSummary = plan.groupBy === 'calendar-day'
+        ? summary
+        : `${summary.charAt(0).toLocaleLowerCase('en-US')}${summary.slice(1)}`
+      summary = `For ${subjectName}, ${subjectSummary}`
     }
     summary += ` This uses ${rankedFilterContext}.`
     const evidence = selected.map(row => (
@@ -373,6 +385,10 @@ function groupFor(transaction, groupBy, context) {
     return { key: bucket.id, label: bucket.label, chronological: String(TIME_BUCKETS.findIndex(item => item.id === bucket.id)) }
   }
   const date = localDateParts(transaction.date, context.timeZone)
+  if (groupBy === 'calendar-day') {
+    const key = localDateKey(transaction.date, context.timeZone)
+    return calendarDayGroup(key)
+  }
   if (groupBy === 'day-of-week') {
     const day = new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay()
     return { key: String(day), label: DAY_LABELS[day], chronological: String((day + 6) % 7).padStart(2, '0') }
@@ -464,6 +480,55 @@ function timeBucketFor(date, timeZone) {
   const formatter = new Intl.DateTimeFormat('en-US', { timeZone, hour: '2-digit', hourCycle: 'h23' })
   const hour = Number(formatter.formatToParts(new Date(date)).find(part => part.type === 'hour')?.value)
   return TIME_BUCKETS.find(bucket => bucket.matches(hour)) || TIME_BUCKETS[TIME_BUCKETS.length - 1]
+}
+
+function matchesDateScope(transaction, dateScope, context) {
+  const transactionDate = localDateKey(transaction.date, context.timeZone)
+  if (dateScope === 'period') return true
+  if (dateScope === 'today') return transactionDate === context.asOfDate
+  const yesterday = shiftDateKey(context.asOfDate, -1)
+  if (dateScope === 'yesterday') return transactionDate === yesterday
+  if (dateScope === 'today-and-yesterday') {
+    return transactionDate === context.asOfDate || transactionDate === yesterday
+  }
+  fail('answer-unavailable', 'The requested date scope is unsupported.')
+}
+
+function calendarDayGroupsForScope(dateScope, context) {
+  if (dateScope === 'today') return [calendarDayGroup(context.asOfDate)]
+  const yesterday = shiftDateKey(context.asOfDate, -1)
+  if (dateScope === 'yesterday') return [calendarDayGroup(yesterday)]
+  if (dateScope === 'today-and-yesterday') {
+    return [calendarDayGroup(yesterday), calendarDayGroup(context.asOfDate)]
+  }
+  return []
+}
+
+function calendarDayGroup(key) {
+  const label = new Date(`${key}T00:00:00.000Z`).toLocaleDateString('en-US', {
+    timeZone: 'UTC',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+  return { key, label, chronological: key }
+}
+
+function describeDateScope(dateScope, context) {
+  if (dateScope === 'period') return `the last ${context.periodDays} days`
+  if (dateScope === 'today') return `today (${context.asOfDate} in ${context.timeZone})`
+  const yesterday = shiftDateKey(context.asOfDate, -1)
+  if (dateScope === 'yesterday') return `yesterday (${yesterday} in ${context.timeZone})`
+  if (dateScope === 'today-and-yesterday') {
+    return `today and yesterday (${yesterday} and ${context.asOfDate} in ${context.timeZone})`
+  }
+  fail('answer-unavailable', 'The requested date scope is unsupported.')
+}
+
+function shiftDateKey(dateKey, days) {
+  const shifted = new Date(`${dateKey}T00:00:00.000Z`)
+  shifted.setUTCDate(shifted.getUTCDate() + days)
+  return shifted.toISOString().slice(0, 10)
 }
 
 function localDateParts(date, timeZone) {
@@ -568,11 +633,11 @@ function validatePlanForCalculation(plan) {
     !isPlainObject(plan) || !hasExactKeys(plan, ['dataset', 'metric', 'filters', 'groupBy', 'order', 'limit']) ||
     !isPlainObject(plan.filters) || !hasExactKeys(
       plan.filters,
-      ['subjectAliases', 'categoryAlias', 'transactionType', 'status', 'timeBucket', 'studentState'],
+      ['subjectAliases', 'categoryAlias', 'transactionType', 'status', 'dateScope', 'timeBucket', 'studentState'],
     ) ||
     !['transactions', 'students'].includes(plan.dataset) ||
     !['count', 'amount-total', 'amount-average', 'net-amount', 'current-balance', 'average-balance'].includes(plan.metric) ||
-    !['none', 'student', 'category', 'time-of-day', 'day-of-week', 'week'].includes(plan.groupBy) ||
+    !['none', 'student', 'category', 'time-of-day', 'calendar-day', 'day-of-week', 'week'].includes(plan.groupBy) ||
     !['highest', 'lowest', 'chronological'].includes(plan.order) ||
     !Number.isSafeInteger(plan.limit) || plan.limit < 1 || plan.limit > 8 ||
     !Array.isArray(plan.filters.subjectAliases) || plan.filters.subjectAliases.length > 8 ||
@@ -581,6 +646,7 @@ function validatePlanForCalculation(plan) {
     !(plan.filters.categoryAlias === null || /^category-[0-9]{3}$/.test(plan.filters.categoryAlias)) ||
     !['Add', 'Subtract', 'any'].includes(plan.filters.transactionType) ||
     !['Approved', 'Pending', 'Denied', 'any'].includes(plan.filters.status) ||
+    !['period', 'today', 'yesterday', 'today-and-yesterday'].includes(plan.filters.dateScope) ||
     !(plan.filters.timeBucket === null || TIME_BUCKETS.some(bucket => bucket.id === plan.filters.timeBucket)) ||
     !['active', 'frozen', 'any'].includes(plan.filters.studentState)
   ) fail('answer-unavailable', 'The server query plan is malformed.')
@@ -610,7 +676,7 @@ function validateMissingTransactionPlanForCalculation(plan) {
     !['any', 'rent'].includes(plan.purpose) ||
     !['Add', 'Subtract', 'any'].includes(plan.transactionType) ||
     !['Approved', 'Pending', 'Denied', 'any'].includes(plan.status) ||
-    !['period', 'today'].includes(plan.dateScope) ||
+    !['period', 'today', 'yesterday', 'today-and-yesterday'].includes(plan.dateScope) ||
     !(plan.amountExact === null || (
       typeof plan.amountExact === 'number' && Number.isFinite(plan.amountExact) &&
       plan.amountExact > 0 && plan.amountExact <= 1_000_000
@@ -640,11 +706,7 @@ function describeMissingTransactionFilters(plan, context, labelLength = 24) {
   } else if (plan.purpose === 'rent' && context.configuredRentAmount > 0) {
     parts.push(`the configured rent amount of ${money(context.configuredRentAmount)}`)
   }
-  if (plan.dateScope === 'today') {
-    parts.push(`today (${context.asOfDate} in ${context.timeZone})`)
-  } else {
-    parts.push(`the last ${context.periodDays} days`)
-  }
+  parts.push(describeDateScope(plan.dateScope, context))
   parts.push(plan.studentState === 'any'
     ? 'all current students'
     : `current ${plan.studentState} students`)
@@ -682,6 +744,9 @@ function describeQueryFilters(plan, context, labelLength = 24) {
   }
   if (plan.filters.timeBucket !== null) {
     parts.push(TIME_BUCKETS.find(bucket => bucket.id === plan.filters.timeBucket)?.label || plan.filters.timeBucket)
+  }
+  if (plan.filters.dateScope !== 'period') {
+    parts.push(describeDateScope(plan.filters.dateScope, context))
   }
   if (plan.filters.studentState !== 'any') {
     parts.push(`current ${plan.filters.studentState} students`)

@@ -11,7 +11,7 @@ import {
 } from './geminiQuestionAdapter.js'
 
 const providerInput = Object.freeze({
-  schemaVersion: 4,
+  schemaVersion: 5,
   question: 'Who has used the restroom the most?',
   subjectAliases: Object.freeze([]),
   categoryCatalog: Object.freeze([
@@ -39,8 +39,14 @@ test('question request uses the single regular Flash model with minimal thinking
   assert.match(request.config.systemInstruction, /students-without-transactions/)
   assert.match(request.config.systemInstruction, /list-student-balances/)
   assert.match(request.config.systemInstruction, /unpaid rent.*amountExact.*dateScope today/)
+  assert.match(request.config.systemInstruction, /submitted.*status any/i)
+  assert.match(request.config.systemInstruction, /whether or did.*metric count/i)
+  assert.match(request.config.systemInstruction, /today-versus-yesterday.*calendar-day/i)
+  assert.match(request.config.systemInstruction, /dataset students.*dateScope period/i)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /students-without-transactions/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /list-student-balances/)
+  assert.match(JSON.stringify(request.config.responseJsonSchema), /today-and-yesterday/)
+  assert.match(JSON.stringify(request.config.responseJsonSchema), /calendar-day/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /guidance/)
   assert.doesNotMatch(JSON.stringify(request), /GianMarco/)
 })
@@ -52,7 +58,7 @@ test('question adapter makes one injected call and accepts only structured inter
       calls += 1
       return {
         text: JSON.stringify({
-          schemaVersion: 4,
+          schemaVersion: 5,
           kind: 'query',
           plan: {
             dataset: 'transactions',
@@ -62,6 +68,7 @@ test('question adapter makes one injected call and accepts only structured inter
               categoryAlias: 'category-001',
               transactionType: 'Subtract',
               status: 'Approved',
+              dateScope: 'period',
               timeBucket: null,
               studentState: 'any',
             },
@@ -94,7 +101,7 @@ test('question adapter accepts a bounded Morgan Bank guidance route', async () =
       assert.match(request.config.systemInstruction, /must not claim that you inspected data/i)
       return {
         text: JSON.stringify({
-          schemaVersion: 4,
+          schemaVersion: 5,
           kind: 'guidance',
           plan: null,
           guidance,

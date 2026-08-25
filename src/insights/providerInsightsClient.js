@@ -461,6 +461,9 @@ export function mapProviderInsightsError(error, { testMode = true } = {}) {
       "request-unavailable",
       "question-ambiguous",
       "question-sensitive",
+      "evidence-unavailable",
+      "provider-output-invalid",
+      "answer-unavailable",
     ].includes(details.category)
     ? details.category
     : "";
@@ -477,7 +480,22 @@ export function mapProviderInsightsError(error, { testMode = true } = {}) {
     return Object.freeze({ ambiguous: false, message: "Ask about one student at a time and use the student’s full name." });
   }
   if (detailCategory === "question-sensitive" && code === "invalid-argument") {
-    return Object.freeze({ ambiguous: false, message: "Remove email addresses, links, and phone numbers before asking." });
+    return Object.freeze({
+      ambiguous: false,
+      message: "Remove email addresses, links, phone numbers, and bracketed student or category placeholders before asking.",
+    });
+  }
+  if (detailCategory === "evidence-unavailable" && code === "internal") {
+    return Object.freeze({
+      ambiguous: false,
+      message: "Morgan Bank couldn’t safely read the classroom records. Refresh and try again.",
+    });
+  }
+  if (["provider-output-invalid", "answer-unavailable"].includes(detailCategory) && code === "internal") {
+    return Object.freeze({
+      ambiguous: false,
+      message: "Morgan Bank couldn’t safely interpret that question. Try asking it another way.",
+    });
   }
   if (["unavailable", "deadline-exceeded", "internal", "unknown", "cancelled"].includes(code)) {
     return Object.freeze({

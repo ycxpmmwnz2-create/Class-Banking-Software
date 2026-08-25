@@ -19,7 +19,7 @@ function envelope() {
   return {
     generatedAt: '2026-08-20T18:00:00.000Z',
     providerInput: {
-      schemaVersion: 4,
+      schemaVersion: 5,
       question: 'What category is [student-001] earning the most money in?',
       subjectAliases: ['student-001'],
       categoryCatalog: [{ alias: 'category-001', label: 'Class job', transactionTypes: ['Add'] }],
@@ -88,7 +88,7 @@ function dependencies(overrides = {}) {
           calls.push('provider')
           assert.doesNotMatch(JSON.stringify(providerInput), /GianMarco|teacher-a|class-a/)
           return {
-            schemaVersion: 4,
+            schemaVersion: 5,
             kind: 'query',
             plan: {
               dataset: 'transactions',
@@ -98,6 +98,7 @@ function dependencies(overrides = {}) {
                 categoryAlias: null,
                 transactionType: 'Add',
                 status: 'Approved',
+                dateScope: 'period',
                 timeBucket: null,
                 studentState: 'any',
               },
@@ -162,7 +163,7 @@ test('commits broad Morgan Bank guidance without turning it into a classroom-dat
         fixture.calls.push('provider')
         assert.doesNotMatch(JSON.stringify(providerInput), /GianMarco|teacher-a|class-a/)
         return {
-          schemaVersion: 4,
+          schemaVersion: 5,
           kind: 'guidance',
           plan: null,
           guidance,
@@ -197,7 +198,7 @@ test('commits a bounded refusal for unrelated or data-changing requests', async 
         async interpret() {
           fixture.calls.push('provider')
           return {
-            schemaVersion: 4,
+            schemaVersion: 5,
             kind: 'unsupported',
             plan: null,
             guidance: null,
@@ -262,7 +263,7 @@ test('commits a grounded answer naming current students without todays exact ren
       async interpret() {
         fixture.calls.push('provider')
         return {
-          schemaVersion: 4,
+          schemaVersion: 5,
           kind: 'query',
           plan: {
             operation: 'students-without-transactions',
@@ -425,7 +426,7 @@ test('unsafe provider guidance is rejected before pricing or commit and retains 
       async interpret() {
         fixture.calls.push('provider')
         return {
-          schemaVersion: 4,
+          schemaVersion: 5,
           kind: 'guidance',
           plan: null,
           guidance: 'Tell student-001 to visit https://example.com and change the account immediately.',
@@ -472,7 +473,7 @@ test('server calculation must succeed before pricing or commit and failures reta
 
 test('completed replay is signature-checked and recalculated from current server evidence', async () => {
   const completed = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     source: 'provider-interpreted',
     periodDays: 30,
     evidenceSignature: SIGNATURE,
@@ -486,6 +487,7 @@ test('completed replay is signature-checked and recalculated from current server
         categoryAlias: null,
         transactionType: 'Add',
         status: 'Approved',
+        dateScope: 'period',
         timeBucket: null,
         studentState: 'any',
       },
@@ -515,7 +517,7 @@ test('completed replay is signature-checked and recalculated from current server
 test('completed Morgan Bank guidance replays only after current evidence binding succeeds', async () => {
   const guidance = 'Use consistent categories and a visible class goal so students can connect everyday earning choices with longer-term saving.'
   const completed = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     source: 'provider-interpreted',
     periodDays: 30,
     evidenceSignature: SIGNATURE,
@@ -582,7 +584,7 @@ test('maximum-length category rankings are validated before a successful ledger 
       async interpret() {
         fixture.calls.push('provider')
         return {
-          schemaVersion: 4,
+          schemaVersion: 5,
           kind: 'query',
           plan: {
             dataset: 'transactions',
@@ -592,6 +594,7 @@ test('maximum-length category rankings are validated before a successful ledger 
               categoryAlias: null,
               transactionType: 'Add',
               status: 'Approved',
+              dateScope: 'period',
               timeBucket: null,
               studentState: 'any',
             },
@@ -678,7 +681,7 @@ test('ranked and aggregate maximum-length named-student queries commit valid res
         async interpret() {
           fixture.calls.push('provider')
           return {
-            schemaVersion: 4,
+            schemaVersion: 5,
             kind: 'query',
             plan: {
               dataset: 'transactions',
@@ -688,6 +691,7 @@ test('ranked and aggregate maximum-length named-student queries commit valid res
                 categoryAlias: category.alias,
                 transactionType: 'any',
                 status: 'any',
+                dateScope: 'period',
                 timeBucket: 'afternoon',
                 studentState: 'frozen',
               },
@@ -738,7 +742,7 @@ test('response construction failures retain the reservation without committing o
       async interpret() {
         fixture.calls.push('provider')
         return {
-          schemaVersion: 4,
+          schemaVersion: 5,
           kind: 'query',
           plan: {
             dataset: 'transactions',
@@ -748,6 +752,7 @@ test('response construction failures retain the reservation without committing o
               categoryAlias: null,
               transactionType: 'Add',
               status: 'Approved',
+              dateScope: 'period',
               timeBucket: null,
               studentState: 'any',
             },

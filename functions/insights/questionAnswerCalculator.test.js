@@ -41,6 +41,7 @@ const filters = {
   categoryAlias: null,
   transactionType: 'any',
   status: 'Approved',
+  dateScope: 'period',
   timeBucket: null,
   studentState: 'any',
 }
@@ -96,6 +97,87 @@ test('answers restroom visits by approved transaction count rather than dollars 
   assert.match(result.evidence[0], /Genesis: 3 transactions/)
   assert.match(result.answer, /approved spending \(Subtract\) transactions/)
   assert.match(result.evidence[0], /approved spending \(Subtract\) transactions/)
+})
+
+test('compares submitted transactions across today and yesterday in the classroom time zone', () => {
+  const technology = { alias: 'category-004', label: 'Technology' }
+  const comparisonEvidence = {
+    ...evidence,
+    categories: [...evidence.categories, technology],
+    transactions: [
+      { id: 102, studentId: 1, date: '2026-08-20T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+      { id: 103, studentId: 1, date: '2026-08-18T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+    ],
+  }
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: {
+        ...filters,
+        subjectAliases: ['student-001'],
+        categoryAlias: technology.alias,
+        transactionType: 'Add',
+        status: 'any',
+        dateScope: 'today-and-yesterday',
+      },
+      groupBy: 'calendar-day',
+      order: 'chronological',
+      limit: 2,
+    }),
+    evidence: comparisonEvidence,
+  })
+
+  assert.match(result.answer, /For Genesis, Chronological/)
+  assert.match(result.answer, /Aug 19, 2026 \(0 transactions\)/)
+  assert.match(result.answer, /Aug 20, 2026 \(1 transaction\)/)
+  assert.doesNotMatch(result.answer, /Aug 18/)
+  assert.match(result.answer, /all approval statuses/)
+  assert.match(result.answer, /today and yesterday/)
+
+  for (const order of ['chronological', 'lowest']) {
+    const limited = calculateQuestionAnswer({
+      kind: 'query',
+      plan: plan({
+        metric: 'count',
+        filters: {
+          ...filters,
+          subjectAliases: ['student-001'],
+          categoryAlias: technology.alias,
+          transactionType: 'Add',
+          status: 'any',
+          dateScope: 'today-and-yesterday',
+        },
+        groupBy: 'calendar-day',
+        order,
+        limit: 1,
+      }),
+      evidence: comparisonEvidence,
+    })
+    assert.match(limited.answer, /Aug 19, 2026 \(0 transactions\)/)
+    assert.match(limited.answer, /Aug 20, 2026 \(1 transaction\)/)
+    assert.doesNotMatch(limited.answer, /For Genesis, aug/)
+  }
+
+  const todayOnly = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: {
+        ...filters,
+        subjectAliases: ['student-001'],
+        categoryAlias: technology.alias,
+        transactionType: 'Add',
+        status: 'any',
+        dateScope: 'today',
+      },
+      groupBy: 'calendar-day',
+      order: 'chronological',
+    }),
+    evidence: comparisonEvidence,
+  })
+  assert.match(todayOnly.answer, /For Genesis, Aug 20, 2026/)
+  assert.doesNotMatch(todayOnly.answer, /For Genesis, aug/)
 })
 
 test('lists every current student balance alphabetically in one bounded answer', () => {
@@ -507,6 +589,7 @@ test('discloses status, type, time, and current-student filters in the summary a
         ...filters,
         transactionType: 'Subtract',
         status: 'Pending',
+        dateScope: 'period',
         timeBucket: 'afternoon',
         studentState: 'frozen',
       },
@@ -518,6 +601,7 @@ test('discloses status, type, time, and current-student filters in the summary a
     assert.match(text, /afternoon \(12:00 PM–4:59 PM\)/)
     assert.match(text, /current frozen students/)
   }
+  assert.equal(result.answer.match(/last 30 days/g)?.length, 1)
 })
 
 test('reports no matches instead of synthetic zero-dollar averages', () => {
@@ -659,6 +743,7 @@ test('dynamically fits ranked, aggregate, and empty results with every disclosur
     categoryAlias: category.alias,
     transactionType: 'any',
     status: 'any',
+    dateScope: 'period',
     timeBucket: 'afternoon',
     studentState: 'frozen',
   }

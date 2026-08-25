@@ -3,6 +3,7 @@ import { buildFactPacketFromEvidence } from './factPacketBuilder.js'
 import { createFirestoreUsageLedger } from './firestoreUsageLedger.js'
 import { createFirestoreTenantEvidenceLoader } from './tenantEvidenceAdapter.js'
 import { createFirestoreQuestionEvidenceLoader } from './questionEvidenceAdapter.js'
+import { INSIGHT_QUERY_PLAN_SCHEMA_VERSION } from './questionContracts.js'
 import { createInsightQuestionService } from './questionService.js'
 import { resolveActiveTeacherTenant } from '../phase2b/teacherTenantResolver.js'
 
@@ -138,6 +139,25 @@ export function createVersion3GeminiEmulatorHandler({
           studentState: 'any',
           limit: 8,
         }
+      } else if (
+        category && /(did|whether|submit|request|attempt)/.test(normalized) &&
+        /(today|yesterday)/.test(normalized)
+      ) {
+        const hasToday = /today/.test(normalized)
+        const hasYesterday = /yesterday/.test(normalized)
+        plan = queryPlan({
+          metric: 'count',
+          subjectAliases,
+          categoryAlias: category.alias,
+          transactionType: 'Add',
+          status: 'any',
+          dateScope: hasToday && hasYesterday
+            ? 'today-and-yesterday'
+            : hasYesterday ? 'yesterday' : 'today',
+          groupBy: 'calendar-day',
+          order: 'chronological',
+          limit: hasToday && hasYesterday ? 2 : 1,
+        })
       } else if (category && /(who|which student)/.test(normalized)) {
         plan = queryPlan({
           metric: /(money|amount|dollar)/.test(normalized) ? 'amount-total' : 'count',
@@ -162,6 +182,7 @@ export function createVersion3GeminiEmulatorHandler({
             categoryAlias: null,
             transactionType: 'any',
             status: 'any',
+            dateScope: 'period',
             timeBucket: null,
             studentState: /frozen/.test(normalized) ? 'frozen' : 'any',
           },
@@ -178,6 +199,7 @@ export function createVersion3GeminiEmulatorHandler({
             categoryAlias: null,
             transactionType: 'any',
             status: 'any',
+            dateScope: 'period',
             timeBucket: null,
             studentState: /frozen/.test(normalized) ? 'frozen' : 'any',
           },
@@ -200,7 +222,7 @@ export function createVersion3GeminiEmulatorHandler({
         guidance = 'Review the result privately, ask students to set a realistic next goal, and use consistent earning opportunities rather than public comparisons or automatic penalties.'
       }
       return {
-        schemaVersion: 4,
+        schemaVersion: INSIGHT_QUERY_PLAN_SCHEMA_VERSION,
         kind: plan && guidance ? 'query-and-guidance' : plan ? 'query' : guidance ? 'guidance' : 'unsupported',
         plan,
         guidance,
@@ -237,15 +259,26 @@ function queryPlan({
   categoryAlias = null,
   transactionType = 'any',
   status = 'Approved',
+  dateScope = 'period',
   groupBy = 'none',
+  order = 'highest',
+  limit = 1,
 } = {}) {
   return {
     dataset: 'transactions',
     metric,
-    filters: { subjectAliases, categoryAlias, transactionType, status, timeBucket: null, studentState: 'any' },
+    filters: {
+      subjectAliases,
+      categoryAlias,
+      transactionType,
+      status,
+      dateScope,
+      timeBucket: null,
+      studentState: 'any',
+    },
     groupBy,
-    order: 'highest',
-    limit: 1,
+    order,
+    limit,
   }
 }
 

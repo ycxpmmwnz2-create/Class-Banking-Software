@@ -341,6 +341,25 @@ test("natural restroom question uses the exact five-field request and ranks visi
   expect(await browserStorageSnapshot(page)).toEqual(storageBefore);
 });
 
+test("today-versus-yesterday submission question renders both calendar days", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  const question = `Did ${TENANT_A.studentName} submit ${TENANT_A.reason} yesterday or today?`;
+  await page.locator("#providerQuestionInput").fill(question);
+  await page.getByTestId("provider-question-submit").click();
+
+  const result = page.getByTestId("provider-question-result");
+  await expect(result).toContainText(TENANT_A.studentName);
+  await expect(result).toContainText("0 transactions");
+  await expect(result).toContainText("1 transaction");
+  await expect(result).toContainText("today and yesterday");
+  await expect(result).not.toContainText(TENANT_A.foreignName);
+
+  const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
+  expect(calls).toHaveLength(1);
+  expect(calls[0].question).toBe(question);
+});
+
 test("rent question names current students without an approved exact payment today", async ({ page }) => {
   await openApp(page);
   await signIn(page, TENANT_A);

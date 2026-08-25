@@ -112,7 +112,7 @@ test('replaces a full or unique partial roster name before constructing provider
       question,
     })
     assert.deepEqual(envelope.providerInput.subjectAliases, ['student-001'])
-    assert.equal(envelope.providerInput.schemaVersion, 4)
+    assert.equal(envelope.providerInput.schemaVersion, 5)
     assert.deepEqual(envelope.providerInput.categoryCatalog, [{
       alias: 'category-001',
       label: 'Class job',
@@ -132,6 +132,30 @@ test('replaces a full or unique partial roster name before constructing provider
     assert.equal(envelope.answerEvidence.asOfDate, '2026-08-20')
     assert.match(envelope.evidenceSignature, /^[a-f0-9]{64}$/)
   }
+})
+
+test('safe student aliases do not collide with an unrelated roster name token', async () => {
+  const data = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Maribel Rivera',
+    },
+    'classrooms/class-a/students/2': {
+      ...fixture()['classrooms/class-a/students/2'],
+      name: 'Test Student',
+    },
+  })
+  const envelope = await loader(data)({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'Did Maribel submit technology yesterday to add to her account? Or just today?',
+  })
+
+  assert.deepEqual(envelope.providerInput.subjectAliases, ['student-001'])
+  assert.match(envelope.providerInput.question, /\[student-001\]/)
+  assert.doesNotMatch(JSON.stringify(envelope.providerInput), /Maribel|Rivera|Test Student/)
 })
 
 test('classifies a V2 blank-category Rent reason only in server answer evidence', async () => {
@@ -468,7 +492,6 @@ test('separator-obscured roster names fail before provider input can be construc
     'What category is Gian\u200BMarco earning the most money in?',
     'What category is Gian-Marco earning the most money in?',
     'What category is ＧｉａｎＭａｒｃｏ earning the most money in?',
-    'What category is Gian[student-001]MarcoBellini earning the most money in?',
   ]) {
     await assert.rejects(
       loader()({
@@ -480,6 +503,23 @@ test('separator-obscured roster names fail before provider input can be construc
       }),
       error => error instanceof InsightQuestionEvidenceError &&
         error.category === 'evidence-not-deidentified',
+    )
+  }
+
+  for (const question of [
+    'What category is Gian[student-001]MarcoBellini earning the most money in?',
+    'What did [ category-001] students earn?',
+  ]) {
+    await assert.rejects(
+      loader()({
+        teacherUid: 'teacher-a',
+        classroomId: 'class-a',
+        periodDays: 30,
+        timeZone: 'America/Denver',
+        question,
+      }),
+      error => error instanceof InsightQuestionEvidenceError &&
+        error.category === 'question-sensitive',
     )
   }
 

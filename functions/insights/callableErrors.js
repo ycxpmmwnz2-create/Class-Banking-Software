@@ -1,7 +1,10 @@
-const CLIENT_RESERVATION_CATEGORIES = Object.freeze(new Set([
+const CLIENT_SAFE_CATEGORIES = Object.freeze(new Set([
   'allowance-exhausted',
   'rate-limit-exhausted',
   'request-unavailable',
+  'evidence-unavailable',
+  'provider-output-invalid',
+  'answer-unavailable',
   'question-ambiguous',
   'question-sensitive',
 ]))
@@ -20,6 +23,7 @@ const LOG_CATEGORIES = Object.freeze(new Set([
   'invalid-time',
   'provider-output-invalid',
   'provider-unavailable',
+  'answer-unavailable',
   'question-ambiguous',
   'question-sensitive',
   'rate-limit-exhausted',
@@ -51,7 +55,7 @@ export function callableErrorCode(error) {
 
 export function callableErrorDetails(error) {
   const category = typeof error?.category === 'string' ? error.category : ''
-  if (!CLIENT_RESERVATION_CATEGORIES.has(category)) return undefined
+  if (!CLIENT_SAFE_CATEGORIES.has(category)) return undefined
   return Object.freeze({ category })
 }
 

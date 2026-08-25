@@ -9,7 +9,7 @@ import {
 import { GEMINI_RATE_CARD_ID } from './geminiProviderAdapter.js'
 
 const providerInput = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   question: 'Who has used the restroom the most?',
   subjectAliases: [],
   categoryCatalog: [{

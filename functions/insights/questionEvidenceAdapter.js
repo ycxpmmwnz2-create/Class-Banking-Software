@@ -25,6 +25,7 @@ const MAX_CATEGORIES = 128
 const MAX_RENT_AMOUNT = 1_000_000
 const EMAIL_OR_URL_PATTERN = /(?:\bhttps?:\/\/|\bwww\.|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i
 const PHONE_PATTERN = /(?:\+?\d[\d\s().-]{7,}\d)/
+const RESERVED_PLACEHOLDER_PATTERN = /\[\s*(?:student|category)/iu
 
 export class InsightQuestionEvidenceError extends Error {
   constructor(category, message) {
@@ -64,8 +65,15 @@ export function createFirestoreQuestionEvidenceLoader({
       throw error
     }
     if (![7, 30, 90].includes(periodDays)) fail('invalid-period', 'The question period is unsupported.')
-    if (EMAIL_OR_URL_PATTERN.test(question) || PHONE_PATTERN.test(question)) {
-      fail('question-sensitive', 'Remove email addresses, links, and phone numbers before asking.')
+    if (
+      EMAIL_OR_URL_PATTERN.test(question) ||
+      PHONE_PATTERN.test(question) ||
+      RESERVED_PLACEHOLDER_PATTERN.test(question)
+    ) {
+      fail(
+        'question-sensitive',
+        'Remove email addresses, links, phone numbers, and bracketed student or category placeholders before asking.',
+      )
     }
     const generatedAt = requireDate(now())
     const asOfDate = localDateKey(generatedAt, timeZone)
@@ -427,15 +435,16 @@ function sanitizeQuestion({ question, students, aliasesByStudentId, mentionedStu
 }
 
 function assertNoRosterNameLeak(question, students) {
-  const normalizedQuestion = normalize(question)
   const questionWithoutAliases = question.replace(/\[student(?:-[0-9]{3})?\]/giu, '')
+  const normalizedQuestion = normalize(questionWithoutAliases)
+  const questionTokens = tokens(questionWithoutAliases)
   for (const student of students) {
     if (containsPhrase(normalizedQuestion, normalize(student.name))) {
       fail('evidence-not-deidentified', 'The sanitized question contains a student name.')
     }
     const nameTokens = tokens(student.name)
     for (const token of nameTokens.filter(value => value.length >= 2)) {
-      if (tokens(question).includes(token)) {
+      if (questionTokens.includes(token)) {
         fail('evidence-not-deidentified', 'The sanitized question contains a student name token.')
       }
     }

@@ -28,9 +28,14 @@ const SYSTEM_INSTRUCTION = [
   'For visits, uses, occurrences, frequency, or how many times, use metric count. For money, use amount-total unless average or net is explicitly requested.',
   'For who, group by student. For which category, group by category. For when, select the most precise supported time grouping.',
   'Use dataset students for roster size, frozen accounts, current balances, or average balance. Use dataset transactions for earning, spending, categories, requests, and times.',
+  'For dataset students, always use dateScope period.',
   'When the teacher asks to list each or all current students with their current balances, use operation list-student-balances instead of a ranked student query.',
   'Use status Approved unless the teacher explicitly asks about pending, denied, or all statuses.',
+  'When the teacher asks whether a transaction was submitted, requested, or attempted, use status any unless a status is explicit. When the teacher asks what was credited, added to a balance, earned, paid, or completed, use status Approved.',
+  'For whether or did a matching transaction happen, use metric count.',
   'Use transactionType Subtract for spending, losing money, purchases, or use of a paid category; Add for earning or receiving; otherwise any.',
+  'Interpret today and yesterday in the classroom time zone. Use dateScope today, yesterday, or today-and-yesterday when the question names those periods; otherwise use period.',
+  'For which day, what date, or a today-versus-yesterday comparison, group by calendar-day and order chronologically.',
   'For which current students did not have a matching transaction, use operation students-without-transactions instead of the ordinary dataset query plan.',
   'For unpaid rent, use purpose rent, transactionType Subtract, status Approved, categoryAlias null, and use amountExact and dateScope today only when the teacher asks for that exact amount or today.',
   'A query result must have a complete plan. A guidance result must have guidance text. Only query-and-guidance may contain both.',
@@ -58,7 +63,7 @@ const PLAN_SCHEMA = Object.freeze({
     filters: Object.freeze({
       type: 'object',
       additionalProperties: false,
-      required: Object.freeze(['subjectAliases', 'categoryAlias', 'transactionType', 'status', 'timeBucket', 'studentState']),
+      required: Object.freeze(['subjectAliases', 'categoryAlias', 'transactionType', 'status', 'dateScope', 'timeBucket', 'studentState']),
       properties: Object.freeze({
         subjectAliases: Object.freeze({
           type: 'array',
@@ -69,6 +74,10 @@ const PLAN_SCHEMA = Object.freeze({
         categoryAlias: NULLABLE_CATEGORY_ALIAS,
         transactionType: Object.freeze({ type: 'string', enum: Object.freeze(['Add', 'Subtract', 'any']) }),
         status: Object.freeze({ type: 'string', enum: Object.freeze(['Approved', 'Pending', 'Denied', 'any']) }),
+        dateScope: Object.freeze({
+          type: 'string',
+          enum: Object.freeze(['period', 'today', 'yesterday', 'today-and-yesterday']),
+        }),
         timeBucket: NULLABLE_TIME_BUCKET,
         studentState: Object.freeze({ type: 'string', enum: Object.freeze(['active', 'frozen', 'any']) }),
       }),
@@ -105,7 +114,10 @@ const MISSING_TRANSACTION_PLAN_SCHEMA = Object.freeze({
     purpose: Object.freeze({ type: 'string', enum: Object.freeze(['any', 'rent']) }),
     transactionType: Object.freeze({ type: 'string', enum: Object.freeze(['Add', 'Subtract', 'any']) }),
     status: Object.freeze({ type: 'string', enum: Object.freeze(['Approved', 'Pending', 'Denied', 'any']) }),
-    dateScope: Object.freeze({ type: 'string', enum: Object.freeze(['period', 'today']) }),
+    dateScope: Object.freeze({
+      type: 'string',
+      enum: Object.freeze(['period', 'today', 'yesterday', 'today-and-yesterday']),
+    }),
     amountExact: Object.freeze({
       anyOf: Object.freeze([
         Object.freeze({ type: 'number', minimum: 0.01, maximum: 1_000_000 }),

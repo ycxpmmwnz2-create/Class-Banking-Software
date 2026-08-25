@@ -223,6 +223,10 @@ test("maps errors to short allowlisted messages and marks only ambiguous outcome
     ambiguous: true,
     message: "The result may still be finishing. Try the same request again.",
   });
+  assert.deepEqual(mapProviderInsightsError({ code: "functions/internal", message: "raw" }), {
+    ambiguous: true,
+    message: "The result may still be finishing. Try the same request again.",
+  });
   assert.deepEqual(mapProviderInsightsError({ code: "functions/resource-exhausted" }), {
     ambiguous: false,
     message: "AI test requests are temporarily limited. Try again later.",
@@ -247,6 +251,13 @@ test("maps errors to short allowlisted messages and marks only ambiguous outcome
   }), {
     ambiguous: false,
     message: "This AI test request cannot be retried. Start a new request.",
+  });
+  assert.deepEqual(mapProviderInsightsError({
+    code: "functions/invalid-argument",
+    details: { category: "question-sensitive" },
+  }), {
+    ambiguous: false,
+    message: "Remove email addresses, links, phone numbers, and bracketed student or category placeholders before asking.",
   });
   assert.deepEqual(mapProviderInsightsError({
     code: "functions/resource-exhausted",
@@ -282,4 +293,28 @@ test("live errors use model-neutral AI Insights wording without exposing raw det
   }, { testMode: false });
   assert.equal(unknown.message, "AI Insights could not be loaded. Try again later.");
   assert.doesNotMatch(unknown.message, /sensitive|upstream/);
+
+  assert.deepEqual(mapProviderInsightsError({
+    code: "functions/internal",
+    details: { category: "evidence-unavailable" },
+  }, { testMode: false }), {
+    ambiguous: false,
+    message: "Morgan Bank couldn’t safely read the classroom records. Refresh and try again.",
+  });
+  for (const category of ["provider-output-invalid", "answer-unavailable"]) {
+    assert.deepEqual(mapProviderInsightsError({
+      code: "functions/internal",
+      details: { category },
+    }, { testMode: false }), {
+      ambiguous: false,
+      message: "Morgan Bank couldn’t safely interpret that question. Try asking it another way.",
+    });
+  }
+  assert.deepEqual(mapProviderInsightsError({
+    code: "functions/internal",
+    message: "sensitive upstream detail",
+  }, { testMode: false }), {
+    ambiguous: true,
+    message: "The result may still be finishing. Try the same request again.",
+  });
 });

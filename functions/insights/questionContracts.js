@@ -1,5 +1,5 @@
 export const INSIGHT_QUESTION_SCHEMA_VERSION = 2
-export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 4
+export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 5
 
 export const INSIGHT_QUERY_DATASETS = Object.freeze(['transactions', 'students'])
 export const INSIGHT_QUERY_METRICS = Object.freeze([
@@ -15,6 +15,7 @@ export const INSIGHT_QUERY_GROUPS = Object.freeze([
   'student',
   'category',
   'time-of-day',
+  'calendar-day',
   'day-of-week',
   'week',
 ])
@@ -30,7 +31,7 @@ const TRANSACTION_STATUSES = Object.freeze(['Approved', 'Pending', 'Denied', 'an
 const TIME_BUCKETS = Object.freeze(['morning', 'afternoon', 'evening', 'night'])
 const STUDENT_STATES = Object.freeze(['active', 'frozen', 'any'])
 const TRANSACTION_PURPOSES = Object.freeze(['any', 'rent'])
-const DATE_SCOPES = Object.freeze(['period', 'today'])
+const DATE_SCOPES = Object.freeze(['period', 'today', 'yesterday', 'today-and-yesterday'])
 const MAX_EXACT_AMOUNT = 1_000_000
 const MIN_GUIDANCE_LENGTH = 20
 const MAX_GUIDANCE_LENGTH = 480
@@ -213,7 +214,7 @@ function validateQueryPlan(value, allowed, category) {
   )
   requireExactObject(
     value.filters,
-    ['subjectAliases', 'categoryAlias', 'transactionType', 'status', 'timeBucket', 'studentState'],
+    ['subjectAliases', 'categoryAlias', 'transactionType', 'status', 'dateScope', 'timeBucket', 'studentState'],
     'question query filters',
     category,
   )
@@ -225,6 +226,7 @@ function validateQueryPlan(value, allowed, category) {
     !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 8 ||
     !TRANSACTION_TYPES.includes(value.filters.transactionType) ||
     !TRANSACTION_STATUSES.includes(value.filters.status) ||
+    !DATE_SCOPES.includes(value.filters.dateScope) ||
     !(value.filters.timeBucket === null || TIME_BUCKETS.includes(value.filters.timeBucket)) ||
     !STUDENT_STATES.includes(value.filters.studentState)
   ) {
@@ -326,7 +328,8 @@ export function questionQueryPlanCoherenceError(value) {
     if (
       (!isBalanceRanking && !isStudentAggregate) ||
       value.filters.categoryAlias !== null || value.filters.transactionType !== 'any' ||
-      value.filters.status !== 'any' || value.filters.timeBucket !== null ||
+      value.filters.status !== 'any' || value.filters.dateScope !== 'period' ||
+      value.filters.timeBucket !== null ||
       value.order === 'chronological'
     ) return 'The balance query plan is inconsistent.'
     return null
@@ -337,7 +340,7 @@ export function questionQueryPlanCoherenceError(value) {
   if (value.metric === 'net-amount' && value.filters.transactionType !== 'any') {
     return 'A net query cannot preselect one transaction type.'
   }
-  const temporal = ['time-of-day', 'day-of-week', 'week'].includes(value.groupBy)
+  const temporal = ['time-of-day', 'calendar-day', 'day-of-week', 'week'].includes(value.groupBy)
   if (value.order === 'chronological' && !temporal) {
     return 'Only a time grouping can be ordered chronologically.'
   }
