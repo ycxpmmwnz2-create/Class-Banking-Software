@@ -125,6 +125,20 @@ test('lists every current student balance alphabetically in one bounded answer',
   }), InsightQuestionAnswerError)
 })
 
+test('places combined guidance on its own line after the complete balance list', () => {
+  const guidance = 'Review the result privately and help students set one realistic savings goal this week.'
+  const result = calculateQuestionAnswer({
+    kind: 'query-and-guidance',
+    plan: { operation: 'list-student-balances' },
+    guidance,
+    evidence,
+  })
+  assert.equal(
+    result.answer,
+    `Current balances for all 3 students:\nGenesis: $42.00\nMateo: $75.00\nSofia: $75.00\nGeneral Morgan Bank guidance: ${guidance}`,
+  )
+})
+
 test('full balance list includes the maximum bounded 500-student roster without truncation', () => {
   const students = Array.from({ length: 500 }, (_, index) => {
     const id = index + 1

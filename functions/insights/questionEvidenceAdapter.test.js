@@ -582,6 +582,23 @@ test('ordinary words containing a roster-name substring remain valid questions',
     assert.equal(result.providerInput.question, question)
     assert.deepEqual(result.providerInput.subjectAliases, [])
   }
+
+  const singleTokenRoster = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Alan',
+    },
+  })
+  const balanceQuestion = 'List for me each student and their current balance'
+  const balanceResult = await loader(singleTokenRoster)({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: balanceQuestion,
+  })
+  assert.equal(balanceResult.providerInput.question, balanceQuestion)
+  assert.deepEqual(balanceResult.providerInput.subjectAliases, [])
 })
 
 test('reads only the active reciprocal tenant and bounds the period server-side', async () => {

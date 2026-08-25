@@ -398,7 +398,10 @@ function sanitizeQuestion({ question, students, aliasesByStudentId, mentionedStu
       ? `MBOPAQUEALIAS${String(student.id).padStart(6, '0')}`
       : 'MBREDACTEDSTUDENT'
     if (mentioned.has(student.id)) placeholders.set(placeholder, aliasesByStudentId.get(student.id))
-    result = result.replace(new RegExp(escapeRegExp(student.name), 'giu'), placeholder)
+    result = result.replace(
+      new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(student.name)}(?=$|[^\\p{L}\\p{N}])`, 'giu'),
+      `$1${placeholder}`,
+    )
   }
   const tokenOwners = new Map()
   for (const student of students) {

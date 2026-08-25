@@ -82,7 +82,10 @@ test("source contract: Q&A is explicit, paragraph-shaped, period-bound, and neve
     indexHtml,
     /function handleProviderQuestionKeyDown\(event\) \{[\s\S]*?event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.isComposing[\s\S]*?event\.preventDefault\(\);[\s\S]*?submitProviderQuestion\(\);/,
   );
-  assert.match(indexHtml, /providerQuestionResult = result;\s*providerQuestionDraft = "";/);
+  assert.match(
+    indexHtml,
+    /providerQuestionResult = result;\s*if \(providerQuestionDraft === request\.question\) providerQuestionDraft = "";/,
+  );
   assert.match(indexHtml, /<p class="insights-answer-copy">\$\{escapeHtml\(providerQuestionResult\.answer\)\}<\/p>/);
   assert.match(indexHtml, /\.insights-answer-copy\s*\{[\s\S]*?white-space: pre-line;/);
   assert.match(indexHtml, /<details class="insights-answer-details">[\s\S]*?<summary>How this was calculated<\/summary>/);

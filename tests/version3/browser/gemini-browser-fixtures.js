@@ -13,7 +13,7 @@ export const TENANT_A = Object.freeze({
   classroomName: "Synthetic Browser Room A",
   studentLoginCode: "AAAA-2345",
   studentName: "Avery Browser",
-  classmateName: "Casey Browser",
+  classmateName: "Alan",
   foreignName: "Bailey Browser",
   reason: "Synthetic robotics reward",
 });

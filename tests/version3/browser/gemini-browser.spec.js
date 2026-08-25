@@ -181,15 +181,29 @@ test("lists every current student balance in one result without crossing tenants
   await page.locator("#providerQuestionInput").press("Enter");
   const result = page.getByTestId("provider-question-result");
   await expect(result).toBeVisible();
-  await expect(result.locator(".insights-answer-copy")).toHaveCount(1);
-  await expect(result.locator(".insights-answer-copy")).toHaveText(
-    `Current balances for all 2 students:\n${TENANT_A.studentName}: $45.00\n${TENANT_A.classmateName}: $45.00`,
+  const answer = result.locator(".insights-answer-copy");
+  await expect(answer).toHaveCount(1);
+  const sortedNames = [TENANT_A.studentName, TENANT_A.classmateName]
+    .sort((left, right) => left.localeCompare(right, "en-US"));
+  expect(await answer.textContent()).toBe(
+    `Current balances for all 2 students:\n${sortedNames.map(name => `${name}: $45.00`).join("\n")}`,
   );
   await expect(result).not.toContainText(TENANT_A.foreignName);
   await expect(page.locator("#providerQuestionInput")).toHaveValue("");
   const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
   expect(calls).toHaveLength(1);
   expect(calls[0].question).toBe(question);
+});
+
+test("a successful answer preserves a new draft typed while the submitted question is loading", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  await startHeldQuestionRequest(page);
+  const newDraft = "What should I ask next?";
+  await page.locator("#providerQuestionInput").fill(newDraft);
+  await releaseHeldResponses(page);
+  await expect(page.getByTestId("provider-question-result")).toBeVisible();
+  await expect(page.locator("#providerQuestionInput")).toHaveValue(newDraft);
 });
 
 test("logout makes a late AI result disappear", async ({ page }) => {

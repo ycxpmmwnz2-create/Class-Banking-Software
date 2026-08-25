@@ -2295,7 +2295,7 @@ function toggleStudentDropdown() {
           requestVersion,
         })) return;
         providerQuestionResult = result;
-        providerQuestionDraft = "";
+        if (providerQuestionDraft === request.question) providerQuestionDraft = "";
       } catch (error) {
         if (!providerQuestionContextIsCurrent({
           capturedIdentity,

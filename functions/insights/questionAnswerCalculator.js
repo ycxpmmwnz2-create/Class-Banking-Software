@@ -69,12 +69,13 @@ function calculateQueryAnswer(plan, context, answerSuffix = '') {
 }
 
 function calculateStudentBalanceList(context, answerSuffix) {
+  const separatedSuffix = answerSuffix ? `\n${answerSuffix.trim()}` : ''
   const students = [...context.students].sort((left, right) => (
     left.name.localeCompare(right.name, 'en-US') || left.id - right.id
   ))
   if (!students.length) {
     return answer(
-      `There are no current students in this classroom.${answerSuffix}`,
+      `There are no current students in this classroom.${separatedSuffix}`,
       ['Current roster students checked: 0.'],
     )
   }
@@ -82,7 +83,7 @@ function calculateStudentBalanceList(context, answerSuffix) {
     `${displayLabel(student.name, 120)}: ${money(student.balance)}`
   )).join('\n')
   return answer(
-    `Current balances for all ${students.length} ${students.length === 1 ? 'student' : 'students'}:\n${balances}${answerSuffix}`,
+    `Current balances for all ${students.length} ${students.length === 1 ? 'student' : 'students'}:\n${balances}${separatedSuffix}`,
     [`Current roster students checked: ${students.length}; every current balance is included.`],
     MAX_STUDENT_BALANCE_LIST_ANSWER_LENGTH,
   )
