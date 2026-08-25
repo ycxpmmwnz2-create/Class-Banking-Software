@@ -122,20 +122,28 @@ export function createFirestoreQuestionEvidenceLoader({
     const aliasesByStudentId = new Map(participants.map((student, index) => (
       [student.id, `student-${String(index + 1).padStart(3, '0')}`]
     )))
-    const mentionedStudentIds = resolveMentionedStudents(question, studentIdentities)
-    if (mentionedStudentIds.length > 8) {
+    const categoryCatalog = buildCategoryCatalog(periodTransactions, studentIdentities)
+    const resolvedSubjects = resolveMentionedStudents(
+      question,
+      studentIdentities,
+      categoryCatalog,
+    )
+    const subjectStudentIds = [...new Set([
+      ...resolvedSubjects.directStudentIds,
+      ...resolvedSubjects.subjectHints.map(hint => hint.studentId),
+    ])].sort((left, right) => left - right)
+    if (subjectStudentIds.length > 8 || resolvedSubjects.subjectHints.length > 8) {
       fail('question-ambiguous', 'Ask about no more than eight named students at a time.')
     }
-    const mentionedAliases = mentionedStudentIds.map(id => aliasesByStudentId.get(id))
+    const mentionedAliases = subjectStudentIds.map(id => aliasesByStudentId.get(id))
     const sanitizedQuestion = sanitizeQuestion({
       question,
       students: studentIdentities,
       aliasesByStudentId,
-      mentionedStudentIds,
+      mentionedStudentIds: resolvedSubjects.directStudentIds,
     })
     assertNoRosterNameLeak(sanitizedQuestion, studentIdentities)
 
-    const categoryCatalog = buildCategoryCatalog(periodTransactions, studentIdentities)
     const categoryAliasByKey = new Map(categoryCatalog.map(category => [category.key, category.alias]))
     const answerEvidence = Object.freeze({
       configuredRentAmount: raw.configuredRentAmount,
@@ -173,6 +181,10 @@ export function createFirestoreQuestionEvidenceLoader({
       schemaVersion: INSIGHT_QUERY_PLAN_SCHEMA_VERSION,
       question: sanitizedQuestion,
       subjectAliases: Object.freeze(mentionedAliases),
+      subjectHints: Object.freeze(resolvedSubjects.subjectHints.map(hint => Object.freeze({
+        text: hint.text,
+        studentAlias: aliasesByStudentId.get(hint.studentId),
+      }))),
       categoryCatalog: Object.freeze(categoryCatalog.map(category => Object.freeze({
         alias: category.alias,
         label: category.label,
@@ -359,11 +371,12 @@ function categoryKey(value) {
   return normalizeDisplayCategory(value).normalize('NFKC').toLocaleLowerCase('en-US')
 }
 
-function resolveMentionedStudents(question, students) {
+function resolveMentionedStudents(question, students, categories) {
   const normalizedQuestion = normalize(question)
   const fullMatches = students.filter(student => (
     containsPhrase(normalizedQuestion, normalize(student.name))
   ))
+  const directMatches = new Set()
   if (fullMatches.length) {
     const ownersByName = new Map()
     for (const student of fullMatches) {
@@ -374,11 +387,17 @@ function resolveMentionedStudents(question, students) {
     if ([...ownersByName.values()].some(owners => owners.size > 1)) {
       fail('question-ambiguous', 'More than one student has that name.')
     }
-    const matchedIds = [...new Set(fullMatches.map(student => student.id))]
-    return matchedIds
+    for (const student of fullMatches) directMatches.add(student.id)
   }
 
   const questionTokens = new Set(tokens(question))
+  const categoryLabelsByToken = new Map()
+  for (const category of categories) {
+    for (const token of new Set(tokens(category.label))) {
+      if (!categoryLabelsByToken.has(token)) categoryLabelsByToken.set(token, [])
+      categoryLabelsByToken.get(token).push(category.label)
+    }
+  }
   const tokenOwners = new Map()
   for (const student of students) {
     for (const token of new Set(tokens(student.name).filter(value => value.length >= 3))) {
@@ -386,26 +405,54 @@ function resolveMentionedStudents(question, students) {
       tokenOwners.get(token).add(student.id)
     }
   }
-  const matches = new Set()
+  const subjectHints = []
   for (const token of questionTokens) {
     const owners = tokenOwners.get(token)
-    if (owners?.size === 1) matches.add([...owners][0])
-    if (owners?.size > 1) {
-      fail('question-ambiguous', 'Use the student’s full name so Morgan Bank can identify one account.')
+    if (!owners) continue
+    const studentRole = isStrongStudentTokenReference(question, token)
+    if (owners.size === 1) {
+      const studentId = [...owners][0]
+      if (categoryLabelsByToken.has(token) && !studentRole) {
+        subjectHints.push(Object.freeze({ text: token, studentId }))
+      } else {
+        directMatches.add(studentId)
+      }
+    } else if (studentRole) {
+      fail('question-ambiguous', "Use the student's full name so Morgan Bank can identify one account.")
     }
   }
-  return [...matches]
+  for (const student of students) {
+    const nameTokens = [...new Set(tokens(student.name))]
+    if (nameTokens.length >= 2 && nameTokens.every(token => questionTokens.has(token))) {
+      directMatches.add(student.id)
+    }
+  }
+  return Object.freeze({
+    directStudentIds: Object.freeze([...directMatches].sort((left, right) => left - right)),
+    subjectHints: Object.freeze(subjectHints.filter(hint => !directMatches.has(hint.studentId))),
+  })
+}
+
+function isStrongStudentTokenReference(question, token) {
+  const word = escapeRegExp(token)
+  const boundaryBefore = '(^|[^\\p{L}\\p{N}])'
+  const boundaryAfter = '(?=$|[^\\p{L}\\p{N}])'
+  const studentPredicate = '(?:account|balance|balances|transactions?|earn|earns|earned|earning|submit|submits|submitted|request|requests|requested|pay|pays|paid|spend|spends|spent|receive|receives|received|owe|owes|owed|make|makes|made|deposit|deposits|deposited|withdraw|withdraws|withdrew|have|has|had|frozen|freeze|lowest|highest|top|bottom|negative|positive|overdrawn)'
+  const normalizedQuestion = normalize(question)
+  return [
+    `${boundaryBefore}${word}(?:['’]s)?(?:\\s+[\\p{L}\\p{N}]+){0,2}\\s+${studentPredicate}${boundaryAfter}`,
+    `${boundaryBefore}(?:student|account|balance|history|transactions?)\\s+(?:for|of|belonging\\s+to)\\s+${word}${boundaryAfter}`,
+  ].some(pattern => new RegExp(pattern, 'u').test(normalizedQuestion))
 }
 
 function sanitizeQuestion({ question, students, aliasesByStudentId, mentionedStudentIds }) {
-  let result = question
+  let result = question.normalize('NFKC')
   const placeholders = new Map()
   const mentioned = new Set(mentionedStudentIds)
   for (const student of [...students].sort((a, b) => b.name.length - a.name.length)) {
-    const placeholder = mentioned.has(student.id)
-      ? `MBOPAQUEALIAS${String(student.id).padStart(6, '0')}`
-      : 'MBREDACTEDSTUDENT'
-    if (mentioned.has(student.id)) placeholders.set(placeholder, aliasesByStudentId.get(student.id))
+    if (!mentioned.has(student.id)) continue
+    const placeholder = `MBOPAQUEALIAS${String(student.id).padStart(6, '0')}`
+    placeholders.set(placeholder, aliasesByStudentId.get(student.id))
     result = result.replace(
       new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(student.name)}(?=$|[^\\p{L}\\p{N}])`, 'giu'),
       `$1${placeholder}`,
@@ -421,15 +468,13 @@ function sanitizeQuestion({ question, students, aliasesByStudentId, mentionedStu
   const nameTokens = [...tokenOwners.keys()].sort((left, right) => right.length - left.length)
   for (const token of nameTokens) {
     const owners = [...tokenOwners.get(token)]
-    const replacement = owners.length === 1 && mentioned.has(owners[0])
-      ? `MBOPAQUEALIAS${String(owners[0]).padStart(6, '0')}`
-      : 'MBREDACTEDSTUDENT'
+    if (owners.length !== 1 || !mentioned.has(owners[0])) continue
+    const replacement = `MBOPAQUEALIAS${String(owners[0]).padStart(6, '0')}`
     result = result.replace(
       new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(token)}(?=$|[^\\p{L}\\p{N}])`, 'giu'),
       `$1${replacement}`,
     )
   }
-  result = result.replaceAll('MBREDACTEDSTUDENT', '[student]')
   for (const [placeholder, alias] of placeholders) result = result.replaceAll(placeholder, `[${alias}]`)
   return result.replace(/\s+/g, ' ').trim()
 }
@@ -437,19 +482,17 @@ function sanitizeQuestion({ question, students, aliasesByStudentId, mentionedStu
 function assertNoRosterNameLeak(question, students) {
   const questionWithoutAliases = question.replace(/\[student(?:-[0-9]{3})?\]/giu, '')
   const normalizedQuestion = normalize(questionWithoutAliases)
-  const questionTokens = tokens(questionWithoutAliases)
+  const questionTokens = new Set(tokens(questionWithoutAliases))
   for (const student of students) {
     if (containsPhrase(normalizedQuestion, normalize(student.name))) {
       fail('evidence-not-deidentified', 'The sanitized question contains a student name.')
     }
-    const nameTokens = tokens(student.name)
-    for (const token of nameTokens.filter(value => value.length >= 2)) {
-      if (questionTokens.includes(token)) {
-        fail('evidence-not-deidentified', 'The sanitized question contains a student name token.')
-      }
-    }
     if (containsSeparatorObscuredName(questionWithoutAliases, student.name)) {
       fail('evidence-not-deidentified', 'The sanitized question contains an obscured student name.')
+    }
+    const nameTokens = [...new Set(tokens(student.name))]
+    if (nameTokens.length >= 2 && nameTokens.every(token => questionTokens.has(token))) {
+      fail('evidence-not-deidentified', 'The sanitized question reconstructs a student name.')
     }
   }
 }
@@ -552,14 +595,18 @@ function containsSeparatorObscuredName(value, name) {
     for (let end = start; end < runs.length; end += 1) {
       candidate += collapseSensitiveText(runs[end])
       if (candidate.length > maximumCandidateLength) break
-      if (matchesSensitiveNameCombination(candidate, nameTokens)) return true
+      if (matchesSensitiveNameCombination(candidate, nameTokens, end - start + 1)) return true
     }
   }
   return false
 }
 
-function matchesSensitiveNameCombination(candidate, nameTokens) {
+function matchesSensitiveNameCombination(candidate, nameTokens, runCount) {
   const uniqueTokens = [...new Set(nameTokens)]
+  if (runCount >= 2 && uniqueTokens.includes(candidate)) return true
+  if (uniqueTokens.length === 1) {
+    return runCount >= 2 && candidate === uniqueTokens[0]
+  }
   const segmentCounts = Array(candidate.length + 1).fill(-1)
   segmentCounts[0] = 0
   for (let index = 0; index < candidate.length; index += 1) {
@@ -571,7 +618,7 @@ function matchesSensitiveNameCombination(candidate, nameTokens) {
     }
   }
   const usedCount = segmentCounts[candidate.length]
-  return usedCount >= 2 || (usedCount === 1 && candidate.length >= 2)
+  return usedCount >= 2
 }
 
 function containsPhrase(haystack, needle) {

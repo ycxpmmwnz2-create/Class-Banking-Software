@@ -237,7 +237,9 @@ function validateEvidenceEnvelope(value) {
 function assertProviderInputIsDeidentified(providerInput, sensitiveValues) {
   const leaves = []
   collectStringLeaves(providerInput, leaves)
-  const privacyLeaves = leaves.map(providerLeafForSensitiveScan)
+  const naturalLanguageLeaves = providerNaturalLanguageLeaves(providerInput)
+    .map(providerLeafForSensitiveScan)
+  const subjectHintLeaves = providerInput.subjectHints.map(hint => providerLeafForSensitiveScan(hint.text))
   for (const entry of sensitiveValues) {
     if (
       !isPlainObject(entry) ||
@@ -250,15 +252,38 @@ function assertProviderInputIsDeidentified(providerInput, sensitiveValues) {
       throw new InsightQuestionServiceError('evidence-unavailable', 'A sensitive-value declaration is malformed.')
     }
     if (entry.kind === 'student-id' && /^[0-9]+$/.test(entry.value)) continue
-    const values = entry.kind === 'student-name'
-      ? [entry.value, ...entry.value.normalize('NFKC').split(/[^\p{L}\p{N}]+/u).filter(token => token.length >= 2)]
-      : [entry.value]
+    const singleTokenStudentName = entry.kind === 'student-name' &&
+      entry.value.normalize('NFKC').split(/[^\p{L}\p{N}]+/u).filter(Boolean).length < 2
+    if (singleTokenStudentName) {
+      const exactHintPattern = new RegExp(
+        `(^|[^\\p{L}\\p{N}])${entry.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^\\p{L}\\p{N}])`,
+        'iu',
+      )
+      if (subjectHintLeaves.some(leaf => exactHintPattern.test(leaf))) {
+        throw new InsightQuestionServiceError(
+          'evidence-not-deidentified',
+          'The provider subject hints contain a complete student identity.',
+        )
+      }
+    }
+    if (
+      singleTokenStudentName &&
+      naturalLanguageLeaves.some(leaf => containsSeparatorObscuredName(leaf, entry.value))
+    ) {
+      throw new InsightQuestionServiceError(
+        'evidence-not-deidentified',
+        'The provider question input contains an obscured sensitive value.',
+      )
+    }
+    if (singleTokenStudentName) continue
+    const values = [entry.value]
     for (const sensitive of values) {
       const pattern = new RegExp(
         `(^|[^\\p{L}\\p{N}])${sensitive.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^\\p{L}\\p{N}])`,
         'iu',
       )
-      if (leaves.some(leaf => pattern.test(leaf))) {
+      const candidates = entry.kind === 'student-name' ? naturalLanguageLeaves : leaves
+      if (candidates.some(leaf => pattern.test(leaf))) {
         throw new InsightQuestionServiceError(
           'evidence-not-deidentified',
           'The provider question input contains a declared sensitive value.',
@@ -266,7 +291,10 @@ function assertProviderInputIsDeidentified(providerInput, sensitiveValues) {
       }
     }
     if (entry.kind === 'student-name') {
-      if (privacyLeaves.some(leaf => containsSeparatorObscuredName(leaf, entry.value))) {
+      if (naturalLanguageLeaves.some(leaf => (
+        containsSeparatorObscuredName(leaf, entry.value) ||
+        containsAllSensitiveNameTokens(leaf, entry.value)
+      ))) {
         throw new InsightQuestionServiceError(
           'evidence-not-deidentified',
           'The provider question input contains an obscured sensitive value.',
@@ -275,7 +303,7 @@ function assertProviderInputIsDeidentified(providerInput, sensitiveValues) {
     } else if (
       ['teacher-uid', 'classroom-id'].includes(entry.kind) &&
       collapseSensitiveText(entry.value).length >= 4 &&
-      privacyLeaves.some(leaf => collapseSensitiveText(leaf).includes(collapseSensitiveText(entry.value)))
+      leaves.some(leaf => collapseSensitiveText(leaf).includes(collapseSensitiveText(entry.value)))
     ) {
       throw new InsightQuestionServiceError(
         'evidence-not-deidentified',
@@ -283,6 +311,43 @@ function assertProviderInputIsDeidentified(providerInput, sensitiveValues) {
       )
     }
   }
+}
+
+function providerNaturalLanguageLeaves(providerInput) {
+  if (
+    typeof providerInput.question !== 'string' ||
+    !Array.isArray(providerInput.subjectHints) ||
+    providerInput.subjectHints.some(hint => (
+      !isPlainObject(hint) ||
+      !hasExactKeys(hint, ['text', 'studentAlias']) ||
+      typeof hint.text !== 'string' ||
+      typeof hint.studentAlias !== 'string'
+    )) ||
+    !Array.isArray(providerInput.categoryCatalog) ||
+    providerInput.categoryCatalog.some(category => !isPlainObject(category) || typeof category.label !== 'string')
+  ) {
+    throw new InsightQuestionServiceError('evidence-unavailable', 'The provider question input is malformed.')
+  }
+  // The evidence adapter owns category-label sanitization. Re-scanning those
+  // labels against every roster token would turn ordinary category words into
+  // false identity leaks. The sanitized question and roster-derived hint text
+  // are the only provider fields that may contain teacher-entered name words.
+  return [providerInput.question, ...providerInput.subjectHints.map(hint => hint.text)]
+}
+
+function containsAllSensitiveNameTokens(value, name) {
+  const nameTokens = [...new Set(String(name)
+    .normalize('NFKC')
+    .toLocaleLowerCase('en-US')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean))]
+  if (nameTokens.length < 2) return false
+  const valueTokens = new Set(String(value)
+    .normalize('NFKC')
+    .toLocaleLowerCase('en-US')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean))
+  return nameTokens.every(token => valueTokens.has(token))
 }
 
 function providerLeafForSensitiveScan(value) {
@@ -315,14 +380,18 @@ function containsSeparatorObscuredName(value, name) {
     for (let end = start; end < runs.length; end += 1) {
       candidate += collapseSensitiveText(runs[end])
       if (candidate.length > maximumCandidateLength) break
-      if (matchesSensitiveNameCombination(candidate, nameTokens)) return true
+      if (matchesSensitiveNameCombination(candidate, nameTokens, end - start + 1)) return true
     }
   }
   return false
 }
 
-function matchesSensitiveNameCombination(candidate, nameTokens) {
+function matchesSensitiveNameCombination(candidate, nameTokens, runCount) {
   const uniqueTokens = [...new Set(nameTokens)]
+  if (runCount >= 2 && uniqueTokens.includes(candidate)) return true
+  if (uniqueTokens.length === 1) {
+    return runCount >= 2 && candidate === uniqueTokens[0]
+  }
   const segmentCounts = Array(candidate.length + 1).fill(-1)
   segmentCounts[0] = 0
   for (let index = 0; index < candidate.length; index += 1) {
@@ -334,7 +403,7 @@ function matchesSensitiveNameCombination(candidate, nameTokens) {
     }
   }
   const usedCount = segmentCounts[candidate.length]
-  return usedCount >= 2 || (usedCount === 1 && candidate.length >= 2)
+  return usedCount >= 2
 }
 
 function collectStringLeaves(value, output) {

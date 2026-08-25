@@ -12,6 +12,7 @@ const providerInput = {
   schemaVersion: 5,
   question: 'Who has used the restroom the most?',
   subjectAliases: [],
+  subjectHints: [],
   categoryCatalog: [{
     alias: 'category-001',
     label: 'Bathroom break',

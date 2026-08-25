@@ -14,6 +14,7 @@ const providerInput = Object.freeze({
   schemaVersion: 5,
   question: 'Who has used the restroom the most?',
   subjectAliases: Object.freeze([]),
+  subjectHints: Object.freeze([]),
   categoryCatalog: Object.freeze([
     Object.freeze({
       alias: 'category-001',
@@ -43,12 +44,31 @@ test('question request uses the single regular Flash model with minimal thinking
   assert.match(request.config.systemInstruction, /whether or did.*metric count/i)
   assert.match(request.config.systemInstruction, /today-versus-yesterday.*calendar-day/i)
   assert.match(request.config.systemInstruction, /dataset students.*dateScope period/i)
+  assert.match(request.config.systemInstruction, /subjectHints.*possible student alias/i)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /students-without-transactions/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /list-student-balances/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /today-and-yesterday/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /calendar-day/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /guidance/)
   assert.doesNotMatch(JSON.stringify(request), /GianMarco/)
+})
+
+test('question request carries only bounded single-word subject hints for model disambiguation', () => {
+  const request = buildGeminiQuestionRequest({
+    providerInput: {
+      ...providerInput,
+      question: 'Which category does Grace use most?',
+      subjectAliases: ['student-001'],
+      subjectHints: [{ text: 'grace', studentAlias: 'student-001' }],
+    },
+  })
+  const payload = JSON.parse(request.contents[0].parts[0].text)
+  assert.deepEqual(payload.providerInput.subjectHints, [{
+    text: 'grace',
+    studentAlias: 'student-001',
+  }])
+  assert.deepEqual(payload.providerInput.subjectAliases, ['student-001'])
+  assert.doesNotMatch(JSON.stringify(request), /Liu|teacher-a|class-a/)
 })
 
 test('question adapter makes one injected call and accepts only structured interpretation usage', async () => {
@@ -136,6 +156,17 @@ test('question adapter redacts transport details and rejects malformed inputs be
   })
   await assert.rejects(
     adapter.interpret({ providerInput: { ...providerInput, realName: 'GianMarco' } }),
+    error => error instanceof GeminiQuestionAdapterError && error.category === 'invalid-question-input',
+  )
+  assert.equal(calls, 0)
+  await assert.rejects(
+    adapter.interpret({
+      providerInput: {
+        ...providerInput,
+        subjectAliases: ['student-001'],
+        subjectHints: [{ text: 'Grace Liu', studentAlias: 'student-001' }],
+      },
+    }),
     error => error instanceof GeminiQuestionAdapterError && error.category === 'invalid-question-input',
   )
   assert.equal(calls, 0)

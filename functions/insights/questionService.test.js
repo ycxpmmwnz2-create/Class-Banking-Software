@@ -22,6 +22,7 @@ function envelope() {
       schemaVersion: 5,
       question: 'What category is [student-001] earning the most money in?',
       subjectAliases: ['student-001'],
+      subjectHints: [],
       categoryCatalog: [{ alias: 'category-001', label: 'Class job', transactionTypes: ['Add'] }],
       periodDays: 30,
     },
@@ -306,14 +307,10 @@ test('browser authority fields fail before tenant resolution', async () => {
   assert.deepEqual(fixture.calls, [])
 })
 
-test('a declared roster name or name token cannot reach the provider', async () => {
+test('a declared multi-part roster identity cannot be reconstructed in provider text', async () => {
   for (const { leakedQuestion, sensitiveName } of [
-    { leakedQuestion: 'What category is GianMarco earning in?', sensitiveName: 'GianMarco' },
-    { leakedQuestion: 'What category is gianmarco earning in?', sensitiveName: 'GianMarco' },
     { leakedQuestion: 'What category is GianMarcoBellini earning in?', sensitiveName: 'GianMarco Bellini' },
     { leakedQuestion: 'What category is BelliniGianMarco earning in?', sensitiveName: 'GianMarco Bellini' },
-    { leakedQuestion: 'What category is Gian\u200BMarco earning in?', sensitiveName: 'GianMarco' },
-    { leakedQuestion: 'What category is Gian-Marco earning in?', sensitiveName: 'GianMarco' },
     { leakedQuestion: 'What is KimVan earning?', sensitiveName: 'Kim Van Lee' },
     { leakedQuestion: 'What is VanLee earning?', sensitiveName: 'Kim Van Lee' },
     { leakedQuestion: 'What is KimLee earning?', sensitiveName: 'Kim Van Lee' },
@@ -325,6 +322,8 @@ test('a declared roster name or name token cannot reach the provider', async () 
     { leakedQuestion: 'What is MarkA earning?', sensitiveName: 'Mark A Chen' },
     { leakedQuestion: 'What is AChen earning?', sensitiveName: 'Mark A Chen' },
     { leakedQuestion: 'What is ChenAMark earning?', sensitiveName: 'Mark A Chen' },
+    { leakedQuestion: 'Did An T Vu earn money?', sensitiveName: 'An Vu' },
+    { leakedQuestion: 'Did Rose X Garden earn money?', sensitiveName: 'Rose Garden' },
   ]) {
     const fixture = dependencies({
       async loadQuestionEvidence() {
@@ -374,6 +373,91 @@ test('ordinary words containing a declared name substring still reach the provid
       ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'price', 'commit'],
     )
   }
+})
+
+test('ordinary category and question words may match a partial or single-token roster name', async () => {
+  const fixture = dependencies({
+    async loadQuestionEvidence() {
+      fixture.calls.push('evidence')
+      const value = envelope()
+      return {
+        ...value,
+        providerInput: {
+          ...value.providerInput,
+          question: 'Has [student-001] been paid yesterday and today for technology?',
+          categoryCatalog: [{
+            ...value.providerInput.categoryCatalog[0],
+            label: 'Technology',
+          }],
+        },
+        sensitiveValues: [
+          ...value.sensitiveValues.filter(entry => entry.kind !== 'student-name'),
+          { kind: 'student-name', value: 'Taylor Technology' },
+          { kind: 'student-name', value: 'Paid' },
+        ],
+      }
+    },
+  })
+  const service = createInsightQuestionService(fixture.deps)
+  await service({ auth: { uid: 'teacher-a' }, data: request })
+  assert.deepEqual(
+    fixture.calls,
+    ['tenant', 'evidence', 'quote', 'reserve', 'provider', 'price', 'commit'],
+  )
+})
+
+test('single-token roster names retain separator-obscured defense in the service layer', async () => {
+  const fixture = dependencies({
+    async loadQuestionEvidence() {
+      fixture.calls.push('evidence')
+      const value = envelope()
+      return {
+        ...value,
+        providerInput: {
+          ...value.providerInput,
+          question: 'What is Gian-Marco earning?',
+        },
+        sensitiveValues: [
+          ...value.sensitiveValues.filter(entry => entry.kind !== 'student-name'),
+          { kind: 'student-name', value: 'GianMarco' },
+        ],
+      }
+    },
+  })
+  const service = createInsightQuestionService(fixture.deps)
+  await assert.rejects(
+    service({ auth: { uid: 'teacher-a' }, data: request }),
+    error => error instanceof InsightQuestionServiceError &&
+      error.category === 'evidence-not-deidentified',
+  )
+  assert.deepEqual(fixture.calls, ['tenant', 'evidence'])
+})
+
+test('subject hints cannot carry a complete single-token roster identity past the service boundary', async () => {
+  const fixture = dependencies({
+    async loadQuestionEvidence() {
+      fixture.calls.push('evidence')
+      const value = envelope()
+      return {
+        ...value,
+        providerInput: {
+          ...value.providerInput,
+          question: 'Which category does GianMarco use most?',
+          subjectHints: [{ text: 'GianMarco', studentAlias: 'student-001' }],
+        },
+        sensitiveValues: value.sensitiveValues.map(entry => entry.kind === 'student-name'
+          ? { ...entry, value: 'GianMarco' }
+          : entry),
+      }
+    },
+  })
+  const service = createInsightQuestionService(fixture.deps)
+  await assert.rejects(
+    service({ auth: { uid: 'teacher-a' }, data: request }),
+    error => error instanceof InsightQuestionServiceError &&
+      error.category === 'evidence-not-deidentified',
+  )
+  assert.deepEqual(fixture.calls, ['tenant', 'evidence'])
 })
 
 test('declared tenant identities cannot be smuggled through category catalog labels', async () => {

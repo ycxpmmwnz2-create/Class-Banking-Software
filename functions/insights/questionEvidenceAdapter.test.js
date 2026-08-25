@@ -154,8 +154,264 @@ test('safe student aliases do not collide with an unrelated roster name token', 
   })
 
   assert.deepEqual(envelope.providerInput.subjectAliases, ['student-001'])
+  assert.deepEqual(envelope.providerInput.subjectHints, [])
   assert.match(envelope.providerInput.question, /\[student-001\]/)
   assert.doesNotMatch(JSON.stringify(envelope.providerInput), /Maribel|Rivera|Test Student/)
+})
+
+test('category words that overlap an unrelated roster name stay available to the question planner', async () => {
+  const data = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Avery Parker',
+    },
+    'classrooms/class-a/students/2': {
+      ...fixture()['classrooms/class-a/students/2'],
+      name: 'Taylor Technology',
+    },
+    'classrooms/class-a/transactions/101': {
+      ...fixture()['classrooms/class-a/transactions/101'],
+      studentName: 'Avery Parker',
+      category: 'Technology supplies',
+      reason: 'Technology supplies',
+    },
+  })
+  const envelope = await loader(data)({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'Has Avery been paid yesterday and today for technology?',
+  })
+
+  assert.deepEqual(envelope.providerInput.subjectAliases, ['student-001', 'student-002'])
+  assert.deepEqual(envelope.providerInput.subjectHints, [{
+    text: 'technology',
+    studentAlias: 'student-002',
+  }])
+  assert.equal(
+    envelope.providerInput.question,
+    'Has [student-001] been paid yesterday and today for technology?',
+  )
+  assert.deepEqual(envelope.providerInput.categoryCatalog, [{
+    alias: 'category-001',
+    label: 'Technology supplies',
+    transactionTypes: ['Add'],
+  }])
+  assert.doesNotMatch(JSON.stringify(envelope.providerInput), /Avery|Parker|Taylor/)
+
+  for (const question of [
+    'How much technology did the class buy?',
+    'Which technology charges are pending?',
+    'Show technology totals by week.',
+  ]) {
+    const categoryResult = await loader(data)({
+      teacherUid: 'teacher-a',
+      classroomId: 'class-a',
+      periodDays: 30,
+      timeZone: 'America/Denver',
+      question,
+    })
+    assert.equal(categoryResult.providerInput.question, question)
+    assert.deepEqual(categoryResult.providerInput.subjectAliases, ['student-002'])
+    assert.deepEqual(categoryResult.providerInput.subjectHints, [{
+      text: 'technology',
+      studentAlias: 'student-002',
+    }])
+  }
+})
+
+test('collision handling applies across category phrases, shared name tokens, and mixed name styles', async () => {
+  const mixedNames = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Rose Garden',
+    },
+    'classrooms/class-a/students/2': {
+      ...fixture()['classrooms/class-a/students/2'],
+      name: 'Sofia Reyes',
+    },
+  })
+  for (const question of [
+    'Compare Sofia Reyes and Rose by current balance.',
+    'Compare Rose and Sofia Reyes by current balance.',
+  ]) {
+    const result = await loader(mixedNames)({
+      teacherUid: 'teacher-a',
+      classroomId: 'class-a',
+      periodDays: 30,
+      timeZone: 'America/Denver',
+      question,
+    })
+    assert.deepEqual(result.providerInput.subjectAliases, ['student-001', 'student-002'])
+    assert.doesNotMatch(JSON.stringify(result.providerInput), /Rose|Sofia|Reyes/)
+  }
+
+  const shortName = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'An Vu',
+    },
+    'classrooms/class-a/transactions/101': {
+      ...fixture()['classrooms/class-a/transactions/101'],
+      studentName: 'An Vu',
+    },
+  })
+  const reconstructed = await loader(shortName)({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'Did An T Vu earn money?',
+  })
+  assert.deepEqual(reconstructed.providerInput.subjectAliases, ['student-001'])
+  assert.doesNotMatch(JSON.stringify(reconstructed.providerInput), /\bAn\b|\bVu\b/)
+
+  const sharedToken = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Grace Liu',
+    },
+    'classrooms/class-a/students/2': {
+      ...fixture()['classrooms/class-a/students/2'],
+      name: 'Mia Grace',
+    },
+  })
+  const ordinaryQuestion = 'Did anyone receive a grace period bonus this week?'
+  const ordinary = await loader(sharedToken)({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: ordinaryQuestion,
+  })
+  assert.equal(ordinary.providerInput.question, ordinaryQuestion)
+  assert.deepEqual(ordinary.providerInput.subjectAliases, [])
+  for (const question of [
+    'Has grace been given to late payments?',
+    'Did grace apply to anyone this week?',
+  ]) {
+    const result = await loader(sharedToken)({
+      teacherUid: 'teacher-a',
+      classroomId: 'class-a',
+      periodDays: 30,
+      timeZone: 'America/Denver',
+      question,
+    })
+    assert.equal(result.providerInput.question, question)
+    assert.deepEqual(result.providerInput.subjectAliases, [])
+  }
+})
+
+test('a category catalog token is exempt only when its provider-visible phrase is in the question', async () => {
+  const data = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Grace Liu',
+    },
+    'classrooms/class-a/transactions/101': {
+      ...fixture()['classrooms/class-a/transactions/101'],
+      studentName: 'Grace Liu',
+      category: 'Grace period fee',
+      reason: 'Grace period fee',
+    },
+  })
+  const studentQuestion = await loader(data)({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'How much has Grace earned this month?',
+  })
+  assert.deepEqual(studentQuestion.providerInput.subjectAliases, ['student-001'])
+  assert.deepEqual(studentQuestion.providerInput.subjectHints, [])
+  assert.match(studentQuestion.providerInput.question, /\[student-001\]/)
+
+  const contextualStudentQuestion = await loader(data)({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'Which category does Grace use most?',
+  })
+  assert.equal(contextualStudentQuestion.providerInput.question, 'Which category does Grace use most?')
+  assert.deepEqual(contextualStudentQuestion.providerInput.subjectAliases, ['student-001'])
+  assert.deepEqual(contextualStudentQuestion.providerInput.subjectHints, [{
+    text: 'grace',
+    studentAlias: 'student-001',
+  }])
+
+  const neutralizedCategory = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Grace Liu',
+    },
+    'classrooms/class-a/transactions/101': {
+      ...fixture()['classrooms/class-a/transactions/101'],
+      studentName: 'Grace Liu',
+      category: 'Grace Liu award',
+      reason: 'Grace Liu award',
+    },
+  })
+  const neutralizedResult = await loader(neutralizedCategory)({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'How much has Grace earned this month?',
+  })
+  assert.deepEqual(neutralizedResult.providerInput.subjectAliases, ['student-001'])
+  assert.match(neutralizedResult.providerInput.question, /\[student-001\]/)
+  assert.doesNotMatch(JSON.stringify(neutralizedResult.providerInput.categoryCatalog), /Grace|Liu/)
+})
+
+test('single-token identities and reconstructed multi-part identities never become subject hints', async () => {
+  const singleToken = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Grace',
+    },
+    'classrooms/class-a/transactions/101': {
+      ...fixture()['classrooms/class-a/transactions/101'],
+      studentName: 'Grace',
+      category: 'Grace period fee',
+      reason: 'Grace period fee',
+    },
+  })
+  const singleResult = await loader(singleToken)({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'How much has Grace earned?',
+  })
+  assert.deepEqual(singleResult.providerInput.subjectAliases, ['student-001'])
+  assert.deepEqual(singleResult.providerInput.subjectHints, [])
+  assert.match(singleResult.providerInput.question, /\[student-001\]/)
+  assert.doesNotMatch(JSON.stringify(singleResult.providerInput.categoryCatalog), /Grace/)
+
+  const reconstructed = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Rose Garden',
+    },
+    'classrooms/class-a/transactions/101': {
+      ...fixture()['classrooms/class-a/transactions/101'],
+      studentName: 'Rose Garden',
+      category: 'Rose',
+      reason: 'Garden',
+    },
+  })
+  const reconstructedResult = await loader(reconstructed)({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'How much was spent on rose and on garden?',
+  })
+  assert.deepEqual(reconstructedResult.providerInput.subjectAliases, ['student-001'])
+  assert.deepEqual(reconstructedResult.providerInput.subjectHints, [])
+  assert.doesNotMatch(reconstructedResult.providerInput.question, /rose|garden/i)
 })
 
 test('classifies a V2 blank-category Rent reason only in server answer evidence', async () => {
@@ -362,10 +618,10 @@ test('unsafe category labels become deterministic neutral aliases without blocki
   })
   const providerText = JSON.stringify(envelope.providerInput)
   assert.match(providerText, /Class job/)
-  assert.match(providerText, /◆◆/)
+  assert.match(providerText, /Restricted label 001/)
   assert.match(providerText, /Restricted label 003/)
   assert.match(providerText, /Restricted label 004/)
-  assert.doesNotMatch(providerText, /Grace period fee|2026 08 21|teacher@example\.com/)
+  assert.doesNotMatch(providerText, /Grace period fee|2026 08 21|teacher@example\.com|Private category 001/)
   assert.deepEqual(
     envelope.answerEvidence.categories.map(category => category.label),
     envelope.providerInput.categoryCatalog.map(category => category.label),
@@ -491,7 +747,6 @@ test('separator-obscured roster names fail before provider input can be construc
     'What category is BelliniGianMarco earning the most money in?',
     'What category is Gian\u200BMarco earning the most money in?',
     'What category is Gian-Marco earning the most money in?',
-    'What category is ＧｉａｎＭａｒｃｏ earning the most money in?',
   ]) {
     await assert.rejects(
       loader()({
@@ -505,6 +760,16 @@ test('separator-obscured roster names fail before provider input can be construc
         error.category === 'evidence-not-deidentified',
     )
   }
+
+  const normalizedCompatibilityName = await loader()({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'What category is ＧｉａｎＭａｒｃｏ earning the most money in?',
+  })
+  assert.match(normalizedCompatibilityName.providerInput.question, /\[student-001\]/)
+  assert.doesNotMatch(JSON.stringify(normalizedCompatibilityName.providerInput), /GianMarco|ＧｉａｎＭａｒｃｏ/)
 
   for (const question of [
     'What category is Gian[student-001]MarcoBellini earning the most money in?',
@@ -667,8 +932,8 @@ test('reads only the active reciprocal tenant and bounds the period server-side'
   ])
 })
 
-test('ambiguous names and likely contact details fail before provider input exists', async () => {
-  const ambiguous = fixture({
+test('shared partial student subjects request a full name while duplicate full names and contact details fail', async () => {
+  const sharedPartial = fixture({
     'classrooms/class-a/students/3': {
       id: 3,
       name: 'GianMarco Smith',
@@ -678,12 +943,53 @@ test('ambiguous names and likely contact details fail before provider input exis
     },
   })
   await assert.rejects(
-    loader(ambiguous)({
+    loader(sharedPartial)({
       teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 30,
       timeZone: 'America/Denver',
       question: 'What is GianMarco earning?',
+    }),
+    error => error instanceof InsightQuestionEvidenceError && error.category === 'question-ambiguous',
+  )
+
+  const sharedSubject = fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Grace Liu',
+    },
+    'classrooms/class-a/students/2': {
+      ...fixture()['classrooms/class-a/students/2'],
+      name: 'Mia Grace',
+    },
+  })
+  await assert.rejects(
+    loader(sharedSubject)({
+      teacherUid: 'teacher-a',
+      classroomId: 'class-a',
+      periodDays: 30,
+      timeZone: 'America/Denver',
+      question: 'How much has Grace earned?',
+    }),
+    error => error instanceof InsightQuestionEvidenceError && error.category === 'question-ambiguous',
+  )
+
+  const duplicateFullName = fixture({
+    'classrooms/class-a/students/3': {
+      id: 3,
+      name: 'GianMarco Bellini',
+      balance: 5,
+      frozen: false,
+      transactions: [],
+    },
+  })
+  await assert.rejects(
+    loader(duplicateFullName)({
+      teacherUid: 'teacher-a',
+      classroomId: 'class-a',
+      periodDays: 30,
+      timeZone: 'America/Denver',
+      question: 'What is GianMarco Bellini earning?',
     }),
     error => error instanceof InsightQuestionEvidenceError && error.category === 'question-ambiguous',
   )

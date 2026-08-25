@@ -108,7 +108,7 @@ assistant box. It can answer broadly within Morgan Bank and classroom-economy
 teaching, but Gemini is not allowed to calculate or narrate a factual claim
 about the current classroom. The browser sends exactly `requestId`, `kind`,
 `periodDays`, `timeZone`, and the teacher's question. Functions resolves the
-active teacher and classroom, reads that tenant's bounded records, removes
+active teacher and classroom, reads that tenant's bounded records, removes full
 student identities from provider input, and sends only the sanitized question,
 up to eight opaque aliases for students named in the question, and a bounded
 category-label catalog.
@@ -161,9 +161,28 @@ money, how many requests are pending, which current students did not make an
 exact rent payment today, current or average balances, class size, frozen-account
 counts, how to establish a saving routine, or ways to introduce class rent.
 A question is refused only when neither the bounded records nor the Morgan Bank
-assistant context can answer it safely. Raw transaction
-reasons, student names or IDs, tenant identifiers, balances, transaction rows,
-counts, and amounts never enter the provider request. The reviewed mixed-release
+assistant context can answer it safely. Raw transaction reasons, full student
+names, student IDs, tenant identifiers, balances, transaction rows, counts, and
+amounts never enter the provider request. An ordinary question or category label
+may contain a word that also appears as one part of a student's name; that word is
+treated according to its question/category role and is not disclosed to Gemini as
+a roster identity. This accepted ambiguity avoids rejecting normal classroom
+language merely because it collides with a partial roster token. Morgan Bank uses
+the provider-visible category vocabulary to recognize those collisions. A unique
+single-word collision is sent only as a bounded possible-student hint tied to an
+opaque alias; Gemini interprets whether the sentence uses it as a student,
+category, or ordinary word. This explicitly associates one partial roster word
+with a pseudonymous student alias, but never discloses the full identity. The
+server still restricts the plan to supplied aliases and calculates every fact
+from private evidence. A factual claim about a hinted student therefore depends
+on Gemini's role interpretation; this is the bounded relevance tradeoff that
+replaces phrase-specific server rules. When the same word is
+actually shared by multiple students and is clearly used as the subject, the
+teacher is asked for a full name instead of receiving a misleading classwide
+answer. That shared-name decision uses a bounded, best-effort English
+classroom-banking grammar; the full-name, reconstructed-name, contact-detail,
+tenant, and provider-input privacy gates remain deterministic and independent of
+it. The reviewed mixed-release
 guard for this contract is `gemini-3.6-flash-morgan-bank-assistant-v3`.
 
 ## Verification for the first item
