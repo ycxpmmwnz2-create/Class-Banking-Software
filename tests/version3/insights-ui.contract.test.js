@@ -88,7 +88,7 @@ test("source contract: Q&A is explicit, paragraph-shaped, period-bound, and neve
   );
   assert.match(indexHtml, /<p class="insights-answer-copy">\$\{escapeHtml\(providerQuestionResult\.answer\)\}<\/p>/);
   assert.match(indexHtml, /\.insights-answer-copy\s*\{[\s\S]*?white-space: pre-line;/);
-  assert.match(indexHtml, /<details class="insights-answer-details">[\s\S]*?<summary>How this was calculated<\/summary>/);
+  assert.match(indexHtml, /<details class="insights-answer-details">[\s\S]*?<summary>See details<\/summary>/);
   assert.doesNotMatch(indexHtml, /class="insight-observation"/);
   assert.match(indexHtml, /Who did not pay rent today, or how can I encourage saving\?/);
   assert.match(indexHtml, /Morgan Bank features, or classroom-economy ideas/);

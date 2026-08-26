@@ -159,14 +159,14 @@ function renderStudentsWithoutTransactions({ plan, context, students, missing, a
     const matchLabel = plan.purpose === 'rent' ? 'rent payment' : 'transaction'
     if (!students.length) {
       return {
-        text: `No current students were available to check. This checks ${filterContext}.`,
-        evidence: [`Students checked: 0. Checked ${filterContext}.`],
+        text: 'There are no current students to check.',
+        evidence: [`Students checked: 0. Checked: ${filterContext}.`],
       }
     }
     if (!missing.length) {
       return {
-        text: `No. All ${students.length} current ${students.length === 1 ? 'student has' : 'students have'} a matching ${matchLabel}. This checks ${filterContext}.`,
-        evidence: [`Students checked: ${students.length}; students without a match: 0. Checked ${filterContext}.`],
+        text: `No. All ${students.length} current ${students.length === 1 ? 'student has' : 'students have'} a matching ${matchLabel}.`,
+        evidence: [`Students checked: ${students.length}; students without a match: 0. Checked: ${filterContext}.`],
       }
     }
     const selected = missing.slice(0, plan.limit)
@@ -174,10 +174,12 @@ function renderStudentsWithoutTransactions({ plan, context, students, missing, a
     const labels = joinLabels(selected.map(student => displayLabel(student.name, labelLength)))
     const omittedText = omitted ? ` and ${omitted} ${omitted === 1 ? 'other' : 'others'}` : ''
     return {
-      text: `Yes. ${missing.length} of ${students.length} current students do not have a matching ${matchLabel}: ${labels}${omittedText}. This checks ${filterContext}.`,
-      evidence: selected.map(student => (
-        `${displayLabel(student.name, labelLength)}: no matching ${matchLabel}. Checked ${filterContext}.`
-      )),
+      text: `Yes. ${missing.length} of ${students.length} current students do not have a matching ${matchLabel}: ${labels}${omittedText}.`,
+      evidence: evidenceWithFilter(
+        selected.map(student => `${displayLabel(student.name, labelLength)}: no matching ${matchLabel}.`),
+        filterContext,
+        'Checked',
+      ),
     }
   }, answerSuffix)
 }
@@ -308,12 +310,12 @@ function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix
       const filterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
       if (plan.dataset === 'students') {
         return {
-          text: `No matching students were found in the current classroom roster. This uses ${filterContext}.`,
+          text: 'I could not find any matching students in the current classroom roster.',
           evidence: [`Matching students: 0. Included records: ${filterContext}.`],
         }
       }
       return {
-        text: `No matching records were found for ${describeDateScope(plan.filters.dateScope, context)}. This uses ${filterContext}.`,
+        text: `I could not find any matching records for ${friendlyDateScope(plan.filters.dateScope, context)}.`,
         evidence: [`Matching records: 0. Included records: ${filterContext}.`],
       }
     }, answerSuffix)
@@ -331,8 +333,21 @@ function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix
     return fitResponseWithinPublicBounds(labelLength => {
       const filterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
       return {
-        text: `The ${noun} is ${formatMetric(plan, row.value, row.count)}${periodSuffix}. This uses ${filterContext}.`,
+        text: `The ${noun} is ${formatMetric(plan, row.value, row.count)}${periodSuffix}.`,
         evidence: [`${evidenceLine(row, plan, labelLength)} Included records: ${filterContext}.`],
+      }
+    }, answerSuffix)
+  }
+
+  if (scopeBoundCalendarDays && plan.metric === 'count') {
+    return fitResponseWithinPublicBounds(labelLength => {
+      const filterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
+      return {
+        text: friendlyCalendarDaySummary({ selected, plan, context, subjectNames, labelLength }),
+        evidence: evidenceWithFilter(selected.map(row => {
+          const relativeDay = friendlyCalendarDayLabel(row.key, context)
+          return `${capitalize(relativeDay)} (${displayLabel(row.label, labelLength)}): ${formatMetric(plan, row.value, row.count)}.`
+        }), filterContext),
       }
     }, answerSuffix)
   }
@@ -350,22 +365,129 @@ function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix
       const row = selected[0]
       summary = `${displayLabel(row.label, labelLength)} has the ${direction ? `${direction} ` : ''}${noun}: ${formatMetric(plan, row.value, row.count)}.`
     } else {
-      summary = `${direction ? capitalize(direction) : 'Chronological'} ${noun} results for ${describeDateScope(plan.filters.dateScope, context)}: ${selected.map(row => `${displayLabel(row.label, labelLength)} (${formatMetric(plan, row.value, row.count)})`).join(', ')}.`
+      const heading = direction
+        ? `${capitalize(direction)} ${noun}`
+        : friendlyGroupHeading(plan.groupBy)
+      summary = `${heading}: ${selected.map(row => `${displayLabel(row.label, labelLength)} (${formatMetric(plan, row.value, row.count)})`).join(', ')}.`
       if (omittedTies) summary += ` And ${omittedTies} more are tied at the cutoff.`
     }
     if (subjectNames.length) {
       const subjectName = summarizeLabels(subjectNames, { labelLength })
-      const subjectSummary = plan.groupBy === 'calendar-day'
-        ? summary
-        : `${summary.charAt(0).toLocaleLowerCase('en-US')}${summary.slice(1)}`
+      const subjectSummary = `${summary.charAt(0).toLocaleLowerCase('en-US')}${summary.slice(1)}`
       summary = `For ${subjectName}, ${subjectSummary}`
     }
-    summary += ` This uses ${rankedFilterContext}.`
-    const evidence = selected.map(row => (
-      `${evidenceLine(row, plan, labelLength)} Included records: ${rankedFilterContext}.`
-    ))
+    const evidence = evidenceWithFilter(
+      selected.map(row => evidenceLine(row, plan, labelLength)),
+      rankedFilterContext,
+    )
     return { text: summary, evidence }
   }, answerSuffix)
+}
+
+function friendlyCalendarDaySummary({ selected, plan, context, subjectNames, labelLength }) {
+  const rowsByKey = new Map(selected.map(row => [row.key, row]))
+  const today = rowsByKey.get(context.asOfDate)
+  const yesterday = rowsByKey.get(shiftDateKey(context.asOfDate, -1))
+  const subject = subjectNames.length
+    ? summarizeLabels(subjectNames, { labelLength })
+    : null
+  const countNoun = friendlyCalendarCountNoun(plan, context, labelLength)
+
+  if (plan.filters.dateScope === 'today-and-yesterday' && today && yesterday) {
+    if (yesterday.value === 0 && today.value === 0) {
+      return `${friendlyCalendarClause(subject, 0, countNoun)} yesterday or today.`
+    }
+    if (yesterday.value === 0) {
+      return `${friendlyCalendarClause(subject, today.value, countNoun)} today and none yesterday.`
+    }
+    if (today.value === 0) {
+      return `${friendlyCalendarClause(subject, yesterday.value, countNoun)} yesterday and none today.`
+    }
+    if (subject) {
+      return `${subject} had ${friendlyCount(yesterday.value, countNoun)} yesterday and ${friendlyCount(today.value, countNoun)} today.`
+    }
+    return `${friendlyCalendarClause(null, yesterday.value, countNoun)} yesterday and ${friendlyCalendarClause(null, today.value, countNoun, true)} today.`
+  }
+
+  const row = selected[0]
+  const day = friendlyCalendarDayLabel(row.key, context)
+  return `${friendlyCalendarClause(subject, row.value, countNoun)} ${day}.`
+}
+
+function friendlyCalendarCountNoun(plan, context, labelLength) {
+  const category = plan.filters.categoryAlias === null
+    ? null
+    : context.categoriesByAlias.get(plan.filters.categoryAlias)?.label
+  const categoryLabel = category ? `${displayLabel(category, labelLength)} ` : ''
+  if (plan.filters.transactionType === 'Add') {
+    if (plan.filters.status === 'Approved') {
+      return { singular: `approved ${categoryLabel}credit`, plural: `approved ${categoryLabel}credits` }
+    }
+    if (plan.filters.status === 'Pending') {
+      return { singular: `pending ${categoryLabel}Add Money request`, plural: `pending ${categoryLabel}Add Money requests` }
+    }
+    if (plan.filters.status === 'Denied') {
+      return { singular: `denied ${categoryLabel}Add Money request`, plural: `denied ${categoryLabel}Add Money requests` }
+    }
+    return {
+      singular: `${categoryLabel}Add Money transaction (any status)`,
+      plural: `${categoryLabel}Add Money transactions (any status)`,
+    }
+  }
+  const qualifier = plan.filters.status === 'any'
+    ? null
+    : `${plan.filters.status.toLocaleLowerCase('en-US')} `
+  if (plan.filters.transactionType === 'Subtract') {
+    return qualifier === null
+      ? {
+          singular: `${categoryLabel}Subtract Money transaction (any status)`,
+          plural: `${categoryLabel}Subtract Money transactions (any status)`,
+        }
+      : {
+          singular: `${qualifier}${categoryLabel}payment`,
+          plural: `${qualifier}${categoryLabel}payments`,
+        }
+  }
+  if (qualifier === null) {
+    return {
+      singular: `${categoryLabel}transaction (any status)`,
+      plural: `${categoryLabel}transactions (any status)`,
+    }
+  }
+  return {
+    singular: `${qualifier}${categoryLabel}transaction`,
+    plural: `${qualifier}${categoryLabel}transactions`,
+  }
+}
+
+function friendlyCount(value, noun) {
+  if (value === 0) return `no ${noun.plural}`
+  return `${value} ${value === 1 ? noun.singular : noun.plural}`
+}
+
+function friendlyCalendarClause(subject, value, noun, lowercase = false) {
+  if (subject) return `${subject} had ${friendlyCount(value, noun)}`
+  const there = lowercase ? 'there' : 'There'
+  return `${there} ${value === 1 ? 'was' : 'were'} ${friendlyCount(value, noun)}`
+}
+
+function friendlyCalendarDayLabel(key, context) {
+  if (key === context.asOfDate) return 'today'
+  if (key === shiftDateKey(context.asOfDate, -1)) return 'yesterday'
+  return key
+}
+
+function friendlyGroupHeading(groupBy) {
+  if (groupBy === 'time-of-day') return 'By time of day'
+  if (groupBy === 'calendar-day') return 'By day'
+  if (groupBy === 'day-of-week') return 'By day of the week'
+  if (groupBy === 'week') return 'By week'
+  return 'Results'
+}
+
+function evidenceWithFilter(lines, filterContext, verb = 'Records checked') {
+  if (lines.length < 8) return [...lines, `${verb}: ${filterContext}.`]
+  return lines.map((line, index) => index === 0 ? `${line} ${verb}: ${filterContext}.` : line)
 }
 
 function groupFor(transaction, groupBy, context) {
@@ -522,6 +644,14 @@ function describeDateScope(dateScope, context) {
   if (dateScope === 'today-and-yesterday') {
     return `today and yesterday (${yesterday} and ${context.asOfDate} in ${context.timeZone})`
   }
+  fail('answer-unavailable', 'The requested date scope is unsupported.')
+}
+
+function friendlyDateScope(dateScope, context) {
+  if (dateScope === 'period') return `the last ${context.periodDays} days`
+  if (dateScope === 'today') return 'today'
+  if (dateScope === 'yesterday') return 'yesterday'
+  if (dateScope === 'today-and-yesterday') return 'yesterday or today'
   fail('answer-unavailable', 'The requested date scope is unsupported.')
 }
 

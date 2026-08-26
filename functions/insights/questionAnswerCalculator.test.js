@@ -95,8 +95,8 @@ test('answers restroom visits by approved transaction count rather than dollars 
   assert.match(result.answer, /Genesis.*highest.*transaction count: 3 transactions/)
   assert.doesNotMatch(result.answer, /Sofia.*highest/)
   assert.match(result.evidence[0], /Genesis: 3 transactions/)
-  assert.match(result.answer, /approved spending \(Subtract\) transactions/)
-  assert.match(result.evidence[0], /approved spending \(Subtract\) transactions/)
+  assert.doesNotMatch(result.answer, /approved spending \(Subtract\) transactions/)
+  assert.match(result.evidence.join(' '), /approved spending \(Subtract\) transactions/)
 })
 
 test('compares submitted transactions across today and yesterday in the classroom time zone', () => {
@@ -128,12 +128,12 @@ test('compares submitted transactions across today and yesterday in the classroo
     evidence: comparisonEvidence,
   })
 
-  assert.match(result.answer, /For Genesis, Chronological/)
-  assert.match(result.answer, /Aug 19, 2026 \(0 transactions\)/)
-  assert.match(result.answer, /Aug 20, 2026 \(1 transaction\)/)
-  assert.doesNotMatch(result.answer, /Aug 18/)
-  assert.match(result.answer, /all approval statuses/)
-  assert.match(result.answer, /today and yesterday/)
+  assert.equal(result.answer, 'Genesis had 1 Technology Add Money transaction (any status) today and none yesterday.')
+  assert.match(result.evidence.join(' '), /Yesterday \(Aug 19, 2026\): 0 transactions/)
+  assert.match(result.evidence.join(' '), /Today \(Aug 20, 2026\): 1 transaction/)
+  assert.doesNotMatch(result.answer, /America\/Denver|all approval statuses|2026/)
+  assert.match(result.evidence.join(' '), /all approval statuses/)
+  assert.match(result.evidence.join(' '), /today and yesterday/)
 
   for (const order of ['chronological', 'lowest']) {
     const limited = calculateQuestionAnswer({
@@ -154,9 +154,7 @@ test('compares submitted transactions across today and yesterday in the classroo
       }),
       evidence: comparisonEvidence,
     })
-    assert.match(limited.answer, /Aug 19, 2026 \(0 transactions\)/)
-    assert.match(limited.answer, /Aug 20, 2026 \(1 transaction\)/)
-    assert.doesNotMatch(limited.answer, /For Genesis, aug/)
+    assert.equal(limited.answer, 'Genesis had 1 Technology Add Money transaction (any status) today and none yesterday.')
   }
 
   const todayOnly = calculateQuestionAnswer({
@@ -176,8 +174,136 @@ test('compares submitted transactions across today and yesterday in the classroo
     }),
     evidence: comparisonEvidence,
   })
-  assert.match(todayOnly.answer, /For Genesis, Aug 20, 2026/)
-  assert.doesNotMatch(todayOnly.answer, /For Genesis, aug/)
+  assert.equal(todayOnly.answer, 'Genesis had 1 Technology Add Money transaction (any status) today.')
+})
+
+test('answers approved today-and-yesterday payments in direct teacher-friendly language', () => {
+  const technology = { alias: 'category-004', label: 'Technology' }
+  const transactions = [
+    { id: 101, studentId: 1, date: '2026-08-19T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+    { id: 102, studentId: 1, date: '2026-08-19T17:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+    { id: 103, studentId: 1, date: '2026-08-20T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+    { id: 104, studentId: 1, date: '2026-08-20T17:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+  ]
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: {
+        ...filters,
+        subjectAliases: ['student-001'],
+        categoryAlias: technology.alias,
+        transactionType: 'Add',
+        status: 'Approved',
+        dateScope: 'today-and-yesterday',
+      },
+      groupBy: 'calendar-day',
+      order: 'chronological',
+      limit: 2,
+    }),
+    evidence: {
+      ...evidence,
+      categories: [...evidence.categories, technology],
+      transactions,
+    },
+  })
+
+  assert.equal(
+    result.answer,
+    'Genesis had 2 approved Technology credits yesterday and 2 approved Technology credits today.',
+  )
+  assert.doesNotMatch(result.answer, /Chronological|Included records|America\/Denver|2026/)
+  assert.match(result.evidence.join(' '), /approved earning \(Add\) transactions/)
+})
+
+test('keeps calendar comparisons natural for yesterday-only, neither-day, and filtered class scopes', () => {
+  const technology = { alias: 'category-004', label: 'Technology' }
+  const comparisonPlan = plan({
+    metric: 'count',
+    filters: {
+      ...filters,
+      subjectAliases: ['student-001'],
+      categoryAlias: technology.alias,
+      transactionType: 'Add',
+      status: 'any',
+      dateScope: 'today-and-yesterday',
+    },
+    groupBy: 'calendar-day',
+    order: 'chronological',
+    limit: 2,
+  })
+  const answerEvidence = {
+    ...evidence,
+    categories: [...evidence.categories, technology],
+    transactions: [],
+  }
+  const neither = calculateQuestionAnswer({
+    kind: 'query',
+    plan: comparisonPlan,
+    evidence: answerEvidence,
+  })
+  const yesterdayOnly = calculateQuestionAnswer({
+    kind: 'query',
+    plan: comparisonPlan,
+    evidence: {
+      ...answerEvidence,
+      transactions: [{ id: 101, studentId: 1, date: '2026-08-19T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Pending' }],
+    },
+  })
+  const frozenScope = calculateQuestionAnswer({
+    kind: 'query',
+    plan: {
+      ...comparisonPlan,
+      filters: {
+        ...comparisonPlan.filters,
+        subjectAliases: [],
+        studentState: 'frozen',
+      },
+    },
+    evidence: answerEvidence,
+  })
+  const frozenToday = calculateQuestionAnswer({
+    kind: 'query',
+    plan: {
+      ...comparisonPlan,
+      filters: {
+        ...comparisonPlan.filters,
+        subjectAliases: [],
+        studentState: 'frozen',
+      },
+    },
+    evidence: {
+      ...answerEvidence,
+      transactions: [{ id: 102, studentId: 3, date: '2026-08-20T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' }],
+    },
+  })
+  const noSubjectBothDays = calculateQuestionAnswer({
+    kind: 'query',
+    plan: {
+      ...comparisonPlan,
+      filters: {
+        ...comparisonPlan.filters,
+        subjectAliases: [],
+        status: 'Approved',
+      },
+    },
+    evidence: {
+      ...answerEvidence,
+      transactions: [
+        { id: 103, studentId: 1, date: '2026-08-19T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+        { id: 104, studentId: 1, date: '2026-08-20T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+        { id: 105, studentId: 2, date: '2026-08-20T17:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+      ],
+    },
+  })
+
+  assert.equal(neither.answer, 'Genesis had no Technology Add Money transactions (any status) yesterday or today.')
+  assert.equal(yesterdayOnly.answer, 'Genesis had 1 Technology Add Money transaction (any status) yesterday and none today.')
+  assert.equal(frozenScope.answer, 'There were no Technology Add Money transactions (any status) yesterday or today.')
+  assert.equal(frozenToday.answer, 'There was 1 Technology Add Money transaction (any status) today and none yesterday.')
+  assert.equal(noSubjectBothDays.answer, 'There was 1 approved Technology credit yesterday and there were 2 approved Technology credits today.')
+  assert.doesNotMatch(frozenScope.answer, /The class/)
+  assert.match(frozenScope.evidence.join(' '), /current frozen students/)
 })
 
 test('lists every current student balance alphabetically in one bounded answer', () => {
@@ -289,13 +415,13 @@ test('lists current students without an approved exact rent payment today', () =
   assert.match(result.answer, /^Yes\. 3 of 4 current students/)
   assert.match(result.answer, /Ava.*Mateo.*Sofia/)
   assert.doesNotMatch(result.answer, /Genesis.*no matching/)
-  for (const text of [result.answer, ...result.evidence]) {
-    assert.match(text, /approved spending \(Subtract\) transactions/)
-    assert.match(text, /rent payments/)
-    assert.match(text, /exactly \$10\.00/)
-    assert.match(text, /today \(2026-08-20 in America\/Denver\)/)
-    assert.match(text, /all current students/)
-  }
+  assert.doesNotMatch(result.answer, /approved spending \(Subtract\) transactions|America\/Denver/)
+  const details = result.evidence.join(' ')
+  assert.match(details, /approved spending \(Subtract\) transactions/)
+  assert.match(details, /rent payments/)
+  assert.match(details, /exactly \$10\.00/)
+  assert.match(details, /today \(2026-08-20 in America\/Denver\)/)
+  assert.match(details, /all current students/)
 
   const allPaid = calculateQuestionAnswer({
     kind: 'query',
@@ -354,7 +480,8 @@ test('lists current students without an approved exact rent payment today', () =
     },
   })
   assert.match(configuredAmount.answer, /^Yes\. 3 of 4 current students/)
-  assert.match(configuredAmount.answer, /configured rent amount of \$10\.00/)
+  assert.doesNotMatch(configuredAmount.answer, /configured rent amount of \$10\.00/)
+  assert.match(configuredAmount.evidence.join(' '), /configured rent amount of \$10\.00/)
   assert.doesNotMatch(configuredAmount.answer, /Genesis.*no matching/)
 })
 
@@ -431,7 +558,7 @@ test('combines calculated classroom facts with clearly labeled general Morgan Ba
   assert.match(result.answer, /^Genesis has the highest Bathroom break transaction count: 3 transactions\./)
   assert.match(result.answer, /General Morgan Bank guidance: Review the result privately/)
   assert.ok(result.answer.length <= 800)
-  assert.match(result.evidence[0], /Included records:/)
+  assert.match(result.evidence.join(' '), /Records checked:/)
 })
 
 test('answers broad roster questions about student count, frozen accounts, and average balance', () => {
@@ -446,7 +573,7 @@ test('answers broad roster questions about student count, frozen accounts, and a
     evidence,
   })
   assert.match(frozenCount.answer, /frozen student count is 1 student/)
-  assert.match(frozenCount.answer, /current frozen students/)
+  assert.doesNotMatch(frozenCount.answer, /current frozen students/)
   assert.match(frozenCount.evidence[0], /current frozen students/)
 
   const average = calculateQuestionAnswer({
@@ -492,7 +619,7 @@ test('supports time groups, net totals, averages, and chronological output serve
     }),
     evidence,
   })
-  assert.match(timeResult.answer, /Chronological transaction count results/)
+  assert.match(timeResult.answer, /^By time of day:/)
   assert.ok(timeResult.evidence.length >= 2)
 
   const average = calculateQuestionAnswer({
@@ -580,7 +707,7 @@ test('large ties stay explicit without exceeding the public evidence bound', () 
   assert.equal(result.evidence.length, 8)
 })
 
-test('discloses status, type, time, and current-student filters in the summary and evidence', () => {
+test('keeps status, type, time, and current-student filters in details instead of the main answer', () => {
   const result = calculateQuestionAnswer({
     kind: 'query',
     plan: plan({
@@ -596,11 +723,11 @@ test('discloses status, type, time, and current-student filters in the summary a
     }),
     evidence,
   })
-  for (const text of [result.answer, ...result.evidence]) {
-    assert.match(text, /pending spending \(Subtract\) transactions/)
-    assert.match(text, /afternoon \(12:00 PM–4:59 PM\)/)
-    assert.match(text, /current frozen students/)
-  }
+  assert.doesNotMatch(result.answer, /pending spending \(Subtract\) transactions|afternoon|current frozen students/)
+  const details = result.evidence.join(' ')
+  assert.match(details, /pending spending \(Subtract\) transactions/)
+  assert.match(details, /afternoon \(12:00 PM–4:59 PM\)/)
+  assert.match(details, /current frozen students/)
   assert.equal(result.answer.match(/last 30 days/g)?.length, 1)
 })
 
@@ -619,7 +746,7 @@ test('reports no matches instead of synthetic zero-dollar averages', () => {
     }),
     evidence,
   })
-  assert.match(noStudents.answer, /No matching students/)
+  assert.match(noStudents.answer, /could not find any matching students/)
   assert.doesNotMatch(noStudents.answer, /\$0\.00/)
 
   const noTransactions = calculateQuestionAnswer({
@@ -634,7 +761,7 @@ test('reports no matches instead of synthetic zero-dollar averages', () => {
     }),
     evidence,
   })
-  assert.match(noTransactions.answer, /No matching records/)
+  assert.match(noTransactions.answer, /could not find any matching records/)
   assert.doesNotMatch(noTransactions.answer, /\$0\.00/)
 })
 
@@ -779,13 +906,15 @@ test('dynamically fits ranked, aggregate, and empty results with every disclosur
   for (const result of [rankedResult, aggregateResult, emptyResult]) {
     assert.ok(result.answer.length <= 800)
     assert.ok(result.evidence.every(line => line.length <= 320))
-    assert.match(result.answer, /…/)
-    assert.match(result.answer, /earning \(Add\) and spending \(Subtract\)/)
-    assert.match(result.answer, /all approval statuses/)
-    assert.match(result.answer, /afternoon \(12:00 PM–4:59 PM\)/)
-    assert.match(result.answer, /current frozen students/)
+    assert.match([result.answer, ...result.evidence].join(' '), /…/)
+    assert.doesNotMatch(result.answer, /earning \(Add\) and spending \(Subtract\)|all approval statuses|afternoon|current frozen students/)
+    const details = result.evidence.join(' ')
+    assert.match(details, /earning \(Add\) and spending \(Subtract\)/)
+    assert.match(details, /all approval statuses/)
+    assert.match(details, /afternoon \(12:00 PM–4:59 PM\)/)
+    assert.match(details, /current frozen students/)
   }
-  assert.match(emptyResult.answer, /No matching records were found/)
+  assert.match(emptyResult.answer, /could not find any matching records/)
 })
 
 test('discloses ties omitted at a non-leading cutoff', () => {
