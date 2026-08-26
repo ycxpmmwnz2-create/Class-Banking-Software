@@ -112,7 +112,7 @@ test('replaces a full or unique partial roster name before constructing provider
       question,
     })
     assert.deepEqual(envelope.providerInput.subjectAliases, ['student-001'])
-    assert.equal(envelope.providerInput.schemaVersion, 6)
+    assert.equal(envelope.providerInput.schemaVersion, 7)
     assert.deepEqual(envelope.providerInput.categoryCatalog, [{
       alias: 'category-001',
       label: 'Class job',
@@ -906,7 +906,7 @@ test('ordinary words containing a roster-name substring remain valid questions',
   assert.deepEqual(balanceResult.providerInput.subjectAliases, [])
 })
 
-test('reads only the active reciprocal tenant and bounds the period server-side', async () => {
+test('reads only the active reciprocal tenant and retains at most 90 days for flexible questions', async () => {
   const fake = createFirestoreDouble(fixture({
     'classrooms/class-a/transactions/102': {
       ...fixture()['classrooms/class-a/transactions/101'],
@@ -922,7 +922,7 @@ test('reads only the active reciprocal tenant and bounds the period server-side'
     timeZone: 'America/Denver',
     question: 'What time are students losing the most money?',
   })
-  assert.equal(envelope.answerEvidence.transactions.length, 1)
+  assert.equal(envelope.answerEvidence.transactions.length, 2)
   assert.deepEqual(fake.reads, [
     'teachers/teacher-a',
     'classrooms/class-a',

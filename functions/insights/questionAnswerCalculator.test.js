@@ -1247,6 +1247,146 @@ test('dynamically fits ranked, aggregate, and empty results with every disclosur
   assert.match(emptyResult.answer, /could not find any matching records/)
 })
 
+test('answers distinct-day alternatives without dumping every transaction count', () => {
+  const technology = { alias: 'category-004', label: 'Technology' }
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: {
+      operation: 'analyze',
+      queries: [plan({
+        metric: 'distinct-days',
+        filters: {
+          ...filters,
+          subjectAliases: ['student-001'],
+          categoryAlias: technology.alias,
+          transactionType: 'Add',
+          dateScope: 'this-week',
+          lookbackDays: null,
+          balanceCondition: 'any',
+        },
+        groupBy: 'none',
+        order: 'highest',
+        limit: 1,
+      })],
+    },
+    evidence: {
+      ...evidence,
+      generatedAt: '2026-08-20T18:00:00.000Z',
+      categories: [...evidence.categories, technology],
+      transactions: [
+        { id: 101, studentId: 1, date: '2026-08-18T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+        { id: 102, studentId: 1, date: '2026-08-19T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+        { id: 103, studentId: 1, date: '2026-08-20T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+      ],
+    },
+  })
+  assert.match(result.answer, /3 distinct days this week/)
+  assert.match(result.evidence.join(' '), /2026-08-18, 2026-08-19, and 2026-08-20/)
+})
+
+test('supports current negative-balance lists and named balance history through general queries', () => {
+  const negativeResult = calculateQuestionAnswer({
+    kind: 'query',
+    plan: {
+      operation: 'analyze',
+      queries: [plan({
+        dataset: 'students',
+        metric: 'current-balance',
+        filters: {
+          ...filters,
+          status: 'any',
+          lookbackDays: null,
+          balanceCondition: 'negative',
+        },
+        groupBy: 'student',
+        order: 'lowest',
+        limit: 40,
+      })],
+    },
+    evidence: {
+      ...evidence,
+      students: [
+        { ...evidence.students[0], balance: -5 },
+        { ...evidence.students[1], balance: 0 },
+        { ...evidence.students[2], balance: -2 },
+      ],
+    },
+  })
+  assert.match(negativeResult.answer, /Genesis \(-\$5\.00\).*Mateo \(-\$2\.00\)/)
+  assert.doesNotMatch(negativeResult.answer, /Sofia/)
+
+  const historyResult = calculateQuestionAnswer({
+    kind: 'query',
+    plan: {
+      operation: 'analyze',
+      queries: [plan({
+        dataset: 'balance-history',
+        metric: 'closing-balance',
+        filters: {
+          ...filters,
+          subjectAliases: ['student-001'],
+          status: 'any',
+          lookbackDays: 3,
+          balanceCondition: 'any',
+        },
+        groupBy: 'calendar-day',
+        order: 'chronological',
+        limit: 3,
+      })],
+    },
+    evidence: {
+      ...evidence,
+      generatedAt: '2026-08-20T18:00:00.000Z',
+      students: [{ ...evidence.students[0], balance: 20 }, ...evidence.students.slice(1)],
+      transactions: [
+        { id: 201, studentId: 1, date: '2026-08-19T16:00:00.000Z', type: 'Subtract', amount: 2, categoryAlias: 'category-003', purpose: 'other', status: 'Approved' },
+        { id: 202, studentId: 1, date: '2026-08-20T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: 'category-002', purpose: 'other', status: 'Approved' },
+      ],
+    },
+  })
+  assert.match(historyResult.answer, /Aug 18, 2026 \(\$17\.00\).*Aug 19, 2026 \(\$15\.00\).*Aug 20, 2026 \(\$20\.00\)/)
+})
+
+test('combines unrelated calculations for compound questions without broadening either filter', () => {
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: {
+      operation: 'analyze',
+      queries: [
+        plan({
+          metric: 'amount-total',
+          filters: { ...filters, transactionType: 'Add', lookbackDays: 10, balanceCondition: 'any' },
+        }),
+        plan({
+          metric: 'amount-total',
+          filters: { ...filters, transactionType: 'Subtract', lookbackDays: 10, balanceCondition: 'any' },
+        }),
+      ],
+    },
+    evidence: { ...evidence, generatedAt: '2026-08-20T18:00:00.000Z' },
+  })
+  assert.match(result.answer, /Calculation 1:.*\$35\.00.*Calculation 2:.*\$203\.00/)
+  assert.match(result.evidence.join(' '), /approved earning.*last 10 days/i)
+  assert.match(result.evidence.join(' '), /approved spending.*last 10 days/i)
+})
+
+test('uses a custom rolling window consistently in calendar summaries', () => {
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: { ...filters, lookbackDays: 10, balanceCondition: 'any' },
+      groupBy: 'calendar-day',
+      order: 'chronological',
+      limit: 10,
+    }),
+    evidence: { ...evidence, generatedAt: '2026-08-20T18:00:00.000Z' },
+  })
+  assert.match(result.answer, /last 10 days/)
+  assert.doesNotMatch(result.answer, /last 30 days/)
+  assert.match(result.evidence.join(' '), /last 10 days/)
+})
+
 test('discloses ties omitted at a non-leading cutoff', () => {
   const students = Array.from({ length: 10 }, (_, index) => ({
     id: index + 1,

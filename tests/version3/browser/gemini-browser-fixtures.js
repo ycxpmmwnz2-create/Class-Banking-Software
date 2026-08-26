@@ -107,6 +107,11 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
     status: "Approved",
     source: "Teacher",
   };
+  const earlierEarningTransactions = [1, 2].map(daysAgo => ({
+    ...earningTransaction,
+    id: transactionId + 8 + daysAgo,
+    date: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString(),
+  }));
   const spendingTransaction = {
     id: transactionId + 2,
     date: new Date(Date.now() - 180_000).toISOString(),
@@ -190,16 +195,16 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
     name: tenant.studentName,
     balance: 45,
     frozen: false,
-    transactions: [pendingTransaction, earningTransaction, spendingTransaction, rentTransaction, ...restroomTransactions.slice(0, 3)],
+    transactions: [pendingTransaction, earningTransaction, ...earlierEarningTransactions, spendingTransaction, rentTransaction, ...restroomTransactions.slice(0, 3)],
   });
   await db.doc(`classrooms/${tenant.classroomId}/students/${classmateId}`).set({
     id: classmateId,
     name: tenant.classmateName,
-    balance: 45,
+    balance: -5,
     frozen: false,
     transactions: restroomTransactions.slice(3),
   });
-  for (const transaction of [pendingTransaction, earningTransaction, spendingTransaction, rentTransaction, ...restroomTransactions]) {
+  for (const transaction of [pendingTransaction, earningTransaction, ...earlierEarningTransactions, spendingTransaction, rentTransaction, ...restroomTransactions]) {
     await db.doc(`classrooms/${tenant.classroomId}/transactions/${transaction.id}`).set(transaction);
   }
 }

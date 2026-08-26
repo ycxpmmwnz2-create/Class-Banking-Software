@@ -1,14 +1,16 @@
 export const INSIGHT_QUESTION_SCHEMA_VERSION = 2
-export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 6
+export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 7
 
-export const INSIGHT_QUERY_DATASETS = Object.freeze(['transactions', 'students'])
+export const INSIGHT_QUERY_DATASETS = Object.freeze(['transactions', 'students', 'balance-history'])
 export const INSIGHT_QUERY_METRICS = Object.freeze([
   'count',
+  'distinct-days',
   'amount-total',
   'amount-average',
   'net-amount',
   'current-balance',
   'average-balance',
+  'closing-balance',
 ])
 export const INSIGHT_QUERY_GROUPS = Object.freeze([
   'none',
@@ -30,6 +32,7 @@ const TRANSACTION_TYPES = Object.freeze(['Add', 'Subtract', 'any'])
 const TRANSACTION_STATUSES = Object.freeze(['Approved', 'Pending', 'Denied', 'any'])
 const TIME_BUCKETS = Object.freeze(['morning', 'afternoon', 'evening', 'night'])
 const STUDENT_STATES = Object.freeze(['active', 'frozen', 'any'])
+const BALANCE_CONDITIONS = Object.freeze(['any', 'negative', 'zero', 'positive', 'nonpositive'])
 const TRANSACTION_PURPOSES = Object.freeze(['any', 'rent'])
 const DATE_SCOPES = Object.freeze([
   'period',
@@ -38,10 +41,16 @@ const DATE_SCOPES = Object.freeze([
   'today-and-yesterday',
   'this-week',
 ])
+const MIN_LOOKBACK_DAYS = 1
+const MAX_LOOKBACK_DAYS = 90
 const MAX_EXACT_AMOUNT = 1_000_000
 const MIN_GUIDANCE_LENGTH = 20
 const MAX_GUIDANCE_LENGTH = 480
 const MAX_TEACHER_QUESTION_ANSWER_LENGTH = 80_000
+const MAX_INTERPRETATION_OUTPUT_TOKENS = 384
+const MAX_INTERPRETATION_THINKING_TOKENS = 4_096
+const MAX_BILLED_OUTPUT_TOKENS = 640
+const MAX_BILLED_THINKING_TOKENS = 8_192
 const PROVIDER_ALIAS_PATTERN = /(?:student|category)-[0-9]{3}/iu
 const PROVIDER_PLACEHOLDER_PATTERN = /\[(?:student|category)(?:-[0-9]{3})?\]/iu
 const URL_PATTERN = /(?:https?:\/\/|www\.)/iu
@@ -195,12 +204,29 @@ export function validateTeacherQuestionResponse(value) {
 
 function validateQuestionPlan(value, allowed, category) {
   if (isPlainObject(value) && Object.hasOwn(value, 'operation')) {
+    if (value.operation === 'analyze') {
+      return validateAnalysisPlan(value, allowed, category)
+    }
     if (value.operation === 'list-student-balances') {
       return validateStudentBalanceListPlan(value, category)
     }
     return validateMissingTransactionPlan(value, allowed, category)
   }
   return validateQueryPlan(value, allowed, category)
+}
+
+function validateAnalysisPlan(value, allowed, category) {
+  requireExactObject(value, ['operation', 'queries'], 'analysis plan', category)
+  if (
+    value.operation !== 'analyze' || !Array.isArray(value.queries) ||
+    value.queries.length < 1 || value.queries.length > 4
+  ) {
+    fail(category, 'The analysis plan must contain one through four bounded queries.')
+  }
+  return Object.freeze({
+    operation: 'analyze',
+    queries: Object.freeze(value.queries.map(query => validateQueryPlan(query, allowed, category))),
+  })
 }
 
 function validateStudentBalanceListPlan(value, category) {
@@ -218,23 +244,20 @@ function validateQueryPlan(value, allowed, category) {
     'question query plan',
     category,
   )
-  requireExactObject(
-    value.filters,
-    ['subjectAliases', 'categoryAlias', 'transactionType', 'status', 'dateScope', 'timeBucket', 'studentState'],
-    'question query filters',
-    category,
-  )
+  requireQueryFilters(value.filters, category)
   if (
     !INSIGHT_QUERY_DATASETS.includes(value.dataset) ||
     !INSIGHT_QUERY_METRICS.includes(value.metric) ||
     !INSIGHT_QUERY_GROUPS.includes(value.groupBy) ||
     !INSIGHT_QUERY_ORDERS.includes(value.order) ||
-    !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 8 ||
+    !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 40 ||
     !TRANSACTION_TYPES.includes(value.filters.transactionType) ||
     !TRANSACTION_STATUSES.includes(value.filters.status) ||
     !DATE_SCOPES.includes(value.filters.dateScope) ||
+    !(value.filters.lookbackDays === undefined || value.filters.lookbackDays === null || validLookbackDays(value.filters.lookbackDays)) ||
     !(value.filters.timeBucket === null || TIME_BUCKETS.includes(value.filters.timeBucket)) ||
-    !STUDENT_STATES.includes(value.filters.studentState)
+    !STUDENT_STATES.includes(value.filters.studentState) ||
+    !(value.filters.balanceCondition === undefined || BALANCE_CONDITIONS.includes(value.filters.balanceCondition))
   ) {
     fail(category, 'The question query plan contains an unsupported operation.')
   }
@@ -263,29 +286,14 @@ function validateQueryPlan(value, allowed, category) {
 }
 
 function validateMissingTransactionPlan(value, allowed, category) {
-  requireExactObject(
-    value,
-    [
-      'operation',
-      'subjectAliases',
-      'categoryAlias',
-      'purpose',
-      'transactionType',
-      'status',
-      'dateScope',
-      'amountExact',
-      'studentState',
-      'limit',
-    ],
-    'missing transaction plan',
-    category,
-  )
+  requireMissingTransactionKeys(value, category)
   if (
     value.operation !== 'students-without-transactions' ||
     !TRANSACTION_PURPOSES.includes(value.purpose) ||
     !TRANSACTION_TYPES.includes(value.transactionType) ||
     !TRANSACTION_STATUSES.includes(value.status) ||
     !DATE_SCOPES.includes(value.dateScope) ||
+    !(value.lookbackDays === undefined || value.lookbackDays === null || validLookbackDays(value.lookbackDays)) ||
     !STUDENT_STATES.includes(value.studentState) ||
     !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 8 ||
     !(value.amountExact === null || (
@@ -321,6 +329,7 @@ function validateMissingTransactionPlan(value, allowed, category) {
     transactionType: value.transactionType,
     status: value.status,
     dateScope: value.dateScope,
+    ...(Object.hasOwn(value, 'lookbackDays') ? { lookbackDays: value.lookbackDays } : {}),
     amountExact: value.amountExact,
     studentState: value.studentState,
     limit: value.limit,
@@ -328,6 +337,8 @@ function validateMissingTransactionPlan(value, allowed, category) {
 }
 
 export function questionQueryPlanCoherenceError(value) {
+  const lookbackDays = value.filters.lookbackDays ?? null
+  const balanceCondition = value.filters.balanceCondition ?? 'any'
   if (value.dataset === 'students') {
     const isBalanceRanking = value.metric === 'current-balance' && value.groupBy === 'student'
     const isStudentAggregate = ['count', 'average-balance'].includes(value.metric) && value.groupBy === 'none'
@@ -335,22 +346,65 @@ export function questionQueryPlanCoherenceError(value) {
       (!isBalanceRanking && !isStudentAggregate) ||
       value.filters.categoryAlias !== null || value.filters.transactionType !== 'any' ||
       value.filters.status !== 'any' || value.filters.dateScope !== 'period' ||
+      lookbackDays !== null ||
       value.filters.timeBucket !== null ||
       value.order === 'chronological'
     ) return 'The balance query plan is inconsistent.'
     return null
   }
-  if (['current-balance', 'average-balance'].includes(value.metric)) {
+  if (value.dataset === 'balance-history') {
+    if (
+      value.metric !== 'closing-balance' || value.groupBy !== 'calendar-day' ||
+      value.filters.subjectAliases.length !== 1 || value.filters.categoryAlias !== null ||
+      value.filters.transactionType !== 'any' || value.filters.status !== 'any' ||
+      value.filters.dateScope !== 'period' || value.filters.lookbackDays === null ||
+      value.filters.timeBucket !== null || value.filters.studentState !== 'any' ||
+      balanceCondition !== 'any' || value.order !== 'chronological'
+    ) return 'The balance-history query plan is inconsistent.'
+    return null
+  }
+  if (['current-balance', 'average-balance', 'closing-balance'].includes(value.metric)) {
     return 'A transaction query cannot read balances.'
+  }
+  if (balanceCondition !== 'any') {
+    return 'A transaction query cannot filter current balances.'
   }
   if (value.metric === 'net-amount' && value.filters.transactionType !== 'any') {
     return 'A net query cannot preselect one transaction type.'
   }
   const temporal = ['time-of-day', 'calendar-day', 'day-of-week', 'week'].includes(value.groupBy)
+  if (value.filters.dateScope !== 'period' && lookbackDays !== null) {
+    return 'A named rolling-day window requires the period date scope.'
+  }
   if (value.order === 'chronological' && !temporal) {
     return 'Only a time grouping can be ordered chronologically.'
   }
   return null
+}
+
+function requireQueryFilters(value, category) {
+  if (!isPlainObject(value)) fail(category, 'The question query filters must be an object.')
+  const required = ['subjectAliases', 'categoryAlias', 'transactionType', 'status', 'dateScope', 'timeBucket', 'studentState']
+  const allowed = new Set([...required, 'lookbackDays', 'balanceCondition'])
+  if (required.some(field => !Object.hasOwn(value, field)) || Object.keys(value).some(field => !allowed.has(field))) {
+    fail(category, 'The question query filters contain unsupported fields.')
+  }
+}
+
+function requireMissingTransactionKeys(value, category) {
+  if (!isPlainObject(value)) fail(category, 'The missing transaction plan must be an object.')
+  const required = [
+    'operation', 'subjectAliases', 'categoryAlias', 'purpose', 'transactionType',
+    'status', 'dateScope', 'amountExact', 'studentState', 'limit',
+  ]
+  const allowed = new Set([...required, 'lookbackDays'])
+  if (required.some(field => !Object.hasOwn(value, field)) || Object.keys(value).some(field => !allowed.has(field))) {
+    fail(category, 'The missing transaction plan has an unexpected shape.')
+  }
+}
+
+function validLookbackDays(value) {
+  return Number.isSafeInteger(value) && value >= MIN_LOOKBACK_DAYS && value <= MAX_LOOKBACK_DAYS
 }
 
 function validateAllowedAliases(value, category) {
@@ -417,7 +471,12 @@ function validateProviderUsage(value) {
     'question usage',
     'invalid-provider-output',
   )
-  return Object.freeze(validateTokenUsage(value, 'invalid-provider-output'))
+  return Object.freeze(validateTokenUsage(
+    value,
+    'invalid-provider-output',
+    MAX_INTERPRETATION_OUTPUT_TOKENS,
+    MAX_INTERPRETATION_THINKING_TOKENS,
+  ))
 }
 
 function validateBilledUsage(value, category) {
@@ -427,14 +486,19 @@ function validateBilledUsage(value, category) {
     'question usage',
     category,
   )
-  const result = validateTokenUsage(value, category)
+  const result = validateTokenUsage(
+    value,
+    category,
+    MAX_BILLED_OUTPUT_TOKENS,
+    MAX_BILLED_THINKING_TOKENS,
+  )
   if (!Number.isSafeInteger(value.costMicroUsd) || value.costMicroUsd < 0 || value.costMicroUsd > 7_500_000) {
     fail(category, 'Question usage exceeds the reviewed limits.')
   }
   return Object.freeze({ ...result, costMicroUsd: value.costMicroUsd })
 }
 
-function validateTokenUsage(value, category) {
+function validateTokenUsage(value, category, maximumOutputTokens, maximumThinkingTokens) {
   const result = {}
   for (const field of ['inputTokens', 'outputTokens', 'thinkingTokens']) {
     if (!Number.isSafeInteger(value[field]) || value[field] < 0) {
@@ -442,7 +506,10 @@ function validateTokenUsage(value, category) {
     }
     result[field] = value[field]
   }
-  if (result.outputTokens > 384 || result.thinkingTokens > 4_096) {
+  if (
+    result.outputTokens > maximumOutputTokens ||
+    result.thinkingTokens > maximumThinkingTokens
+  ) {
     fail(category, 'Question usage exceeds the reviewed limits.')
   }
   return result

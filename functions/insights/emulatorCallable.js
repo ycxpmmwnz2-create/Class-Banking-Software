@@ -21,6 +21,13 @@ const FAKE_RATE_CARD_ID = 'fake-emulator-rate-v2'
 const FAKE_WORST_CASE_COST_MICRO_USD = 4_000_000
 const FAKE_ACTUAL_COST_MICRO_USD = 3_000_000
 
+function classifyMoneyDirection(normalized) {
+  return Object.freeze({
+    added: /\b(?:earn(?:ed|ing)?|add(?:ed|ing)?|gain(?:ed|ing)?|credit(?:ed|ing)?|receive(?:d|ing)?)\b|\b(?:give|gave|given|pay|paid|paying)\s+(?:out\s+)?money\b|\bmoney\s+(?:is|was|gets?|got|being)?\s*(?:given|paid|credited|added|earned|received)\b/.test(normalized),
+    subtracted: /\b(?:spend|spent|spending|subtract(?:ed|ing)?|deduct(?:ed|ing)?|remove(?:d|ing)?|los(?:e|t|ing))\b|\b(?:take|took|taken|taking)\s+(?:away\s+)?money\b|\bmoney\s+(?:is|was|gets?|got|being)?\s*(?:taken|subtracted|deducted|removed|spent)\b/.test(normalized),
+  })
+}
+
 export class Version3GeminiEmulatorError extends Error {
   constructor(category, message) {
     super(message)
@@ -108,6 +115,8 @@ export function createVersion3GeminiEmulatorHandler({
     async interpret({ providerInput }) {
       const normalized = providerInput.question.toLocaleLowerCase('en-US')
       const subjectAliases = providerInput.subjectAliases
+      const asksWhen = /\b(?:when|time|hour|morning|afternoon|evening|night|day)\b/.test(normalized)
+      const moneyDirection = classifyMoneyDirection(normalized)
       const category = providerInput.categoryCatalog.find(candidate => {
         const label = candidate.label.toLocaleLowerCase('en-US')
         return (/(restroom|bathroom)/.test(normalized) && /(restroom|bathroom)/.test(label)) ||
@@ -135,6 +144,7 @@ export function createVersion3GeminiEmulatorHandler({
           transactionType: 'Subtract',
           status: 'Approved',
           dateScope: /today/.test(normalized) ? 'today' : 'period',
+          lookbackDays: null,
           amountExact: amount ? Number(amount) : null,
           studentState: 'any',
           limit: 8,
@@ -154,8 +164,9 @@ export function createVersion3GeminiEmulatorHandler({
         const hasYesterday = /yesterday/.test(normalized)
         const hasThisWeek = /(this week|current week|week to date)/.test(normalized)
         const approvedOnly = /\b(?:paid|credit(?:ed)?|earn(?:ed)?|receive(?:d)?)\b/.test(normalized)
+        const compareDistinctDays = hasThisWeek && /(?:all\s+(?:three|3)|how many)\s+days|just yesterday/.test(normalized)
         plan = queryPlan({
-          metric: 'count',
+          metric: compareDistinctDays ? 'distinct-days' : 'count',
           subjectAliases,
           categoryAlias: category.alias,
           transactionType: 'Add',
@@ -165,17 +176,17 @@ export function createVersion3GeminiEmulatorHandler({
             : hasToday && hasYesterday
               ? 'today-and-yesterday'
               : hasYesterday ? 'yesterday' : 'today',
-          groupBy: 'calendar-day',
-          order: 'chronological',
-          limit: hasThisWeek ? 7 : hasToday && hasYesterday ? 2 : 1,
+          groupBy: compareDistinctDays ? 'none' : 'calendar-day',
+          order: compareDistinctDays ? 'highest' : 'chronological',
+          limit: compareDistinctDays ? 1 : hasThisWeek ? 7 : hasToday && hasYesterday ? 2 : 1,
         })
-      } else if (/categor/.test(normalized) && /(earn|add|gain)/.test(normalized)) {
+      } else if (/categor/.test(normalized) && moneyDirection.added) {
         plan = queryPlan({ subjectAliases, transactionType: 'Add', groupBy: 'category' })
-      } else if (/categor/.test(normalized) && /(spend|spent|los|subtract)/.test(normalized)) {
+      } else if (/categor/.test(normalized) && moneyDirection.subtracted) {
         plan = queryPlan({ subjectAliases, transactionType: 'Subtract', groupBy: 'category' })
-      } else if (/(time|hour|day)/.test(normalized) && /(spend|spent|los|subtract)/.test(normalized)) {
+      } else if (asksWhen && moneyDirection.subtracted) {
         plan = queryPlan({ subjectAliases, transactionType: 'Subtract', groupBy: 'time-of-day' })
-      } else if (/(time|hour|day)/.test(normalized) && /(earn|add|gain)/.test(normalized)) {
+      } else if (asksWhen && moneyDirection.added) {
         plan = queryPlan({ subjectAliases, transactionType: 'Add', groupBy: 'time-of-day' })
       } else if (/(how many students|student count|class size)/.test(normalized)) {
         plan = {
@@ -194,7 +205,31 @@ export function createVersion3GeminiEmulatorHandler({
           order: 'highest',
           limit: 1,
         }
+      } else if (/balance/.test(normalized) && /(?:last|past|over|across)\s+\d+\s+days/.test(normalized) && subjectAliases.length === 1) {
+        const lookbackDays = Number(normalized.match(/(?:last|past|over|across)\s+(\d+)\s+days/)?.[1])
+        plan = {
+          operation: 'analyze',
+          queries: [{
+            dataset: 'balance-history',
+            metric: 'closing-balance',
+            filters: {
+              subjectAliases,
+              categoryAlias: null,
+              transactionType: 'any',
+              status: 'any',
+              dateScope: 'period',
+              lookbackDays,
+              timeBucket: null,
+              studentState: 'any',
+              balanceCondition: 'any',
+            },
+            groupBy: 'calendar-day',
+            order: 'chronological',
+            limit: lookbackDays,
+          }],
+        }
       } else if (/balance/.test(normalized)) {
+        const negative = /negative|below\s+(?:zero|\$?0)|under\s+\$?0/.test(normalized)
         plan = {
           dataset: 'students',
           metric: /average|mean/.test(normalized) ? 'average-balance' : 'current-balance',
@@ -204,12 +239,14 @@ export function createVersion3GeminiEmulatorHandler({
             transactionType: 'any',
             status: 'any',
             dateScope: 'period',
+            lookbackDays: null,
             timeBucket: null,
             studentState: /frozen/.test(normalized) ? 'frozen' : 'any',
+            balanceCondition: negative ? 'negative' : 'any',
           },
           groupBy: /average|mean/.test(normalized) ? 'none' : 'student',
-          order: /lowest/.test(normalized) ? 'lowest' : 'highest',
-          limit: subjectAliases.length ? 1 : 8,
+          order: negative || /lowest/.test(normalized) ? 'lowest' : 'highest',
+          limit: negative ? 40 : subjectAliases.length ? 1 : 8,
         }
       } else if (/pending/.test(normalized)) {
         plan = queryPlan({ metric: 'count', status: 'Pending', groupBy: 'none' })
@@ -233,6 +270,33 @@ export function createVersion3GeminiEmulatorHandler({
         usage: { inputTokens: 90, outputTokens: 18, thinkingTokens: 0 },
       }
     },
+    async writeAnswer({ writerInput }) {
+      const normalized = writerInput.question.toLocaleLowerCase('en-US')
+      const moneyDirection = classifyMoneyDirection(normalized)
+      const alias = writerInput.studentAliases[0]
+      let answer = writerInput.draftAnswer.replace(/\s+/gu, ' ').trim()
+      if (alias && /(?:all\s+(?:three|3)|3\s+days).*just yesterday/.test(normalized)) {
+        const category = normalized.includes('class job') ? 'Class job' : 'the requested category'
+        answer = `[${alias}] was paid for ${category} on all 3 days this week, not just yesterday.`
+      } else if (/negative|below\s+(?:zero|\$?0)|under\s+\$?0/.test(normalized)) {
+        const entries = [...answer.matchAll(
+          /(\[student-[0-9]{3}\])(?: has the (?:highest|lowest) current balance: | \()(-?\$[0-9,]+(?:\.[0-9]{2})?)\)?/gu,
+        )].map(match => `${match[1]} (${match[2]})`)
+        if (entries.length) answer = `Students currently in the negative: ${entries.join(', ')}.`
+      } else if (alias && /balance/.test(normalized) && /(?:last|past|over|across)\s+\d+\s+days/.test(normalized)) {
+        const current = [...answer.matchAll(/\(\$([0-9,.]+)\)/gu)].at(-1)?.[1]
+        if (current) answer = `[${alias}] currently has $${current}. The daily balance history for the requested period is in the details.`
+      } else if (/\b(?:when|time|hour)\b/.test(normalized)) {
+        const peak = answer.match(/\b(morning|afternoon|evening|night)\b[^$]*(\$[0-9,]+(?:\.[0-9]{2})?)/iu)
+        if (peak && moneyDirection.added) answer = `Money was given out most during the ${peak[1].toLocaleLowerCase('en-US')}, totaling ${peak[2]}.`
+        if (peak && moneyDirection.subtracted) answer = `Money was subtracted most during the ${peak[1].toLocaleLowerCase('en-US')}, totaling ${peak[2]}.`
+      }
+      return {
+        schemaVersion: 1,
+        answer: answer.slice(0, 480),
+        usage: { inputTokens: 80, outputTokens: 24, thinkingTokens: 0 },
+      }
+    },
   })
   const askQuestion = createInsightQuestionService({
     now,
@@ -245,6 +309,7 @@ export function createVersion3GeminiEmulatorHandler({
       }
     },
     provider: questionProvider,
+    answerWriter: questionProvider,
     async priceActualUsage() {
       return FAKE_ACTUAL_COST_MICRO_USD
     },
@@ -277,8 +342,10 @@ function queryPlan({
       transactionType,
       status,
       dateScope,
+      lookbackDays: null,
       timeBucket: null,
       studentState: 'any',
+      balanceCondition: 'any',
     },
     groupBy,
     order,

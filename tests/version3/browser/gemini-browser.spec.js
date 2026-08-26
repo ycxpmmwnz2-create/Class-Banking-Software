@@ -183,10 +183,12 @@ test("lists every current student balance in one result without crossing tenants
   await expect(result).toBeVisible();
   const answer = result.locator(".insights-answer-copy");
   await expect(answer).toHaveCount(1);
-  const sortedNames = [TENANT_A.studentName, TENANT_A.classmateName]
-    .sort((left, right) => left.localeCompare(right, "en-US"));
+  const sortedBalances = [
+    [TENANT_A.studentName, "$45.00"],
+    [TENANT_A.classmateName, "-$5.00"],
+  ].sort(([left], [right]) => left.localeCompare(right, "en-US"));
   expect(await answer.textContent()).toBe(
-    `Current balances for all 2 students:\n${sortedNames.map(name => `${name}: $45.00`).join("\n")}`,
+    `Current balances for all 2 students:\n${sortedBalances.map(([name, balance]) => `${name}: ${balance}`).join("\n")}`,
   );
   await expect(result).not.toContainText(TENANT_A.foreignName);
   await expect(page.locator("#providerQuestionInput")).toHaveValue("");
@@ -369,8 +371,11 @@ test("current-week payment question uses the exact safe request and server-calcu
 
   const result = page.getByTestId("provider-question-result");
   await expect(result).toContainText(TENANT_A.studentName);
-  await expect(result).toContainText("approved Class job credit");
-  await expect(result).toContainText("this week to date");
+  await expect(result.locator(".insights-answer-copy")).toHaveText(
+    `${TENANT_A.studentName} was paid for Class job on all 3 days this week, not just yesterday.`,
+  );
+  await expect(result.locator(".insights-answer-copy")).not.toContainText("Calculation");
+  await expect(result.locator(".insights-answer-copy")).not.toContainText("transaction count");
   await expect(result).not.toContainText(TENANT_A.foreignName);
 
   const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
@@ -383,6 +388,38 @@ test("current-week payment question uses the exact safe request and server-calcu
     "timeZone",
   ]);
   expect(calls[0].question).toBe(question);
+});
+
+test("general analytics lists every current negative balance", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  await page.locator("#providerQuestionInput").fill("Which students currently have a negative balance?");
+  await page.getByTestId("provider-question-submit").click();
+  const answer = page.getByTestId("provider-question-result").locator(".insights-answer-copy");
+  await expect(answer).toContainText(`Students currently in the negative: ${TENANT_A.classmateName} (-$5.00)`);
+  await expect(answer).not.toContainText(TENANT_A.studentName);
+});
+
+test("general analytics answers a named student's 10-day balance history", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  await page.locator("#providerQuestionInput").fill(`Show ${TENANT_A.studentName}'s account balance over the last 10 days.`);
+  await page.getByTestId("provider-question-submit").click();
+  const answer = page.getByTestId("provider-question-result").locator(".insights-answer-copy");
+  await expect(answer).toContainText(`${TENANT_A.studentName} currently has $45.00.`);
+  await expect(answer).toContainText("daily balance history");
+});
+
+test("general analytics answers when approved money is given out most", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  await page.locator("#providerQuestionInput").fill("Around what time of day is money given out the most?");
+  await page.getByTestId("provider-question-submit").click();
+  const answer = page.getByTestId("provider-question-result").locator(".insights-answer-copy");
+  await expect(answer).toContainText("Money was given out most during the");
+  await expect(answer).toContainText("$36.00");
+  await expect(answer).not.toContainText("highest total amount");
+  await expect(answer).not.toContainText(TENANT_A.foreignName);
 });
 
 test("rent question names current students without an approved exact payment today", async ({ page }) => {
@@ -452,7 +489,7 @@ test("one question can combine a calculated classroom answer with general Morgan
   await page.locator("#providerQuestionInput").fill(question);
   await page.getByTestId("provider-question-submit").click();
   const result = page.getByTestId("provider-question-result");
-  await expect(result).toContainText("lowest current balance");
+  await expect(result).toContainText(/lowest current balance/i);
   await expect(result).toContainText("General Morgan Bank guidance");
   await expect(result).toContainText("realistic next goal");
   await expect(result).not.toContainText(TENANT_A.foreignName);

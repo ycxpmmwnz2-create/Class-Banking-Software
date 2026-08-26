@@ -19,7 +19,7 @@ function envelope() {
   return {
     generatedAt: '2026-08-20T18:00:00.000Z',
     providerInput: {
-      schemaVersion: 6,
+      schemaVersion: 7,
       question: 'What category is [student-001] earning the most money in?',
       subjectAliases: ['student-001'],
       subjectHints: [],
@@ -90,7 +90,7 @@ function dependencies(overrides = {}) {
           calls.push('provider')
           assert.doesNotMatch(JSON.stringify(providerInput), /GianMarco|teacher-a|class-a/)
           return {
-            schemaVersion: 6,
+            schemaVersion: 7,
             kind: 'query',
             plan: {
               dataset: 'transactions',
@@ -157,6 +157,40 @@ test('resolves tenant, sanitizes evidence, reserves, interprets, calculates, and
   assert.match(stored, /student-001|amount-total/)
 })
 
+test('uses a second grounded provider pass for a natural answer and restores names only on the server', async () => {
+  let capturedWriterInput
+  const fixture = dependencies({
+    answerWriter: {
+      async writeAnswer({ writerInput }) {
+        capturedWriterInput = writerInput
+        assert.doesNotMatch(JSON.stringify(writerInput), /GianMarco|teacher-a|class-a/)
+        assert.match(writerInput.draftAnswer, /\[student-001\]/)
+        assert.match(writerInput.draftAnswer, /\$20\.00/)
+        return {
+          schemaVersion: 1,
+          answer: '[student-001] earned the most from Class job, totaling $20.00.',
+          usage: { inputTokens: 80, outputTokens: 16, thinkingTokens: 0 },
+        }
+      },
+    },
+  })
+  const result = await createInsightQuestionService(fixture.deps)({
+    auth: { uid: 'teacher-a' },
+    data: request,
+  })
+  assert.ok(capturedWriterInput)
+  assert.equal(result.answer, 'GianMarco earned the most from Class job, totaling $20.00.')
+  assert.deepEqual(result.usage, {
+    inputTokens: 170,
+    outputTokens: 34,
+    thinkingTokens: 0,
+    costMicroUsd: 25_000,
+  })
+  assert.equal(fixture.commits.length, 1)
+  assert.deepEqual(fixture.commits[0].result.usage, result.usage)
+  assert.doesNotMatch(JSON.stringify(fixture.commits[0].result), /GianMarco|\$20\.00/)
+})
+
 test('commits broad Morgan Bank guidance without turning it into a classroom-data claim', async () => {
   const guidance = 'Set a small weekly savings goal, keep earning categories predictable, and offer optional purchases so students can practice choosing between spending now and saving.'
   const fixture = dependencies({
@@ -165,7 +199,7 @@ test('commits broad Morgan Bank guidance without turning it into a classroom-dat
         fixture.calls.push('provider')
         assert.doesNotMatch(JSON.stringify(providerInput), /GianMarco|teacher-a|class-a/)
         return {
-          schemaVersion: 6,
+          schemaVersion: 7,
           kind: 'guidance',
           plan: null,
           guidance,
@@ -200,7 +234,7 @@ test('commits a bounded refusal for unrelated or data-changing requests', async 
         async interpret() {
           fixture.calls.push('provider')
           return {
-            schemaVersion: 6,
+            schemaVersion: 7,
             kind: 'unsupported',
             plan: null,
             guidance: null,
@@ -265,7 +299,7 @@ test('commits a grounded answer naming current students without todays exact ren
       async interpret() {
         fixture.calls.push('provider')
         return {
-          schemaVersion: 6,
+          schemaVersion: 7,
           kind: 'query',
           plan: {
             operation: 'students-without-transactions',
@@ -512,7 +546,7 @@ test('unsafe provider guidance is rejected before pricing or commit and retains 
       async interpret() {
         fixture.calls.push('provider')
         return {
-          schemaVersion: 6,
+          schemaVersion: 7,
           kind: 'guidance',
           plan: null,
           guidance: 'Tell student-001 to visit https://example.com and change the account immediately.',
@@ -559,7 +593,7 @@ test('server calculation must succeed before pricing or commit and failures reta
 
 test('completed replay is signature-checked and recalculated from current server evidence', async () => {
   const completed = {
-    schemaVersion: 6,
+    schemaVersion: 7,
     source: 'provider-interpreted',
     periodDays: 30,
     evidenceSignature: SIGNATURE,
@@ -603,7 +637,7 @@ test('completed replay is signature-checked and recalculated from current server
 test('completed Morgan Bank guidance replays only after current evidence binding succeeds', async () => {
   const guidance = 'Use consistent categories and a visible class goal so students can connect everyday earning choices with longer-term saving.'
   const completed = {
-    schemaVersion: 6,
+    schemaVersion: 7,
     source: 'provider-interpreted',
     periodDays: 30,
     evidenceSignature: SIGNATURE,
@@ -670,7 +704,7 @@ test('maximum-length category rankings are validated before a successful ledger 
       async interpret() {
         fixture.calls.push('provider')
         return {
-          schemaVersion: 6,
+          schemaVersion: 7,
           kind: 'query',
           plan: {
             dataset: 'transactions',
@@ -767,7 +801,7 @@ test('ranked and aggregate maximum-length named-student queries commit valid res
         async interpret() {
           fixture.calls.push('provider')
           return {
-            schemaVersion: 6,
+            schemaVersion: 7,
             kind: 'query',
             plan: {
               dataset: 'transactions',
@@ -828,7 +862,7 @@ test('response construction failures retain the reservation without committing o
       async interpret() {
         fixture.calls.push('provider')
         return {
-          schemaVersion: 6,
+          schemaVersion: 7,
           kind: 'query',
           plan: {
             dataset: 'transactions',

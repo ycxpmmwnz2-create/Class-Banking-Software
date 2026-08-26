@@ -113,23 +113,19 @@ export function createFirestoreQuestionEvidenceLoader({
     })
 
     const cutoff = generatedAt.getTime() - periodDays * 24 * 60 * 60 * 1000
+    const historyCutoff = generatedAt.getTime() - 90 * 24 * 60 * 60 * 1000
     const periodStart = new Date(cutoff).toISOString()
-    const currentWeekStart = startOfWeekDateKey(asOfDate)
-    const weekProbeFloor = cutoff - 26 * 60 * 60 * 1000
     const generatedAtTime = generatedAt.getTime()
-    const periodTransactions = raw.transactions.filter(transaction => {
+    const availableTransactions = raw.transactions.filter(transaction => {
       const timestamp = Date.parse(transaction.date)
-      if (timestamp > generatedAtTime) return false
-      if (timestamp >= cutoff) return true
-      if (timestamp < weekProbeFloor) return false
-      return localDateKey(new Date(transaction.date), timeZone) >= currentWeekStart
+      return timestamp <= generatedAtTime && timestamp >= historyCutoff
     })
-    const participants = buildParticipants(raw.students, periodTransactions)
-    const studentIdentities = buildStudentIdentities(raw.students, periodTransactions)
+    const participants = buildParticipants(raw.students, availableTransactions)
+    const studentIdentities = buildStudentIdentities(raw.students, availableTransactions)
     const aliasesByStudentId = new Map(participants.map((student, index) => (
       [student.id, `student-${String(index + 1).padStart(3, '0')}`]
     )))
-    const categoryCatalog = buildCategoryCatalog(periodTransactions, studentIdentities)
+    const categoryCatalog = buildCategoryCatalog(availableTransactions, studentIdentities)
     const resolvedSubjects = resolveMentionedStudents(
       question,
       studentIdentities,
@@ -170,7 +166,7 @@ export function createFirestoreQuestionEvidenceLoader({
         alias: category.alias,
         label: category.label,
       }))),
-      transactions: Object.freeze(periodTransactions.map(transaction => Object.freeze({
+      transactions: Object.freeze(availableTransactions.map(transaction => Object.freeze({
         id: transaction.id,
         studentId: transaction.studentId,
         date: transaction.date,
@@ -182,6 +178,7 @@ export function createFirestoreQuestionEvidenceLoader({
       }))),
       periodDays,
       periodStart,
+      generatedAt: generatedAt.toISOString(),
       timeZone,
       asOfDate,
     })
@@ -211,7 +208,7 @@ export function createFirestoreQuestionEvidenceLoader({
       sensitiveValues: Object.freeze([
         Object.freeze({ kind: 'teacher-uid', value: teacher }),
         Object.freeze({ kind: 'classroom-id', value: classroom }),
-        ...buildSensitiveStudentValues(raw.students, periodTransactions),
+        ...buildSensitiveStudentValues(raw.students, availableTransactions),
       ]),
       evidenceSignature: createHash('sha256').update(JSON.stringify({
         teacherUid: teacher,
@@ -222,7 +219,7 @@ export function createFirestoreQuestionEvidenceLoader({
         asOfDate,
         configuredRentAmount: raw.configuredRentAmount,
         students: raw.students,
-        transactions: periodTransactions.map(transaction => ({
+        transactions: availableTransactions.map(transaction => ({
           ...transaction,
           insideRollingPeriod: Date.parse(transaction.date) >= cutoff,
         })),
@@ -249,13 +246,6 @@ function localDateKey(date, timeZone) {
   })
   const parts = Object.fromEntries(formatter.formatToParts(date).map(part => [part.type, part.value]))
   return `${parts.year}-${parts.month}-${parts.day}`
-}
-
-function startOfWeekDateKey(dateKey) {
-  const date = new Date(`${dateKey}T00:00:00.000Z`)
-  const mondayOffset = (date.getUTCDay() + 6) % 7
-  date.setUTCDate(date.getUTCDate() - mondayOffset)
-  return date.toISOString().slice(0, 10)
 }
 
 function buildParticipants(students, transactions) {
