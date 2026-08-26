@@ -329,7 +329,7 @@ function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix
     const row = selected[0]
     const periodSuffix = plan.dataset === 'students'
       ? ''
-      : ` for ${describeDateScope(plan.filters.dateScope, context)}`
+      : ` ${friendlyAggregateDateScope(plan.filters.dateScope, context)}`
     return fitResponseWithinPublicBounds(labelLength => {
       const filterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
       return {
@@ -357,13 +357,16 @@ function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix
   return fitResponseWithinPublicBounds(labelLength => {
     const rankedFilterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
     let summary
+    let startsWithCalendarLabel = false
     if (tied) {
       const labels = joinLabels(selected.map(row => displayLabel(row.label, labelLength)))
       summary = `${labels} are tied for the ${direction} ${noun} at ${formatMetric(plan, selected[0].value, selected[0].count)}.`
+      startsWithCalendarLabel = plan.groupBy === 'calendar-day'
       if (omittedTies) summary += ` And ${omittedTies} more are tied at the cutoff.`
     } else if (selected.length === 1) {
       const row = selected[0]
       summary = `${displayLabel(row.label, labelLength)} has the ${direction ? `${direction} ` : ''}${noun}: ${formatMetric(plan, row.value, row.count)}.`
+      startsWithCalendarLabel = plan.groupBy === 'calendar-day'
     } else {
       const heading = direction
         ? `${capitalize(direction)} ${noun}`
@@ -373,7 +376,9 @@ function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix
     }
     if (subjectNames.length) {
       const subjectName = summarizeLabels(subjectNames, { labelLength })
-      const subjectSummary = `${summary.charAt(0).toLocaleLowerCase('en-US')}${summary.slice(1)}`
+      const subjectSummary = startsWithCalendarLabel
+        ? summary
+        : `${summary.charAt(0).toLocaleLowerCase('en-US')}${summary.slice(1)}`
       summary = `For ${subjectName}, ${subjectSummary}`
     }
     const evidence = evidenceWithFilter(
@@ -423,30 +428,27 @@ function friendlyCalendarCountNoun(plan, context, labelLength) {
     if (plan.filters.status === 'Approved') {
       return { singular: `approved ${categoryLabel}credit`, plural: `approved ${categoryLabel}credits` }
     }
-    if (plan.filters.status === 'Pending') {
-      return { singular: `pending ${categoryLabel}Add Money request`, plural: `pending ${categoryLabel}Add Money requests` }
-    }
-    if (plan.filters.status === 'Denied') {
-      return { singular: `denied ${categoryLabel}Add Money request`, plural: `denied ${categoryLabel}Add Money requests` }
-    }
+    const qualifier = plan.filters.status === 'any'
+      ? ''
+      : `${plan.filters.status.toLocaleLowerCase('en-US')} `
+    const statusLabel = plan.filters.status === 'any' ? ' (any status)' : ''
     return {
-      singular: `${categoryLabel}Add Money transaction (any status)`,
-      plural: `${categoryLabel}Add Money transactions (any status)`,
+      singular: `${qualifier}${categoryLabel}Add Money transaction${statusLabel}`,
+      plural: `${qualifier}${categoryLabel}Add Money transactions${statusLabel}`,
     }
   }
   const qualifier = plan.filters.status === 'any'
     ? null
     : `${plan.filters.status.toLocaleLowerCase('en-US')} `
   if (plan.filters.transactionType === 'Subtract') {
-    return qualifier === null
-      ? {
-          singular: `${categoryLabel}Subtract Money transaction (any status)`,
-          plural: `${categoryLabel}Subtract Money transactions (any status)`,
-        }
-      : {
-          singular: `${qualifier}${categoryLabel}payment`,
-          plural: `${qualifier}${categoryLabel}payments`,
-        }
+    if (plan.filters.status === 'Approved') {
+      return { singular: `approved ${categoryLabel}payment`, plural: `approved ${categoryLabel}payments` }
+    }
+    const statusLabel = plan.filters.status === 'any' ? ' (any status)' : ''
+    return {
+      singular: `${qualifier ?? ''}${categoryLabel}Subtract Money transaction${statusLabel}`,
+      plural: `${qualifier ?? ''}${categoryLabel}Subtract Money transactions${statusLabel}`,
+    }
   }
   if (qualifier === null) {
     return {
@@ -652,6 +654,14 @@ function friendlyDateScope(dateScope, context) {
   if (dateScope === 'today') return 'today'
   if (dateScope === 'yesterday') return 'yesterday'
   if (dateScope === 'today-and-yesterday') return 'yesterday or today'
+  fail('answer-unavailable', 'The requested date scope is unsupported.')
+}
+
+function friendlyAggregateDateScope(dateScope, context) {
+  if (dateScope === 'period') return `over the last ${context.periodDays} days`
+  if (dateScope === 'today') return 'today'
+  if (dateScope === 'yesterday') return 'yesterday'
+  if (dateScope === 'today-and-yesterday') return 'across yesterday and today'
   fail('answer-unavailable', 'The requested date scope is unsupported.')
 }
 

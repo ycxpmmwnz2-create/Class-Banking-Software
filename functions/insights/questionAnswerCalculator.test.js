@@ -216,6 +216,148 @@ test('answers approved today-and-yesterday payments in direct teacher-friendly l
   assert.match(result.evidence.join(' '), /approved earning \(Add\) transactions/)
 })
 
+test('uses payment only for approved Subtract records and neutral wording for unresolved statuses', () => {
+  const technology = { alias: 'category-004', label: 'Technology' }
+  const cases = [
+    { transactionType: 'Add', status: 'Pending', noun: 'pending Technology Add Money transaction' },
+    { transactionType: 'Add', status: 'Denied', noun: 'denied Technology Add Money transaction' },
+    { transactionType: 'Subtract', status: 'Approved', noun: 'approved Technology payment' },
+    { transactionType: 'Subtract', status: 'Pending', noun: 'pending Technology Subtract Money transaction' },
+    { transactionType: 'Subtract', status: 'Denied', noun: 'denied Technology Subtract Money transaction' },
+  ]
+
+  for (const { transactionType, status, noun } of cases) {
+    const result = calculateQuestionAnswer({
+      kind: 'query',
+      plan: plan({
+        metric: 'count',
+        filters: {
+          ...filters,
+          subjectAliases: ['student-001'],
+          categoryAlias: technology.alias,
+          transactionType,
+          status,
+          dateScope: 'today',
+        },
+        groupBy: 'calendar-day',
+        order: 'chronological',
+      }),
+      evidence: {
+        ...evidence,
+        categories: [...evidence.categories, technology],
+        transactions: [{
+          id: 101,
+          studentId: 1,
+          date: '2026-08-20T16:00:00.000Z',
+          type: transactionType,
+          amount: 5,
+          categoryAlias: technology.alias,
+          purpose: 'other',
+          status,
+        }],
+      },
+    })
+
+    assert.equal(result.answer, `Genesis had 1 ${noun} today.`)
+  }
+})
+
+test('keeps technical dates out of aggregate headlines and capitalizes named-student calendar dates', () => {
+  const technology = { alias: 'category-004', label: 'Technology' }
+  const answerEvidence = {
+    ...evidence,
+    categories: [...evidence.categories, technology],
+    transactions: [{
+      id: 101,
+      studentId: 1,
+      date: '2026-08-20T16:00:00.000Z',
+      type: 'Add',
+      amount: 5,
+      categoryAlias: technology.alias,
+      purpose: 'other',
+      status: 'Approved',
+    }],
+  }
+  const aggregate = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: {
+        ...filters,
+        subjectAliases: ['student-001'],
+        categoryAlias: technology.alias,
+        transactionType: 'Add',
+        dateScope: 'today',
+      },
+      groupBy: 'none',
+    }),
+    evidence: answerEvidence,
+  })
+  const calendarAmount = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'amount-total',
+      filters: {
+        ...filters,
+        subjectAliases: ['student-001'],
+        categoryAlias: technology.alias,
+        transactionType: 'Add',
+        dateScope: 'today',
+      },
+      groupBy: 'calendar-day',
+      order: 'chronological',
+    }),
+    evidence: answerEvidence,
+  })
+  const multiDayEvidence = {
+    ...answerEvidence,
+    transactions: [
+      { ...answerEvidence.transactions[0], id: 102, date: '2026-08-18T16:00:00.000Z', amount: 5 },
+      { ...answerEvidence.transactions[0], id: 103, date: '2026-08-19T16:00:00.000Z', amount: 7 },
+    ],
+  }
+  const multiDayPlan = plan({
+    metric: 'amount-total',
+    filters: {
+      ...filters,
+      subjectAliases: ['student-001'],
+      categoryAlias: technology.alias,
+      transactionType: 'Add',
+      dateScope: 'period',
+    },
+    groupBy: 'calendar-day',
+    order: 'chronological',
+    limit: 8,
+  })
+  const multiDayChronological = calculateQuestionAnswer({
+    kind: 'query',
+    plan: multiDayPlan,
+    evidence: multiDayEvidence,
+  })
+  const multiDayHighest = calculateQuestionAnswer({
+    kind: 'query',
+    plan: { ...multiDayPlan, order: 'highest' },
+    evidence: multiDayEvidence,
+  })
+  const tiedCalendarDays = calculateQuestionAnswer({
+    kind: 'query',
+    plan: { ...multiDayPlan, order: 'highest', limit: 1 },
+    evidence: {
+      ...multiDayEvidence,
+      transactions: multiDayEvidence.transactions.map(transaction => ({ ...transaction, amount: 5 })),
+    },
+  })
+
+  assert.equal(aggregate.answer, 'The Technology transaction count is 1 transaction today.')
+  assert.doesNotMatch(aggregate.answer, /America\/Denver|2026/)
+  assert.match(aggregate.evidence.join(' '), /today \(2026-08-20 in America\/Denver\)/)
+  assert.match(calendarAmount.answer, /^For Genesis, Aug 20, 2026/)
+  assert.doesNotMatch(calendarAmount.answer, /^For Genesis, aug/)
+  assert.match(multiDayChronological.answer, /^For Genesis, by day:/)
+  assert.match(multiDayHighest.answer, /^For Genesis, highest Technology total amount:/)
+  assert.match(tiedCalendarDays.answer, /^For Genesis, Aug 18, 2026 and Aug 19, 2026 are tied/)
+})
+
 test('keeps calendar comparisons natural for yesterday-only, neither-day, and filtered class scopes', () => {
   const technology = { alias: 'category-004', label: 'Technology' }
   const comparisonPlan = plan({
