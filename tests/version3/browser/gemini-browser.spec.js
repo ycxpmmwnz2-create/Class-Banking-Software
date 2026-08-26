@@ -54,7 +54,7 @@ async function signIn(page, tenant) {
   return uid;
 }
 
-const RESTROOM_QUESTION = "Who has used the restroom the most?";
+const RESTROOM_QUESTION = "Who has used the restroom the most today?";
 const QUICK_CHOICES = Object.freeze([
   Object.freeze(["Lowest balances", "Who currently has the lowest balance?"]),
   Object.freeze(["Spending patterns", "What category are students spending the most money in?"]),
@@ -319,7 +319,7 @@ test("natural restroom question uses the exact five-field request and ranks visi
   await openApp(page);
   await signIn(page, TENANT_A);
   const storageBefore = await browserStorageSnapshot(page);
-  await page.locator("#providerQuestionInput").fill("Who has used the restroom the most?");
+  await page.locator("#providerQuestionInput").fill(RESTROOM_QUESTION);
   await page.getByTestId("provider-question-submit").click();
   await expect(page.getByTestId("provider-question-result")).toContainText(TENANT_A.studentName);
   await expect(page.getByTestId("provider-question-result")).toContainText("Bathroom break");
@@ -337,7 +337,7 @@ test("natural restroom question uses the exact five-field request and ranks visi
     "timeZone",
   ]);
   expect(calls[0]).toMatchObject({ kind: "question", periodDays: 30 });
-  expect(calls[0].question).toBe("Who has used the restroom the most?");
+  expect(calls[0].question).toBe(RESTROOM_QUESTION);
   expect(await browserStorageSnapshot(page)).toEqual(storageBefore);
 });
 
@@ -357,6 +357,31 @@ test("today-versus-yesterday submission question renders both calendar days", as
 
   const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
   expect(calls).toHaveLength(1);
+  expect(calls[0].question).toBe(question);
+});
+
+test("current-week payment question uses the exact safe request and server-calculated week", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  const question = `Has ${TENANT_A.studentName} been paid for Class job all three days this week or just yesterday?`;
+  await page.locator("#providerQuestionInput").fill(question);
+  await page.getByTestId("provider-question-submit").click();
+
+  const result = page.getByTestId("provider-question-result");
+  await expect(result).toContainText(TENANT_A.studentName);
+  await expect(result).toContainText("approved Class job credit");
+  await expect(result).toContainText("this week to date");
+  await expect(result).not.toContainText(TENANT_A.foreignName);
+
+  const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
+  expect(calls).toHaveLength(1);
+  expect(Object.keys(calls[0]).sort()).toEqual([
+    "kind",
+    "periodDays",
+    "question",
+    "requestId",
+    "timeZone",
+  ]);
   expect(calls[0].question).toBe(question);
 });
 

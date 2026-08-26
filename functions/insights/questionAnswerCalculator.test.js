@@ -6,6 +6,7 @@ import { calculateQuestionAnswer, InsightQuestionAnswerError } from './questionA
 const evidence = {
   configuredRentAmount: 10,
   periodDays: 30,
+  periodStart: '2026-07-21T18:00:00.000Z',
   timeZone: 'America/Denver',
   asOfDate: '2026-08-20',
   participants: [
@@ -122,7 +123,7 @@ test('compares submitted transactions across today and yesterday in the classroo
         dateScope: 'today-and-yesterday',
       },
       groupBy: 'calendar-day',
-      order: 'chronological',
+      order: 'highest',
       limit: 2,
     }),
     evidence: comparisonEvidence,
@@ -214,6 +215,144 @@ test('answers approved today-and-yesterday payments in direct teacher-friendly l
   )
   assert.doesNotMatch(result.answer, /Chronological|Included records|America\/Denver|2026/)
   assert.match(result.evidence.join(' '), /approved earning \(Add\) transactions/)
+})
+
+test('answers all elapsed days this week from server dates and includes zero-count days', () => {
+  const technology = { alias: 'category-004', label: 'Technology' }
+  const weekEvidence = {
+    ...evidence,
+    asOfDate: '2026-08-26',
+    categories: [...evidence.categories, technology],
+    transactions: [
+      { id: 201, studentId: 1, date: '2026-08-23T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+      { id: 202, studentId: 1, date: '2026-08-24T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+      { id: 203, studentId: 1, date: '2026-08-25T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+      { id: 204, studentId: 1, date: '2026-08-25T17:00:00.000Z', type: 'Add', amount: 5, categoryAlias: technology.alias, purpose: 'other', status: 'Approved' },
+    ],
+  }
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: {
+        ...filters,
+        subjectAliases: ['student-001'],
+        categoryAlias: technology.alias,
+        transactionType: 'Add',
+        status: 'Approved',
+        dateScope: 'this-week',
+      },
+      groupBy: 'calendar-day',
+      order: 'highest',
+      limit: 1,
+    }),
+    evidence: weekEvidence,
+  })
+
+  assert.equal(
+    result.answer,
+    'Genesis had 1 approved Technology credit on Monday, 2 yesterday, and none today.',
+  )
+  assert.doesNotMatch(result.answer, /Aug|2026|America\/Denver|Sunday/)
+  assert.match(result.evidence.join(' '), /Monday \(Aug 24, 2026\): 1 transaction/)
+  assert.match(result.evidence.join(' '), /Yesterday \(Aug 25, 2026\): 2 transactions/)
+  assert.match(result.evidence.join(' '), /Today \(Aug 26, 2026\): 0 transactions/)
+  assert.match(result.evidence.join(' '), /this week to date \(2026-08-24 through 2026-08-26 in America\/Denver\)/)
+  assert.doesNotMatch(result.evidence.join(' '), /Aug 23/)
+})
+
+test('keeps a full current-week answer within bounds when guidance and labels are long', () => {
+  const category = { alias: 'category-005', label: "Teacher's Choice" }
+  const guidance = (
+    'Use private check-ins and consistent earning opportunities to help students set a realistic goal without public comparisons. '
+      .repeat(3)
+      .slice(0, 236)
+      .trimEnd()
+  )
+  const result = calculateQuestionAnswer({
+    kind: 'query-and-guidance',
+    guidance,
+    plan: plan({
+      metric: 'count',
+      filters: {
+        ...filters,
+        categoryAlias: category.alias,
+        transactionType: 'Add',
+        status: 'any',
+        dateScope: 'this-week',
+      },
+      groupBy: 'calendar-day',
+      order: 'highest',
+      limit: 1,
+    }),
+    evidence: {
+      ...evidence,
+      periodDays: 7,
+      periodStart: '2026-08-23T06:30:00.000Z',
+      asOfDate: '2026-08-30',
+      categories: [...evidence.categories, category],
+      transactions: [],
+    },
+  })
+
+  assert.ok(result.answer.length <= 800)
+  assert.match(result.answer, /Counts for Teacher's Choice Add Money transactions \(any status\):/)
+  assert.equal(
+    result.answer.match(/Teacher's Choice Add Money transactions \(any status\)/gu)?.length,
+    1,
+  )
+  assert.match(result.answer, /on Monday.*yesterday.*today/u)
+  assert.match(result.answer, /General Morgan Bank guidance:/)
+})
+
+test('keeps the full local week across fall-back DST without widening the rolling period', () => {
+  const category = { alias: 'category-005', label: 'Technology' }
+  const dstEvidence = {
+    ...evidence,
+    periodDays: 7,
+    periodStart: '2026-10-26T06:30:00.000Z',
+    asOfDate: '2026-11-01',
+    categories: [...evidence.categories, category],
+    transactions: [{
+      id: 201,
+      studentId: 1,
+      date: '2026-10-26T06:20:00.000Z',
+      type: 'Add',
+      amount: 5,
+      categoryAlias: category.alias,
+      purpose: 'other',
+      status: 'Approved',
+    }],
+  }
+  const commonFilters = {
+    ...filters,
+    categoryAlias: category.alias,
+    transactionType: 'Add',
+    status: 'Approved',
+  }
+  const weekResult = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: { ...commonFilters, dateScope: 'this-week' },
+      groupBy: 'calendar-day',
+      order: 'chronological',
+      limit: 7,
+    }),
+    evidence: dstEvidence,
+  })
+  const periodResult = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: { ...commonFilters, dateScope: 'period' },
+      groupBy: 'none',
+    }),
+    evidence: dstEvidence,
+  })
+
+  assert.match(weekResult.answer, /^Counts for approved Technology credits: 1 on Monday/)
+  assert.equal(periodResult.answer, 'The Technology transaction count is 0 transactions over the last 7 days.')
 })
 
 test('uses payment only for approved Subtract records and neutral wording for unresolved statuses', () => {
@@ -625,6 +764,55 @@ test('lists current students without an approved exact rent payment today', () =
   assert.doesNotMatch(configuredAmount.answer, /configured rent amount of \$10\.00/)
   assert.match(configuredAmount.evidence.join(' '), /configured rent amount of \$10\.00/)
   assert.doesNotMatch(configuredAmount.answer, /Genesis.*no matching/)
+})
+
+test('applies the rolling cutoff consistently to missing-payment and current-week plans', () => {
+  const rentCategory = { alias: 'category-004', label: 'Rent' }
+  const dstEvidence = {
+    ...evidence,
+    configuredRentAmount: 10,
+    periodDays: 7,
+    periodStart: '2026-10-26T06:30:00.000Z',
+    asOfDate: '2026-11-01',
+    categories: [...evidence.categories, rentCategory],
+    transactions: [{
+      id: 201,
+      studentId: 1,
+      date: '2026-10-26T06:20:00.000Z',
+      type: 'Subtract',
+      amount: 10,
+      categoryAlias: rentCategory.alias,
+      purpose: 'rent',
+      status: 'Approved',
+    }],
+  }
+  const missingPlan = dateScope => ({
+    operation: 'students-without-transactions',
+    subjectAliases: [],
+    categoryAlias: null,
+    purpose: 'rent',
+    transactionType: 'Subtract',
+    status: 'Approved',
+    dateScope,
+    amountExact: 10,
+    studentState: 'any',
+    limit: 8,
+  })
+  const periodResult = calculateQuestionAnswer({
+    kind: 'query',
+    plan: missingPlan('period'),
+    evidence: dstEvidence,
+  })
+  const weekResult = calculateQuestionAnswer({
+    kind: 'query',
+    plan: missingPlan('this-week'),
+    evidence: dstEvidence,
+  })
+
+  assert.match(periodResult.answer, /^Yes\. 3 of 3 current students/)
+  assert.match(periodResult.answer, /Genesis.*Mateo.*Sofia/u)
+  assert.match(weekResult.answer, /^Yes\. 2 of 3 current students/)
+  assert.doesNotMatch(weekResult.answer, /Genesis.*no matching/u)
 })
 
 test('calculates a named student category ranking without sending facts to the model', () => {

@@ -11,7 +11,7 @@ import {
 } from './geminiQuestionAdapter.js'
 
 const providerInput = Object.freeze({
-  schemaVersion: 5,
+  schemaVersion: 6,
   question: 'Who has used the restroom the most?',
   subjectAliases: Object.freeze([]),
   subjectHints: Object.freeze([]),
@@ -43,11 +43,14 @@ test('question request uses the single regular Flash model with minimal thinking
   assert.match(request.config.systemInstruction, /submitted.*status any/i)
   assert.match(request.config.systemInstruction, /whether or did.*metric count/i)
   assert.match(request.config.systemInstruction, /today-versus-yesterday.*calendar-day/i)
+  assert.match(request.config.systemInstruction, /this week.*Monday.*server-calculated current classroom date/i)
+  assert.match(request.config.systemInstruction, /comparison of days this week.*calendar-day/i)
   assert.match(request.config.systemInstruction, /dataset students.*dateScope period/i)
   assert.match(request.config.systemInstruction, /subjectHints.*possible student alias/i)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /students-without-transactions/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /list-student-balances/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /today-and-yesterday/)
+  assert.match(JSON.stringify(request.config.responseJsonSchema), /this-week/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /calendar-day/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /guidance/)
   assert.doesNotMatch(JSON.stringify(request), /GianMarco/)
@@ -78,7 +81,7 @@ test('question adapter makes one injected call and accepts only structured inter
       calls += 1
       return {
         text: JSON.stringify({
-          schemaVersion: 5,
+          schemaVersion: 6,
           kind: 'query',
           plan: {
             dataset: 'transactions',
@@ -121,7 +124,7 @@ test('question adapter accepts a bounded Morgan Bank guidance route', async () =
       assert.match(request.config.systemInstruction, /must not claim that you inspected data/i)
       return {
         text: JSON.stringify({
-          schemaVersion: 5,
+          schemaVersion: 6,
           kind: 'guidance',
           plan: null,
           guidance,

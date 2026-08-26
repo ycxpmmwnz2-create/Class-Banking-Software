@@ -134,9 +134,9 @@ function calculateStudentsWithoutTransactions(plan, context, answerSuffix) {
   if (plan.status !== 'any') {
     transactions = transactions.filter(transaction => transaction.status === plan.status)
   }
-  if (plan.dateScope !== 'period') {
-    transactions = transactions.filter(transaction => matchesDateScope(transaction, plan.dateScope, context))
-  }
+  transactions = transactions.filter(transaction => (
+    matchesDateScope(transaction, plan.dateScope, context)
+  ))
   const amount = plan.amountExact ?? (
     plan.purpose === 'rent' && context.configuredRentAmount > 0
       ? context.configuredRentAmount
@@ -254,9 +254,9 @@ function calculateTransactionQuery(plan, context, answerSuffix) {
   if (filters.status !== 'any') {
     transactions = transactions.filter(transaction => transaction.status === filters.status)
   }
-  if (filters.dateScope !== 'period') {
-    transactions = transactions.filter(transaction => matchesDateScope(transaction, filters.dateScope, context))
-  }
+  transactions = transactions.filter(transaction => (
+    matchesDateScope(transaction, filters.dateScope, context)
+  ))
   if (filters.studentState !== 'any') {
     const frozen = filters.studentState === 'frozen'
     transactions = transactions.filter(transaction => (
@@ -345,7 +345,9 @@ function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix
       return {
         text: friendlyCalendarDaySummary({ selected, plan, context, subjectNames, labelLength }),
         evidence: evidenceWithFilter(selected.map(row => {
-          const relativeDay = friendlyCalendarDayLabel(row.key, context)
+          const relativeDay = plan.filters.dateScope === 'this-week'
+            ? friendlyThisWeekDayLabel(row.key, context).replace(/^on /u, '')
+            : friendlyCalendarDayLabel(row.key, context)
           return `${capitalize(relativeDay)} (${displayLabel(row.label, labelLength)}): ${formatMetric(plan, row.value, row.count)}.`
         }), filterContext),
       }
@@ -397,6 +399,22 @@ function friendlyCalendarDaySummary({ selected, plan, context, subjectNames, lab
     ? summarizeLabels(subjectNames, { labelLength })
     : null
   const countNoun = friendlyCalendarCountNoun(plan, context, labelLength)
+
+  if (plan.filters.dateScope === 'this-week') {
+    const ordered = [...selected].sort((left, right) => left.key.localeCompare(right.key, 'en-US'))
+    const clauses = ordered.map((row, index) => {
+      const day = friendlyThisWeekDayLabel(row.key, context)
+      const bareCount = row.value === 0 ? 'none' : String(row.value)
+      const count = index === 0 && subject
+        ? friendlyCount(row.value, countNoun)
+        : bareCount
+      return `${count} ${day}`
+    })
+    const summary = joinLabels(clauses)
+    return subject
+      ? `${subject} had ${summary}.`
+      : `Counts for ${countNoun.plural}: ${summary}.`
+  }
 
   if (plan.filters.dateScope === 'today-and-yesterday' && today && yesterday) {
     if (yesterday.value === 0 && today.value === 0) {
@@ -477,6 +495,13 @@ function friendlyCalendarDayLabel(key, context) {
   if (key === context.asOfDate) return 'today'
   if (key === shiftDateKey(context.asOfDate, -1)) return 'yesterday'
   return key
+}
+
+function friendlyThisWeekDayLabel(key, context) {
+  if (key === context.asOfDate) return 'today'
+  if (key === shiftDateKey(context.asOfDate, -1)) return 'yesterday'
+  const day = new Date(`${key}T00:00:00.000Z`).getUTCDay()
+  return `on ${DAY_LABELS[day]}`
 }
 
 function friendlyGroupHeading(groupBy) {
@@ -607,13 +632,17 @@ function timeBucketFor(date, timeZone) {
 }
 
 function matchesDateScope(transaction, dateScope, context) {
+  if (dateScope === 'period') return Date.parse(transaction.date) >= Date.parse(context.periodStart)
   const transactionDate = localDateKey(transaction.date, context.timeZone)
-  if (dateScope === 'period') return true
   if (dateScope === 'today') return transactionDate === context.asOfDate
   const yesterday = shiftDateKey(context.asOfDate, -1)
   if (dateScope === 'yesterday') return transactionDate === yesterday
   if (dateScope === 'today-and-yesterday') {
     return transactionDate === context.asOfDate || transactionDate === yesterday
+  }
+  if (dateScope === 'this-week') {
+    return transactionDate >= startOfWeekDateKey(context.asOfDate) &&
+      transactionDate <= context.asOfDate
   }
   fail('answer-unavailable', 'The requested date scope is unsupported.')
 }
@@ -624,6 +653,10 @@ function calendarDayGroupsForScope(dateScope, context) {
   if (dateScope === 'yesterday') return [calendarDayGroup(yesterday)]
   if (dateScope === 'today-and-yesterday') {
     return [calendarDayGroup(yesterday), calendarDayGroup(context.asOfDate)]
+  }
+  if (dateScope === 'this-week') {
+    return dateKeysBetween(startOfWeekDateKey(context.asOfDate), context.asOfDate)
+      .map(calendarDayGroup)
   }
   return []
 }
@@ -646,6 +679,9 @@ function describeDateScope(dateScope, context) {
   if (dateScope === 'today-and-yesterday') {
     return `today and yesterday (${yesterday} and ${context.asOfDate} in ${context.timeZone})`
   }
+  if (dateScope === 'this-week') {
+    return `this week to date (${startOfWeekDateKey(context.asOfDate)} through ${context.asOfDate} in ${context.timeZone})`
+  }
   fail('answer-unavailable', 'The requested date scope is unsupported.')
 }
 
@@ -654,6 +690,7 @@ function friendlyDateScope(dateScope, context) {
   if (dateScope === 'today') return 'today'
   if (dateScope === 'yesterday') return 'yesterday'
   if (dateScope === 'today-and-yesterday') return 'yesterday or today'
+  if (dateScope === 'this-week') return 'this week'
   fail('answer-unavailable', 'The requested date scope is unsupported.')
 }
 
@@ -662,6 +699,7 @@ function friendlyAggregateDateScope(dateScope, context) {
   if (dateScope === 'today') return 'today'
   if (dateScope === 'yesterday') return 'yesterday'
   if (dateScope === 'today-and-yesterday') return 'across yesterday and today'
+  if (dateScope === 'this-week') return 'this week'
   fail('answer-unavailable', 'The requested date scope is unsupported.')
 }
 
@@ -669,6 +707,18 @@ function shiftDateKey(dateKey, days) {
   const shifted = new Date(`${dateKey}T00:00:00.000Z`)
   shifted.setUTCDate(shifted.getUTCDate() + days)
   return shifted.toISOString().slice(0, 10)
+}
+
+function startOfWeekDateKey(dateKey) {
+  const date = new Date(`${dateKey}T00:00:00.000Z`)
+  const mondayOffset = (date.getUTCDay() + 6) % 7
+  return shiftDateKey(dateKey, -mondayOffset)
+}
+
+function dateKeysBetween(startKey, endKey) {
+  const keys = []
+  for (let key = startKey; key <= endKey; key = shiftDateKey(key, 1)) keys.push(key)
+  return keys
 }
 
 function localDateParts(date, timeZone) {
@@ -695,6 +745,7 @@ function validateEvidence(value) {
     !Number.isSafeInteger(value.configuredRentAmount) ||
     value.configuredRentAmount < 0 || value.configuredRentAmount > 1_000_000 ||
     ![7, 30, 90].includes(value.periodDays) || typeof value.timeZone !== 'string' ||
+    typeof value.periodStart !== 'string' || !Number.isFinite(Date.parse(value.periodStart)) ||
     typeof value.asOfDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.asOfDate)
   ) fail('answer-unavailable', 'The server answer evidence is malformed.')
 
@@ -786,7 +837,7 @@ function validatePlanForCalculation(plan) {
     !(plan.filters.categoryAlias === null || /^category-[0-9]{3}$/.test(plan.filters.categoryAlias)) ||
     !['Add', 'Subtract', 'any'].includes(plan.filters.transactionType) ||
     !['Approved', 'Pending', 'Denied', 'any'].includes(plan.filters.status) ||
-    !['period', 'today', 'yesterday', 'today-and-yesterday'].includes(plan.filters.dateScope) ||
+    !['period', 'today', 'yesterday', 'today-and-yesterday', 'this-week'].includes(plan.filters.dateScope) ||
     !(plan.filters.timeBucket === null || TIME_BUCKETS.some(bucket => bucket.id === plan.filters.timeBucket)) ||
     !['active', 'frozen', 'any'].includes(plan.filters.studentState)
   ) fail('answer-unavailable', 'The server query plan is malformed.')
@@ -816,7 +867,7 @@ function validateMissingTransactionPlanForCalculation(plan) {
     !['any', 'rent'].includes(plan.purpose) ||
     !['Add', 'Subtract', 'any'].includes(plan.transactionType) ||
     !['Approved', 'Pending', 'Denied', 'any'].includes(plan.status) ||
-    !['period', 'today', 'yesterday', 'today-and-yesterday'].includes(plan.dateScope) ||
+    !['period', 'today', 'yesterday', 'today-and-yesterday', 'this-week'].includes(plan.dateScope) ||
     !(plan.amountExact === null || (
       typeof plan.amountExact === 'number' && Number.isFinite(plan.amountExact) &&
       plan.amountExact > 0 && plan.amountExact <= 1_000_000

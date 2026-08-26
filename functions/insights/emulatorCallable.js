@@ -139,31 +139,35 @@ export function createVersion3GeminiEmulatorHandler({
           studentState: 'any',
           limit: 8,
         }
-      } else if (
-        category && /(did|whether|submit|request|attempt)/.test(normalized) &&
-        /(today|yesterday)/.test(normalized)
-      ) {
-        const hasToday = /today/.test(normalized)
-        const hasYesterday = /yesterday/.test(normalized)
-        plan = queryPlan({
-          metric: 'count',
-          subjectAliases,
-          categoryAlias: category.alias,
-          transactionType: 'Add',
-          status: 'any',
-          dateScope: hasToday && hasYesterday
-            ? 'today-and-yesterday'
-            : hasYesterday ? 'yesterday' : 'today',
-          groupBy: 'calendar-day',
-          order: 'chronological',
-          limit: hasToday && hasYesterday ? 2 : 1,
-        })
       } else if (category && /(who|which student)/.test(normalized)) {
         plan = queryPlan({
           metric: /(money|amount|dollar)/.test(normalized) ? 'amount-total' : 'count',
           categoryAlias: category.alias,
           transactionType: 'Subtract',
           groupBy: 'student',
+        })
+      } else if (
+        category && /\b(?:did|whether|has|submit(?:ted)?|request(?:ed)?|attempt(?:ed)?|paid|credit(?:ed)?|earn(?:ed)?|receive(?:d)?)\b/.test(normalized) &&
+        /(today|yesterday|this week|current week|week to date)/.test(normalized)
+      ) {
+        const hasToday = /today/.test(normalized)
+        const hasYesterday = /yesterday/.test(normalized)
+        const hasThisWeek = /(this week|current week|week to date)/.test(normalized)
+        const approvedOnly = /\b(?:paid|credit(?:ed)?|earn(?:ed)?|receive(?:d)?)\b/.test(normalized)
+        plan = queryPlan({
+          metric: 'count',
+          subjectAliases,
+          categoryAlias: category.alias,
+          transactionType: 'Add',
+          status: approvedOnly ? 'Approved' : 'any',
+          dateScope: hasThisWeek
+            ? 'this-week'
+            : hasToday && hasYesterday
+              ? 'today-and-yesterday'
+              : hasYesterday ? 'yesterday' : 'today',
+          groupBy: 'calendar-day',
+          order: 'chronological',
+          limit: hasThisWeek ? 7 : hasToday && hasYesterday ? 2 : 1,
         })
       } else if (/categor/.test(normalized) && /(earn|add|gain)/.test(normalized)) {
         plan = queryPlan({ subjectAliases, transactionType: 'Add', groupBy: 'category' })

@@ -113,9 +113,16 @@ export function createFirestoreQuestionEvidenceLoader({
     })
 
     const cutoff = generatedAt.getTime() - periodDays * 24 * 60 * 60 * 1000
+    const periodStart = new Date(cutoff).toISOString()
+    const currentWeekStart = startOfWeekDateKey(asOfDate)
+    const weekProbeFloor = cutoff - 26 * 60 * 60 * 1000
+    const generatedAtTime = generatedAt.getTime()
     const periodTransactions = raw.transactions.filter(transaction => {
       const timestamp = Date.parse(transaction.date)
-      return timestamp >= cutoff && timestamp <= generatedAt.getTime()
+      if (timestamp > generatedAtTime) return false
+      if (timestamp >= cutoff) return true
+      if (timestamp < weekProbeFloor) return false
+      return localDateKey(new Date(transaction.date), timeZone) >= currentWeekStart
     })
     const participants = buildParticipants(raw.students, periodTransactions)
     const studentIdentities = buildStudentIdentities(raw.students, periodTransactions)
@@ -174,6 +181,7 @@ export function createFirestoreQuestionEvidenceLoader({
         status: transaction.status,
       }))),
       periodDays,
+      periodStart,
       timeZone,
       asOfDate,
     })
@@ -214,7 +222,10 @@ export function createFirestoreQuestionEvidenceLoader({
         asOfDate,
         configuredRentAmount: raw.configuredRentAmount,
         students: raw.students,
-        transactions: periodTransactions,
+        transactions: periodTransactions.map(transaction => ({
+          ...transaction,
+          insideRollingPeriod: Date.parse(transaction.date) >= cutoff,
+        })),
       })).digest('hex'),
     })
   }
@@ -238,6 +249,13 @@ function localDateKey(date, timeZone) {
   })
   const parts = Object.fromEntries(formatter.formatToParts(date).map(part => [part.type, part.value]))
   return `${parts.year}-${parts.month}-${parts.day}`
+}
+
+function startOfWeekDateKey(dateKey) {
+  const date = new Date(`${dateKey}T00:00:00.000Z`)
+  const mondayOffset = (date.getUTCDay() + 6) % 7
+  date.setUTCDate(date.getUTCDate() - mondayOffset)
+  return date.toISOString().slice(0, 10)
 }
 
 function buildParticipants(students, transactions) {

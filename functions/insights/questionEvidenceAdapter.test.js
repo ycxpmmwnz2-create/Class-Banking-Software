@@ -112,7 +112,7 @@ test('replaces a full or unique partial roster name before constructing provider
       question,
     })
     assert.deepEqual(envelope.providerInput.subjectAliases, ['student-001'])
-    assert.equal(envelope.providerInput.schemaVersion, 5)
+    assert.equal(envelope.providerInput.schemaVersion, 6)
     assert.deepEqual(envelope.providerInput.categoryCatalog, [{
       alias: 'category-001',
       label: 'Class job',
@@ -930,6 +930,55 @@ test('reads only the active reciprocal tenant and bounds the period server-side'
     'classrooms/class-a/students|limit=501',
     'classrooms/class-a/transactions|limit=20001',
   ])
+})
+
+test('loads the full current local week across fall-back DST while recording the rolling cutoff', async () => {
+  const currentTime = new Date('2026-11-02T06:30:00.000Z')
+  const data = fixture({
+    'classrooms/class-a/transactions/101': {
+      ...fixture()['classrooms/class-a/transactions/101'],
+      date: '2026-10-26T06:20:00.000Z',
+      category: 'Technology',
+      reason: 'Technology',
+    },
+  })
+  const envelope = await loader(data, currentTime)({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 7,
+    timeZone: 'America/Denver',
+    question: 'Were there Technology credits this week?',
+  })
+
+  assert.equal(envelope.answerEvidence.asOfDate, '2026-11-01')
+  assert.equal(envelope.answerEvidence.periodStart, '2026-10-26T06:30:00.000Z')
+  assert.equal(envelope.answerEvidence.transactions.length, 1)
+  assert.equal(envelope.answerEvidence.transactions[0].date, '2026-10-26T06:20:00.000Z')
+})
+
+test('changes replay identity when the rolling cutoff crosses a retained current-week transaction', async () => {
+  const data = fixture({
+    'classrooms/class-a/transactions/101': {
+      ...fixture()['classrooms/class-a/transactions/101'],
+      date: '2026-10-26T06:20:00.000Z',
+    },
+  })
+  const request = {
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 7,
+    timeZone: 'America/Denver',
+    question: 'Were there Class job credits this week?',
+  }
+  const before = await loader(data, new Date('2026-11-02T06:15:00.000Z'))(request)
+  const stable = await loader(data, new Date('2026-11-02T06:16:00.000Z'))(request)
+  const after = await loader(data, new Date('2026-11-02T06:30:00.000Z'))(request)
+
+  assert.equal(before.answerEvidence.transactions.length, 1)
+  assert.equal(stable.answerEvidence.transactions.length, 1)
+  assert.equal(after.answerEvidence.transactions.length, 1)
+  assert.equal(before.evidenceSignature, stable.evidenceSignature)
+  assert.notEqual(before.evidenceSignature, after.evidenceSignature)
 })
 
 test('shared partial student subjects request a full name while duplicate full names and contact details fail', async () => {

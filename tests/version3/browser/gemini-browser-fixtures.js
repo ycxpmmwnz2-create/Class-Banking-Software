@@ -90,7 +90,7 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
     amount: 25,
     reason: tenant.reason,
     memo: "",
-    category: "",
+    category: tenant.reason,
     status: "Pending",
     source: "Student",
   };

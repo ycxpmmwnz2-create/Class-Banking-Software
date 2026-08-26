@@ -34,8 +34,8 @@ const SYSTEM_INSTRUCTION = [
   'When the teacher asks whether a transaction was submitted, requested, or attempted, use status any unless a status is explicit. When the teacher asks what was credited, added to a balance, earned, paid, or completed, use status Approved.',
   'For whether or did a matching transaction happen, use metric count.',
   'Use transactionType Subtract for spending, losing money, purchases, or use of a paid category; Add for earning or receiving; otherwise any.',
-  'Interpret today and yesterday in the classroom time zone. Use dateScope today, yesterday, or today-and-yesterday when the question names those periods; otherwise use period.',
-  'For which day, what date, or a today-versus-yesterday comparison, group by calendar-day and order chronologically.',
+  'Interpret relative dates in the classroom time zone. Use dateScope today, yesterday, or today-and-yesterday when the question names those periods. Use dateScope this-week for this week, the current week, or week to date; this-week means Monday through the server-calculated current classroom date. Otherwise use period.',
+  'For which day, what date, a today-versus-yesterday comparison, or a comparison of days this week, group by calendar-day and order chronologically.',
   'For which current students did not have a matching transaction, use operation students-without-transactions instead of the ordinary dataset query plan.',
   'For unpaid rent, use purpose rent, transactionType Subtract, status Approved, categoryAlias null, and use amountExact and dateScope today only when the teacher asks for that exact amount or today.',
   'A query result must have a complete plan. A guidance result must have guidance text. Only query-and-guidance may contain both.',
@@ -76,7 +76,7 @@ const PLAN_SCHEMA = Object.freeze({
         status: Object.freeze({ type: 'string', enum: Object.freeze(['Approved', 'Pending', 'Denied', 'any']) }),
         dateScope: Object.freeze({
           type: 'string',
-          enum: Object.freeze(['period', 'today', 'yesterday', 'today-and-yesterday']),
+          enum: Object.freeze(['period', 'today', 'yesterday', 'today-and-yesterday', 'this-week']),
         }),
         timeBucket: NULLABLE_TIME_BUCKET,
         studentState: Object.freeze({ type: 'string', enum: Object.freeze(['active', 'frozen', 'any']) }),
@@ -116,7 +116,7 @@ const MISSING_TRANSACTION_PLAN_SCHEMA = Object.freeze({
     status: Object.freeze({ type: 'string', enum: Object.freeze(['Approved', 'Pending', 'Denied', 'any']) }),
     dateScope: Object.freeze({
       type: 'string',
-      enum: Object.freeze(['period', 'today', 'yesterday', 'today-and-yesterday']),
+      enum: Object.freeze(['period', 'today', 'yesterday', 'today-and-yesterday', 'this-week']),
     }),
     amountExact: Object.freeze({
       anyOf: Object.freeze([

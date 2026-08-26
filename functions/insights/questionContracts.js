@@ -1,5 +1,5 @@
 export const INSIGHT_QUESTION_SCHEMA_VERSION = 2
-export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 5
+export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 6
 
 export const INSIGHT_QUERY_DATASETS = Object.freeze(['transactions', 'students'])
 export const INSIGHT_QUERY_METRICS = Object.freeze([
@@ -31,7 +31,13 @@ const TRANSACTION_STATUSES = Object.freeze(['Approved', 'Pending', 'Denied', 'an
 const TIME_BUCKETS = Object.freeze(['morning', 'afternoon', 'evening', 'night'])
 const STUDENT_STATES = Object.freeze(['active', 'frozen', 'any'])
 const TRANSACTION_PURPOSES = Object.freeze(['any', 'rent'])
-const DATE_SCOPES = Object.freeze(['period', 'today', 'yesterday', 'today-and-yesterday'])
+const DATE_SCOPES = Object.freeze([
+  'period',
+  'today',
+  'yesterday',
+  'today-and-yesterday',
+  'this-week',
+])
 const MAX_EXACT_AMOUNT = 1_000_000
 const MIN_GUIDANCE_LENGTH = 20
 const MAX_GUIDANCE_LENGTH = 480
