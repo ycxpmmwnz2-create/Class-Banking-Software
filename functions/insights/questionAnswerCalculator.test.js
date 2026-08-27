@@ -1132,6 +1132,21 @@ test('reports no matches instead of synthetic zero-dollar averages', () => {
 })
 
 test('calculator independently enforces the canonical cross-field plan rules', () => {
+  const repeatedTransactions = plan({
+    metric: 'count',
+    groupBy: 'composite',
+    groupByFields: ['student', 'category'],
+    having: { comparator: 'at-least', value: 2 },
+    limit: 8,
+  })
+  const distinctCategories = plan({
+    metric: 'distinct-values',
+    groupBy: 'student',
+    distinctBy: 'category',
+    having: { comparator: 'at-least', value: 2 },
+    limit: 8,
+  })
+
   for (const invalidPlan of [
     plan({
       dataset: 'students',
@@ -1140,8 +1155,19 @@ test('calculator independently enforces the canonical cross-field plan rules', (
     }),
     plan({ metric: 'net-amount', filters: { ...filters, transactionType: 'Add' } }),
     plan({ order: 'chronological' }),
+    { ...repeatedTransactions, groupByFields: ['student'] },
+    { ...repeatedTransactions, groupByFields: ['student', 'student'] },
+    { ...repeatedTransactions, having: { comparator: 'around', value: 2 } },
+    { ...repeatedTransactions, having: { comparator: 'at-least', value: 1.5 } },
+    { ...repeatedTransactions, filters: { ...repeatedTransactions.filters, amountMinimum: 10, amountMaximum: 5 } },
+    { ...repeatedTransactions, groupBy: 'student' },
+    { ...distinctCategories, distinctBy: null },
+    { ...distinctCategories, metric: 'count' },
   ]) {
-    assert.throws(() => calculateQuestionAnswer({ kind: 'query', plan: invalidPlan, evidence }), InsightQuestionAnswerError)
+    assert.throws(
+      () => calculateQuestionAnswer({ kind: 'query', plan: invalidPlan, evidence }),
+      error => error instanceof InsightQuestionAnswerError && error.category === 'answer-unavailable',
+    )
   }
 })
 
