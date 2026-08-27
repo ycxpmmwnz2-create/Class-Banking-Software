@@ -21,11 +21,6 @@ import {
   validateTeacherQuestionResponse,
 } from './questionContracts.js'
 import { InsightQuestionEvidenceError } from './questionEvidenceAdapter.js'
-import {
-  QUESTION_ANSWER_MAX_OUTPUT_TOKENS,
-  QUESTION_ANSWER_MAX_THINKING_TOKENS,
-  QUESTION_ANSWER_WRITER_SCHEMA_VERSION,
-} from './geminiQuestionAdapter.js'
 
 const RESERVATION_FAILURE_MESSAGES = Object.freeze({
   'allowance-exhausted': 'The monthly AI allowance is exhausted.',
@@ -130,47 +125,15 @@ export function createInsightQuestionService(dependencies) {
         guidance: interpretation.guidance,
         evidence: envelope.answerEvidence,
       })
-      let finalAnswer = calculated.answer
-      let combinedUsage = interpretation.usage
-      if (shouldWriteNaturalAnswer(deps.answerWriter, interpretation)) {
-        try {
-          const writerInput = buildAnswerWriterInput({
-            request,
-            envelope,
-            interpretation,
-          })
-          const written = validateWrittenAnswerResult(
-            await deps.answerWriter.writeAnswer({ writerInput }),
-            writerInput,
-          )
-          finalAnswer = restoreStudentAliases(written.answer, envelope.answerEvidence)
-          combinedUsage = combineProviderUsage(interpretation.usage, written.usage)
-        } catch {
-          await retainWorstCaseReservation(deps.usageLedger, {
-            reservationId: acceptedReservation.reservationId,
-            requestId: request.requestId,
-            worstCaseCostMicroUsd: quote.worstCaseCostMicroUsd,
-          })
-          return buildTeacherResponse({
-            calculated,
-            envelope,
-            generatedAt: now.toISOString(),
-            usage: Object.freeze({
-              ...interpretation.usage,
-              costMicroUsd: quote.worstCaseCostMicroUsd,
-            }),
-          })
-        }
-      }
       const actualCostMicroUsd = validateActualCost(
         await deps.priceActualUsage({
           rateCardId: quote.rateCardId,
-          usage: combinedUsage,
+          usage: interpretation.usage,
         }),
         quote.worstCaseCostMicroUsd,
       )
       const billedUsage = Object.freeze({
-        ...combinedUsage,
+        ...interpretation.usage,
         costMicroUsd: actualCostMicroUsd,
       })
       const completed = Object.freeze({
@@ -186,7 +149,6 @@ export function createInsightQuestionService(dependencies) {
       })
       const teacherResponse = buildTeacherResponse({
         calculated,
-        finalAnswer,
         envelope,
         generatedAt: completed.generatedAt,
         usage: billedUsage,
@@ -218,14 +180,14 @@ export function createInsightQuestionService(dependencies) {
   }
 }
 
-function buildTeacherResponse({ calculated, finalAnswer = calculated.answer, envelope, generatedAt, usage }) {
+function buildTeacherResponse({ calculated, envelope, generatedAt, usage }) {
   try {
     return validateTeacherQuestionResponse({
       schemaVersion: INSIGHT_QUESTION_SCHEMA_VERSION,
       source: 'ai-grounded',
       periodDays: envelope.answerEvidence.periodDays,
       generatedAt,
-      answer: finalAnswer,
+      answer: calculated.answer,
       evidence: calculated.evidence,
       usage,
     })
@@ -246,176 +208,6 @@ function calculateGroundedAnswer(input) {
     }
     throw error
   }
-}
-
-function shouldWriteNaturalAnswer(answerWriter, interpretation) {
-  if (!isPlainObject(answerWriter) || typeof answerWriter.writeAnswer !== 'function') return false
-  if (!['query', 'query-and-guidance'].includes(interpretation.kind)) return false
-  return interpretation.plan?.operation !== 'list-student-balances'
-}
-
-function buildAnswerWriterInput({ request, envelope, interpretation }) {
-  const safeCalculated = calculateGroundedAnswer({
-    kind: interpretation.kind,
-    plan: interpretation.plan,
-    guidance: interpretation.guidance,
-    evidence: deidentifyAnswerEvidence(envelope.answerEvidence),
-  })
-  const providerQuestion = envelope.providerInput.question
-  const studentAliases = collectStudentAliases([
-    providerQuestion,
-    safeCalculated.answer,
-    ...safeCalculated.evidence,
-  ])
-  const evidenceAliases = new Set(envelope.answerEvidence.participants.map(participant => participant.alias))
-  if (studentAliases.some(alias => !evidenceAliases.has(alias))) {
-    throw new InsightQuestionServiceError(
-      'evidence-not-deidentified',
-      'The grounded answer-writing input contains an unapproved student alias.',
-    )
-  }
-  return Object.freeze({
-    schemaVersion: QUESTION_ANSWER_WRITER_SCHEMA_VERSION,
-    question: providerQuestion,
-    draftAnswer: safeCalculated.answer,
-    details: safeCalculated.evidence,
-    studentAliases: Object.freeze(studentAliases),
-    periodDays: request.periodDays,
-  })
-}
-
-function deidentifyAnswerEvidence(evidence) {
-  const aliasById = new Map(evidence.participants.map(participant => (
-    [participant.id, participant.alias]
-  )))
-  return Object.freeze({
-    ...evidence,
-    participants: Object.freeze(evidence.participants.map(participant => Object.freeze({
-      ...participant,
-      name: `[${participant.alias}]`,
-    }))),
-    students: Object.freeze(evidence.students.map(student => Object.freeze({
-      ...student,
-      name: `[${aliasById.get(student.id) || student.alias}]`,
-    }))),
-  })
-}
-
-function collectStudentAliases(values) {
-  const aliases = []
-  const seen = new Set()
-  for (const value of values) {
-    for (const match of String(value).matchAll(/\[(student-[0-9]{3})\]/gu)) {
-      if (seen.has(match[1])) continue
-      seen.add(match[1])
-      aliases.push(match[1])
-    }
-  }
-  if (aliases.length > 40) {
-    throw new InsightQuestionServiceError(
-      'answer-unavailable',
-      'The grounded answer-writing input contains too many student aliases.',
-    )
-  }
-  return aliases
-}
-
-function validateWrittenAnswerResult(value, writerInput) {
-  if (!isPlainObject(value) || !hasExactKeys(value, ['schemaVersion', 'answer', 'usage'])) {
-    throw new InsightQuestionServiceError('provider-output-invalid', 'The AI answer-writing result is malformed.')
-  }
-  if (
-    value.schemaVersion !== QUESTION_ANSWER_WRITER_SCHEMA_VERSION ||
-    typeof value.answer !== 'string' || value.answer.length < 1 || value.answer.length > 480 ||
-    value.answer.trim() !== value.answer || hasDisallowedAnswerText(value.answer) ||
-    !isPlainObject(value.usage) || !hasExactKeys(
-      value.usage,
-      ['inputTokens', 'outputTokens', 'thinkingTokens'],
-    )
-  ) {
-    throw new InsightQuestionServiceError('provider-output-invalid', 'The AI answer-writing result is malformed.')
-  }
-  for (const field of ['inputTokens', 'outputTokens', 'thinkingTokens']) {
-    if (!Number.isSafeInteger(value.usage[field]) || value.usage[field] < 0) {
-      throw new InsightQuestionServiceError('provider-output-invalid', 'The AI answer-writing usage is malformed.')
-    }
-  }
-  if (
-    value.usage.outputTokens > QUESTION_ANSWER_MAX_OUTPUT_TOKENS ||
-    value.usage.thinkingTokens > QUESTION_ANSWER_MAX_THINKING_TOKENS
-  ) {
-    throw new InsightQuestionServiceError('provider-output-invalid', 'The AI answer-writing usage exceeds its reservation.')
-  }
-
-  const usedAliases = collectStudentAliases([value.answer])
-  if (usedAliases.some(alias => !writerInput.studentAliases.includes(alias))) {
-    throw new InsightQuestionServiceError('provider-output-invalid', 'The AI answer contains an unapproved student alias.')
-  }
-  if (
-    writerInput.studentAliases.length === 1 &&
-    writerInput.draftAnswer.includes(`[${writerInput.studentAliases[0]}]`) &&
-    !usedAliases.includes(writerInput.studentAliases[0])
-  ) {
-    throw new InsightQuestionServiceError('provider-output-invalid', 'The AI answer omitted the selected student.')
-  }
-  const withoutApprovedPlaceholders = value.answer.replace(/\[student-[0-9]{3}\]/gu, '')
-  if (
-    /(?:student|category)-[0-9]{3}/iu.test(withoutApprovedPlaceholders) ||
-    /\[(?:student|category)(?:-[0-9]{3})?\]/iu.test(withoutApprovedPlaceholders)
-  ) {
-    throw new InsightQuestionServiceError('provider-output-invalid', 'The AI answer contains an unsupported alias.')
-  }
-
-  const groundingText = `${writerInput.draftAnswer} ${writerInput.details.join(' ')}`
-  const allowedNumbers = new Set(numberTokens(groundingText))
-  if (numberTokens(withoutApprovedPlaceholders).some(number => !allowedNumbers.has(number))) {
-    throw new InsightQuestionServiceError('provider-output-invalid', 'The AI answer contains an unsupported number.')
-  }
-  return Object.freeze({
-    schemaVersion: QUESTION_ANSWER_WRITER_SCHEMA_VERSION,
-    answer: value.answer,
-    usage: Object.freeze({ ...value.usage }),
-  })
-}
-
-function hasDisallowedAnswerText(value) {
-  return [...value].some(character => {
-    const codePoint = character.codePointAt(0)
-    return codePoint === 127 || codePoint < 32
-  }) || /(?:https?:\/\/|www\.)/iu.test(value)
-}
-
-function numberTokens(value) {
-  return String(value).match(/\d+(?:[,.]\d+)*/gu) ?? []
-}
-
-function restoreStudentAliases(value, evidence) {
-  const namesByAlias = new Map(evidence.participants.map(participant => (
-    [participant.alias, participant.name]
-  )))
-  const restored = value.replace(/\[(student-[0-9]{3})\]/gu, (placeholder, alias) => {
-    const name = namesByAlias.get(alias)
-    if (typeof name !== 'string' || !name) {
-      throw new InsightQuestionServiceError('answer-unavailable', 'The selected student is unavailable.')
-    }
-    return name
-  })
-  if (/(?:student|category)-[0-9]{3}|\[(?:student|category)/iu.test(restored)) {
-    throw new InsightQuestionServiceError('answer-unavailable', 'The restored answer contains an unresolved alias.')
-  }
-  return restored
-}
-
-function combineProviderUsage(first, second) {
-  const combined = {}
-  for (const field of ['inputTokens', 'outputTokens', 'thinkingTokens']) {
-    const value = first[field] + second[field]
-    if (!Number.isSafeInteger(value) || value < 0) {
-      throw new InsightQuestionServiceError('cost-policy-unavailable', 'The combined AI usage is malformed.')
-    }
-    combined[field] = value
-  }
-  return Object.freeze(combined)
 }
 
 function validateEvidenceEnvelope(value) {
@@ -673,12 +465,6 @@ function validateDependencies(value) {
   }
   if (!isPlainObject(value.provider) || typeof value.provider.interpret !== 'function') {
     throw new TypeError('provider.interpret must be a function.')
-  }
-  if (
-    value.answerWriter !== undefined &&
-    (!isPlainObject(value.answerWriter) || typeof value.answerWriter.writeAnswer !== 'function')
-  ) {
-    throw new TypeError('answerWriter.writeAnswer must be a function when supplied.')
   }
   if (
     !isPlainObject(value.usageLedger) ||

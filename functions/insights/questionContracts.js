@@ -49,8 +49,8 @@ const MAX_GUIDANCE_LENGTH = 480
 const MAX_TEACHER_QUESTION_ANSWER_LENGTH = 80_000
 const MAX_INTERPRETATION_OUTPUT_TOKENS = 384
 const MAX_INTERPRETATION_THINKING_TOKENS = 4_096
-const MAX_BILLED_OUTPUT_TOKENS = 640
-const MAX_BILLED_THINKING_TOKENS = 8_192
+const MAX_BILLED_OUTPUT_TOKENS = 384
+const MAX_BILLED_THINKING_TOKENS = 4_096
 const PROVIDER_ALIAS_PATTERN = /(?:student|category)-[0-9]{3}/iu
 const PROVIDER_PLACEHOLDER_PATTERN = /\[(?:student|category)(?:-[0-9]{3})?\]/iu
 const URL_PATTERN = /(?:https?:\/\/|www\.)/iu
@@ -250,7 +250,7 @@ function validateQueryPlan(value, allowed, category) {
     !INSIGHT_QUERY_METRICS.includes(value.metric) ||
     !INSIGHT_QUERY_GROUPS.includes(value.groupBy) ||
     !INSIGHT_QUERY_ORDERS.includes(value.order) ||
-    !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 40 ||
+    !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 500 ||
     !TRANSACTION_TYPES.includes(value.filters.transactionType) ||
     !TRANSACTION_STATUSES.includes(value.filters.status) ||
     !DATE_SCOPES.includes(value.filters.dateScope) ||
@@ -350,6 +350,12 @@ export function questionQueryPlanCoherenceError(value) {
       value.filters.timeBucket !== null ||
       value.order === 'chronological'
     ) return 'The balance query plan is inconsistent.'
+    if (balanceCondition !== 'any' && isBalanceRanking && value.limit !== 500) {
+      return 'A filtered current-balance list must include the complete current roster.'
+    }
+    if (balanceCondition === 'any' && isBalanceRanking && value.limit > 8) {
+      return 'An unfiltered balance ranking cannot exceed eight students.'
+    }
     return null
   }
   if (value.dataset === 'balance-history') {
@@ -357,12 +363,14 @@ export function questionQueryPlanCoherenceError(value) {
       value.metric !== 'closing-balance' || value.groupBy !== 'calendar-day' ||
       value.filters.subjectAliases.length !== 1 || value.filters.categoryAlias !== null ||
       value.filters.transactionType !== 'any' || value.filters.status !== 'any' ||
-      value.filters.dateScope !== 'period' || value.filters.lookbackDays === null ||
+      value.filters.dateScope !== 'period' || lookbackDays === null ||
       value.filters.timeBucket !== null || value.filters.studentState !== 'any' ||
-      balanceCondition !== 'any' || value.order !== 'chronological'
+      balanceCondition !== 'any' || value.order !== 'chronological' ||
+      value.limit !== lookbackDays
     ) return 'The balance-history query plan is inconsistent.'
     return null
   }
+  if (value.limit > 90) return 'A transaction query cannot return more than ninety groups.'
   if (['current-balance', 'average-balance', 'closing-balance'].includes(value.metric)) {
     return 'A transaction query cannot read balances.'
   }

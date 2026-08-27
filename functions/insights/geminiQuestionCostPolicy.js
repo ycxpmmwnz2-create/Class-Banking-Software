@@ -2,33 +2,14 @@ import { Buffer } from 'node:buffer'
 
 import { GEMINI_RATE_CARD } from './geminiCostPolicy.js'
 import {
-  QUESTION_ANSWER_MAX_OUTPUT_TOKENS,
-  QUESTION_ANSWER_MAX_THINKING_TOKENS,
-  QUESTION_ANSWER_WRITER_SCHEMA_VERSION,
   QUESTION_MAX_OUTPUT_TOKENS,
   QUESTION_MAX_THINKING_TOKENS,
-  buildGeminiAnswerRequest,
   buildGeminiQuestionRequest,
 } from './geminiQuestionAdapter.js'
 import { GEMINI_RATE_CARD_ID } from './geminiProviderAdapter.js'
 
 const TOKENS_PER_MILLION = 1_000_000
 const INPUT_TOKEN_SAFETY_MARGIN = 1_024
-const MAXIMUM_ANSWER_WRITER_REQUEST_BYTES = Buffer.byteLength(JSON.stringify(
-  buildGeminiAnswerRequest({
-    writerInput: {
-      schemaVersion: QUESTION_ANSWER_WRITER_SCHEMA_VERSION,
-      question: 'q'.repeat(500),
-      draftAnswer: 'a'.repeat(3_200),
-      details: Array.from({ length: 8 }, () => 'd'.repeat(320)),
-      studentAliases: Array.from(
-        { length: 40 },
-        (_, index) => `student-${String(index + 1).padStart(3, '0')}`,
-      ),
-      periodDays: 90,
-    },
-  }),
-), 'utf8')
 
 export class GeminiQuestionCostPolicyError extends Error {
   constructor(category, message) {
@@ -40,15 +21,12 @@ export class GeminiQuestionCostPolicyError extends Error {
 
 export function quoteGeminiQuestionWorstCaseCost({ providerInput } = {}) {
   const request = buildGeminiQuestionRequest({ providerInput })
-  const inputTokens = Buffer.byteLength(JSON.stringify(request), 'utf8') +
-    MAXIMUM_ANSWER_WRITER_REQUEST_BYTES +
-    (INPUT_TOKEN_SAFETY_MARGIN * 2)
+  const inputTokens = Buffer.byteLength(JSON.stringify(request), 'utf8') + INPUT_TOKEN_SAFETY_MARGIN
   return Object.freeze({
     rateCardId: GEMINI_RATE_CARD_ID,
     worstCaseCostMicroUsd: price({
       inputTokens,
-      billedOutputTokens: QUESTION_MAX_OUTPUT_TOKENS + QUESTION_MAX_THINKING_TOKENS +
-        QUESTION_ANSWER_MAX_OUTPUT_TOKENS + QUESTION_ANSWER_MAX_THINKING_TOKENS,
+      billedOutputTokens: QUESTION_MAX_OUTPUT_TOKENS + QUESTION_MAX_THINKING_TOKENS,
     }),
   })
 }
@@ -69,8 +47,8 @@ export function priceGeminiQuestionActualUsage({ rateCardId, usage } = {}) {
     }
   }
   if (
-    usage.outputTokens > QUESTION_MAX_OUTPUT_TOKENS + QUESTION_ANSWER_MAX_OUTPUT_TOKENS ||
-    usage.thinkingTokens > QUESTION_MAX_THINKING_TOKENS + QUESTION_ANSWER_MAX_THINKING_TOKENS
+    usage.outputTokens > QUESTION_MAX_OUTPUT_TOKENS ||
+    usage.thinkingTokens > QUESTION_MAX_THINKING_TOKENS
   ) {
     fail('invalid-usage', 'AI question usage exceeds its reservation.')
   }

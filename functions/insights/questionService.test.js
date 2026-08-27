@@ -157,18 +157,15 @@ test('resolves tenant, sanitizes evidence, reserves, interprets, calculates, and
   assert.match(stored, /student-001|amount-total/)
 })
 
-test('uses a second grounded provider pass for a natural answer and restores names only on the server', async () => {
-  let capturedWriterInput
+test('ignores an injected factual answer writer and uses only the server-calculated answer', async () => {
+  let writerCalls = 0
   const fixture = dependencies({
     answerWriter: {
-      async writeAnswer({ writerInput }) {
-        capturedWriterInput = writerInput
-        assert.doesNotMatch(JSON.stringify(writerInput), /GianMarco|teacher-a|class-a/)
-        assert.match(writerInput.draftAnswer, /\[student-001\]/)
-        assert.match(writerInput.draftAnswer, /\$20\.00/)
+      async writeAnswer() {
+        writerCalls += 1
         return {
           schemaVersion: 1,
-          answer: '[student-001] earned the most from Class job, totaling $20.00.',
+          answer: 'GianMarco did not receive any Class job money.',
           usage: { inputTokens: 80, outputTokens: 16, thinkingTokens: 0 },
         }
       },
@@ -178,11 +175,12 @@ test('uses a second grounded provider pass for a natural answer and restores nam
     auth: { uid: 'teacher-a' },
     data: request,
   })
-  assert.ok(capturedWriterInput)
-  assert.equal(result.answer, 'GianMarco earned the most from Class job, totaling $20.00.')
+  assert.equal(writerCalls, 0)
+  assert.match(result.answer, /GianMarco.*class job.*\$20\.00/i)
+  assert.doesNotMatch(result.answer, /did not receive/)
   assert.deepEqual(result.usage, {
-    inputTokens: 170,
-    outputTokens: 34,
+    inputTokens: 90,
+    outputTokens: 18,
     thinkingTokens: 0,
     costMicroUsd: 25_000,
   })

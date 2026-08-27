@@ -372,7 +372,7 @@ test("current-week payment question uses the exact safe request and server-calcu
   const result = page.getByTestId("provider-question-result");
   await expect(result).toContainText(TENANT_A.studentName);
   await expect(result.locator(".insights-answer-copy")).toHaveText(
-    `${TENANT_A.studentName} was paid for Class job on all 3 days this week, not just yesterday.`,
+    `${TENANT_A.studentName} received approved Class job credits on 3 different days this week.`,
   );
   await expect(result.locator(".insights-answer-copy")).not.toContainText("Calculation");
   await expect(result.locator(".insights-answer-copy")).not.toContainText("transaction count");
@@ -396,7 +396,7 @@ test("general analytics lists every current negative balance", async ({ page }) 
   await page.locator("#providerQuestionInput").fill("Which students currently have a negative balance?");
   await page.getByTestId("provider-question-submit").click();
   const answer = page.getByTestId("provider-question-result").locator(".insights-answer-copy");
-  await expect(answer).toContainText(`Students currently in the negative: ${TENANT_A.classmateName} (-$5.00)`);
+  await expect(answer).toContainText(`1 current student has a negative balance: ${TENANT_A.classmateName} (-$5.00)`);
   await expect(answer).not.toContainText(TENANT_A.studentName);
 });
 
@@ -406,8 +406,9 @@ test("general analytics answers a named student's 10-day balance history", async
   await page.locator("#providerQuestionInput").fill(`Show ${TENANT_A.studentName}'s account balance over the last 10 days.`);
   await page.getByTestId("provider-question-submit").click();
   const answer = page.getByTestId("provider-question-result").locator(".insights-answer-copy");
-  await expect(answer).toContainText(`${TENANT_A.studentName} currently has $45.00.`);
-  await expect(answer).toContainText("daily balance history");
+  await expect(answer).toContainText(`${TENANT_A.studentName}'s end-of-day balance`);
+  await expect(answer).toContainText("$45.00");
+  await expect(answer).toContainText("over the last 10 days");
 });
 
 test("general analytics answers when approved money is given out most", async ({ page }) => {
@@ -416,7 +417,7 @@ test("general analytics answers when approved money is given out most", async ({
   await page.locator("#providerQuestionInput").fill("Around what time of day is money given out the most?");
   await page.getByTestId("provider-question-submit").click();
   const answer = page.getByTestId("provider-question-result").locator(".insights-answer-copy");
-  await expect(answer).toContainText("Money was given out most during the");
+  await expect(answer).toContainText("Money was added most during the");
   await expect(answer).toContainText("$36.00");
   await expect(answer).not.toContainText("highest total amount");
   await expect(answer).not.toContainText(TENANT_A.foreignName);

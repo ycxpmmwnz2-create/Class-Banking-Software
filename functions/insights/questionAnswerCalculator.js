@@ -61,11 +61,9 @@ export function calculateQuestionAnswer({ kind, plan, guidance = null, evidence 
 function calculateQueryAnswer(plan, context, answerSuffix = '') {
   if (plan.operation === 'analyze') {
     const results = plan.queries.map(query => calculateQueryAnswer(query, context))
-    const text = results.map((result, index) => (
-      results.length === 1 ? result.answer : `Calculation ${index + 1}: ${result.answer}`
-    )).join(' ')
+    const text = results.map(result => result.answer).join(' ')
     const evidence = results.flatMap((result, index) => result.evidence.map(item => (
-      results.length === 1 ? item : `Calculation ${index + 1}: ${item}`
+      results.length === 1 ? item : `Part ${index + 1}: ${item}`
     ))).slice(0, 8)
     const combined = `${text}${answerSuffix}`
     return answer(combined, evidence.length ? evidence : ['The requested calculations completed.'], MAX_ANALYSIS_ANSWER_LENGTH)
@@ -245,7 +243,43 @@ function calculateStudentQuery(plan, context, answerSuffix) {
     count: 1,
     chronological: student.alias,
   }))
+  if (balanceCondition !== 'any') {
+    return renderCompleteBalanceConditionList({
+      rows,
+      plan,
+      context,
+      balanceCondition,
+      answerSuffix,
+    })
+  }
   return renderRows({ rows, plan, context, noun: 'current balance', answerSuffix })
+}
+
+function renderCompleteBalanceConditionList({ rows, plan, context, balanceCondition, answerSuffix }) {
+  const sorted = sortRows(rows, plan.order)
+  const condition = friendlyBalanceCondition(balanceCondition)
+  if (!sorted.length) {
+    return answer(
+      `No current students ${condition.plural}.${answerSuffix}`,
+      [`Current roster students matching ${balanceCondition} balances: 0. Records checked: ${describeQueryFilters(plan, context)}.`],
+    )
+  }
+  const entries = sorted.map(row => `${displayLabel(row.label, 120)} (${money(row.value)})`)
+  const conditionText = sorted.length === 1 ? condition.singular : condition.plural
+  const text = `${sorted.length} current ${sorted.length === 1 ? 'student' : 'students'} ${conditionText}: ${joinLabels(entries)}.${answerSuffix}`
+  return answer(
+    text,
+    [`Every matching current student is included; matching students: ${sorted.length}. Records checked: ${describeQueryFilters(plan, context)}.`],
+    MAX_STUDENT_BALANCE_LIST_ANSWER_LENGTH,
+  )
+}
+
+function friendlyBalanceCondition(condition) {
+  if (condition === 'negative') return { singular: 'has a negative balance', plural: 'have negative balances' }
+  if (condition === 'zero') return { singular: 'has a $0.00 balance', plural: 'have a $0.00 balance' }
+  if (condition === 'positive') return { singular: 'has a positive balance', plural: 'have positive balances' }
+  if (condition === 'nonpositive') return { singular: 'has a balance at or below $0.00', plural: 'have balances at or below $0.00' }
+  fail('answer-unavailable', 'The requested balance condition is unsupported.')
 }
 
 function calculateTransactionQuery(plan, context, answerSuffix) {
@@ -344,14 +378,20 @@ function calculateBalanceHistoryQuery(plan, context, answerSuffix) {
     const group = calendarDayGroup(dateKey)
     return { ...group, value, count: 1 }
   })
-  return renderRows({
-    rows,
-    plan,
-    context,
-    noun: 'end-of-day balance',
-    subjectNames: [student.name],
-    answerSuffix,
-  })
+  const first = rows[0]
+  const last = rows.at(-1)
+  const scope = friendlyAggregateDateScope('period', context, plan.filters.lookbackDays)
+  const text = rows.length === 1
+    ? `${student.name}'s end-of-day balance was ${money(last.value)} today.${answerSuffix}`
+    : first.value === last.value
+      ? `${student.name}'s end-of-day balance stayed at ${money(last.value)} ${scope}.${answerSuffix}`
+      : `${student.name}'s end-of-day balance changed from ${money(first.value)} to ${money(last.value)} ${scope}.${answerSuffix}`
+  const dailyEntries = rows.map(row => `${compactDateLabel(row.key)} ${money(row.value)}`)
+  const evidence = [
+    ...packEvidenceEntries(dailyEntries, 'Daily balances: ', 7),
+    `Records checked: ${describeQueryFilters(plan, context)}.`,
+  ]
+  return answer(text, evidence)
 }
 
 function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix = '' }) {
@@ -399,7 +439,9 @@ function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix
     return fitResponseWithinPublicBounds(labelLength => {
       const filterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
       return {
-        text: `The ${noun} is ${formatMetric(plan, row.value, row.count)}${periodSuffix}.`,
+        text: plan.metric === 'distinct-days'
+          ? friendlyDistinctDaysSummary({ row, plan, context, subjectNames, labelLength })
+          : `The ${noun} is ${formatMetric(plan, row.value, row.count)}${periodSuffix}.`,
         evidence: [`${evidenceLine(row, plan, labelLength)} Included records: ${filterContext}.`],
       }
     }, answerSuffix)
@@ -422,6 +464,31 @@ function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix
 
   const direction = plan.order === 'lowest' ? 'lowest' : plan.order === 'highest' ? 'highest' : null
   const tied = direction && selected.length > 1 && selected.every(row => row.value === selected[0].value)
+  if (plan.groupBy === 'time-of-day' && plan.metric === 'amount-total' && direction) {
+    return fitResponseWithinPublicBounds(labelLength => {
+      const filterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
+      const category = plan.filters.categoryAlias === null
+        ? ''
+        : `${displayLabel(context.categoriesByAlias.get(plan.filters.categoryAlias)?.label || '', labelLength)} `
+      const subject = subjectNames.length
+        ? `For ${summarizeLabels(subjectNames, { labelLength })}, `
+        : ''
+      const action = plan.filters.transactionType === 'Add'
+        ? `${category}money was added`
+        : plan.filters.transactionType === 'Subtract'
+          ? `${category}money was subtracted`
+          : `${category}transaction activity was`
+      const bucketLabels = selected.map(row => row.key)
+      const subjectAction = subject ? action : capitalize(action)
+      const summary = tied
+        ? `${subject}${subjectAction} ${direction === 'highest' ? 'most' : 'least'} during ${joinLabels(bucketLabels)}, with ${money(selected[0].value)} in each.`
+        : `${subject}${subjectAction} ${direction === 'highest' ? 'most' : 'least'} during the ${selected[0].key}, totaling ${money(selected[0].value)}.`
+      return {
+        text: summary,
+        evidence: evidenceWithFilter(selected.slice(0, 4).map(row => evidenceLine(row, plan, labelLength)), filterContext),
+      }
+    }, answerSuffix)
+  }
   return fitResponseWithinPublicBounds(labelLength => {
     const rankedFilterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
     let summary
@@ -469,7 +536,8 @@ function renderPeriodCalendarCountSummary({ rows, plan, context, subjectNames, a
   return fitResponseWithinPublicBounds(labelLength => {
     const countNoun = friendlyCalendarCountNoun(plan, context, labelLength)
     const dayCount = matchingDays.length
-    const period = `the last ${plan.filters.lookbackDays ?? context.periodDays} days`
+    const days = plan.filters.lookbackDays ?? context.periodDays
+    const period = days === 1 ? 'today' : `the last ${days} days`
     const yesterdayConclusion = includesYesterday ? 'including yesterday' : 'but not yesterday'
     const text = subject
       ? `${subject} had ${countNoun.plural} on ${dayCount} ${dayCount === 1 ? 'day' : 'days'} in ${period}, ${yesterdayConclusion}.`
@@ -573,6 +641,43 @@ function friendlyCalendarCountNoun(plan, context, labelLength) {
     singular: `${qualifier}${categoryLabel}transaction`,
     plural: `${qualifier}${categoryLabel}transactions`,
   }
+}
+
+function friendlyDistinctDaysSummary({ row, plan, context, subjectNames, labelLength }) {
+  const category = plan.filters.categoryAlias === null
+    ? ''
+    : `${displayLabel(context.categoriesByAlias.get(plan.filters.categoryAlias)?.label || '', labelLength)} `
+  let activity
+  let subjectVerb = 'had matching'
+  if (plan.filters.transactionType === 'Add' && plan.filters.status === 'Approved') {
+    activity = `approved ${category}credits`
+    subjectVerb = 'received'
+  } else if (plan.filters.transactionType === 'Subtract' && plan.filters.status === 'Approved') {
+    activity = `approved ${category}payments`
+    subjectVerb = 'made'
+  } else if (plan.filters.transactionType === 'Add') {
+    activity = `${category}Add Money transactions`
+  } else if (plan.filters.transactionType === 'Subtract') {
+    activity = `${category}Subtract Money transactions`
+  } else {
+    activity = `${category}transactions`
+  }
+  const scope = friendlyAggregateDateScope(
+    plan.filters.dateScope,
+    context,
+    plan.filters.lookbackDays,
+  )
+  const subject = subjectNames.length
+    ? summarizeLabels(subjectNames, { labelLength })
+    : null
+  if (row.value === 0) {
+    return subject
+      ? `${subject} had no ${activity} ${scope}.`
+      : `There were no matching ${activity} ${scope}.`
+  }
+  return subject
+    ? `${subject} ${subjectVerb} ${activity} on ${row.value} different ${row.value === 1 ? 'day' : 'days'} ${scope}.`
+    : `${capitalize(activity)} were recorded on ${row.value} different ${row.value === 1 ? 'day' : 'days'} ${scope}.`
 }
 
 function friendlyCount(value, noun) {
@@ -743,10 +848,10 @@ function timeBucketFor(date, timeZone) {
 
 function matchesDateScope(transaction, dateScope, context, lookbackDays = null) {
   if (dateScope === 'period') {
-    const start = lookbackDays === null
-      ? Date.parse(context.periodStart)
-      : Date.parse(context.generatedAt) - lookbackDays * 24 * 60 * 60 * 1000
-    return Date.parse(transaction.date) >= start
+    if (lookbackDays === null) return Date.parse(transaction.date) >= Date.parse(context.periodStart)
+    const transactionDate = localDateKey(transaction.date, context.timeZone)
+    const startKey = shiftDateKey(context.asOfDate, -(lookbackDays - 1))
+    return transactionDate >= startKey && transactionDate <= context.asOfDate
   }
   const transactionDate = localDateKey(transaction.date, context.timeZone)
   if (dateScope === 'today') return transactionDate === context.asOfDate
@@ -787,7 +892,14 @@ function calendarDayGroup(key) {
 }
 
 function describeDateScope(dateScope, context, lookbackDays = null) {
-  if (dateScope === 'period') return `the last ${lookbackDays ?? context.periodDays} days`
+  if (dateScope === 'period') {
+    const days = lookbackDays ?? context.periodDays
+    if (lookbackDays === null) return `the last ${days} ${days === 1 ? 'day' : 'days'}`
+    const startKey = shiftDateKey(context.asOfDate, -(days - 1))
+    return days === 1
+      ? `today (${context.asOfDate} in ${context.timeZone})`
+      : `the last ${days} days by classroom date (${startKey} through ${context.asOfDate} in ${context.timeZone})`
+  }
   if (dateScope === 'today') return `today (${context.asOfDate} in ${context.timeZone})`
   const yesterday = shiftDateKey(context.asOfDate, -1)
   if (dateScope === 'yesterday') return `yesterday (${yesterday} in ${context.timeZone})`
@@ -801,7 +913,10 @@ function describeDateScope(dateScope, context, lookbackDays = null) {
 }
 
 function friendlyDateScope(dateScope, context, lookbackDays = null) {
-  if (dateScope === 'period') return `the last ${lookbackDays ?? context.periodDays} days`
+  if (dateScope === 'period') {
+    const days = lookbackDays ?? context.periodDays
+    return days === 1 ? 'today' : `the last ${days} days`
+  }
   if (dateScope === 'today') return 'today'
   if (dateScope === 'yesterday') return 'yesterday'
   if (dateScope === 'today-and-yesterday') return 'yesterday or today'
@@ -810,7 +925,10 @@ function friendlyDateScope(dateScope, context, lookbackDays = null) {
 }
 
 function friendlyAggregateDateScope(dateScope, context, lookbackDays = null) {
-  if (dateScope === 'period') return `over the last ${lookbackDays ?? context.periodDays} days`
+  if (dateScope === 'period') {
+    const days = lookbackDays ?? context.periodDays
+    return days === 1 ? 'today' : `over the last ${days} days`
+  }
   if (dateScope === 'today') return 'today'
   if (dateScope === 'yesterday') return 'yesterday'
   if (dateScope === 'today-and-yesterday') return 'across yesterday and today'
@@ -834,6 +952,35 @@ function dateKeysBetween(startKey, endKey) {
   const keys = []
   for (let key = startKey; key <= endKey; key = shiftDateKey(key, 1)) keys.push(key)
   return keys
+}
+
+function compactDateLabel(dateKey) {
+  const [, month, day] = dateKey.split('-').map(Number)
+  return `${month}/${day}`
+}
+
+function packEvidenceEntries(entries, prefix, maximumLines) {
+  const lines = []
+  let current = prefix
+  for (const entry of entries) {
+    const separator = current === prefix ? '' : '; '
+    if (`${current}${separator}${entry}`.length <= MAX_EVIDENCE_LENGTH) {
+      current += `${separator}${entry}`
+      continue
+    }
+    lines.push(current)
+    current = entry
+    if (lines.length === maximumLines) break
+  }
+  if (lines.length < maximumLines && current && current !== prefix) lines.push(current)
+  if (lines.length > maximumLines) return lines.slice(0, maximumLines)
+  const included = lines.join('; ').match(/\d{1,2}\/\d{1,2} /gu)?.length ?? 0
+  if (included < entries.length) {
+    const disclosure = `${entries.length - included} more daily balances are omitted from these details.`
+    if (lines.length < maximumLines) lines.push(disclosure)
+    else lines[lines.length - 1] = disclosure
+  }
+  return lines
 }
 
 function localDateParts(date, timeZone) {
@@ -963,7 +1110,7 @@ function validatePlanForCalculation(plan) {
     !['count', 'distinct-days', 'amount-total', 'amount-average', 'net-amount', 'current-balance', 'average-balance', 'closing-balance'].includes(plan.metric) ||
     !['none', 'student', 'category', 'time-of-day', 'calendar-day', 'day-of-week', 'week'].includes(plan.groupBy) ||
     !['highest', 'lowest', 'chronological'].includes(plan.order) ||
-    !Number.isSafeInteger(plan.limit) || plan.limit < 1 || plan.limit > 40 ||
+    !Number.isSafeInteger(plan.limit) || plan.limit < 1 || plan.limit > 500 ||
     !Array.isArray(plan.filters.subjectAliases) || plan.filters.subjectAliases.length > 8 ||
     plan.filters.subjectAliases.some(alias => !/^student-[0-9]{3}$/.test(alias)) ||
     new Set(plan.filters.subjectAliases).size !== plan.filters.subjectAliases.length ||

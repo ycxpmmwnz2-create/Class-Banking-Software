@@ -125,3 +125,22 @@ only its future-wiring assumptions:
 This evolution does not authorize browser wiring, a real provider, provider
 credentials, model or price selection, App Check claims, staging, production,
 billing, deployment, commit, or push.
+
+## Teacher question route evolution
+
+The later, separately approved `askTeacherQuestionV3` route uses Gemini only to
+interpret a teacher's natural-language question into one through four bounded,
+read-only query plans. Firebase Functions remains the sole calculator and the
+sole author of factual answer text. There is no second provider pass that may
+rewrite, reverse, or otherwise replace the server-calculated conclusion. A
+completed request therefore replays the same calculated wording without a new
+provider call.
+
+To support explicit custom windows up to 90 classroom days, the evidence
+adapter retains a bounded 90-day transaction view before applying the selected
+query window. The provider still receives no transactions, balances, amounts,
+counts, tenant identifiers, or raw reasons. Its identity and category
+vocabulary can include bounded opaque student aliases, single-word subject
+hints, and safe category labels derived from that retained 90-day view, even
+when the browser's selected summary period is shorter. All facts and final
+names remain server-side.

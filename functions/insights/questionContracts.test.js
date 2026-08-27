@@ -371,7 +371,7 @@ test('provider can request one through four general calculations with custom win
     },
     groupBy: 'student',
     order: 'lowest',
-    limit: 40,
+    limit: 500,
   }
   const plan = { operation: 'analyze', queries: [transactionQuery, balanceQuery] }
   assert.deepEqual(validateQuestionInterpretation({
@@ -395,6 +395,80 @@ test('provider can request one through four general calculations with custom win
     guidance: null,
     usage,
   }, allowed), InsightQuestionContractError)
+})
+
+test('provider can count and average students regardless of an inert aggregate limit', () => {
+  const filteredStudentFilters = {
+    ...restroomPlan.filters,
+    categoryAlias: null,
+    transactionType: 'any',
+    status: 'any',
+    lookbackDays: null,
+    balanceCondition: 'negative',
+  }
+  for (const metric of ['count', 'average-balance']) {
+    for (const { balanceCondition, limit } of [
+      { balanceCondition: 'negative', limit: 1 },
+      { balanceCondition: 'any', limit: 500 },
+    ]) {
+      const aggregate = {
+        dataset: 'students',
+        metric,
+        filters: { ...filteredStudentFilters, balanceCondition },
+        groupBy: 'none',
+        order: 'highest',
+        limit,
+      }
+      assert.deepEqual(validateQuestionInterpretation({
+        schemaVersion: 7,
+        kind: 'query',
+        plan: aggregate,
+        guidance: null,
+        usage,
+      }, allowed).plan, aggregate)
+    }
+  }
+})
+
+test('provider limits prevent incomplete balance rankings and oversized transaction results', () => {
+  const studentFilters = {
+    ...restroomPlan.filters,
+    categoryAlias: null,
+    transactionType: 'any',
+    status: 'any',
+    lookbackDays: null,
+  }
+  const invalidPlans = [
+    {
+      dataset: 'students',
+      metric: 'current-balance',
+      filters: { ...studentFilters, balanceCondition: 'negative' },
+      groupBy: 'student',
+      order: 'lowest',
+      limit: 8,
+    },
+    {
+      dataset: 'students',
+      metric: 'current-balance',
+      filters: { ...studentFilters, balanceCondition: 'any' },
+      groupBy: 'student',
+      order: 'lowest',
+      limit: 9,
+    },
+    { ...restroomPlan, limit: 91 },
+  ]
+  for (const invalidPlan of invalidPlans) {
+    assert.throws(() => validateQuestionInterpretation({
+      schemaVersion: 7,
+      kind: 'query',
+      plan: invalidPlan,
+      guidance: null,
+      usage,
+    }, allowed), error => (
+      error instanceof InsightQuestionContractError &&
+      error.category === 'invalid-provider-output'
+    ))
+  }
 })
 
 test('provider can request a named student balance history without gaining a balance write path', () => {
@@ -428,6 +502,21 @@ test('provider can request a named student balance history without gaining a bal
     guidance: null,
     usage,
   }, allowed), InsightQuestionContractError)
+  for (const invalidHistory of [
+    { ...history, filters: { ...history.filters, lookbackDays: undefined } },
+    { ...history, limit: 9 },
+  ]) {
+    assert.throws(() => validateQuestionInterpretation({
+      schemaVersion: 7,
+      kind: 'query',
+      plan: invalidHistory,
+      guidance: null,
+      usage,
+    }, allowed), error => (
+      error instanceof InsightQuestionContractError &&
+      error.category === 'invalid-provider-output'
+    ))
+  }
 })
 
 test('teacher response accepts only calculated answer text, bounded evidence, and billed usage', () => {

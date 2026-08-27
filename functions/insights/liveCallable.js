@@ -55,7 +55,6 @@ export function createVersion3GeminiLiveHandler({
     loadQuestionEvidence,
     quoteWorstCaseCost: quoteGeminiQuestionWorstCaseCost,
     provider: questionProvider,
-    answerWriter: questionProvider,
     priceActualUsage: priceGeminiQuestionActualUsage,
     usageLedger,
   })

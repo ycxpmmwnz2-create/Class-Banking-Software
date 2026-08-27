@@ -39,8 +39,8 @@ test('question pricing rejects mismatched cards and usage above either output ce
   }) > 0)
   for (const input of [
     { rateCardId: 'browser-selected', usage: { inputTokens: 1, outputTokens: 1, thinkingTokens: 0 } },
-    { rateCardId: GEMINI_RATE_CARD_ID, usage: { inputTokens: 1, outputTokens: 641, thinkingTokens: 0 } },
-    { rateCardId: GEMINI_RATE_CARD_ID, usage: { inputTokens: 1, outputTokens: 1, thinkingTokens: 8_193 } },
+    { rateCardId: GEMINI_RATE_CARD_ID, usage: { inputTokens: 1, outputTokens: 385, thinkingTokens: 0 } },
+    { rateCardId: GEMINI_RATE_CARD_ID, usage: { inputTokens: 1, outputTokens: 1, thinkingTokens: 4_097 } },
   ]) {
     assert.throws(() => priceGeminiQuestionActualUsage(input), GeminiQuestionCostPolicyError)
   }

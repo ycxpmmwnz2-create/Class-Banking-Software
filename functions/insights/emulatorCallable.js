@@ -246,7 +246,7 @@ export function createVersion3GeminiEmulatorHandler({
           },
           groupBy: /average|mean/.test(normalized) ? 'none' : 'student',
           order: negative || /lowest/.test(normalized) ? 'lowest' : 'highest',
-          limit: negative ? 40 : subjectAliases.length ? 1 : 8,
+          limit: negative ? 500 : subjectAliases.length ? 1 : 8,
         }
       } else if (/pending/.test(normalized)) {
         plan = queryPlan({ metric: 'count', status: 'Pending', groupBy: 'none' })
@@ -270,33 +270,6 @@ export function createVersion3GeminiEmulatorHandler({
         usage: { inputTokens: 90, outputTokens: 18, thinkingTokens: 0 },
       }
     },
-    async writeAnswer({ writerInput }) {
-      const normalized = writerInput.question.toLocaleLowerCase('en-US')
-      const moneyDirection = classifyMoneyDirection(normalized)
-      const alias = writerInput.studentAliases[0]
-      let answer = writerInput.draftAnswer.replace(/\s+/gu, ' ').trim()
-      if (alias && /(?:all\s+(?:three|3)|3\s+days).*just yesterday/.test(normalized)) {
-        const category = normalized.includes('class job') ? 'Class job' : 'the requested category'
-        answer = `[${alias}] was paid for ${category} on all 3 days this week, not just yesterday.`
-      } else if (/negative|below\s+(?:zero|\$?0)|under\s+\$?0/.test(normalized)) {
-        const entries = [...answer.matchAll(
-          /(\[student-[0-9]{3}\])(?: has the (?:highest|lowest) current balance: | \()(-?\$[0-9,]+(?:\.[0-9]{2})?)\)?/gu,
-        )].map(match => `${match[1]} (${match[2]})`)
-        if (entries.length) answer = `Students currently in the negative: ${entries.join(', ')}.`
-      } else if (alias && /balance/.test(normalized) && /(?:last|past|over|across)\s+\d+\s+days/.test(normalized)) {
-        const current = [...answer.matchAll(/\(\$([0-9,.]+)\)/gu)].at(-1)?.[1]
-        if (current) answer = `[${alias}] currently has $${current}. The daily balance history for the requested period is in the details.`
-      } else if (/\b(?:when|time|hour)\b/.test(normalized)) {
-        const peak = answer.match(/\b(morning|afternoon|evening|night)\b[^$]*(\$[0-9,]+(?:\.[0-9]{2})?)/iu)
-        if (peak && moneyDirection.added) answer = `Money was given out most during the ${peak[1].toLocaleLowerCase('en-US')}, totaling ${peak[2]}.`
-        if (peak && moneyDirection.subtracted) answer = `Money was subtracted most during the ${peak[1].toLocaleLowerCase('en-US')}, totaling ${peak[2]}.`
-      }
-      return {
-        schemaVersion: 1,
-        answer: answer.slice(0, 480),
-        usage: { inputTokens: 80, outputTokens: 24, thinkingTokens: 0 },
-      }
-    },
   })
   const askQuestion = createInsightQuestionService({
     now,
@@ -309,7 +282,6 @@ export function createVersion3GeminiEmulatorHandler({
       }
     },
     provider: questionProvider,
-    answerWriter: questionProvider,
     async priceActualUsage() {
       return FAKE_ACTUAL_COST_MICRO_USD
     },

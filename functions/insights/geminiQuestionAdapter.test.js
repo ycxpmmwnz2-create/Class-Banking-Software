@@ -6,7 +6,6 @@ import {
 } from './geminiProviderAdapter.js'
 import {
   GeminiQuestionAdapterError,
-  buildGeminiAnswerRequest,
   buildGeminiQuestionRequest,
   createGeminiQuestionAdapter,
 } from './geminiQuestionAdapter.js'
@@ -50,7 +49,9 @@ test('question request uses the single regular Flash model with minimal thinking
   assert.match(request.config.systemInstruction, /subjectHints.*possible student alias/i)
   assert.match(request.config.systemInstruction, /one through four independent queries/i)
   assert.match(request.config.systemInstruction, /balance-history.*closing-balance/i)
-  assert.match(request.config.systemInstruction, /balanceCondition negative/i)
+  assert.match(request.config.systemInstruction, /negative.*balanceCondition/i)
+  assert.match(request.config.systemInstruction, /limit 500/i)
+  assert.equal(request.config.responseJsonSchema.properties.plan.anyOf[1].properties.queries.items.properties.limit.maximum, 500)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /students-without-transactions/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /list-student-balances/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /today-and-yesterday/)
@@ -60,40 +61,9 @@ test('question request uses the single regular Flash model with minimal thinking
   assert.doesNotMatch(JSON.stringify(request), /GianMarco/)
 })
 
-test('answer writer receives only bounded calculated facts and produces structured natural text', async () => {
-  const writerInput = {
-    schemaVersion: 1,
-    question: 'Was [student-001] paid on all 3 days or just yesterday?',
-    draftAnswer: 'The distinct day count is 3 distinct days this week.',
-    details: ['Matching records: 3 distinct days on 2026-08-18, 2026-08-19, and 2026-08-20.'],
-    studentAliases: ['student-001'],
-    periodDays: 30,
-  }
-  const request = buildGeminiAnswerRequest({ writerInput })
-  assert.equal(request.model, GEMINI_MODEL_ID)
-  assert.equal(request.config.maxOutputTokens, 256)
-  assert.match(request.config.systemInstruction, /actual question directly/i)
-  assert.match(request.config.systemInstruction, /only factual authority/i)
-  assert.doesNotMatch(JSON.stringify(request), /GianMarco|teacher-a|class-a/)
-
-  const adapter = createGeminiQuestionAdapter({
-    async generateContentOnce() {
-      return {
-        text: JSON.stringify({ schemaVersion: 1, answer: '[student-001] was paid on all 3 days this week.' }),
-        usageMetadata: {
-          promptTokenCount: 70,
-          candidatesTokenCount: 14,
-          thoughtsTokenCount: 0,
-          totalTokenCount: 84,
-        },
-      }
-    },
-  })
-  assert.deepEqual(await adapter.writeAnswer({ writerInput }), {
-    schemaVersion: 1,
-    answer: '[student-001] was paid on all 3 days this week.',
-    usage: { inputTokens: 70, outputTokens: 14, thinkingTokens: 0 },
-  })
+test('question adapter exposes only interpretation so factual prose stays server-calculated', () => {
+  const adapter = createGeminiQuestionAdapter({ async generateContentOnce() {} })
+  assert.deepEqual(Object.keys(adapter), ['interpret'])
 })
 
 test('question request carries only bounded single-word subject hints for model disambiguation', () => {

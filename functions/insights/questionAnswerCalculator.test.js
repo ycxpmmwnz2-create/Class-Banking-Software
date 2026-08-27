@@ -919,6 +919,42 @@ test('answers broad roster questions about student count, frozen accounts, and a
   assert.match(average.answer, /average current balance is \$64\.00/)
   assert.match(average.evidence[0], /across 3 students/)
 
+  const negativeCount = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      dataset: 'students',
+      metric: 'count',
+      filters: { ...filters, status: 'any', balanceCondition: 'negative' },
+      groupBy: 'none',
+    }),
+    evidence: {
+      ...evidence,
+      students: evidence.students.map((student, index) => ({
+        ...student,
+        balance: index < 2 ? -(index + 1) : student.balance,
+      })),
+    },
+  })
+  assert.match(negativeCount.answer, /student count is 2 students/)
+
+  const negativeAverage = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      dataset: 'students',
+      metric: 'average-balance',
+      filters: { ...filters, status: 'any', balanceCondition: 'negative' },
+      groupBy: 'none',
+    }),
+    evidence: {
+      ...evidence,
+      students: evidence.students.map((student, index) => ({
+        ...student,
+        balance: index < 2 ? -(index + 1) : student.balance,
+      })),
+    },
+  })
+  assert.match(negativeAverage.answer, /average current balance is -\$1\.50/)
+
   const comparison = calculateQuestionAnswer({
     kind: 'query',
     plan: plan({
@@ -1280,7 +1316,7 @@ test('answers distinct-day alternatives without dumping every transaction count'
       ],
     },
   })
-  assert.match(result.answer, /3 distinct days this week/)
+  assert.equal(result.answer, 'Genesis received approved Technology credits on 3 different days this week.')
   assert.match(result.evidence.join(' '), /2026-08-18, 2026-08-19, and 2026-08-20/)
 })
 
@@ -1300,7 +1336,7 @@ test('supports current negative-balance lists and named balance history through 
         },
         groupBy: 'student',
         order: 'lowest',
-        limit: 40,
+        limit: 500,
       })],
     },
     evidence: {
@@ -1344,7 +1380,100 @@ test('supports current negative-balance lists and named balance history through 
       ],
     },
   })
-  assert.match(historyResult.answer, /Aug 18, 2026 \(\$17\.00\).*Aug 19, 2026 \(\$15\.00\).*Aug 20, 2026 \(\$20\.00\)/)
+  assert.equal(historyResult.answer, "Genesis's end-of-day balance changed from $17.00 to $20.00 over the last 3 days.")
+  assert.match(historyResult.evidence.join(' '), /8\/18 \$17\.00.*8\/19 \$15\.00.*8\/20 \$20\.00/)
+})
+
+test('returns every matching current balance and supports a bounded 90-day history', () => {
+  const students = Array.from({ length: 25 }, (_, index) => ({
+    id: index + 1,
+    alias: `student-${String(index + 1).padStart(3, '0')}`,
+    name: `Student ${String(index + 1).padStart(2, '0')}`,
+    balance: -(index + 1),
+    frozen: false,
+  }))
+  const negativeResult = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      dataset: 'students',
+      metric: 'current-balance',
+      filters: { ...filters, status: 'any', lookbackDays: null, balanceCondition: 'negative' },
+      groupBy: 'student',
+      order: 'lowest',
+      limit: 500,
+    }),
+    evidence: {
+      ...evidence,
+      participants: students.map(({ id, alias, name }) => ({ id, alias, name })),
+      students,
+      transactions: [],
+    },
+  })
+  assert.match(negativeResult.answer, /^25 current students have negative balances:/)
+  assert.match(negativeResult.answer, /Student 01 \(-\$1\.00\)/)
+  assert.match(negativeResult.answer, /Student 25 \(-\$25\.00\)/)
+  assert.doesNotMatch(negativeResult.answer, /other|omitted/)
+
+  const historyResult = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      dataset: 'balance-history',
+      metric: 'closing-balance',
+      filters: {
+        ...filters,
+        subjectAliases: ['student-001'],
+        status: 'any',
+        lookbackDays: 90,
+        balanceCondition: 'any',
+      },
+      groupBy: 'calendar-day',
+      order: 'chronological',
+      limit: 90,
+    }),
+    evidence: { ...evidence, generatedAt: '2026-08-20T18:00:00.000Z', transactions: [] },
+  })
+  assert.equal(historyResult.answer, "Genesis's end-of-day balance stayed at $42.00 over the last 90 days.")
+  assert.ok(historyResult.evidence.length <= 8)
+  assert.ok(historyResult.evidence.every(line => line.length <= 320))
+  assert.match(historyResult.evidence.join(' '), /5\/23 \$42\.00/)
+  assert.match(historyResult.evidence.join(' '), /8\/20 \$42\.00/)
+  assert.doesNotMatch(historyResult.evidence.join(' '), /omitted/)
+})
+
+test('rejects malformed balance history as a categorized answer error', () => {
+  const malformedFilters = { ...filters, subjectAliases: ['student-001'], status: 'any', balanceCondition: 'any' }
+  assert.throws(() => calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      dataset: 'balance-history',
+      metric: 'closing-balance',
+      filters: malformedFilters,
+      groupBy: 'calendar-day',
+      order: 'chronological',
+      limit: 10,
+    }),
+    evidence,
+  }), error => error instanceof InsightQuestionAnswerError && error.category === 'answer-unavailable')
+})
+
+test('uses classroom calendar dates for explicit rolling-day windows', () => {
+  const result = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: { ...filters, lookbackDays: 1, balanceCondition: 'any' },
+    }),
+    evidence: {
+      ...evidence,
+      generatedAt: '2026-08-20T18:00:00.000Z',
+      transactions: [
+        { id: 301, studentId: 1, date: '2026-08-20T05:30:00.000Z', type: 'Add', amount: 1, categoryAlias: 'category-002', purpose: 'other', status: 'Approved' },
+        { id: 302, studentId: 1, date: '2026-08-20T06:30:00.000Z', type: 'Add', amount: 1, categoryAlias: 'category-002', purpose: 'other', status: 'Approved' },
+      ],
+    },
+  })
+  assert.equal(result.answer, 'The transaction count is 1 transaction today.')
+  assert.match(result.evidence.join(' '), /today \(2026-08-20 in America\/Denver\)/)
 })
 
 test('combines unrelated calculations for compound questions without broadening either filter', () => {
@@ -1365,7 +1494,8 @@ test('combines unrelated calculations for compound questions without broadening 
     },
     evidence: { ...evidence, generatedAt: '2026-08-20T18:00:00.000Z' },
   })
-  assert.match(result.answer, /Calculation 1:.*\$35\.00.*Calculation 2:.*\$203\.00/)
+  assert.match(result.answer, /^The total amount is \$35\.00.*The total amount is \$203\.00/)
+  assert.doesNotMatch(result.answer, /Calculation/)
   assert.match(result.evidence.join(' '), /approved earning.*last 10 days/i)
   assert.match(result.evidence.join(' '), /approved spending.*last 10 days/i)
 })
