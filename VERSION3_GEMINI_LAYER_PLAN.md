@@ -144,3 +144,13 @@ vocabulary can include bounded opaque student aliases, single-word subject
 hints, and safe category labels derived from that retained 90-day view, even
 when the browser's selected summary period is shorter. All facts and final
 names remain server-side.
+
+Question-plan schema version 8 broadens the read-only vocabulary so Gemini can
+compose unforeseen Morgan Bank questions instead of selecting from a narrow
+sentence catalog. Transaction plans may filter by amount range and purpose;
+group directly or jointly by student, category, type, status, amount, purpose,
+or time dimensions; count distinct values; and apply numeric conditions to
+grouped results. Repeated transactions are one composition of those generic
+primitives, not a privileged intent. The browser authority, tenant resolution,
+evidence signature, provider data boundary, Functions-owned calculation,
+reservation, replay, and no-write guarantees remain unchanged.

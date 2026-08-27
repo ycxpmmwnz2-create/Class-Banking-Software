@@ -1500,6 +1500,102 @@ test('combines unrelated calculations for compound questions without broadening 
   assert.match(result.evidence.join(' '), /approved spending.*last 10 days/i)
 })
 
+test('answers broad multi-field repeated-record and threshold questions', () => {
+  const repeatedEvidence = {
+    ...evidence,
+    generatedAt: '2026-08-20T18:00:00.000Z',
+    transactions: [
+      { id: 401, studentId: 1, date: '2026-08-20T15:00:00.000Z', type: 'Add', amount: 5, categoryAlias: 'category-002', purpose: 'other', status: 'Approved' },
+      { id: 402, studentId: 1, date: '2026-08-20T16:00:00.000Z', type: 'Add', amount: 5, categoryAlias: 'category-002', purpose: 'other', status: 'Approved' },
+      { id: 403, studentId: 2, date: '2026-08-20T16:30:00.000Z', type: 'Subtract', amount: 25, categoryAlias: 'category-003', purpose: 'other', status: 'Pending' },
+    ],
+  }
+  const repeatedPlan = plan({
+    metric: 'count',
+    filters: {
+      ...filters,
+      status: 'any',
+      dateScope: 'today',
+      purpose: 'any',
+      amountMinimum: null,
+      amountMaximum: null,
+    },
+    groupBy: 'composite',
+    groupByFields: [
+      'student', 'category', 'transaction-type', 'amount', 'status', 'purpose', 'calendar-day',
+    ],
+    having: { comparator: 'at-least', value: 2 },
+    order: 'highest',
+    limit: 8,
+  })
+  const repeated = calculateQuestionAnswer({ kind: 'query', plan: repeatedPlan, evidence: repeatedEvidence })
+  assert.match(repeated.answer, /^Yes\. I found 1 possible duplicate set today:/)
+  assert.match(repeated.answer, /Genesis.*Class job.*money added.*\$5\.00.*Approved.*2 transactions/)
+  assert.doesNotMatch(repeated.answer, /Sofia/)
+
+  const noRepeated = calculateQuestionAnswer({
+    kind: 'query',
+    plan: { ...repeatedPlan, filters: { ...repeatedPlan.filters, subjectAliases: ['student-002'] } },
+    evidence: repeatedEvidence,
+  })
+  assert.equal(noRepeated.answer, 'No. I did not find any possible duplicate transactions today.')
+
+  const threshold = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'amount-total',
+      filters: {
+        ...filters,
+        status: 'any',
+        purpose: 'other',
+        amountMinimum: 50,
+        amountMaximum: null,
+      },
+      groupBy: 'composite',
+      groupByFields: ['student', 'category'],
+      having: { comparator: 'greater-than', value: 100 },
+      order: 'highest',
+      limit: 8,
+    }),
+    evidence,
+  })
+  assert.match(threshold.answer, /Mateo.*Bathroom break.*\$500\.00/)
+  assert.match(threshold.answer, /Sofia.*Bathroom break.*\$200\.00/)
+  assert.doesNotMatch(threshold.answer, /Genesis/)
+  assert.match(threshold.evidence.join(' '), /at least \$50\.00/)
+  assert.match(threshold.evidence.join(' '), /non-rent transactions/)
+  assert.match(threshold.evidence.join(' '), /group total amount more than \$100\.00/)
+
+  const variety = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'distinct-values',
+      filters: { ...filters, status: 'Approved' },
+      groupBy: 'student',
+      distinctBy: 'category',
+      having: { comparator: 'at-least', value: 2 },
+      order: 'highest',
+      limit: 8,
+    }),
+    evidence,
+  })
+  assert.match(variety.answer, /Genesis.*3 different categories/)
+  assert.doesNotMatch(variety.answer, /Sofia|Mateo/)
+
+  const statuses = calculateQuestionAnswer({
+    kind: 'query',
+    plan: plan({
+      metric: 'count',
+      filters: { ...filters, status: 'any' },
+      groupBy: 'status',
+      order: 'highest',
+      limit: 8,
+    }),
+    evidence,
+  })
+  assert.match(statuses.answer, /Approved \(8 transactions\).*Pending \(1 transaction\)/)
+})
+
 test('uses a custom rolling window consistently in calendar summaries', () => {
   const result = calculateQuestionAnswer({
     kind: 'query',

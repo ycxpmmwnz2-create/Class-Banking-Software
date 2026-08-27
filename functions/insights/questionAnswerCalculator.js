@@ -308,6 +308,18 @@ function calculateTransactionQuery(plan, context, answerSuffix) {
   if (filters.status !== 'any') {
     transactions = transactions.filter(transaction => transaction.status === filters.status)
   }
+  const purpose = filters.purpose ?? 'any'
+  if (purpose !== 'any') {
+    transactions = transactions.filter(transaction => transaction.purpose === purpose)
+  }
+  const amountMinimum = filters.amountMinimum ?? null
+  const amountMaximum = filters.amountMaximum ?? null
+  if (amountMinimum !== null) {
+    transactions = transactions.filter(transaction => transaction.amount >= amountMinimum)
+  }
+  if (amountMaximum !== null) {
+    transactions = transactions.filter(transaction => transaction.amount <= amountMaximum)
+  }
   transactions = transactions.filter(transaction => (
     matchesDateScope(transaction, filters.dateScope, context, filters.lookbackDays ?? null)
   ))
@@ -333,13 +345,8 @@ function calculateTransactionQuery(plan, context, answerSuffix) {
     }
   }
   for (const transaction of transactions) {
-    const group = groupFor(transaction, plan.groupBy, context)
-    const row = grouped.get(group.key) || {
-      key: group.key,
-      label: group.label,
-      chronological: group.chronological,
-      transactions: [],
-    }
+    const group = groupFor(transaction, plan, context)
+    const row = grouped.get(group.key) || { ...group, transactions: [] }
     row.transactions.push(transaction)
     grouped.set(group.key, row)
   }
@@ -348,12 +355,12 @@ function calculateTransactionQuery(plan, context, answerSuffix) {
   }
   const rows = [...grouped.values()].map(row => ({
     ...row,
-    value: metricValue(plan.metric, row.transactions, context),
+    value: metricValue(plan, row.transactions, context),
     count: row.transactions.length,
     dateKeys: plan.metric === 'distinct-days'
       ? [...new Set(row.transactions.map(transaction => localDateKey(transaction.date, context.timeZone)))].sort()
       : undefined,
-  }))
+  })).filter(row => matchesHaving(row.value, plan.having ?? null))
   const categoryLabel = filters.categoryAlias === null
     ? null
     : context.categoriesByAlias.get(filters.categoryAlias)?.label
@@ -404,11 +411,29 @@ function renderRows({ rows, plan, context, noun, subjectNames = [], answerSuffix
           evidence: [`Matching students: 0. Included records: ${filterContext}.`],
         }
       }
+      if (plan.groupBy === 'composite' && plan.having != null && plan.metric === 'count') {
+        const repeated = isRepeatedTransactionGrouping(plan)
+        return {
+          text: repeated
+            ? `No. I did not find any possible duplicate transactions ${friendlyDateScope(plan.filters.dateScope, context, plan.filters.lookbackDays)}.`
+            : `No. I did not find any transaction groups ${friendlyHaving(plan.having)} ${friendlyDateScope(plan.filters.dateScope, context, plan.filters.lookbackDays)}.`,
+          evidence: [`Matching grouped results: 0. Included records: ${filterContext}.`],
+        }
+      }
+      if (plan.having != null && plan.groupBy !== 'none') {
+        return {
+          text: `No. No grouped results met the requested condition ${friendlyDateScope(plan.filters.dateScope, context, plan.filters.lookbackDays)}.`,
+          evidence: [`Matching grouped results: 0. Included records: ${filterContext}; ${describeHavingCondition(plan)}.`],
+        }
+      }
       return {
         text: `I could not find any matching records for ${friendlyDateScope(plan.filters.dateScope, context, plan.filters.lookbackDays)}.`,
         evidence: [`Matching records: 0. Included records: ${filterContext}.`],
       }
     }, answerSuffix)
+  }
+  if (plan.groupBy === 'composite' && plan.having != null && plan.metric === 'count') {
+    return renderCompositeCountResults({ rows, plan, context, answerSuffix })
   }
   if (
     plan.groupBy === 'calendar-day' &&
@@ -709,6 +734,7 @@ function friendlyGroupHeading(groupBy) {
   if (groupBy === 'calendar-day') return 'By day'
   if (groupBy === 'day-of-week') return 'By day of the week'
   if (groupBy === 'week') return 'By week'
+  if (groupBy === 'composite') return 'Grouped results'
   return 'Results'
 }
 
@@ -717,21 +743,11 @@ function evidenceWithFilter(lines, filterContext, verb = 'Records checked') {
   return lines.map((line, index) => index === 0 ? `${line} ${verb}: ${filterContext}.` : line)
 }
 
-function groupFor(transaction, groupBy, context) {
+function groupFor(transaction, plan, context) {
+  const { groupBy } = plan
   if (groupBy === 'none') return { key: 'all', label: 'Matching records', chronological: 'all' }
-  if (groupBy === 'student') {
-    const student = context.participantsById.get(transaction.studentId)
-    if (!student) fail('answer-unavailable', 'A transaction references an unknown student.')
-    return { key: student.alias, label: student.name, chronological: student.alias }
-  }
-  if (groupBy === 'category') {
-    const category = context.categoriesByAlias.get(transaction.categoryAlias)
-    if (!category) fail('answer-unavailable', 'A transaction references an unknown category.')
-    return { key: category.alias, label: category.label, chronological: category.alias }
-  }
-  if (groupBy === 'time-of-day') {
-    const bucket = timeBucketFor(transaction.date, context.timeZone)
-    return { key: bucket.id, label: bucket.label, chronological: String(TIME_BUCKETS.findIndex(item => item.id === bucket.id)) }
+  if (['student', 'category', 'transaction-type', 'status', 'amount', 'purpose', 'time-of-day'].includes(groupBy)) {
+    return transactionDimension(transaction, groupBy, context)
   }
   const date = localDateParts(transaction.date, context.timeZone)
   if (groupBy === 'calendar-day') {
@@ -753,14 +769,122 @@ function groupFor(transaction, groupBy, context) {
       chronological: key,
     }
   }
+  if (groupBy === 'composite') {
+    const parts = plan.groupByFields.map(field => transactionDimension(transaction, field, context))
+    return {
+      key: JSON.stringify(parts.map(part => part.key)),
+      label: parts.map(part => part.label).join(' • '),
+      chronological: parts.map(part => part.chronological).join('|'),
+      labelParts: parts.map(part => part.label),
+    }
+  }
   fail('answer-unavailable', 'The requested grouping is unsupported.')
 }
 
-function metricValue(metric, transactions, context) {
+function transactionDimension(transaction, field, context) {
+  if (field === 'student') {
+    const student = context.participantsById.get(transaction.studentId)
+    if (!student) fail('answer-unavailable', 'A transaction references an unknown student.')
+    return { key: student.alias, label: student.name, chronological: student.alias }
+  }
+  if (field === 'category') {
+    const category = context.categoriesByAlias.get(transaction.categoryAlias)
+    if (!category) fail('answer-unavailable', 'A transaction references an unknown category.')
+    return { key: category.alias, label: category.label, chronological: category.alias }
+  }
+  if (field === 'transaction-type') {
+    return {
+      key: transaction.type,
+      label: transaction.type === 'Add' ? 'money added' : 'money subtracted',
+      chronological: transaction.type,
+    }
+  }
+  if (field === 'status') {
+    return { key: transaction.status, label: transaction.status, chronological: transaction.status }
+  }
+  if (field === 'amount') {
+    const key = String(transaction.amount)
+    return { key, label: money(transaction.amount), chronological: key.padStart(20, '0') }
+  }
+  if (field === 'purpose') {
+    return { key: transaction.purpose, label: transaction.purpose === 'rent' ? 'rent' : 'other purpose', chronological: transaction.purpose }
+  }
+  if (field === 'time-of-day') {
+    const bucket = timeBucketFor(transaction.date, context.timeZone)
+    return { key: bucket.id, label: bucket.label, chronological: String(TIME_BUCKETS.findIndex(item => item.id === bucket.id)) }
+  }
+  if (field === 'calendar-day') return calendarDayGroup(localDateKey(transaction.date, context.timeZone))
+  const date = localDateParts(transaction.date, context.timeZone)
+  if (field === 'day-of-week') {
+    const day = new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay()
+    return { key: String(day), label: DAY_LABELS[day], chronological: String((day + 6) % 7).padStart(2, '0') }
+  }
+  if (field === 'week') {
+    const local = new Date(Date.UTC(date.year, date.month - 1, date.day))
+    const mondayOffset = (local.getUTCDay() + 6) % 7
+    local.setUTCDate(local.getUTCDate() - mondayOffset)
+    const key = local.toISOString().slice(0, 10)
+    return {
+      key,
+      label: `Week of ${local.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' })}`,
+      chronological: key,
+    }
+  }
+  fail('answer-unavailable', 'The requested grouping field is unsupported.')
+}
+
+function matchesHaving(value, having) {
+  if (having === null) return true
+  if (having.comparator === 'greater-than') return value > having.value
+  if (having.comparator === 'at-least') return value >= having.value
+  if (having.comparator === 'equal') return value === having.value
+  if (having.comparator === 'at-most') return value <= having.value
+  if (having.comparator === 'less-than') return value < having.value
+  fail('answer-unavailable', 'The requested result condition is unsupported.')
+}
+
+function friendlyHaving(having) {
+  if (having.comparator === 'greater-than') return `with more than ${having.value} matching transactions`
+  if (having.comparator === 'at-least') return `with at least ${having.value} matching transactions`
+  if (having.comparator === 'equal') return `with exactly ${having.value} matching transactions`
+  if (having.comparator === 'at-most') return `with at most ${having.value} matching transactions`
+  if (having.comparator === 'less-than') return `with fewer than ${having.value} matching transactions`
+  fail('answer-unavailable', 'The requested result condition is unsupported.')
+}
+
+function renderCompositeCountResults({ rows, plan, context, answerSuffix }) {
+  return fitResponseWithinPublicBounds(labelLength => {
+    const sorted = sortRows(rows, plan.order)
+    const selected = includeTies(sorted, plan.limit).slice(0, 8)
+    const omitted = rows.length - selected.length
+    const scope = friendlyDateScope(plan.filters.dateScope, context, plan.filters.lookbackDays)
+    const condition = friendlyHaving(plan.having)
+    const entries = selected.map(row => `${displayCompositeLabel(row, labelLength)} (${row.count} transactions)`)
+    const repeated = isRepeatedTransactionGrouping(plan)
+    let text = repeated
+      ? `Yes. I found ${rows.length} possible duplicate ${rows.length === 1 ? 'set' : 'sets'} ${scope}: ${joinLabels(entries)}.`
+      : `Yes. I found ${rows.length} transaction ${rows.length === 1 ? 'group' : 'groups'} ${condition} ${scope}: ${joinLabels(entries)}.`
+    if (omitted > 0) text += ` ${omitted} more matching ${omitted === 1 ? 'group was' : 'groups were'} found.`
+    const filterContext = describeQueryFilters(plan, context, Math.min(24, labelLength))
+    const evidence = evidenceWithFilter(
+      selected.map(row => `${displayCompositeLabel(row, labelLength)}: ${row.count} matching transactions.`),
+      filterContext,
+    )
+    return { text, evidence }
+  }, answerSuffix)
+}
+
+function metricValue(plan, transactions, context) {
+  const { metric } = plan
   if (metric === 'count') return transactions.length
   if (metric === 'distinct-days') {
     return new Set(transactions.map(transaction => (
       localDateKey(transaction.date, context.timeZone)
+    ))).size
+  }
+  if (metric === 'distinct-values') {
+    return new Set(transactions.map(transaction => (
+      transactionDimension(transaction, plan.distinctBy, context).key
     ))).size
   }
   const total = transactions.reduce((sum, transaction) => sum + transaction.amount, 0)
@@ -780,6 +904,7 @@ function metricValue(metric, transactions, context) {
 function metricNoun(plan) {
   if (plan.metric === 'count') return 'transaction count'
   if (plan.metric === 'distinct-days') return 'distinct day count'
+  if (plan.metric === 'distinct-values') return `number of different ${friendlyDimension(plan.distinctBy)}`
   if (plan.metric === 'amount-total') return 'total amount'
   if (plan.metric === 'amount-average') return 'average amount'
   if (plan.metric === 'net-amount') return 'net amount'
@@ -833,6 +958,7 @@ function formatMetric(plan, value, count) {
     return `${value} ${value === 1 ? noun : `${noun}s`}`
   }
   if (metric === 'distinct-days') return `${value} distinct ${value === 1 ? 'day' : 'days'}`
+  if (metric === 'distinct-values') return `${value} different ${friendlyDimension(plan.distinctBy, value)}`
   if (['current-balance', 'average-balance'].includes(metric)) return money(value)
   if (metric === 'closing-balance') return money(value)
   if (metric === 'net-amount') return `${value < 0 ? '−' : '+'}${money(Math.abs(value))}`
@@ -1104,11 +1230,11 @@ function validatePlanForCalculation(plan) {
     return
   }
   if (
-    !isPlainObject(plan) || !hasExactKeys(plan, ['dataset', 'metric', 'filters', 'groupBy', 'order', 'limit']) ||
+    !hasQueryPlanKeys(plan) ||
     !hasQueryFilterKeys(plan.filters) ||
     !['transactions', 'students', 'balance-history'].includes(plan.dataset) ||
-    !['count', 'distinct-days', 'amount-total', 'amount-average', 'net-amount', 'current-balance', 'average-balance', 'closing-balance'].includes(plan.metric) ||
-    !['none', 'student', 'category', 'time-of-day', 'calendar-day', 'day-of-week', 'week'].includes(plan.groupBy) ||
+    !['count', 'distinct-days', 'distinct-values', 'amount-total', 'amount-average', 'net-amount', 'current-balance', 'average-balance', 'closing-balance'].includes(plan.metric) ||
+    !['none', 'student', 'category', 'transaction-type', 'status', 'amount', 'purpose', 'time-of-day', 'calendar-day', 'day-of-week', 'week', 'composite'].includes(plan.groupBy) ||
     !['highest', 'lowest', 'chronological'].includes(plan.order) ||
     !Number.isSafeInteger(plan.limit) || plan.limit < 1 || plan.limit > 500 ||
     !Array.isArray(plan.filters.subjectAliases) || plan.filters.subjectAliases.length > 8 ||
@@ -1125,7 +1251,13 @@ function validatePlanForCalculation(plan) {
     !(plan.filters.timeBucket === null || TIME_BUCKETS.some(bucket => bucket.id === plan.filters.timeBucket)) ||
     !['active', 'frozen', 'any'].includes(plan.filters.studentState) ||
     !(plan.filters.balanceCondition === undefined ||
-      ['any', 'negative', 'zero', 'positive', 'nonpositive'].includes(plan.filters.balanceCondition))
+      ['any', 'negative', 'zero', 'positive', 'nonpositive'].includes(plan.filters.balanceCondition)) ||
+    !(plan.filters.purpose === undefined || ['any', 'rent', 'other'].includes(plan.filters.purpose)) ||
+    !validOptionalAmount(plan.filters.amountMinimum) ||
+    !validOptionalAmount(plan.filters.amountMaximum) ||
+    !validGroupByFieldsForCalculation(plan.groupByFields) ||
+    !validHavingForCalculation(plan.having) ||
+    !validDistinctByForCalculation(plan.distinctBy)
   ) fail('answer-unavailable', 'The server query plan is malformed.')
   const coherenceError = questionQueryPlanCoherenceError(plan)
   if (coherenceError) fail('answer-unavailable', coherenceError)
@@ -1139,7 +1271,7 @@ function validateMissingTransactionPlanForCalculation(plan) {
     plan.subjectAliases.some(alias => !/^student-[0-9]{3}$/.test(alias)) ||
     new Set(plan.subjectAliases).size !== plan.subjectAliases.length ||
     !(plan.categoryAlias === null || /^category-[0-9]{3}$/.test(plan.categoryAlias)) ||
-    !['any', 'rent'].includes(plan.purpose) ||
+    !['any', 'rent', 'other'].includes(plan.purpose) ||
     !['Add', 'Subtract', 'any'].includes(plan.transactionType) ||
     !['Approved', 'Pending', 'Denied', 'any'].includes(plan.status) ||
     !['period', 'today', 'yesterday', 'today-and-yesterday', 'this-week'].includes(plan.dateScope) ||
@@ -1222,6 +1354,21 @@ function describeQueryFilters(plan, context, labelLength = 24) {
   if (plan.filters.timeBucket !== null) {
     parts.push(TIME_BUCKETS.find(bucket => bucket.id === plan.filters.timeBucket)?.label || plan.filters.timeBucket)
   }
+  const purpose = plan.filters.purpose ?? 'any'
+  if (purpose === 'rent') parts.push('rent transactions')
+  if (purpose === 'other') parts.push('non-rent transactions')
+  const amountMinimum = plan.filters.amountMinimum ?? null
+  const amountMaximum = plan.filters.amountMaximum ?? null
+  if (amountMinimum !== null && amountMaximum !== null) {
+    parts.push(`${money(amountMinimum)} through ${money(amountMaximum)}`)
+  } else if (amountMinimum !== null) {
+    parts.push(`at least ${money(amountMinimum)}`)
+  } else if (amountMaximum !== null) {
+    parts.push(`at most ${money(amountMaximum)}`)
+  }
+  if (plan.having !== undefined && plan.having !== null) {
+    parts.push(describeHavingCondition(plan))
+  }
   parts.push(describeDateScope(plan.filters.dateScope, context, plan.filters.lookbackDays))
   if (plan.filters.studentState !== 'any') {
     parts.push(`current ${plan.filters.studentState} students`)
@@ -1275,9 +1422,118 @@ function hasExactKeys(value, expected) {
 function hasQueryFilterKeys(value) {
   if (!isPlainObject(value)) return false
   const required = ['subjectAliases', 'categoryAlias', 'transactionType', 'status', 'dateScope', 'timeBucket', 'studentState']
-  const allowed = new Set([...required, 'lookbackDays', 'balanceCondition'])
+  const allowed = new Set([
+    ...required,
+    'lookbackDays',
+    'balanceCondition',
+    'purpose',
+    'amountMinimum',
+    'amountMaximum',
+  ])
   return required.every(field => Object.hasOwn(value, field)) &&
     Object.keys(value).every(field => allowed.has(field))
+}
+
+function hasQueryPlanKeys(value) {
+  if (!isPlainObject(value)) return false
+  const required = ['dataset', 'metric', 'filters', 'groupBy', 'order', 'limit']
+  const allowed = new Set([...required, 'groupByFields', 'having', 'distinctBy'])
+  return required.every(field => Object.hasOwn(value, field)) &&
+    Object.keys(value).every(field => allowed.has(field))
+}
+
+function validOptionalAmount(value) {
+  return value === undefined || value === null || (
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1_000_000
+  )
+}
+
+function validGroupByFieldsForCalculation(value) {
+  const dimensions = [
+    'student', 'category', 'transaction-type', 'status', 'amount', 'purpose',
+    'time-of-day', 'calendar-day', 'day-of-week', 'week',
+  ]
+  return value === undefined || (
+    Array.isArray(value) && value.length <= 8 &&
+    value.every(field => dimensions.includes(field)) &&
+    new Set(value).size === value.length
+  )
+}
+
+function validHavingForCalculation(value) {
+  return value === undefined || value === null || (
+    isPlainObject(value) && hasExactKeys(value, ['comparator', 'value']) &&
+    ['greater-than', 'at-least', 'equal', 'at-most', 'less-than'].includes(value.comparator) &&
+    typeof value.value === 'number' && Number.isFinite(value.value) &&
+    value.value >= -1_000_000 && value.value <= 1_000_000
+  )
+}
+
+function validDistinctByForCalculation(value) {
+  return value === undefined || value === null || [
+    'student', 'category', 'transaction-type', 'status', 'amount', 'purpose',
+    'time-of-day', 'calendar-day', 'day-of-week', 'week',
+  ].includes(value)
+}
+
+function displayCompositeLabel(row, maximum) {
+  const parts = Array.isArray(row.labelParts) ? row.labelParts : String(row.label).split(' • ')
+  const partLength = Math.max(8, Math.floor(maximum / 2))
+  return parts.map(part => displayLabel(part, partLength)).join(' • ')
+}
+
+function friendlyDimension(value, count = 2) {
+  const labels = {
+    student: ['student', 'students'],
+    category: ['category', 'categories'],
+    'transaction-type': ['transaction type', 'transaction types'],
+    status: ['status', 'statuses'],
+    amount: ['amount', 'amounts'],
+    purpose: ['purpose', 'purposes'],
+    'time-of-day': ['time of day', 'times of day'],
+    'calendar-day': ['calendar day', 'calendar days'],
+    'day-of-week': ['day of the week', 'days of the week'],
+    week: ['week', 'weeks'],
+  }
+  const selected = labels[value]
+  if (!selected) fail('answer-unavailable', 'The requested distinct value is unsupported.')
+  return count === 1 ? selected[0] : selected[1]
+}
+
+function describeHavingCondition(plan) {
+  const comparator = {
+    'greater-than': 'more than',
+    'at-least': 'at least',
+    equal: 'exactly',
+    'at-most': 'at most',
+    'less-than': ['count', 'distinct-days', 'distinct-values'].includes(plan.metric)
+      ? 'fewer than'
+      : 'less than',
+  }[plan.having.comparator]
+  if (!comparator) fail('answer-unavailable', 'The requested result condition is unsupported.')
+  if (plan.metric === 'count') return `group transaction count ${comparator} ${plan.having.value}`
+  if (plan.metric === 'distinct-days') return `group distinct-day count ${comparator} ${plan.having.value}`
+  if (plan.metric === 'distinct-values') {
+    return `group distinct ${friendlyDimension(plan.distinctBy)} count ${comparator} ${plan.having.value}`
+  }
+  const noun = plan.metric === 'amount-average'
+    ? 'group average amount'
+    : plan.metric === 'net-amount'
+      ? 'group net amount'
+      : 'group total amount'
+  return `${noun} ${comparator} ${money(plan.having.value)}`
+}
+
+function isRepeatedTransactionGrouping(plan) {
+  if (
+    plan.metric !== 'count' || plan.groupBy !== 'composite' ||
+    plan.having?.comparator !== 'at-least' || plan.having.value !== 2
+  ) return false
+  const expected = new Set([
+    'student', 'category', 'transaction-type', 'amount', 'status', 'purpose', 'calendar-day',
+  ])
+  return plan.groupByFields.length === expected.size &&
+    plan.groupByFields.every(field => expected.has(field))
 }
 
 function hasMissingTransactionKeys(value) {

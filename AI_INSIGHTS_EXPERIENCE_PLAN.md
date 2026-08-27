@@ -49,19 +49,21 @@ or 90 day period.
   the question reaches the model. Email addresses, URLs, likely phone numbers,
   ambiguous students, and questions naming more than one student fail before a
   provider call.
-- The model only maps the sanitized question to an allowlisted intent and an
-  allowed opaque subject alias. It receives no classroom transactions,
-  balances, raw categories, raw reasons, IDs, login data, PINs, teacher
-  identity, or classroom identity, and it never writes the factual answer.
+- The model maps the sanitized question to a composable, allowlisted read-only
+  analytics plan and allowed opaque aliases. It receives no classroom
+  transactions, balances, raw reasons, IDs, login data, PINs, teacher identity,
+  or classroom identity, and it never writes the factual answer.
 - Morgan Bank calculates the answer deterministically from the authorized
   server data. Only the teacher response may restore a real student name.
   Stored idempotency results contain the intent, alias, signature, and usage,
   never the raw question, real name, factual answer, or raw evidence.
-- Supported initial questions cover current balances; highest and lowest
-  balances; earned, spent, and net totals; top earning or spending categories;
-  peak earning or spending time of day; and pending request count/amount.
-  Causal, predictive, diagnostic, or otherwise unsupported questions return a
-  bounded refusal rather than an invented answer.
+- The plan vocabulary covers roster and balance questions, transaction counts
+  and amounts, date and time comparisons, current balance history, missing
+  payments, multiple simultaneous grouping dimensions, distinct-value counts,
+  amount ranges, and grouped numeric conditions. This is a composition model,
+  not a closed list of example questions. Requests requiring unavailable data,
+  data changes, causal or predictive claims, or unrelated information still
+  return a bounded refusal rather than an invented answer.
 
 ## Stale and external-state controls
 

@@ -112,7 +112,7 @@ test('replaces a full or unique partial roster name before constructing provider
       question,
     })
     assert.deepEqual(envelope.providerInput.subjectAliases, ['student-001'])
-    assert.equal(envelope.providerInput.schemaVersion, 7)
+    assert.equal(envelope.providerInput.schemaVersion, 8)
     assert.deepEqual(envelope.providerInput.categoryCatalog, [{
       alias: 'category-001',
       label: 'Class job',

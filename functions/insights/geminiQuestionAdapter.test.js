@@ -11,7 +11,7 @@ import {
 } from './geminiQuestionAdapter.js'
 
 const providerInput = Object.freeze({
-  schemaVersion: 7,
+  schemaVersion: 8,
   question: 'Who has used the restroom the most?',
   subjectAliases: Object.freeze([]),
   subjectHints: Object.freeze([]),
@@ -30,7 +30,7 @@ test('question request uses the single regular Flash model with minimal thinking
   assert.equal(request.model, GEMINI_MODEL_ID)
   assert.equal(request.model, 'gemini-3.6-flash')
   assert.equal(request.config.thinkingConfig.thinkingLevel, 'MINIMAL')
-  assert.equal(request.config.maxOutputTokens, 384)
+  assert.equal(request.config.maxOutputTokens, 512)
   assert.equal(Object.hasOwn(request.config, 'temperature'), false)
   assert.equal(Object.hasOwn(request.config, 'tools'), false)
   assert.match(request.config.systemInstruction, /kind query.*fact.*classroom records/i)
@@ -48,6 +48,12 @@ test('question request uses the single regular Flash model with minimal thinking
   assert.match(request.config.systemInstruction, /dataset students.*dateScope period/i)
   assert.match(request.config.systemInstruction, /subjectHints.*possible student alias/i)
   assert.match(request.config.systemInstruction, /one through four independent queries/i)
+  assert.match(request.config.systemInstruction, /groupBy composite.*groupByFields/i)
+  assert.match(request.config.systemInstruction, /grouped directly by student.*transaction-type.*purpose/i)
+  assert.match(request.config.systemInstruction, /distinct-values.*distinctBy/i)
+  assert.match(request.config.systemInstruction, /purpose other.*exclude rent/i)
+  assert.match(request.config.systemInstruction, /duplicate.*having at-least 2/i)
+  assert.match(request.config.systemInstruction, /Do not choose unsupported.*combination is unfamiliar/i)
   assert.match(request.config.systemInstruction, /balance-history.*closing-balance/i)
   assert.match(request.config.systemInstruction, /negative.*balanceCondition/i)
   assert.match(request.config.systemInstruction, /limit 500/i)
@@ -57,6 +63,10 @@ test('question request uses the single regular Flash model with minimal thinking
   assert.match(JSON.stringify(request.config.responseJsonSchema), /today-and-yesterday/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /this-week/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /calendar-day/)
+  assert.match(JSON.stringify(request.config.responseJsonSchema), /groupByFields/)
+  assert.match(JSON.stringify(request.config.responseJsonSchema), /distinctBy/)
+  assert.match(JSON.stringify(request.config.responseJsonSchema), /amountMinimum/)
+  assert.match(JSON.stringify(request.config.responseJsonSchema), /greater-than/)
   assert.match(JSON.stringify(request.config.responseJsonSchema), /guidance/)
   assert.doesNotMatch(JSON.stringify(request), /GianMarco/)
 })
@@ -91,7 +101,7 @@ test('question adapter makes one injected call and accepts only structured inter
       calls += 1
       return {
         text: JSON.stringify({
-          schemaVersion: 7,
+          schemaVersion: 8,
           kind: 'query',
           plan: {
             dataset: 'transactions',
@@ -134,7 +144,7 @@ test('question adapter accepts a bounded Morgan Bank guidance route', async () =
       assert.match(request.config.systemInstruction, /must not claim that you inspected data/i)
       return {
         text: JSON.stringify({
-          schemaVersion: 7,
+          schemaVersion: 8,
           kind: 'guidance',
           plan: null,
           guidance,

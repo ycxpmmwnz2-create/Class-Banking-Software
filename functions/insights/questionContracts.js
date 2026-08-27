@@ -1,10 +1,11 @@
 export const INSIGHT_QUESTION_SCHEMA_VERSION = 2
-export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 7
+export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 8
 
 export const INSIGHT_QUERY_DATASETS = Object.freeze(['transactions', 'students', 'balance-history'])
 export const INSIGHT_QUERY_METRICS = Object.freeze([
   'count',
   'distinct-days',
+  'distinct-values',
   'amount-total',
   'amount-average',
   'net-amount',
@@ -16,12 +17,36 @@ export const INSIGHT_QUERY_GROUPS = Object.freeze([
   'none',
   'student',
   'category',
+  'transaction-type',
+  'status',
+  'amount',
+  'purpose',
+  'time-of-day',
+  'calendar-day',
+  'day-of-week',
+  'week',
+  'composite',
+])
+export const INSIGHT_QUERY_ORDERS = Object.freeze(['highest', 'lowest', 'chronological'])
+export const INSIGHT_QUERY_DIMENSIONS = Object.freeze([
+  'student',
+  'category',
+  'transaction-type',
+  'status',
+  'amount',
+  'purpose',
   'time-of-day',
   'calendar-day',
   'day-of-week',
   'week',
 ])
-export const INSIGHT_QUERY_ORDERS = Object.freeze(['highest', 'lowest', 'chronological'])
+export const INSIGHT_QUERY_COMPARATORS = Object.freeze([
+  'greater-than',
+  'at-least',
+  'equal',
+  'at-most',
+  'less-than',
+])
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/
 const SUBJECT_ALIAS_PATTERN = /^student-[0-9]{3}$/
@@ -33,7 +58,7 @@ const TRANSACTION_STATUSES = Object.freeze(['Approved', 'Pending', 'Denied', 'an
 const TIME_BUCKETS = Object.freeze(['morning', 'afternoon', 'evening', 'night'])
 const STUDENT_STATES = Object.freeze(['active', 'frozen', 'any'])
 const BALANCE_CONDITIONS = Object.freeze(['any', 'negative', 'zero', 'positive', 'nonpositive'])
-const TRANSACTION_PURPOSES = Object.freeze(['any', 'rent'])
+const TRANSACTION_PURPOSES = Object.freeze(['any', 'rent', 'other'])
 const DATE_SCOPES = Object.freeze([
   'period',
   'today',
@@ -47,9 +72,9 @@ const MAX_EXACT_AMOUNT = 1_000_000
 const MIN_GUIDANCE_LENGTH = 20
 const MAX_GUIDANCE_LENGTH = 480
 const MAX_TEACHER_QUESTION_ANSWER_LENGTH = 80_000
-const MAX_INTERPRETATION_OUTPUT_TOKENS = 384
+const MAX_INTERPRETATION_OUTPUT_TOKENS = 512
 const MAX_INTERPRETATION_THINKING_TOKENS = 4_096
-const MAX_BILLED_OUTPUT_TOKENS = 384
+const MAX_BILLED_OUTPUT_TOKENS = 512
 const MAX_BILLED_THINKING_TOKENS = 4_096
 const PROVIDER_ALIAS_PATTERN = /(?:student|category)-[0-9]{3}/iu
 const PROVIDER_PLACEHOLDER_PATTERN = /\[(?:student|category)(?:-[0-9]{3})?\]/iu
@@ -238,13 +263,11 @@ function validateStudentBalanceListPlan(value, category) {
 }
 
 function validateQueryPlan(value, allowed, category) {
-  requireExactObject(
-    value,
-    ['dataset', 'metric', 'filters', 'groupBy', 'order', 'limit'],
-    'question query plan',
-    category,
-  )
+  requireQueryPlanKeys(value, category)
   requireQueryFilters(value.filters, category)
+  const groupByFields = value.groupByFields ?? []
+  const having = value.having ?? null
+  const distinctBy = value.distinctBy ?? null
   if (
     !INSIGHT_QUERY_DATASETS.includes(value.dataset) ||
     !INSIGHT_QUERY_METRICS.includes(value.metric) ||
@@ -257,7 +280,13 @@ function validateQueryPlan(value, allowed, category) {
     !(value.filters.lookbackDays === undefined || value.filters.lookbackDays === null || validLookbackDays(value.filters.lookbackDays)) ||
     !(value.filters.timeBucket === null || TIME_BUCKETS.includes(value.filters.timeBucket)) ||
     !STUDENT_STATES.includes(value.filters.studentState) ||
-    !(value.filters.balanceCondition === undefined || BALANCE_CONDITIONS.includes(value.filters.balanceCondition))
+    !(value.filters.balanceCondition === undefined || BALANCE_CONDITIONS.includes(value.filters.balanceCondition)) ||
+    !(value.filters.purpose === undefined || TRANSACTION_PURPOSES.includes(value.filters.purpose)) ||
+    !(value.filters.amountMinimum === undefined || value.filters.amountMinimum === null || validQueryAmount(value.filters.amountMinimum)) ||
+    !(value.filters.amountMaximum === undefined || value.filters.amountMaximum === null || validQueryAmount(value.filters.amountMaximum)) ||
+    !validGroupByFields(groupByFields) ||
+    !validHaving(having) ||
+    !(distinctBy === null || INSIGHT_QUERY_DIMENSIONS.includes(distinctBy))
   ) {
     fail(category, 'The question query plan contains an unsupported operation.')
   }
@@ -282,6 +311,9 @@ function validateQueryPlan(value, allowed, category) {
     groupBy: value.groupBy,
     order: value.order,
     limit: value.limit,
+    ...(Object.hasOwn(value, 'groupByFields') ? { groupByFields: Object.freeze([...groupByFields]) } : {}),
+    ...(Object.hasOwn(value, 'having') ? { having: having === null ? null : Object.freeze({ ...having }) } : {}),
+    ...(Object.hasOwn(value, 'distinctBy') ? { distinctBy } : {}),
   })
 }
 
@@ -339,6 +371,15 @@ function validateMissingTransactionPlan(value, allowed, category) {
 export function questionQueryPlanCoherenceError(value) {
   const lookbackDays = value.filters.lookbackDays ?? null
   const balanceCondition = value.filters.balanceCondition ?? 'any'
+  const purpose = value.filters.purpose ?? 'any'
+  const amountMinimum = value.filters.amountMinimum ?? null
+  const amountMaximum = value.filters.amountMaximum ?? null
+  const groupByFields = value.groupByFields ?? []
+  const having = value.having ?? null
+  const distinctBy = value.distinctBy ?? null
+  if (amountMinimum !== null && amountMaximum !== null && amountMinimum > amountMaximum) {
+    return 'The transaction amount range is inconsistent.'
+  }
   if (value.dataset === 'students') {
     const isBalanceRanking = value.metric === 'current-balance' && value.groupBy === 'student'
     const isStudentAggregate = ['count', 'average-balance'].includes(value.metric) && value.groupBy === 'none'
@@ -348,6 +389,8 @@ export function questionQueryPlanCoherenceError(value) {
       value.filters.status !== 'any' || value.filters.dateScope !== 'period' ||
       lookbackDays !== null ||
       value.filters.timeBucket !== null ||
+      purpose !== 'any' || amountMinimum !== null || amountMaximum !== null ||
+      groupByFields.length !== 0 || having !== null || distinctBy !== null ||
       value.order === 'chronological'
     ) return 'The balance query plan is inconsistent.'
     if (balanceCondition !== 'any' && isBalanceRanking && value.limit !== 500) {
@@ -365,6 +408,8 @@ export function questionQueryPlanCoherenceError(value) {
       value.filters.transactionType !== 'any' || value.filters.status !== 'any' ||
       value.filters.dateScope !== 'period' || lookbackDays === null ||
       value.filters.timeBucket !== null || value.filters.studentState !== 'any' ||
+      purpose !== 'any' || amountMinimum !== null || amountMaximum !== null ||
+      groupByFields.length !== 0 || having !== null || distinctBy !== null ||
       balanceCondition !== 'any' || value.order !== 'chronological' ||
       value.limit !== lookbackDays
     ) return 'The balance-history query plan is inconsistent.'
@@ -377,10 +422,36 @@ export function questionQueryPlanCoherenceError(value) {
   if (balanceCondition !== 'any') {
     return 'A transaction query cannot filter current balances.'
   }
+  if (value.groupBy === 'composite') {
+    if (groupByFields.length < 2) return 'A composite transaction query needs at least two grouping fields.'
+  } else if (groupByFields.length !== 0) {
+    return 'Grouping fields are allowed only for a composite transaction query.'
+  }
+  if (value.metric === 'distinct-values' && distinctBy === null) {
+    return 'A distinct-value query must name the value to count.'
+  }
+  if (value.metric !== 'distinct-values' && distinctBy !== null) {
+    return 'Only a distinct-value query can name a distinct value.'
+  }
+  if (having !== null && value.groupBy === 'none') {
+    return 'A result condition requires grouped transaction results.'
+  }
+  if (
+    having !== null && ['count', 'distinct-days', 'distinct-values'].includes(value.metric) &&
+    (!Number.isSafeInteger(having.value) || having.value < 0)
+  ) return 'A count result condition must use a nonnegative whole number.'
+  if (
+    having !== null && ['amount-total', 'amount-average'].includes(value.metric) &&
+    having.value < 0
+  ) return 'A positive amount result condition cannot use a negative value.'
   if (value.metric === 'net-amount' && value.filters.transactionType !== 'any') {
     return 'A net query cannot preselect one transaction type.'
   }
-  const temporal = ['time-of-day', 'calendar-day', 'day-of-week', 'week'].includes(value.groupBy)
+  const temporal = ['time-of-day', 'calendar-day', 'day-of-week', 'week'].includes(value.groupBy) || (
+    value.groupBy === 'composite' && groupByFields.every(field => (
+      ['time-of-day', 'calendar-day', 'day-of-week', 'week'].includes(field)
+    ))
+  )
   if (value.filters.dateScope !== 'period' && lookbackDays !== null) {
     return 'A named rolling-day window requires the period date scope.'
   }
@@ -393,10 +464,45 @@ export function questionQueryPlanCoherenceError(value) {
 function requireQueryFilters(value, category) {
   if (!isPlainObject(value)) fail(category, 'The question query filters must be an object.')
   const required = ['subjectAliases', 'categoryAlias', 'transactionType', 'status', 'dateScope', 'timeBucket', 'studentState']
-  const allowed = new Set([...required, 'lookbackDays', 'balanceCondition'])
+  const allowed = new Set([
+    ...required,
+    'lookbackDays',
+    'balanceCondition',
+    'purpose',
+    'amountMinimum',
+    'amountMaximum',
+  ])
   if (required.some(field => !Object.hasOwn(value, field)) || Object.keys(value).some(field => !allowed.has(field))) {
     fail(category, 'The question query filters contain unsupported fields.')
   }
+}
+
+function requireQueryPlanKeys(value, category) {
+  if (!isPlainObject(value)) fail(category, 'The question query plan must be an object.')
+  const required = ['dataset', 'metric', 'filters', 'groupBy', 'order', 'limit']
+  const allowed = new Set([...required, 'groupByFields', 'having', 'distinctBy'])
+  if (required.some(field => !Object.hasOwn(value, field)) || Object.keys(value).some(field => !allowed.has(field))) {
+    fail(category, 'The question query plan has an unexpected shape.')
+  }
+}
+
+function validQueryAmount(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_EXACT_AMOUNT
+}
+
+function validGroupByFields(value) {
+  return Array.isArray(value) && value.length <= 8 &&
+    value.every(field => INSIGHT_QUERY_DIMENSIONS.includes(field)) &&
+    new Set(value).size === value.length
+}
+
+function validHaving(value) {
+  return value === null || (
+    isPlainObject(value) && hasExactKeys(value, ['comparator', 'value']) &&
+    INSIGHT_QUERY_COMPARATORS.includes(value.comparator) &&
+    typeof value.value === 'number' && Number.isFinite(value.value) &&
+    value.value >= -MAX_EXACT_AMOUNT && value.value <= MAX_EXACT_AMOUNT
+  )
 }
 
 function requireMissingTransactionKeys(value, category) {

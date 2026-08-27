@@ -343,6 +343,32 @@ test("natural restroom question uses the exact five-field request and ranks visi
   expect(await browserStorageSnapshot(page)).toEqual(storageBefore);
 });
 
+test("broad duplicate-transaction question is calculated instead of refused as unsupported", async ({ page }) => {
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  const question = "Are there any students who have duplicate transactions today?";
+  await page.locator("#providerQuestionInput").fill(question);
+  await page.getByTestId("provider-question-submit").click();
+
+  const result = page.getByTestId("provider-question-result");
+  await expect(result).toBeVisible();
+  await expect(result.locator(".insights-answer-copy")).toContainText(/^(Yes|No)\./);
+  await expect(result).not.toContainText("but not that request");
+  await expect(result).not.toContainText("outside the Morgan Bank classroom-assistant scope");
+  await expect(result).not.toContainText(TENANT_A.foreignName);
+
+  const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
+  expect(calls).toHaveLength(1);
+  expect(Object.keys(calls[0]).sort()).toEqual([
+    "kind",
+    "periodDays",
+    "question",
+    "requestId",
+    "timeZone",
+  ]);
+  expect(calls[0].question).toBe(question);
+});
+
 test("today-versus-yesterday submission question renders both calendar days", async ({ page }) => {
   await openApp(page);
   await signIn(page, TENANT_A);

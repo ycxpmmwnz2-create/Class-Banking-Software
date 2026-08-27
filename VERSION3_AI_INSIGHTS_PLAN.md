@@ -114,16 +114,20 @@ up to eight opaque aliases for students named in the question, and a bounded
 category-label catalog.
 
 For a classroom-data question, Gemini 3.6 Flash with minimal thinking may
-return only a versioned, read-only query plan. That plan can select the student
-or transaction dataset; choose a
-bounded count, total, average, net, or balance metric; filter by opaque student
-or category aliases, type, status, time bucket, or current frozen state; group
-by student, category, time of day, day of week, or week; and choose a bounded
-order and result limit. Functions validates every field and alias, calculates
+return only a versioned, read-only query plan. Schema version 8 is a general
+analytics vocabulary rather than a sentence-by-sentence intent list. A plan
+can select students, transactions, or balance history; choose count, distinct
+day, distinct value, total, average, net, or balance metrics; filter by opaque
+student or category aliases, transaction type, status, purpose, amount range,
+time bucket, date window, or current student state; and group by one or several
+student, category, type, status, amount, purpose, or time dimensions. A grouped
+result may also carry a numeric condition such as at least two matches. Gemini
+can compose one through four of these calculations for comparisons and
+multi-part questions. Functions validates every field and alias, calculates
 the result from server-owned evidence, handles ties, and returns only the
 calculated answer and short evidence lines.
 
-Plan schema version 4 also permits one separate negative-match operation for
+The plan also permits one separate negative-match operation for
 current students without transactions matching allowlisted criteria. It can
 filter by opaque named-student or category aliases, the server-derived rent
 purpose, transaction type and status, an exact amount, the selected period or
@@ -158,8 +162,11 @@ too large.
 This supports natural questions such as who has the most restroom visits,
 which category a named student earns most in, when students lose the most
 money, how many requests are pending, which current students did not make an
-exact rent payment today, current or average balances, class size, frozen-account
-counts, how to establish a saving routine, or ways to introduce class rent.
+exact rent payment today, which same-detail transaction groups repeat, how many
+different categories each student used, which grouped totals cross a stated
+threshold, current or historical balances, class size, frozen-account counts,
+how to establish a saving routine, or ways to introduce class rent. These are
+examples of compositions, not a fixed list of recognized sentences.
 A question is refused only when neither the bounded records nor the Morgan Bank
 assistant context can answer it safely. Raw transaction reasons, full student
 names, student IDs, tenant identifiers, balances, transaction rows, counts, and

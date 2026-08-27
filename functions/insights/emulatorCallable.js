@@ -129,6 +129,17 @@ export function createVersion3GeminiEmulatorHandler({
         // The production contract routes data mutations to unsupported. Keep the
         // browser double honest instead of accidentally treating "change every
         // balance" as a read-only balance query.
+      } else if (/(duplicate|repeated|same transaction)/.test(normalized)) {
+        plan = queryPlan({
+          metric: 'count',
+          status: /approved/.test(normalized) ? 'Approved' : 'any',
+          dateScope: /today/.test(normalized) ? 'today' : /yesterday/.test(normalized) ? 'yesterday' : 'period',
+          groupBy: 'composite',
+          groupByFields: ['student', 'category', 'transaction-type', 'amount', 'status', 'purpose', 'calendar-day'],
+          having: { comparator: 'at-least', value: 2 },
+          order: 'highest',
+          limit: 8,
+        })
       } else if (
         /(?:list|show|give)(?:\s+for\s+me)?\s+(?:each|every|all)/.test(normalized) &&
         /student/.test(normalized) && /balance/.test(normalized)
@@ -304,6 +315,12 @@ function queryPlan({
   groupBy = 'none',
   order = 'highest',
   limit = 1,
+  groupByFields,
+  having,
+  purpose,
+  amountMinimum,
+  amountMaximum,
+  distinctBy,
 } = {}) {
   return {
     dataset: 'transactions',
@@ -318,10 +335,16 @@ function queryPlan({
       timeBucket: null,
       studentState: 'any',
       balanceCondition: 'any',
+      ...(purpose === undefined ? {} : { purpose }),
+      ...(amountMinimum === undefined ? {} : { amountMinimum }),
+      ...(amountMaximum === undefined ? {} : { amountMaximum }),
     },
     groupBy,
     order,
     limit,
+    ...(groupByFields === undefined ? {} : { groupByFields }),
+    ...(having === undefined ? {} : { having }),
+    ...(distinctBy === undefined ? {} : { distinctBy }),
   }
 }
 

@@ -51,7 +51,7 @@ test('server question request has exactly five browser fields and validates IANA
 
 test('provider may return only a bounded query plan using server allowlisted aliases', () => {
   const interpretation = {
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query',
     plan: restroomPlan,
     guidance: null,
@@ -67,7 +67,7 @@ test('provider may return only a bounded query plan using server allowlisted ali
     plan: { ...restroomPlan, writeOperation: 'delete' },
   }, allowed), InsightQuestionContractError)
   assert.deepEqual(validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'unsupported',
     plan: null,
     guidance: null,
@@ -91,14 +91,14 @@ test('provider can compare today and yesterday using a bounded calendar-day plan
     limit: 2,
   }
   assert.deepEqual(validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query',
     plan: comparisonPlan,
     guidance: null,
     usage,
   }, allowed).plan, comparisonPlan)
   assert.throws(() => validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query',
     plan: {
       ...comparisonPlan,
@@ -125,7 +125,7 @@ test('provider can compare every elapsed day in the server-calculated current we
     limit: 7,
   }
   assert.deepEqual(validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query',
     plan: currentWeekPlan,
     guidance: null,
@@ -136,13 +136,13 @@ test('provider can compare every elapsed day in the server-calculated current we
 test('provider may return bounded Morgan Bank guidance but cannot mix it with a data plan', () => {
   const guidance = 'Use a predictable weekly savings routine and let students set a small classroom goal before choosing optional purchases.'
   assert.deepEqual(validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'guidance',
     plan: null,
     guidance,
     usage,
   }, allowed), {
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'guidance',
     plan: null,
     guidance,
@@ -157,7 +157,7 @@ test('provider may return bounded Morgan Bank guidance but cannot mix it with a 
     { kind: 'unsupported', plan: null, guidance },
   ]) {
     assert.throws(() => validateQuestionInterpretation({
-      schemaVersion: 7,
+      schemaVersion: 8,
       ...invalid,
       usage,
     }, allowed), InsightQuestionContractError)
@@ -167,7 +167,7 @@ test('provider may return bounded Morgan Bank guidance but cannot mix it with a 
 test('provider can pair a grounded plan with short result-independent guidance', () => {
   const guidance = 'Review the result privately and use a consistent earning routine to help students set a realistic next goal.'
   const combined = validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query-and-guidance',
     plan: restroomPlan,
     guidance,
@@ -177,7 +177,7 @@ test('provider can pair a grounded plan with short result-independent guidance',
   assert.deepEqual(combined.plan, restroomPlan)
   assert.equal(combined.guidance, guidance)
   assert.throws(() => validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query-and-guidance',
     plan: restroomPlan,
     guidance: 'A'.repeat(241),
@@ -186,7 +186,7 @@ test('provider can pair a grounded plan with short result-independent guidance',
 })
 
 test('cross-field rules reject nonsensical balance, net, and chronological plans', () => {
-  const wrap = plan => ({ schemaVersion: 7, kind: 'query', plan, guidance: null, usage })
+  const wrap = plan => ({ schemaVersion: 8, kind: 'query', plan, guidance: null, usage })
   assert.throws(() => validateQuestionInterpretation(wrap({
     ...restroomPlan,
     dataset: 'students',
@@ -220,7 +220,7 @@ test('student dataset permits roster counts and balance analysis without exposin
     limit: 1,
   }
   assert.deepEqual(validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query',
     plan: studentCount,
     guidance: null,
@@ -230,7 +230,7 @@ test('student dataset permits roster counts and balance analysis without exposin
 
 test('completed replay is pinned to schema, evidence signature, and current aliases', () => {
   const completed = {
-    schemaVersion: 7,
+    schemaVersion: 8,
     source: 'provider-interpreted',
     periodDays: 30,
     evidenceSignature: 'a'.repeat(64),
@@ -263,7 +263,7 @@ test('completed replay is pinned to schema, evidence signature, and current alia
 test('completed guidance replay is schema-bound and contains no data plan', () => {
   const guidance = 'Use a short weekly balance check-in and ask students to name one saving goal before they choose an optional purchase.'
   const completed = {
-    schemaVersion: 7,
+    schemaVersion: 8,
     source: 'provider-interpreted',
     periodDays: 30,
     evidenceSignature: 'a'.repeat(64),
@@ -302,7 +302,7 @@ test('provider can request current students without exact matching rent payments
     limit: 8,
   }
   assert.deepEqual(validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query',
     plan,
     guidance: null,
@@ -315,7 +315,7 @@ test('provider can request current students without exact matching rent payments
     { ...plan, subjectAliases: ['student-999'] },
   ]) {
     assert.throws(() => validateQuestionInterpretation({
-      schemaVersion: 7,
+      schemaVersion: 8,
       kind: 'query',
       plan: invalidPlan,
       guidance: null,
@@ -327,7 +327,7 @@ test('provider can request current students without exact matching rent payments
 test('provider can request one exact read-only plan for every current student balance', () => {
   const plan = { operation: 'list-student-balances' }
   assert.deepEqual(validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query',
     plan,
     guidance: null,
@@ -338,7 +338,7 @@ test('provider can request one exact read-only plan for every current student ba
     { operation: 'list-all-transactions' },
   ]) {
     assert.throws(() => validateQuestionInterpretation({
-      schemaVersion: 7,
+      schemaVersion: 8,
       kind: 'query',
       plan: invalidPlan,
       guidance: null,
@@ -375,21 +375,21 @@ test('provider can request one through four general calculations with custom win
   }
   const plan = { operation: 'analyze', queries: [transactionQuery, balanceQuery] }
   assert.deepEqual(validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query',
     plan,
     guidance: null,
     usage,
   }, allowed).plan, plan)
   assert.throws(() => validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query',
     plan: { operation: 'analyze', queries: [] },
     guidance: null,
     usage,
   }, allowed), InsightQuestionContractError)
   assert.throws(() => validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query',
     plan: { operation: 'analyze', queries: Array.from({ length: 5 }, () => transactionQuery) },
     guidance: null,
@@ -420,13 +420,93 @@ test('provider can count and average students regardless of an inert aggregate l
         limit,
       }
       assert.deepEqual(validateQuestionInterpretation({
-        schemaVersion: 7,
+        schemaVersion: 8,
         kind: 'query',
         plan: aggregate,
         guidance: null,
         usage,
       }, allowed).plan, aggregate)
     }
+  }
+})
+
+test('provider can compose multi-field transaction analysis with result and amount conditions', () => {
+  const repeatedTransactions = {
+    ...restroomPlan,
+    filters: {
+      ...restroomPlan.filters,
+      dateScope: 'today',
+      lookbackDays: null,
+      balanceCondition: 'any',
+      purpose: 'any',
+      amountMinimum: null,
+      amountMaximum: null,
+    },
+    groupBy: 'composite',
+    groupByFields: [
+      'student', 'category', 'transaction-type', 'amount', 'status', 'purpose', 'calendar-day',
+    ],
+    having: { comparator: 'at-least', value: 2 },
+    order: 'highest',
+    limit: 8,
+  }
+  assert.deepEqual(validateQuestionInterpretation({
+    schemaVersion: 8,
+    kind: 'query',
+    plan: repeatedTransactions,
+    guidance: null,
+    usage,
+  }, allowed).plan, repeatedTransactions)
+
+  const distinctCategories = {
+    ...restroomPlan,
+    metric: 'distinct-values',
+    groupBy: 'student',
+    distinctBy: 'category',
+    having: { comparator: 'at-least', value: 2 },
+    limit: 8,
+  }
+  assert.deepEqual(validateQuestionInterpretation({
+    schemaVersion: 8,
+    kind: 'query',
+    plan: distinctCategories,
+    guidance: null,
+    usage,
+  }, allowed).plan, distinctCategories)
+
+  const statusBreakdown = {
+    ...restroomPlan,
+    filters: { ...restroomPlan.filters, purpose: 'other' },
+    groupBy: 'status',
+  }
+  assert.deepEqual(validateQuestionInterpretation({
+    schemaVersion: 8,
+    kind: 'query',
+    plan: statusBreakdown,
+    guidance: null,
+    usage,
+  }, allowed).plan, statusBreakdown)
+
+  for (const invalidPlan of [
+    { ...repeatedTransactions, groupByFields: ['student'] },
+    { ...repeatedTransactions, groupByFields: ['student', 'student'] },
+    { ...repeatedTransactions, having: { comparator: 'around', value: 2 } },
+    { ...repeatedTransactions, having: { comparator: 'at-least', value: 1.5 } },
+    { ...repeatedTransactions, filters: { ...repeatedTransactions.filters, amountMinimum: 10, amountMaximum: 5 } },
+    { ...repeatedTransactions, groupBy: 'student' },
+    { ...distinctCategories, distinctBy: null },
+    { ...distinctCategories, metric: 'count' },
+  ]) {
+    assert.throws(() => validateQuestionInterpretation({
+      schemaVersion: 8,
+      kind: 'query',
+      plan: invalidPlan,
+      guidance: null,
+      usage,
+    }, allowed), error => (
+      error instanceof InsightQuestionContractError &&
+      error.category === 'invalid-provider-output'
+    ))
   }
 })
 
@@ -459,7 +539,7 @@ test('provider limits prevent incomplete balance rankings and oversized transact
   ]
   for (const invalidPlan of invalidPlans) {
     assert.throws(() => validateQuestionInterpretation({
-      schemaVersion: 7,
+      schemaVersion: 8,
       kind: 'query',
       plan: invalidPlan,
       guidance: null,
@@ -489,14 +569,14 @@ test('provider can request a named student balance history without gaining a bal
     limit: 10,
   }
   assert.deepEqual(validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query',
     plan: { operation: 'analyze', queries: [history] },
     guidance: null,
     usage,
   }, allowed).plan.queries[0], history)
   assert.throws(() => validateQuestionInterpretation({
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'query',
     plan: { operation: 'analyze', queries: [{ ...history, writeOperation: 'set-balance' }] },
     guidance: null,
@@ -507,7 +587,7 @@ test('provider can request a named student balance history without gaining a bal
     { ...history, limit: 9 },
   ]) {
     assert.throws(() => validateQuestionInterpretation({
-      schemaVersion: 7,
+      schemaVersion: 8,
       kind: 'query',
       plan: invalidHistory,
       guidance: null,
