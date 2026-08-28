@@ -60,6 +60,7 @@ test('runs a grounded tool turn and returns a direct conversational answer', asy
         evidenceCallIds: ['duplicate-check'],
         factRefs: [
           { callId: 'duplicate-check', path: '/rows/0/group/student' },
+          { callId: 'duplicate-check', path: '/rows/0/group/category' },
           { callId: 'duplicate-check', path: '/rows/0/value' },
         ],
       }),
@@ -205,10 +206,15 @@ test('rejects an unknown two-part student identity even when tool evidence is ci
   )
 })
 
-test('rejects an invented first name but accepts an ordinary sentence start and a cited first name', async () => {
-  for (const [answer, shouldPass] of [
-    ['Priya has 1 matching balance.', false],
-    ['There is 1 matching balance for Ava.', true],
+test('rejects every uncited capitalized identity while preserving ordinary language and cited names', async () => {
+  for (const [answer, factPath, shouldPass] of [
+    ['Priya has 1 matching balance.', '/matchedCount', false],
+    ["Priya's balance is $10.", '/students/0/currentBalance', false],
+    ['Ava and Priya have 1 matching balance.', '/matchedCount', false],
+    ['Priya: $10.', '/students/0/currentBalance', false],
+    ['There is 1 matching balance for Ava.', '/matchedCount', true],
+    ['Overall, there is 1 matching balance for Ava.', '/matchedCount', true],
+    ["Ava's balance is $10.", '/students/0/currentBalance', true],
   ]) {
     let count = 0
     const assistant = createGeminiClassroomAssistant({
@@ -225,8 +231,8 @@ test('rejects an invented first name but accepts an ordinary sentence start and 
             answer,
             evidenceCallIds: ['call'],
             factRefs: [
-              { callId: 'call', path: '/matchedCount' },
               { callId: 'call', path: '/students/0/student' },
+              { callId: 'call', path: factPath },
             ],
           }),
           functionCalls: [],

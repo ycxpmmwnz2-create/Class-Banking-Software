@@ -28,7 +28,7 @@ const SYSTEM_INSTRUCTION = [
   'If a cited tool result is truncated, begin that disclosure with "Showing X of Y," using and citing that result’s returnedCount and exact total count.',
   'Use digits rather than number words for factual quantities so each quantity can be checked against its exact cited result field.',
   'Your final response must be JSON only with exactly three fields: answer (a plain-text answer from 3 to 1200 characters), evidenceCallIds (one or more executed tool-call IDs), and factRefs.',
-  'factRefs must be an array of objects with exactly callId and path. Each path is a JSON Pointer to the exact scalar field in that cited tool result supporting a student name or number in the answer. Include a factRef for every student name and every number used in the answer.',
+  'factRefs must be an array of objects with exactly callId and path. Each path is a JSON Pointer to the exact scalar field in that cited tool result supporting a student name, classroom label, or number in the answer. Include a factRef for every student name, classroom label, and number used in the answer.',
 ].join(' ')
 
 export class GeminiClassroomAssistantError extends Error {
@@ -394,16 +394,30 @@ function assertAnswerNamesAreGrounded(answer, students, facts) {
   const nameLikeTokens = answer.match(
     /(?<![\p{L}\p{N}])[\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}]\.)?(?=$|[^\p{L}\p{N}])/gu,
   ) ?? []
-  const ordinary = new Set(['Morgan', 'Bank', 'Yes', 'No', 'Not', 'Today', 'Yesterday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Add', 'Subtract', 'Approved', 'Pending', 'Denied', 'There', 'The', 'This', 'That', 'Based', 'Across', 'During', 'Over', 'For', 'Showing', 'Additional', 'None', 'All', 'Only', 'Most', 'Current', 'Class', 'Everyone', 'Nobody', 'Each'])
+  const ordinary = new Set([
+    'Morgan', 'Bank', 'Yes', 'No', 'Not', 'Today', 'Yesterday',
+    'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+    'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
+    'September', 'October', 'November', 'December',
+    'Jan', 'Feb', 'Mar', 'Apr', 'Jun', 'Jul', 'Aug', 'Sep', 'Sept', 'Oct', 'Nov', 'Dec',
+    'AM', 'PM', 'Add', 'Subtract', 'Approved', 'Pending', 'Denied',
+    'There', 'The', 'This', 'That', 'These', 'Those', 'It', 'Its', 'They', 'Their',
+    'Based', 'Across', 'During', 'Over', 'For', 'From', 'With', 'Within', 'By',
+    'In', 'On', 'At', 'After', 'Before', 'Between', 'Among', 'According', 'Compared',
+    'Showing', 'Additional', 'None', 'All', 'Only', 'Most', 'Current', 'Class',
+    'Everyone', 'Nobody', 'Each', 'Both', 'Neither', 'Either',
+    'Overall', 'However', 'Also', 'Because', 'Although', 'Here', 'First', 'Next', 'Finally',
+    'Students', 'Student', 'Transactions', 'Transaction', 'Balances', 'Balance',
+    'Results', 'Result', 'Counts', 'Count', 'Total', 'Average', 'Checked', 'Found', 'Calculated',
+  ])
   for (const token of nameLikeTokens) {
+    const tokenKey = normalizedNameLikeToken(token)
     if (
       !ordinary.has(token) &&
-      !allowed.has(token.toLocaleLowerCase('en-US')) &&
-      !citedLabels.has(token.toLocaleLowerCase('en-US'))
+      !allowed.has(tokenKey) &&
+      !citedLabels.has(tokenKey)
     ) {
-      if (/\s/u.test(token) || likelyStudentNameUse(answer, token)) {
-        fail('answer-unverified', 'The provider answer contains an unknown student identity.')
-      }
+      fail('answer-unverified', 'The provider answer contains an unknown student identity.')
     }
   }
 }
@@ -412,12 +426,8 @@ function containsWholeText(answer, value) {
   return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(value)}(?![\\p{L}\\p{N}])`, 'iu').test(answer)
 }
 
-function likelyStudentNameUse(answer, token) {
-  const escaped = escapeRegExp(token)
-  return new RegExp(
-    `(?:\\bFor\\s+${escaped}\\b|\\b${escaped}(?:'s|’s)?\\s+(?:has|had|is|was|were|did|does|received|earned|spent|paid|owes|currently)\\b|(?:,|\\band\\s+)\\s*${escaped}(?:,|\\s+and\\b|\\s+(?:has|had|is|was|were)\\b))`,
-    'iu',
-  ).test(answer)
+function normalizedNameLikeToken(token) {
+  return token.replace(/(?:'s|’s)$/iu, '').toLocaleLowerCase('en-US')
 }
 
 function assertTruncationDisclosed(answer, cited) {
