@@ -6,6 +6,10 @@ import {
   priceGeminiToolAssistantActualUsage,
   quoteGeminiToolAssistantWorstCaseCost,
 } from './geminiToolAssistantCostPolicy.js'
+import {
+  CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
+  CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
+} from './classroomAssistantUsageContract.js'
 import { GEMINI_RATE_CARD_ID } from './geminiProviderAdapter.js'
 
 const EVIDENCE = Object.freeze({
@@ -51,4 +55,23 @@ test('tool-assistant actual pricing rejects a mismatched card and over-limit out
     }),
     GeminiToolAssistantCostPolicyError,
   )
+})
+
+test('tool-assistant actual pricing accepts each exact accumulated usage ceiling', () => {
+  assert.equal(priceGeminiToolAssistantActualUsage({
+    rateCardId: GEMINI_RATE_CARD_ID,
+    usage: {
+      inputTokens: 1,
+      outputTokens: CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
+      thinkingTokens: CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
+    },
+  }) > 0, true)
+  assert.throws(() => priceGeminiToolAssistantActualUsage({
+    rateCardId: GEMINI_RATE_CARD_ID,
+    usage: {
+      inputTokens: 1,
+      outputTokens: CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
+      thinkingTokens: CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS + 1,
+    },
+  }), GeminiToolAssistantCostPolicyError)
 })

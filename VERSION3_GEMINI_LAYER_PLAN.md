@@ -159,7 +159,7 @@ reservation, replay, and no-write guarantees remain unchanged.
 
 The teacher question route now has a separately gated version-4 redesign. It
 replaces data-blind plan generation with a bounded Gemini function-calling loop
-over six server-owned read-only tools. This is the approved general-purpose
+over seven server-owned read-only tools. This is the approved general-purpose
 route for unforeseen classroom questions. The schema-8 planner remains dormant
 code for immediate rollback while the tool-assistant flag is off.
 
@@ -175,8 +175,10 @@ provider.
 
 The loop is limited to four provider turns, eight calls, 32 KiB of tool output,
 one 60-second overall deadline, and a 1,200-character final answer. The first
-turn must call a tool; the final JSON cites executed call IDs. The server rejects
-uncited results, opaque refs, unknown two-part identities, output truncation,
+turn must call a tool; the final JSON cites executed call IDs and the exact
+scalar result fields supporting student names and numbers. The server rejects
+uncited results, opaque refs, ungrounded first or multi-part identities,
+field-mismatched numeric claims, undisclosed partial results, output truncation,
 malformed usage, and exhausted limits. Transient provider transport errors
 receive bounded retries inside that one deadline; request, authentication, and
 verification failures do not.

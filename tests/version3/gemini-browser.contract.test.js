@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import {
+  CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
+  CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
+} from "../../functions/insights/classroomAssistantUsageContract.js";
+import { CLASSROOM_ASSISTANT_BILLED_USAGE_LIMITS } from "../../src/insights/providerInsightsClient.js";
+
 const [indexHtml, browserClient, providerAppCheck, browserViteConfig, packageJson] = await Promise.all([
   readFile(new URL("../../index.html", import.meta.url), "utf8"),
   readFile(new URL("../../src/insights/providerInsightsClient.js", import.meta.url), "utf8"),
@@ -56,6 +62,15 @@ test("source contract: browser request carries only the teacher question control
   assert.match(indexHtml, /request = freshProviderQuestionRetryRequest\(retryState\.request\)/);
   assert.match(indexHtml, /function freshProviderQuestionRetryRequest\([\s\S]*?requestId: providerInsightsClient\.newRequestId\(\)/);
   assert.match(indexHtml, /Try again as a new request/);
+});
+
+test("runtime contract: browser and Functions accept the same accumulated assistant usage ceilings", () => {
+  assert.deepEqual(CLASSROOM_ASSISTANT_BILLED_USAGE_LIMITS, {
+    outputTokens: CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
+    thinkingTokens: CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
+  });
+  assert.match(browserClient, /CLASSROOM_ASSISTANT_BILLED_USAGE_LIMITS\.outputTokens/);
+  assert.match(browserClient, /CLASSROOM_ASSISTANT_BILLED_USAGE_LIMITS\.thinkingTokens/);
 });
 
 test("source contract: assisted state is in memory, reset with tenant state, and stale-checked", () => {

@@ -2,11 +2,11 @@ import { Buffer } from 'node:buffer'
 
 import { createClassroomAssistantToolbox } from './classroomAssistantTools.js'
 import {
-  CLASSROOM_ASSISTANT_MAX_OUTPUT_TOKENS,
-  CLASSROOM_ASSISTANT_MAX_THINKING_TOKENS,
-  CLASSROOM_ASSISTANT_MAX_TOOL_BYTES,
+  CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
+  CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
   CLASSROOM_ASSISTANT_MAX_TURNS,
-} from './geminiClassroomAssistant.js'
+} from './classroomAssistantUsageContract.js'
+import { CLASSROOM_ASSISTANT_MAX_TOOL_BYTES } from './geminiClassroomAssistant.js'
 import { GEMINI_RATE_CARD } from './geminiCostPolicy.js'
 import { GEMINI_RATE_CARD_ID } from './geminiProviderAdapter.js'
 
@@ -43,9 +43,9 @@ export function quoteGeminiToolAssistantWorstCaseCost({ assistantEvidence, toolb
     rateCardId: GEMINI_RATE_CARD_ID,
     worstCaseCostMicroUsd: price({
       inputTokens,
-      billedOutputTokens: CLASSROOM_ASSISTANT_MAX_TURNS * (
-        CLASSROOM_ASSISTANT_MAX_OUTPUT_TOKENS + CLASSROOM_ASSISTANT_MAX_THINKING_TOKENS
-      ),
+      billedOutputTokens:
+        CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS +
+        CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
     }),
   })
 }
@@ -59,8 +59,8 @@ export function priceGeminiToolAssistantActualUsage({ rateCardId, usage } = {}) 
     if (!Number.isSafeInteger(usage[field]) || usage[field] < 0) fail('invalid-usage', 'Classroom assistant usage is malformed.')
   }
   if (
-    usage.outputTokens > CLASSROOM_ASSISTANT_MAX_TURNS * CLASSROOM_ASSISTANT_MAX_OUTPUT_TOKENS ||
-    usage.thinkingTokens > CLASSROOM_ASSISTANT_MAX_TURNS * CLASSROOM_ASSISTANT_MAX_THINKING_TOKENS
+    usage.outputTokens > CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS ||
+    usage.thinkingTokens > CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS
   ) fail('invalid-usage', 'Classroom assistant usage exceeds its reservation.')
   return price({
     inputTokens: usage.inputTokens,

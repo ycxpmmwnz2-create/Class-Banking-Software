@@ -1,6 +1,7 @@
 const TOOL_NAMES = Object.freeze([
   'list_transactions',
   'aggregate_transactions',
+  'find_students_without_transactions',
   'get_balances',
   'get_balance_history',
   'compare_periods',
@@ -52,6 +53,10 @@ export const CLASSROOM_ASSISTANT_TOOL_DECLARATIONS = Object.freeze([
     limit: { type: 'integer', minimum: 1, maximum: 50 },
     sort: { type: 'string', enum: ['highest', 'lowest', 'alphabetical', 'chronological'] },
   }, ['groupBy', 'metric'])),
+  declaration('find_students_without_transactions', 'Find current students who have no transactions matching the supplied filters. Use this for questions such as who has not paid rent, who has not earned a category, or who has no activity in a date range. A truncated result is partial and must be disclosed.', transactionFilterSchema({
+    limit: { type: 'integer', minimum: 1, maximum: 25 },
+    sort: { type: 'string', enum: ['name', 'lowestBalance', 'highestBalance'] },
+  })),
   declaration('get_balances', 'Read current student balances and frozen status.', {
     type: 'object',
     additionalProperties: false,
@@ -182,6 +187,9 @@ export function createClassroomAssistantToolbox(evidence, { memoResolver } = {})
           return comparePeriods(args, data, transactions, studentsByRef)
         }
         const filtered = filterTransactions(args, data, transactions, studentsByRef)
+        if (name === 'find_students_without_transactions') {
+          return findStudentsWithoutTransactions(args, data.students, filtered)
+        }
         return name === 'list_transactions'
           ? listTransactions(args, filtered, studentsByRef, memoResolver)
           : aggregateTransactions(args, filtered, studentsByRef)
@@ -190,6 +198,44 @@ export function createClassroomAssistantToolbox(evidence, { memoResolver } = {})
         throw error
       }
     },
+  })
+}
+
+function findStudentsWithoutTransactions(args, students, filteredTransactions) {
+  const requestedRefs = studentRefs(args.studentRefs, students)
+  const matchingStudentRefs = new Set(filteredTransactions.map(transaction => transaction.studentRef))
+  const currentStudents = students.filter(student => student.current)
+  const selectedStudents = requestedRefs.length === 0
+    ? currentStudents
+    : currentStudents.filter(student => requestedRefs.includes(student.ref))
+  const withoutTransactions = selectedStudents.filter(student => !matchingStudentRefs.has(student.ref))
+  const sort = enumeration(args.sort ?? 'name', ['name', 'lowestBalance', 'highestBalance'])
+  withoutTransactions.sort((left, right) => {
+    if (sort === 'lowestBalance') {
+      return nullableBalance(left.balance, Number.POSITIVE_INFINITY) - nullableBalance(right.balance, Number.POSITIVE_INFINITY) ||
+        left.displayName.localeCompare(right.displayName, 'en-US')
+    }
+    if (sort === 'highestBalance') {
+      return nullableBalance(right.balance, Number.NEGATIVE_INFINITY) - nullableBalance(left.balance, Number.NEGATIVE_INFINITY) ||
+        left.displayName.localeCompare(right.displayName, 'en-US')
+    }
+    return left.displayName.localeCompare(right.displayName, 'en-US')
+  })
+  const limit = integer(args.limit, 1, 25, 25)
+  return Object.freeze({
+    ok: true,
+    currentStudentCount: currentStudents.length,
+    consideredStudentCount: selectedStudents.length,
+    matchedTransactionCount: filteredTransactions.length,
+    studentsWithoutCount: withoutTransactions.length,
+    returnedCount: Math.min(limit, withoutTransactions.length),
+    truncated: withoutTransactions.length > limit,
+    students: Object.freeze(withoutTransactions.slice(0, limit).map(student => Object.freeze({
+      studentRef: student.ref,
+      student: student.displayName,
+      currentBalance: student.balance,
+      frozen: student.frozen,
+    }))),
   })
 }
 
@@ -512,6 +558,10 @@ function balanceMatches(balance, condition) {
   if (condition === 'positive') return balance > 0
   if (condition === 'nonpositive') return balance <= 0
   return true
+}
+
+function nullableBalance(value, fallback) {
+  return value === null ? fallback : value
 }
 
 function studentRefs(value, students, minimum = 0) {

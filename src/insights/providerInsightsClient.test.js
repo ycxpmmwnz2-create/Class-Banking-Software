@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CLASSROOM_ASSISTANT_BILLED_USAGE_LIMITS,
   VERSION3_GEMINI_BROWSER_PROJECT_ID,
   VERSION3_GEMINI_LIVE_PROJECT_IDS,
   createProviderInsightsBrowserClient,
@@ -216,6 +217,33 @@ test("question response accepts a bounded full-roster answer but rejects oversiz
   assert.throws(() => validateProviderQuestionResponse(questionResponse({
     answer: "A".repeat(80_001),
   })), /answer is malformed/);
+});
+
+test("question response accepts the full reviewed multi-turn usage ceiling and rejects one token more", () => {
+  assert.deepEqual(validateProviderQuestionResponse(questionResponse({
+    usage: {
+      inputTokens: 1,
+      outputTokens: CLASSROOM_ASSISTANT_BILLED_USAGE_LIMITS.outputTokens,
+      thinkingTokens: CLASSROOM_ASSISTANT_BILLED_USAGE_LIMITS.thinkingTokens,
+      costMicroUsd: 1,
+    },
+  })).usage, {
+    inputTokens: 1,
+    outputTokens: 8_192,
+    thinkingTokens: 16_384,
+    costMicroUsd: 1,
+  });
+  for (const field of ["outputTokens", "thinkingTokens"]) {
+    assert.throws(() => validateProviderQuestionResponse(questionResponse({
+      usage: {
+        inputTokens: 1,
+        outputTokens: 0,
+        thinkingTokens: 0,
+        [field]: CLASSROOM_ASSISTANT_BILLED_USAGE_LIMITS[field] + 1,
+        costMicroUsd: 1,
+      },
+    })), /malformed/);
+  }
 });
 
 test("maps errors to short allowlisted messages and marks only ambiguous outcomes retryable", () => {

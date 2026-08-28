@@ -2,6 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
+  CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
+} from './classroomAssistantUsageContract.js'
+
+import {
   InsightQuestionContractError,
   validateCompletedQuestion,
   validateInsightQuestionRequest,
@@ -620,4 +625,18 @@ test('teacher response accepts only calculated answer text, bounded evidence, an
     ...response,
     answer: 'A'.repeat(80_001),
   }), InsightQuestionContractError)
+  assert.deepEqual(validateTeacherQuestionResponse({
+    ...response,
+    usage: {
+      inputTokens: 1,
+      outputTokens: CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
+      thinkingTokens: CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
+      costMicroUsd: 1,
+    },
+  }).usage, {
+    inputTokens: 1,
+    outputTokens: 8_192,
+    thinkingTokens: 16_384,
+    costMicroUsd: 1,
+  })
 })

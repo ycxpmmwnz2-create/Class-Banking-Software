@@ -29,7 +29,7 @@ or 90 day period.
 - All generated-insight and teacher-question requests use exactly
   `gemini-3.6-flash` with `thinkingLevel: minimal`; there is no fallback model,
   web search, code execution, or provider-owned data source. Teacher questions
-  may use only Morgan Bank's six server-owned read-only classroom tools.
+  may use only Morgan Bank's seven server-owned read-only classroom tools.
 - A teacher question may use at most four provider turns, eight tool calls,
   32 KiB of total tool output, 2,048 output tokens per turn, and 4,096 thinking
   tokens per turn, all inside one 60-second assistant deadline. Usage metadata
@@ -69,15 +69,20 @@ or 90 day period.
 - Gemini never receives Auth UIDs, Firestore IDs or paths, teacher/classroom
   identifiers, credentials, PINs, App Check data, secrets, another classroom,
   or write authority. Tool arguments contain no tenant selector.
-- The six tools list transactions, aggregate transactions, read current
+- The seven tools list transactions, aggregate transactions, find current
+  students without transactions matching a filter, read current
   balances, calculate balance history, compare periods, and describe available
   schema. Their filters, multidimensional groupings, totals, averages, medians,
   ranges, percentages, distinct counts, and period comparisons are general
-  primitives for unforeseen questions, not sentence-specific fixes.
+  primitives for unforeseen questions, not sentence-specific fixes. The
+  complement tool returns at most 25 names plus the exact total and marks a
+  longer result as truncated so the answer cannot imply that a partial list is
+  complete.
 - Gemini writes the direct teacher-facing answer, cites the executed tool-call
-  IDs, and cannot expose opaque references. Morgan Bank validates the final
-  envelope, evidence citations, output bounds, identities, usage, reservation,
-  and replay signature before returning it.
+  IDs, and points every student name and numeric claim to the exact scalar tool
+  result field that supports it. Morgan Bank validates those field-level facts,
+  truncated-result disclosure, output bounds, identities, usage, reservation,
+  and replay signature before returning the answer.
 - The previous schema-8 deterministic calculator remains available behind the
   server feature switch as a rollback path. The new tool assistant is separately
   gated by `VERSION3_GEMINI_TOOL_ASSISTANT_ENABLED`.

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import {
+  CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
+  CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
+} from './classroomAssistantUsageContract.js'
 import { GeminiClassroomAssistantError } from './geminiClassroomAssistant.js'
 import { InsightQuestionEvidenceError } from './questionEvidenceAdapter.js'
 import {
@@ -98,6 +102,27 @@ test('resolves tenant, reserves, runs the tool assistant, and commits a natural 
   assert.equal(setup.completed[0].result.usage.costMicroUsd, 10)
   assert.equal(setup.toolboxes.length, 2)
   assert.equal(setup.toolboxes[0], setup.toolboxes[1])
+})
+
+test('returns and commits valid usage at the exact accumulated multi-turn ceiling', async () => {
+  const setup = fixture()
+  setup.deps.assistant.answer = async () => ({
+    answer: 'No. There are no duplicate transactions today.',
+    evidence: ['Calculated 0 grouped results from 3 matching transactions.'],
+    usage: {
+      inputTokens: 1,
+      outputTokens: CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
+      thinkingTokens: CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
+    },
+    toolCallCount: 1,
+  })
+  const result = await createInsightToolQuestionService(setup.deps)({
+    auth: { uid: 'teacher-a' },
+    data: REQUEST,
+  })
+  assert.equal(result.usage.outputTokens, 8_192)
+  assert.equal(result.usage.thinkingTokens, 16_384)
+  assert.equal(setup.completed[0].result.usage.outputTokens, 8_192)
 })
 
 test('retains the reservation and preserves the safe provider failure category', async () => {

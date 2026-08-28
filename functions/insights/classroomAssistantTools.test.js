@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
+import { Buffer } from 'node:buffer'
 import test from 'node:test'
 
-import { createClassroomAssistantToolbox } from './classroomAssistantTools.js'
+import {
+  CLASSROOM_ASSISTANT_TOOL_DECLARATIONS,
+  createClassroomAssistantToolbox,
+} from './classroomAssistantTools.js'
 
 function evidence() {
   return {
@@ -38,6 +42,18 @@ function transaction(ref, studentRef, date, amount) {
     status: 'Approved',
   }
 }
+
+test('publishes exactly seven read-only classroom tools including the complement primitive', () => {
+  assert.deepEqual(CLASSROOM_ASSISTANT_TOOL_DECLARATIONS.map(item => item.name), [
+    'list_transactions',
+    'aggregate_transactions',
+    'find_students_without_transactions',
+    'get_balances',
+    'get_balance_history',
+    'compare_periods',
+    'describe_schema',
+  ])
+})
 
 test('finds broad duplicate groups without exposing opaque refs in the group label', () => {
   const toolbox = createClassroomAssistantToolbox(evidence())
@@ -110,6 +126,50 @@ test('answers current negative-balance and balance-history questions', () => {
     { studentRef: 'student-001', student: 'Ava R.', date: '2026-08-26', closingBalance: -2 },
     { studentRef: 'student-001', student: 'Ava R.', date: '2026-08-27', closingBalance: 8 },
   ])
+})
+
+test('finds the exact current students without matching transactions', () => {
+  const data = evidence()
+  data.students.push({ ref: 'student-003', displayName: 'Liam', current: true, balance: 4, frozen: false })
+  const result = createClassroomAssistantToolbox(data).execute('find_students_without_transactions', {
+    startDate: '2026-08-27',
+    endDate: '2026-08-27',
+    categoryContains: 'Technology',
+  })
+  assert.deepEqual(result, {
+    ok: true,
+    currentStudentCount: 3,
+    consideredStudentCount: 3,
+    matchedTransactionCount: 2,
+    studentsWithoutCount: 2,
+    returnedCount: 2,
+    truncated: false,
+    students: [
+      { studentRef: 'student-002', student: 'Ava S.', currentBalance: -2, frozen: false },
+      { studentRef: 'student-003', student: 'Liam', currentBalance: 4, frozen: false },
+    ],
+  })
+})
+
+test('honestly truncates a 500-student complement while keeping output below the assistant cap', () => {
+  const data = evidence()
+  data.students = Array.from({ length: 500 }, (_, index) => ({
+    ref: `student-${String(index + 1).padStart(3, '0')}`,
+    displayName: `Learner ${String(index + 1).padStart(3, '0')}`,
+    current: true,
+    balance: index,
+    frozen: false,
+  }))
+  data.transactions = []
+  const result = createClassroomAssistantToolbox(data).execute('find_students_without_transactions', {
+    startDate: '2026-08-27',
+    endDate: '2026-08-27',
+  })
+  assert.equal(result.studentsWithoutCount, 500)
+  assert.equal(result.returnedCount, 25)
+  assert.equal(result.students.length, 25)
+  assert.equal(result.truncated, true)
+  assert.equal(Buffer.byteLength(JSON.stringify(result), 'utf8') < 32 * 1024, true)
 })
 
 test('default period filtering honors the exact rolling cutoff while explicit dates use classroom days', () => {

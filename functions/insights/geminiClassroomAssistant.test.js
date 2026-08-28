@@ -58,6 +58,10 @@ test('runs a grounded tool turn and returns a direct conversational answer', asy
       text: JSON.stringify({
         answer: 'Yes. Ava has 2 matching Technology Add transactions today.',
         evidenceCallIds: ['duplicate-check'],
+        factRefs: [
+          { callId: 'duplicate-check', path: '/rows/0/group/student' },
+          { callId: 'duplicate-check', path: '/rows/0/value' },
+        ],
       }),
       functionCalls: [],
       finishReason: 'STOP',
@@ -103,10 +107,52 @@ test('stops the multi-turn loop at one overall minute', async () => {
   assert.equal(providerCalls, 1)
 })
 
+test('accumulates a four-turn tool answer at the shared billed usage ceiling', async () => {
+  let turn = 0
+  const ceilingUsage = {
+    promptTokenCount: 1,
+    candidatesTokenCount: 2_048,
+    thoughtsTokenCount: 4_096,
+    toolUsePromptTokenCount: 0,
+    totalTokenCount: 6_145,
+  }
+  const assistant = createGeminiClassroomAssistant({
+    async generateContent() {
+      turn += 1
+      if (turn < 4) return {
+        functionCalls: [{ id: `call-${turn}`, name: 'get_balances', args: {} }],
+        candidateContent: { role: 'model', parts: [{ functionCall: { id: `call-${turn}`, name: 'get_balances', args: {} } }] },
+        finishReason: 'STOP',
+        usageMetadata: ceilingUsage,
+      }
+      return {
+        text: JSON.stringify({
+          answer: 'There is 1 matching balance for Ava.',
+          evidenceCallIds: ['call-3'],
+          factRefs: [
+            { callId: 'call-3', path: '/matchedCount' },
+            { callId: 'call-3', path: '/students/0/student' },
+          ],
+        }),
+        functionCalls: [],
+        finishReason: 'STOP',
+        usageMetadata: ceilingUsage,
+      }
+    },
+  })
+  const result = await assistant.answer({ assistantEvidence: evidence() })
+  assert.deepEqual(result.usage, {
+    inputTokens: 4,
+    outputTokens: 8_192,
+    thinkingTokens: 16_384,
+  })
+  assert.equal(result.toolCallCount, 3)
+})
+
 test('rejects uncited, opaque, or truncated provider answers', async () => {
   for (const finalResponse of [
-    { text: JSON.stringify({ answer: 'Ava has 2 matches.', evidenceCallIds: [] }), finishReason: 'STOP' },
-    { text: JSON.stringify({ answer: 'student-001 has 2 matches.', evidenceCallIds: ['call'] }), finishReason: 'STOP' },
+    { text: JSON.stringify({ answer: 'Ava has 2 matches.', evidenceCallIds: [], factRefs: [] }), finishReason: 'STOP' },
+    { text: JSON.stringify({ answer: 'student-001 has 2 matches.', evidenceCallIds: ['call'], factRefs: [{ callId: 'call', path: '/matchedCount' }] }), finishReason: 'STOP' },
     { text: '{}', finishReason: 'MAX_TOKENS' },
   ]) {
     let count = 0
@@ -142,7 +188,11 @@ test('rejects an unknown two-part student identity even when tool evidence is ci
         usageMetadata: USAGE,
       }
       return {
-        text: JSON.stringify({ answer: 'Michael R. has 2 matches.', evidenceCallIds: ['call'] }),
+        text: JSON.stringify({
+          answer: 'Michael R. has 1 matching balance.',
+          evidenceCallIds: ['call'],
+          factRefs: [{ callId: 'call', path: '/matchedCount' }],
+        }),
         functionCalls: [],
         finishReason: 'STOP',
         usageMetadata: USAGE,
@@ -153,4 +203,180 @@ test('rejects an unknown two-part student identity even when tool evidence is ci
     assistant.answer({ assistantEvidence: evidence() }),
     error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
   )
+})
+
+test('rejects an invented first name but accepts an ordinary sentence start and a cited first name', async () => {
+  for (const [answer, shouldPass] of [
+    ['Priya has 1 matching balance.', false],
+    ['There is 1 matching balance for Ava.', true],
+  ]) {
+    let count = 0
+    const assistant = createGeminiClassroomAssistant({
+      async generateContent() {
+        count += 1
+        if (count === 1) return {
+          functionCalls: [{ id: 'call', name: 'get_balances', args: {} }],
+          candidateContent: { role: 'model', parts: [{ functionCall: { id: 'call', name: 'get_balances', args: {} } }] },
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+        return {
+          text: JSON.stringify({
+            answer,
+            evidenceCallIds: ['call'],
+            factRefs: [
+              { callId: 'call', path: '/matchedCount' },
+              { callId: 'call', path: '/students/0/student' },
+            ],
+          }),
+          functionCalls: [],
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+      },
+    })
+    if (shouldPass) {
+      assert.equal((await assistant.answer({ assistantEvidence: evidence() })).answer, answer)
+    } else {
+      await assert.rejects(
+        assistant.answer({ assistantEvidence: evidence() }),
+        error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
+      )
+    }
+  }
+})
+
+test('requires student names to come from fields in cited calls', async () => {
+  let count = 0
+  const assistant = createGeminiClassroomAssistant({
+    async generateContent() {
+      count += 1
+      if (count === 1) return {
+        functionCalls: [
+          { id: 'balances', name: 'get_balances', args: {} },
+          { id: 'schema', name: 'describe_schema', args: {} },
+        ],
+        candidateContent: { role: 'model', parts: [{ functionCall: { id: 'balances', name: 'get_balances', args: {} } }] },
+        finishReason: 'STOP',
+        usageMetadata: USAGE,
+      }
+      return {
+        text: JSON.stringify({
+          answer: 'Ava is listed.',
+          evidenceCallIds: ['schema'],
+          factRefs: [{ callId: 'schema', path: '/classroomDate' }],
+        }),
+        functionCalls: [],
+        finishReason: 'STOP',
+        usageMetadata: USAGE,
+      }
+    },
+  })
+  await assert.rejects(
+    assistant.answer({ assistantEvidence: evidence() }),
+    error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
+  )
+})
+
+test('binds currency and count claims to exact typed result fields', async () => {
+  for (const [answer, path, shouldPass] of [
+    ["Ava's balance is $10.", '/students/0/currentBalance', true],
+    ["Ava's balance is $1.", '/matchedCount', false],
+    ['Ava has 1 transaction.', '/matchedCount', false],
+  ]) {
+    let count = 0
+    const assistant = createGeminiClassroomAssistant({
+      async generateContent() {
+        count += 1
+        if (count === 1) return {
+          functionCalls: [{ id: 'call', name: 'get_balances', args: {} }],
+          candidateContent: { role: 'model', parts: [{ functionCall: { id: 'call', name: 'get_balances', args: {} } }] },
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+        return {
+          text: JSON.stringify({
+            answer,
+            evidenceCallIds: ['call'],
+            factRefs: [
+              { callId: 'call', path: '/students/0/student' },
+              { callId: 'call', path },
+            ],
+          }),
+          functionCalls: [],
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+      },
+    })
+    if (shouldPass) {
+      assert.equal((await assistant.answer({ assistantEvidence: evidence() })).answer, answer)
+    } else {
+      await assert.rejects(
+        assistant.answer({ assistantEvidence: evidence() }),
+        error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
+      )
+    }
+  }
+})
+
+test('requires a teacher-visible disclosure when cited tool output is truncated', async () => {
+  for (const [answer, shouldPass] of [
+    ['500 students had no matching rent transactions.', false],
+    ['Showing the first 25 students; all 500 current students had no matching rent transactions.', true],
+  ]) {
+    let count = 0
+    const assistant = createGeminiClassroomAssistant({
+      async generateContent() {
+        count += 1
+        if (count === 1) return {
+          functionCalls: [{ id: 'call', name: 'find_students_without_transactions', args: { purpose: 'rent' } }],
+          candidateContent: { role: 'model', parts: [{ functionCall: { id: 'call', name: 'find_students_without_transactions', args: { purpose: 'rent' } } }] },
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+        return {
+          text: JSON.stringify({
+            answer,
+            evidenceCallIds: ['call'],
+            factRefs: [
+              { callId: 'call', path: '/returnedCount' },
+              { callId: 'call', path: '/currentStudentCount' },
+              { callId: 'call', path: '/studentsWithoutCount' },
+            ],
+          }),
+          functionCalls: [],
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+      },
+    })
+    if (shouldPass) {
+      const result = await assistant.answer({ assistantEvidence: {
+        ...evidence(),
+        students: Array.from({ length: 500 }, (_, index) => ({
+          ref: `student-${String(index + 1).padStart(3, '0')}`,
+          displayName: `Learner ${String(index + 1).padStart(3, '0')}`,
+          current: true,
+          balance: index,
+          frozen: false,
+        })),
+      } })
+      assert.equal(result.answer, answer)
+    } else {
+      await assert.rejects(
+        assistant.answer({ assistantEvidence: {
+          ...evidence(),
+          students: Array.from({ length: 500 }, (_, index) => ({
+            ref: `student-${String(index + 1).padStart(3, '0')}`,
+            displayName: `Learner ${String(index + 1).padStart(3, '0')}`,
+            current: true,
+            balance: index,
+            frozen: false,
+          })),
+        } }),
+        error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
+      )
+    }
+  }
 })

@@ -6,6 +6,10 @@
  * unexpected server value is rejected before it can reach the teacher UI.
  */
 
+import { CLASSROOM_ASSISTANT_BILLED_USAGE_LIMITS } from "../../functions/insights/classroomAssistantUsageContract.js";
+
+export { CLASSROOM_ASSISTANT_BILLED_USAGE_LIMITS };
+
 export const VERSION3_GEMINI_BROWSER_PROJECT_ID =
   "demo-morgan-bank-version3-gemini-callable-browser";
 export const VERSION3_GEMINI_LIVE_PROJECT_IDS = Object.freeze({
@@ -261,8 +265,16 @@ export function validateProviderQuestionResponse(value, expected = {}) {
     evidence: Object.freeze(value.evidence.map(item => boundedText(item, 1, 320, "evidence"))),
     usage: Object.freeze({
       inputTokens: nonNegativeInteger(value.usage.inputTokens, "inputTokens"),
-      outputTokens: nonNegativeInteger(value.usage.outputTokens, "outputTokens", 256),
-      thinkingTokens: nonNegativeInteger(value.usage.thinkingTokens, "thinkingTokens", 4_096),
+      outputTokens: nonNegativeInteger(
+        value.usage.outputTokens,
+        "outputTokens",
+        CLASSROOM_ASSISTANT_BILLED_USAGE_LIMITS.outputTokens,
+      ),
+      thinkingTokens: nonNegativeInteger(
+        value.usage.thinkingTokens,
+        "thinkingTokens",
+        CLASSROOM_ASSISTANT_BILLED_USAGE_LIMITS.thinkingTokens,
+      ),
       costMicroUsd: nonNegativeInteger(value.usage.costMicroUsd, "costMicroUsd", 7_500_000),
     }),
   });

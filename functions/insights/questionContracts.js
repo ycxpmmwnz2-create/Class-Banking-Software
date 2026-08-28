@@ -1,3 +1,8 @@
+import {
+  CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
+  CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
+} from './classroomAssistantUsageContract.js'
+
 export const INSIGHT_QUESTION_SCHEMA_VERSION = 2
 export const INSIGHT_QUERY_PLAN_SCHEMA_VERSION = 8
 
@@ -74,8 +79,6 @@ const MAX_GUIDANCE_LENGTH = 480
 const MAX_TEACHER_QUESTION_ANSWER_LENGTH = 80_000
 const MAX_INTERPRETATION_OUTPUT_TOKENS = 512
 const MAX_INTERPRETATION_THINKING_TOKENS = 4_096
-const MAX_BILLED_OUTPUT_TOKENS = 8_192
-const MAX_BILLED_THINKING_TOKENS = 16_384
 const PROVIDER_ALIAS_PATTERN = /(?:student|category)-[0-9]{3}/iu
 const PROVIDER_PLACEHOLDER_PATTERN = /\[(?:student|category)(?:-[0-9]{3})?\]/iu
 const URL_PATTERN = /(?:https?:\/\/|www\.)/iu
@@ -603,8 +606,8 @@ function validateBilledUsage(value, category) {
   const result = validateTokenUsage(
     value,
     category,
-    MAX_BILLED_OUTPUT_TOKENS,
-    MAX_BILLED_THINKING_TOKENS,
+    CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
+    CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
   )
   if (!Number.isSafeInteger(value.costMicroUsd) || value.costMicroUsd < 0 || value.costMicroUsd > 7_500_000) {
     fail(category, 'Question usage exceeds the reviewed limits.')
