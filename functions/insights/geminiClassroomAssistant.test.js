@@ -86,6 +86,52 @@ test('runs a grounded tool turn and returns a direct conversational answer', asy
   assert.equal(requests[1].contents.at(-1).parts[0].functionResponse.id, 'duplicate-check')
 })
 
+test('accepts cited multiword category labels without treating their words as student names', async () => {
+  for (const category of ["Teacher's Choice", 'Class Job']) {
+    let count = 0
+    const assistant = createGeminiClassroomAssistant({
+      async generateContent() {
+        count += 1
+        if (count === 1) return {
+          functionCalls: [{ id: 'category-count', name: 'aggregate_transactions', args: {
+            startDate: '2026-08-27',
+            endDate: '2026-08-27',
+            categoryContains: category,
+            groupBy: ['category'],
+            metric: 'count',
+          } }],
+          candidateContent: { role: 'model', parts: [{ functionCall: { id: 'category-count', name: 'aggregate_transactions', args: {} } }] },
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+        return {
+          text: JSON.stringify({
+            answer: `${category} had 2 matching transactions.`,
+            evidenceCallIds: ['category-count'],
+            factRefs: [
+              { callId: 'category-count', path: '/rows/0/group/category' },
+              { callId: 'category-count', path: '/rows/0/value' },
+            ],
+          }),
+          functionCalls: [],
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+      },
+    })
+    const customEvidence = evidence()
+    customEvidence.categories = [{ label: category, transactionTypes: ['Add'] }]
+    customEvidence.transactions = customEvidence.transactions.map(transaction => ({
+      ...transaction,
+      category,
+    }))
+    assert.equal(
+      (await assistant.answer({ assistantEvidence: customEvidence })).answer,
+      `${category} had 2 matching transactions.`,
+    )
+  }
+})
+
 test('stops the multi-turn loop at one overall minute', async () => {
   let providerCalls = 0
   const times = [0, 0, 60_001]

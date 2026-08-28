@@ -386,14 +386,15 @@ function assertAnswerNamesAreGrounded(answer, students, facts) {
   const citedLabels = new Set(facts
     .filter(fact => typeof fact.value === 'string')
     .map(fact => fact.value.toLocaleLowerCase('en-US')))
+  const citedLabelTokens = new Set(facts
+    .filter(fact => typeof fact.value === 'string')
+    .flatMap(fact => nameLikeTokens(fact.value).map(normalizedNameLikeToken)))
   for (const name of rosterNames) {
     if (containsWholeText(answer, name) && !allowed.has(name)) {
       fail('answer-unverified', 'The provider answer used a student name without citing its result field.')
     }
   }
-  const nameLikeTokens = answer.match(
-    /(?<![\p{L}\p{N}])[\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}]\.)?(?=$|[^\p{L}\p{N}])/gu,
-  ) ?? []
+  const answerNameLikeTokens = nameLikeTokens(answer)
   const ordinary = new Set([
     'Morgan', 'Bank', 'Yes', 'No', 'Not', 'Today', 'Yesterday',
     'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
@@ -410,16 +411,23 @@ function assertAnswerNamesAreGrounded(answer, students, facts) {
     'Students', 'Student', 'Transactions', 'Transaction', 'Balances', 'Balance',
     'Results', 'Result', 'Counts', 'Count', 'Total', 'Average', 'Checked', 'Found', 'Calculated',
   ])
-  for (const token of nameLikeTokens) {
+  for (const token of answerNameLikeTokens) {
     const tokenKey = normalizedNameLikeToken(token)
     if (
       !ordinary.has(token) &&
       !allowed.has(tokenKey) &&
-      !citedLabels.has(tokenKey)
+      !citedLabels.has(tokenKey) &&
+      !citedLabelTokens.has(tokenKey)
     ) {
       fail('answer-unverified', 'The provider answer contains an unknown student identity.')
     }
   }
+}
+
+function nameLikeTokens(value) {
+  return value.match(
+    /(?<![\p{L}\p{N}])[\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}]\.)?(?=$|[^\p{L}\p{N}])/gu,
+  ) ?? []
 }
 
 function containsWholeText(answer, value) {
