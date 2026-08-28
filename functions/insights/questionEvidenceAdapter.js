@@ -29,6 +29,9 @@ const EMAIL_OR_URL_REDACTION_PATTERN = new RegExp(EMAIL_OR_URL_PATTERN.source, '
 const PHONE_REDACTION_PATTERN = new RegExp(PHONE_PATTERN.source, 'gu')
 const RESERVED_PLACEHOLDER_PATTERN = /\[\s*(?:student|category)/iu
 const MAX_PROVIDER_MEMO_CHARACTERS = 500
+const MAX_SHORT_SURNAME_OBSCURING_CHARACTERS = 1
+const MAX_LONG_SURNAME_OBSCURING_CHARACTERS = 2
+const MAX_MULTI_TOKEN_OBSCURING_CHARACTERS = 8
 
 export class InsightQuestionEvidenceError extends Error {
   constructor(category, message) {
@@ -774,7 +777,10 @@ function normalize(value) {
 }
 
 function collapseSensitiveText(value) {
-  return normalize(value).replace(/[^\p{L}\p{N}]/gu, '')
+  return normalize(value)
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^\p{L}\p{N}]/gu, '')
 }
 
 function containsSeparatorObscuredName(value, name) {
@@ -802,6 +808,7 @@ function containsObscuredMultiTokenName(value, name) {
   if (nameTokens.length < 2) return false
   const maximumCandidateLength = nameTokens.reduce((total, token) => total + token.length, 0)
   const runs = normalize(value).match(/[\p{L}\p{N}]+/gu) ?? []
+  if (runs.some(run => containsResidualRosterName(run, nameTokens))) return true
   for (let start = 0; start < runs.length; start += 1) {
     let candidate = ''
     for (let end = start; end < runs.length; end += 1) {
@@ -809,6 +816,41 @@ function containsObscuredMultiTokenName(value, name) {
       if (candidate.length > maximumCandidateLength) break
       if (matchesMultipleDistinctNameTokens(candidate, nameTokens)) return true
     }
+  }
+  return false
+}
+
+function containsResidualRosterName(run, nameTokens) {
+  const candidate = collapseSensitiveText(run)
+  const maximumNameLength = nameTokens.reduce((total, token) => total + token.length, 0)
+  if (
+    candidate.length <= maximumNameLength + MAX_MULTI_TOKEN_OBSCURING_CHARACTERS &&
+    containsTwoNameTokensAsSubsequence(candidate, nameTokens)
+  ) return true
+
+  const surname = nameTokens.at(-1)
+  if (!candidate.includes(surname)) return false
+  const allowedObscuringCharacters = surname.length >= 4
+    ? MAX_LONG_SURNAME_OBSCURING_CHARACTERS
+    : MAX_SHORT_SURNAME_OBSCURING_CHARACTERS
+  return candidate.length <= surname.length + allowedObscuringCharacters
+}
+
+function containsTwoNameTokensAsSubsequence(candidate, nameTokens) {
+  for (let firstIndex = 0; firstIndex < nameTokens.length; firstIndex += 1) {
+    for (let secondIndex = 0; secondIndex < nameTokens.length; secondIndex += 1) {
+      if (firstIndex === secondIndex) continue
+      if (isSubsequence(`${nameTokens[firstIndex]}${nameTokens[secondIndex]}`, candidate)) return true
+    }
+  }
+  return false
+}
+
+function isSubsequence(needle, haystack) {
+  let index = 0
+  for (const character of haystack) {
+    if (character === needle[index]) index += 1
+    if (index === needle.length) return true
   }
   return false
 }

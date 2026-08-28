@@ -216,11 +216,22 @@ test('tool-assistant normalization cannot reveal a compatibility-form surname or
   assert.doesNotMatch(JSON.stringify(contactName.assistantEvidence), /parent@example\.com/)
 })
 
-test('tool assistant blocks concatenated or reordered full names without rejecting safely shortened punctuation', async () => {
+test('tool assistant blocks concatenated, reordered, and character-obscured roster names', async () => {
   for (const question of [
     'How much did GianMarcoBellini earn?',
     'How much did BelliniGianMarco earn?',
     'How much did ＧｉａｎＭａｒｃｏＢｅｌｌｉｎｉ earn?',
+    'How much did GianMarcoXBellini earn?',
+    'How much did GianMarco123456Bellini earn?',
+    'How much did GianXMarcoBellini earn?',
+    'How much did GianMarcoBelXlini earn?',
+    'How much did XGianMarcoBellini earn?',
+    'How much did GianMarcoBelliniX earn?',
+    'How much did BelliniQGianMarco earn?',
+    'How much did ＧｉａｎＭａｒｃｏＸＢｅｌｌｉｎｉ earn?',
+    'How much did GianMarcoBelli\u0301ni earn?',
+    'How much did BelliniX earn?',
+    'How much did XBellini earn?',
   ]) {
     await assert.rejects(
       loader()({
@@ -247,11 +258,46 @@ test('tool assistant blocks concatenated or reordered full names without rejecti
   assert.doesNotMatch(safelyShortened.assistantEvidence.question, /Bellini/)
 })
 
-test('lazy assistant memos fail closed when they reconstruct a concatenated or reordered full name', async () => {
+test('tool-assistant residual-name checks do not reject unrelated word overlaps', async () => {
+  const envelope = await loader(fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'Ava Li',
+    },
+    'classrooms/class-a/students/2': {
+      ...fixture()['classrooms/class-a/students/2'],
+      name: 'Grace Land',
+    },
+  }))({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 7,
+    timeZone: 'America/Denver',
+    question: 'Show the spending list and the highland category.',
+    assistantMode: true,
+  })
+  assert.equal(
+    envelope.assistantEvidence.question,
+    'Show the spending list and the highland category.',
+  )
+})
+
+test('lazy assistant memos fail closed when they retain character-obscured roster names', async () => {
   for (const memo of [
     'Paid to GianMarcoBellini for chores',
     'Paid to BelliniGianMarco for chores',
     'Paid to ＧｉａｎＭａｒｃｏＢｅｌｌｉｎｉ for chores',
+    'Paid to GianMarcoXBellini for chores',
+    'Paid to GianMarco123456Bellini for chores',
+    'Paid to GianXMarcoBellini for chores',
+    'Paid to GianMarcoBelXlini for chores',
+    'Paid to XGianMarcoBellini for chores',
+    'Paid to GianMarcoBelliniX for chores',
+    'Paid to BelliniQGianMarco for chores',
+    'Paid to ＧｉａｎＭａｒｃｏＸＢｅｌｌｉｎｉ for chores',
+    'Paid to GianMarcoBelli\u0301ni for chores',
+    'Paid to BelliniX for chores',
+    'Paid to XBellini for chores',
   ]) {
     const envelope = await loader(fixture({
       'classrooms/class-a/transactions/101': {
