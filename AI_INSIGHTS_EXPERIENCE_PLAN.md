@@ -57,11 +57,14 @@ or 90 day period.
   first names; when first names collide it receives first name plus last
   initial. It receives ephemeral student/transaction references, current
   balances, frozen status, safe categories, server-calculated classroom dates,
-  and only the bounded tool results needed for the question.
+  and only the bounded tool results needed for the question. Concatenated,
+  reordered, or compatibility-obscured multi-part roster names fail before a
+  question can reach Gemini.
 - Transaction memos are absent by default. A tool may request them only when
   relevant; emails, phone numbers, links, and control characters are removed,
   each memo is capped at 500 characters, and truncation is explicit. Memo text
-  is resolved and sanitized lazily only for the bounded rows the tool returns.
+  is resolved and sanitized lazily only for the bounded rows the tool returns;
+  a memo that still reconstructs a multi-part roster name is unavailable.
 - Gemini never receives Auth UIDs, Firestore IDs or paths, teacher/classroom
   identifiers, credentials, PINs, App Check data, secrets, another classroom,
   or write authority. Tool arguments contain no tenant selector.

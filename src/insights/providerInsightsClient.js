@@ -489,7 +489,7 @@ export function mapProviderInsightsError(error, { testMode = true } = {}) {
   if (detailCategory === "question-sensitive" && code === "invalid-argument") {
     return Object.freeze({
       ambiguous: false,
-      message: "Remove email addresses, links, phone numbers, and bracketed student or category placeholders before asking.",
+      message: "Remove contact information or placeholders, and type student names with normal spacing.",
     });
   }
   if (detailCategory === "evidence-unavailable" && code === "internal") {

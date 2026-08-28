@@ -82,6 +82,12 @@ test('keeps memos out by default and returns them only on explicit bounded reque
   assert.equal(withMemo.transactions[0].memo, 'Technology helper')
   assert.equal(withMemo.transactions[0].memoTruncated, false)
   assert.equal(memoResolutions, 1)
+
+  const unsafeMemo = createClassroomAssistantToolbox(evidence(), { memoResolver: () => null })
+  assert.deepEqual(unsafeMemo.execute('list_transactions', { includeMemos: true, limit: 1 }), {
+    ok: false,
+    error: 'Memo text is unavailable.',
+  })
 })
 
 test('answers current negative-balance and balance-history questions', () => {

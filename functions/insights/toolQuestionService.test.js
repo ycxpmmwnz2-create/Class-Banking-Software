@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { GeminiClassroomAssistantError } from './geminiClassroomAssistant.js'
+import { InsightQuestionEvidenceError } from './questionEvidenceAdapter.js'
 import {
   InsightToolQuestionServiceError,
   createInsightToolQuestionService,
@@ -112,6 +113,22 @@ test('retains the reservation and preserves the safe provider failure category',
   )
   assert.equal(setup.calls.includes('uncertain'), true)
   assert.equal(setup.calls.includes('commit'), false)
+})
+
+test('rejects an obscured-name question before quoting, reserving, or invoking Gemini', async () => {
+  const setup = fixture()
+  setup.deps.loadQuestionEvidence = async () => {
+    setup.calls.push('evidence')
+    throw new InsightQuestionEvidenceError(
+      'question-sensitive',
+      'Type student names with normal spacing and punctuation before asking.',
+    )
+  }
+  await assert.rejects(
+    createInsightToolQuestionService(setup.deps)({ auth: { uid: 'teacher-a' }, data: REQUEST }),
+    error => error instanceof InsightToolQuestionServiceError && error.category === 'question-sensitive',
+  )
+  assert.deepEqual(setup.calls, ['tenant', 'evidence'])
 })
 
 test('replays only an exact tool-assistant result bound to current evidence', async () => {

@@ -257,7 +257,7 @@ test("maps errors to short allowlisted messages and marks only ambiguous outcome
     details: { category: "question-sensitive" },
   }), {
     ambiguous: false,
-    message: "Remove email addresses, links, phone numbers, and bracketed student or category placeholders before asking.",
+    message: "Remove contact information or placeholders, and type student names with normal spacing.",
   });
   assert.deepEqual(mapProviderInsightsError({
     code: "functions/resource-exhausted",

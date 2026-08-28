@@ -166,6 +166,12 @@ export function createFirestoreQuestionEvidenceLoader({
       return assistantTextCache.get(cacheKey)
     }
     const providerQuestion = assistantMode ? safeAssistantText(question, 500).text : ''
+    if (assistantMode && containsObscuredMultiTokenRosterName(providerQuestion, studentIdentities)) {
+      fail(
+        'question-sensitive',
+        'Type student names with normal spacing and punctuation before asking.',
+      )
+    }
     const assistantMemoSourceByRef = assistantMode ? new Map() : null
     const assistantMemoCache = assistantMode ? new Map() : null
     const answerEvidence = Object.freeze({
@@ -255,10 +261,14 @@ export function createFirestoreQuestionEvidenceLoader({
     const assistantMemoResolver = assistantMode ? Object.freeze(transactionRef => {
       if (typeof transactionRef !== 'string' || !assistantMemoSourceByRef.has(transactionRef)) return null
       if (!assistantMemoCache.has(transactionRef)) {
-        assistantMemoCache.set(transactionRef, safeAssistantText(
+        const memo = safeAssistantText(
           assistantMemoSourceByRef.get(transactionRef),
           MAX_PROVIDER_MEMO_CHARACTERS,
-        ))
+        )
+        assistantMemoCache.set(
+          transactionRef,
+          containsObscuredMultiTokenRosterName(memo.text, studentIdentities) ? null : memo,
+        )
       }
       return assistantMemoCache.get(transactionRef)
     }) : null
@@ -781,6 +791,47 @@ function containsSeparatorObscuredName(value, name) {
     }
   }
   return false
+}
+
+function containsObscuredMultiTokenRosterName(value, identities) {
+  return identities.some(identity => containsObscuredMultiTokenName(value, identity.name))
+}
+
+function containsObscuredMultiTokenName(value, name) {
+  const nameTokens = [...new Set(tokens(name).map(collapseSensitiveText).filter(Boolean))]
+  if (nameTokens.length < 2) return false
+  const maximumCandidateLength = nameTokens.reduce((total, token) => total + token.length, 0)
+  const runs = normalize(value).match(/[\p{L}\p{N}]+/gu) ?? []
+  for (let start = 0; start < runs.length; start += 1) {
+    let candidate = ''
+    for (let end = start; end < runs.length; end += 1) {
+      candidate += collapseSensitiveText(runs[end])
+      if (candidate.length > maximumCandidateLength) break
+      if (matchesMultipleDistinctNameTokens(candidate, nameTokens)) return true
+    }
+  }
+  return false
+}
+
+function matchesMultipleDistinctNameTokens(candidate, nameTokens) {
+  const states = Array.from({ length: candidate.length + 1 }, () => new Set())
+  states[0].add(-1)
+  for (let index = 0; index < candidate.length; index += 1) {
+    if (states[index].size === 0) continue
+    for (let tokenIndex = 0; tokenIndex < nameTokens.length; tokenIndex += 1) {
+      const token = nameTokens[tokenIndex]
+      if (!candidate.startsWith(token, index)) continue
+      const nextIndex = index + token.length
+      for (const firstTokenIndex of states[index]) {
+        states[nextIndex].add(
+          firstTokenIndex === -1
+            ? tokenIndex
+            : firstTokenIndex === tokenIndex ? tokenIndex : -2,
+        )
+      }
+    }
+  }
+  return states[candidate.length].has(-2)
 }
 
 function matchesSensitiveNameCombination(candidate, nameTokens, runCount) {

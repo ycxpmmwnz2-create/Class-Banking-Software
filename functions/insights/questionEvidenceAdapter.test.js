@@ -216,6 +216,60 @@ test('tool-assistant normalization cannot reveal a compatibility-form surname or
   assert.doesNotMatch(JSON.stringify(contactName.assistantEvidence), /parent@example\.com/)
 })
 
+test('tool assistant blocks concatenated or reordered full names without rejecting safely shortened punctuation', async () => {
+  for (const question of [
+    'How much did GianMarcoBellini earn?',
+    'How much did BelliniGianMarco earn?',
+    'How much did ＧｉａｎＭａｒｃｏＢｅｌｌｉｎｉ earn?',
+  ]) {
+    await assert.rejects(
+      loader()({
+        teacherUid: 'teacher-a',
+        classroomId: 'class-a',
+        periodDays: 7,
+        timeZone: 'America/Denver',
+        question,
+        assistantMode: true,
+      }),
+      error => error instanceof InsightQuestionEvidenceError && error.category === 'question-sensitive',
+    )
+  }
+
+  const safelyShortened = await loader()({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 7,
+    timeZone: 'America/Denver',
+    question: 'How much did Gian-Marco Bellini earn?',
+    assistantMode: true,
+  })
+  assert.equal(safelyShortened.assistantEvidence.question, 'How much did Gian-Marco B. earn?')
+  assert.doesNotMatch(safelyShortened.assistantEvidence.question, /Bellini/)
+})
+
+test('lazy assistant memos fail closed when they reconstruct a concatenated or reordered full name', async () => {
+  for (const memo of [
+    'Paid to GianMarcoBellini for chores',
+    'Paid to BelliniGianMarco for chores',
+    'Paid to ＧｉａｎＭａｒｃｏＢｅｌｌｉｎｉ for chores',
+  ]) {
+    const envelope = await loader(fixture({
+      'classrooms/class-a/transactions/101': {
+        ...fixture()['classrooms/class-a/transactions/101'],
+        memo,
+      },
+    }))({
+      teacherUid: 'teacher-a',
+      classroomId: 'class-a',
+      periodDays: 7,
+      timeZone: 'America/Denver',
+      question: 'What happened in the technology transactions?',
+      assistantMode: true,
+    })
+    assert.equal(envelope.assistantMemoResolver('transaction-00001'), null)
+  }
+})
+
 test('safe student aliases do not collide with an unrelated roster name token', async () => {
   const data = fixture({
     'classrooms/class-a/students/1': {
