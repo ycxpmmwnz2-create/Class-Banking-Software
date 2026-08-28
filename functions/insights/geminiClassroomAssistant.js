@@ -25,7 +25,7 @@ const SYSTEM_INSTRUCTION = [
   'Use the provided student display names. They contain only first names, or first name plus last initial when needed. Never expand a last initial or reveal opaque refs in the answer.',
   'Memos are available only through list_transactions with includeMemos true. Request them only when their wording is necessary.',
   'If the available records cannot answer a question, say exactly what is missing instead of guessing.',
-  'If a cited tool result is truncated, clearly say the answer is partial or that additional matching students or records were not shown.',
+  'If a cited tool result is truncated, begin that disclosure with "Showing X of Y," using and citing that result’s returnedCount and exact total count.',
   'Use digits rather than number words for factual quantities so each quantity can be checked against its exact cited result field.',
   'Your final response must be JSON only with exactly three fields: answer (a plain-text answer from 3 to 1200 characters), evidenceCallIds (one or more executed tool-call IDs), and factRefs.',
   'factRefs must be an array of objects with exactly callId and path. Each path is a JSON Pointer to the exact scalar field in that cited tool result supporting a student name or number in the answer. Include a factRef for every student name and every number used in the answer.',
@@ -276,7 +276,8 @@ function factKind(path, result, callName) {
   if (/balance|amount/iu.test(field)) return 'money'
   if (['studentsWithoutCount', 'currentStudentCount', 'consideredStudentCount'].includes(field)) return 'student-count'
   if (field === 'matchedCount' && callName === 'get_balances') return 'student-count'
-  if (field === 'returnedCount' && callName === 'find_students_without_transactions') return 'student-count'
+  if (field === 'returnedCount' && ['find_students_without_transactions', 'get_balances'].includes(callName)) return 'student-count'
+  if (field === 'returnedCount' && callName === 'aggregate_transactions') return 'result-count'
   if (['matchedTransactionCount', 'transactionCount'].includes(field)) return 'transaction-count'
   if (['matchedCount', 'returnedCount'].includes(field) && callName === 'list_transactions') return 'transaction-count'
   if (field === 'resultCount') return 'result-count'
@@ -392,7 +393,7 @@ function assertAnswerNamesAreGrounded(answer, students, facts) {
   const nameLikeTokens = answer.match(
     /(?<![\p{L}\p{N}])[\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}]\.)?(?=$|[^\p{L}\p{N}])/gu,
   ) ?? []
-  const ordinary = new Set(['Morgan', 'Bank', 'Yes', 'No', 'Today', 'Yesterday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Add', 'Subtract', 'Approved', 'Pending', 'Denied', 'There', 'The', 'This', 'That', 'Based', 'Across', 'During', 'Over', 'For', 'Showing', 'Additional', 'None', 'All', 'Only', 'Most', 'Current', 'Class', 'Everyone', 'Nobody', 'Each'])
+  const ordinary = new Set(['Morgan', 'Bank', 'Yes', 'No', 'Not', 'Today', 'Yesterday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Add', 'Subtract', 'Approved', 'Pending', 'Denied', 'There', 'The', 'This', 'That', 'Based', 'Across', 'During', 'Over', 'For', 'Showing', 'Additional', 'None', 'All', 'Only', 'Most', 'Current', 'Class', 'Everyone', 'Nobody', 'Each'])
   for (const token of nameLikeTokens) {
     if (
       !ordinary.has(token) &&
@@ -419,10 +420,44 @@ function likelyStudentNameUse(answer, token) {
 }
 
 function assertTruncationDisclosed(answer, cited) {
+  for (const call of cited.filter(item => item.result?.truncated === true)) {
+    const counts = truncationCounts(call)
+    if (!counts || !hasExactTruncationDisclosure(answer, counts)) {
+      fail('answer-unverified', 'The provider answer did not disclose a truncated result.')
+    }
+  }
+}
+
+function truncationCounts(call) {
+  const returnedCount = call.result?.returnedCount
+  let totalCount
+  if (call.name === 'find_students_without_transactions') totalCount = call.result?.studentsWithoutCount
+  if (call.name === 'list_transactions') totalCount = call.result?.matchedCount
+  if (call.name === 'aggregate_transactions') totalCount = call.result?.resultCount
+  if (call.name === 'get_balances') totalCount = call.result?.matchedCount
   if (
-    cited.some(call => call.result?.truncated === true) &&
-    !/\b(?:showing|partial|first|not all|additional|more|truncated|up to)\b/iu.test(answer)
-  ) fail('answer-unverified', 'The provider answer did not disclose a truncated result.')
+    !Number.isSafeInteger(returnedCount) ||
+    !Number.isSafeInteger(totalCount) ||
+    returnedCount < 0 ||
+    totalCount <= returnedCount
+  ) return null
+  return { returnedCount, totalCount }
+}
+
+function hasExactTruncationDisclosure(answer, { returnedCount, totalCount }) {
+  const returned = integerTextPattern(returnedCount)
+  const total = integerTextPattern(totalCount)
+  return new RegExp(
+    `\\bshowing\\s+(?:only\\s+|the\\s+first\\s+)?${returned}\\s+(?:of|out\\s+of)\\s+${total}\\b`,
+    'iu',
+  ).test(answer)
+}
+
+function integerTextPattern(value) {
+  const text = String(value)
+  if (text.length <= 3) return escapeRegExp(text)
+  const grouped = text.replace(/\B(?=(\d{3})+(?!\d))/gu, ',')
+  return `(?:${escapeRegExp(text)}|${escapeRegExp(grouped)})`
 }
 
 function assertFinishReason(response) {

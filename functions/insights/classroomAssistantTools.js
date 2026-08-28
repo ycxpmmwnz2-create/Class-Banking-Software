@@ -329,6 +329,7 @@ function aggregateTransactions(args, filtered, studentsByRef) {
     groupBy: Object.freeze(groupBy),
     matchedTransactionCount: filtered.length,
     resultCount: rows.length,
+    returnedCount: Math.min(limit, rows.length),
     truncated: rows.length > limit,
     rows: Object.freeze(rows.slice(0, limit)),
   })
@@ -360,6 +361,7 @@ function getBalances(args, students) {
       : null,
     lowestBalance: filtered.length > 0 ? Math.min(...filtered.map(student => student.balance ?? 0)) : null,
     highestBalance: filtered.length > 0 ? Math.max(...filtered.map(student => student.balance ?? 0)) : null,
+    returnedCount: Math.min(limit, filtered.length),
     truncated: filtered.length > limit,
     students: Object.freeze(filtered.slice(0, limit).map(student => Object.freeze({
       studentRef: student.ref,

@@ -323,7 +323,8 @@ test('binds currency and count claims to exact typed result fields', async () =>
 test('requires a teacher-visible disclosure when cited tool output is truncated', async () => {
   for (const [answer, shouldPass] of [
     ['500 students had no matching rent transactions.', false],
-    ['Showing the first 25 students; all 500 current students had no matching rent transactions.', true],
+    ['There are 500 students without rent transactions, which is more than last week.', false],
+    ['Showing 25 of 500 students without matching rent transactions.', true],
   ]) {
     let count = 0
     const assistant = createGeminiClassroomAssistant({
@@ -378,5 +379,121 @@ test('requires a teacher-visible disclosure when cited tool output is truncated'
         error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
       )
     }
+  }
+})
+
+test('accepts a grounded truncated answer beginning with Not', async () => {
+  let count = 0
+  const assistant = createGeminiClassroomAssistant({
+    async generateContent() {
+      count += 1
+      if (count === 1) return {
+        functionCalls: [{ id: 'call', name: 'find_students_without_transactions', args: { purpose: 'rent' } }],
+        candidateContent: { role: 'model', parts: [{ functionCall: { id: 'call', name: 'find_students_without_transactions', args: { purpose: 'rent' } } }] },
+        finishReason: 'STOP',
+        usageMetadata: USAGE,
+      }
+      return {
+        text: JSON.stringify({
+          answer: 'Showing 25 of 29 students. Not all are listed: 29 students have not paid rent.',
+          evidenceCallIds: ['call'],
+          factRefs: [
+            { callId: 'call', path: '/returnedCount' },
+            { callId: 'call', path: '/studentsWithoutCount' },
+          ],
+        }),
+        functionCalls: [],
+        finishReason: 'STOP',
+        usageMetadata: USAGE,
+      }
+    },
+  })
+  const students = Array.from({ length: 30 }, (_, index) => ({
+    ref: `student-${String(index + 1).padStart(3, '0')}`,
+    displayName: `Learner ${String(index + 1).padStart(3, '0')}`,
+    current: true,
+    balance: index,
+    frozen: false,
+  }))
+  const result = await assistant.answer({ assistantEvidence: {
+    ...evidence(),
+    students,
+    transactions: [{
+      ref: 'transaction-00001',
+      studentRef: 'student-001',
+      date: '2026-08-27T15:01:00.000Z',
+      type: 'Subtract',
+      amount: 10,
+      category: 'Rent',
+      purpose: 'rent',
+      status: 'Approved',
+    }],
+  } })
+  assert.equal(result.answer, 'Showing 25 of 29 students. Not all are listed: 29 students have not paid rent.')
+})
+
+test('requires exact returned and total counts for every truncated tool shape', async () => {
+  const cases = [
+    {
+      name: 'list_transactions',
+      args: { limit: 1 },
+      answer: 'Showing 1 of 2 matching transactions.',
+      factRefs: ['/returnedCount', '/matchedCount'],
+      assistantEvidence: evidence(),
+    },
+    {
+      name: 'aggregate_transactions',
+      args: { groupBy: ['amount'], metric: 'count', limit: 1 },
+      answer: 'Showing 1 of 2 matching results.',
+      factRefs: ['/returnedCount', '/resultCount'],
+      assistantEvidence: {
+        ...evidence(),
+        transactions: evidence().transactions.map((transaction, index) => ({
+          ...transaction,
+          amount: 5 + index,
+        })),
+      },
+    },
+    {
+      name: 'get_balances',
+      args: { limit: 1 },
+      answer: 'Showing 1 of 2 matching balances.',
+      factRefs: ['/returnedCount', '/matchedCount'],
+      assistantEvidence: {
+        ...evidence(),
+        students: [
+          ...evidence().students,
+          { ref: 'student-002', displayName: 'Ben', current: true, balance: 5, frozen: false },
+        ],
+      },
+    },
+  ]
+  for (const scenario of cases) {
+    let count = 0
+    const assistant = createGeminiClassroomAssistant({
+      async generateContent() {
+        count += 1
+        if (count === 1) return {
+          functionCalls: [{ id: 'call', name: scenario.name, args: scenario.args }],
+          candidateContent: { role: 'model', parts: [{ functionCall: { id: 'call', name: scenario.name, args: scenario.args } }] },
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+        return {
+          text: JSON.stringify({
+            answer: scenario.answer,
+            evidenceCallIds: ['call'],
+            factRefs: scenario.factRefs.map(path => ({ callId: 'call', path })),
+          }),
+          functionCalls: [],
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+      },
+    })
+    assert.equal(
+      (await assistant.answer({ assistantEvidence: scenario.assistantEvidence })).answer,
+      scenario.answer,
+    )
   }
 })

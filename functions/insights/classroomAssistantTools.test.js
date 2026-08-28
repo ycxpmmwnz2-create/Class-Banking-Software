@@ -66,6 +66,7 @@ test('finds broad duplicate groups without exposing opaque refs in the group lab
   })
   assert.equal(result.ok, true)
   assert.equal(result.resultCount, 1)
+  assert.equal(result.returnedCount, 1)
   assert.deepEqual(result.rows[0], {
     group: {
       student: 'Ava R.',
@@ -117,6 +118,7 @@ test('answers current negative-balance and balance-history questions', () => {
   }])
   assert.equal(negatives.matchedPercent, 50)
   assert.equal(negatives.averageBalance, -2)
+  assert.equal(negatives.returnedCount, 1)
   const history = toolbox.execute('get_balance_history', {
     studentRefs: ['student-001'],
     startDate: '2026-08-26',
