@@ -17,6 +17,7 @@ const REQUEST = Object.freeze({
 
 function fixture() {
   const calls = []
+  const toolboxes = []
   const assistantEvidence = {
     question: REQUEST.question,
     generatedAt: '2026-08-27T18:00:00.000Z',
@@ -39,15 +40,21 @@ function fixture() {
     },
     async loadQuestionEvidence() {
       calls.push('evidence')
-      return { assistantEvidence, evidenceSignature: 'a'.repeat(64) }
+      return {
+        assistantEvidence,
+        assistantMemoResolver: () => null,
+        evidenceSignature: 'a'.repeat(64),
+      }
     },
-    async quoteWorstCaseCost() {
+    async quoteWorstCaseCost({ toolbox }) {
       calls.push('quote')
+      toolboxes.push(toolbox)
       return { rateCardId: 'rate-card', worstCaseCostMicroUsd: 100 }
     },
     assistant: {
-      async answer() {
+      async answer({ toolbox }) {
         calls.push('assistant')
+        toolboxes.push(toolbox)
         return {
           answer: 'No. There are no duplicate transactions today.',
           evidence: ['Calculated 0 grouped results from 3 matching transactions.'],
@@ -77,7 +84,7 @@ function fixture() {
       async markUncertain() { calls.push('uncertain') },
     },
   }
-  return { calls, completed, deps }
+  return { calls, completed, deps, toolboxes }
 }
 
 test('resolves tenant, reserves, runs the tool assistant, and commits a natural answer', async () => {
@@ -88,6 +95,8 @@ test('resolves tenant, reserves, runs the tool assistant, and commits a natural 
   assert.deepEqual(setup.calls, ['tenant', 'evidence', 'quote', 'reserve', 'assistant', 'price', 'commit'])
   assert.equal(setup.completed[0].result.source, 'provider-tool-assistant')
   assert.equal(setup.completed[0].result.usage.costMicroUsd, 10)
+  assert.equal(setup.toolboxes.length, 2)
+  assert.equal(setup.toolboxes[0], setup.toolboxes[1])
 })
 
 test('retains the reservation and preserves the safe provider failure category', async () => {

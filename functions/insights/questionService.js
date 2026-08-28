@@ -218,7 +218,6 @@ function validateEvidenceEnvelope(value) {
     'allowedAliases',
     'sensitiveValues',
     'evidenceSignature',
-    ...(Object.hasOwn(value ?? {}, 'assistantEvidence') ? ['assistantEvidence'] : []),
   ]
   if (!isPlainObject(value) || !hasExactKeys(value, expectedKeys)) {
     throw new InsightQuestionServiceError('evidence-unavailable', 'The question evidence envelope is malformed.')

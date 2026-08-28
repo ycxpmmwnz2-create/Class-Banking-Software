@@ -167,8 +167,9 @@ The server still resolves the authenticated reciprocal teacher/classroom pair
 before reading any data. The provider receives one classroom only, first names
 or first name plus last initial, ephemeral references, safe categories, dates,
 and bounded tool results. Memo text is on-demand, contact-sanitized, limited to
-500 characters, and marked when truncated. No tool accepts a classroom or
-teacher selector, and no write tool exists.
+500 characters, marked when truncated, and resolved only for returned rows
+after an explicit memo request. No tool accepts a classroom or teacher selector,
+and no write tool exists.
 
 The loop is limited to four provider turns, eight calls, 32 KiB of tool output,
 one 60-second overall deadline, and a 1,200-character final answer. The first

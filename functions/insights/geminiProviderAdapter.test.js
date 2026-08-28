@@ -153,8 +153,8 @@ test('invalid JSON and contradictory totals fail closed while cached usage is ac
     }),
     { ...JSON.parse(structuredResponse()), usage: { inputTokens: 10, outputTokens: 5, thinkingTokens: 0 } },
   )
-  assert.deepEqual(
-    parseGeminiGenerateResponse({
+  assert.throws(
+    () => parseGeminiGenerateResponse({
       text: structuredResponse(),
       usageMetadata: {
         promptTokenCount: 10,
@@ -164,8 +164,22 @@ test('invalid JSON and contradictory totals fail closed while cached usage is ac
         cachedContentTokenCount: 1,
         toolUsePromptTokenCount: 2,
       },
+    }),
+    error => error instanceof GeminiProviderAdapterError && error.category === 'invalid-usage',
+  )
+  assert.deepEqual(
+    parseGeminiGenerateResponse({
+      text: structuredResponse(),
+      usageMetadata: {
+        promptTokenCount: 10,
+        candidatesTokenCount: 5,
+        thoughtsTokenCount: 0,
+        totalTokenCount: 17,
+        cachedContentTokenCount: 1,
+        toolUsePromptTokenCount: 2,
+      },
     }).usage,
-    { inputTokens: 15, outputTokens: 5, thinkingTokens: 0 },
+    { inputTokens: 12, outputTokens: 5, thinkingTokens: 0 },
   )
   assert.throws(
     () => parseGeminiGenerateResponse({

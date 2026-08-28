@@ -157,6 +157,20 @@ test('resolves tenant, sanitizes evidence, reserves, interprets, calculates, and
   assert.match(stored, /student-001|amount-total/)
 })
 
+test('legacy question service rejects a tool-assistant field at its evidence boundary', async () => {
+  const fixture = dependencies({
+    async loadQuestionEvidence() {
+      fixture.calls.push('evidence')
+      return { ...envelope(), assistantEvidence: {} }
+    },
+  })
+  await assert.rejects(
+    createInsightQuestionService(fixture.deps)({ auth: { uid: 'teacher-a' }, data: request }),
+    error => error instanceof InsightQuestionServiceError && error.category === 'evidence-unavailable',
+  )
+  assert.deepEqual(fixture.calls, ['tenant', 'evidence'])
+})
+
 test('runs a broad repeated-transaction plan through reserve, calculation, commit, and replay-safe storage', async () => {
   const repeatedEnvelope = envelope()
   repeatedEnvelope.providerInput = {

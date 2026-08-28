@@ -9,7 +9,7 @@ import {
 const USAGE = Object.freeze({
   promptTokenCount: 10,
   candidatesTokenCount: 5,
-  totalTokenCount: 15,
+  totalTokenCount: 17,
   cachedContentTokenCount: 3,
   toolUsePromptTokenCount: 2,
 })
@@ -35,8 +35,6 @@ function evidence() {
       category: 'Technology',
       purpose: 'other',
       status: 'Approved',
-      memo: '',
-      memoTruncated: false,
     })),
   }
 }
@@ -74,7 +72,7 @@ test('runs a grounded tool turn and returns a direct conversational answer', asy
   })
   const result = await assistant.answer({ assistantEvidence: evidence() })
   assert.equal(result.answer, 'Yes. Ava has 2 matching Technology Add transactions today.')
-  assert.deepEqual(result.usage, { inputTokens: 20, outputTokens: 10, thinkingTokens: 0 })
+  assert.deepEqual(result.usage, { inputTokens: 24, outputTokens: 10, thinkingTokens: 0 })
   assert.equal(result.toolCallCount, 1)
   assert.match(result.evidence[0], /2 matching transactions/)
   assert.equal(requests[0].config.toolConfig.functionCallingConfig.mode, 'ANY')
@@ -130,4 +128,29 @@ test('rejects uncited, opaque, or truncated provider answers', async () => {
         ['answer-unverified', 'provider-output-truncated'].includes(error.category),
     )
   }
+})
+
+test('rejects an unknown two-part student identity even when tool evidence is cited', async () => {
+  let count = 0
+  const assistant = createGeminiClassroomAssistant({
+    async generateContent() {
+      count += 1
+      if (count === 1) return {
+        functionCalls: [{ id: 'call', name: 'get_balances', args: {} }],
+        candidateContent: { role: 'model', parts: [{ functionCall: { id: 'call', name: 'get_balances', args: {} } }] },
+        finishReason: 'STOP',
+        usageMetadata: USAGE,
+      }
+      return {
+        text: JSON.stringify({ answer: 'Michael R. has 2 matches.', evidenceCallIds: ['call'] }),
+        functionCalls: [],
+        finishReason: 'STOP',
+        usageMetadata: USAGE,
+      }
+    },
+  })
+  await assert.rejects(
+    assistant.answer({ assistantEvidence: evidence() }),
+    error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
+  )
 })

@@ -32,9 +32,10 @@ or 90 day period.
   may use only Morgan Bank's six server-owned read-only classroom tools.
 - A teacher question may use at most four provider turns, eight tool calls,
   32 KiB of total tool output, 2,048 output tokens per turn, and 4,096 thinking
-  tokens per turn, all inside one 60-second assistant deadline. Cached and
-  tool-use token metadata is accepted and charged conservatively instead of
-  turning a valid answer into an error.
+  tokens per turn, all inside one 60-second assistant deadline. Usage metadata
+  must satisfy Gemini's exact total: prompt tokens (including cached content),
+  candidates, tool-use prompt tokens, and thoughts. Tool-use prompt tokens are
+  included in the charged input total; contradictory metadata fails closed.
 - The transport retries only transient 408, 429, and 5xx failures, at most
   three attempts with bounded backoff. Authentication, request-schema, and
   answer-verification failures are not retried.
@@ -59,7 +60,8 @@ or 90 day period.
   and only the bounded tool results needed for the question.
 - Transaction memos are absent by default. A tool may request them only when
   relevant; emails, phone numbers, links, and control characters are removed,
-  each memo is capped at 500 characters, and truncation is explicit.
+  each memo is capped at 500 characters, and truncation is explicit. Memo text
+  is resolved and sanitized lazily only for the bounded rows the tool returns.
 - Gemini never receives Auth UIDs, Firestore IDs or paths, teacher/classroom
   identifiers, credentials, PINs, App Check data, secrets, another classroom,
   or write authority. Tool arguments contain no tenant selector.

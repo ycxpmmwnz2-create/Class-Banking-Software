@@ -21,8 +21,15 @@ export class GeminiToolAssistantCostPolicyError extends Error {
   }
 }
 
-export function quoteGeminiToolAssistantWorstCaseCost({ assistantEvidence } = {}) {
-  const toolbox = createClassroomAssistantToolbox(assistantEvidence)
+export function quoteGeminiToolAssistantWorstCaseCost({ assistantEvidence, toolbox: suppliedToolbox } = {}) {
+  const toolbox = suppliedToolbox ?? createClassroomAssistantToolbox(assistantEvidence)
+  if (
+    !toolbox ||
+    typeof toolbox !== 'object' ||
+    !toolbox.context ||
+    !Array.isArray(toolbox.declarations) ||
+    typeof toolbox.execute !== 'function'
+  ) fail('invalid-evidence', 'The classroom tool boundary is malformed.')
   const initialBytes = Buffer.byteLength(JSON.stringify({
     question: assistantEvidence.question,
     classroomContext: toolbox.context,

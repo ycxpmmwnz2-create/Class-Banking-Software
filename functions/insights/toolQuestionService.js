@@ -6,6 +6,7 @@ import {
   validateWorstCaseQuote,
 } from './costPolicy.js'
 import { FirestoreUsageLedgerError } from './firestoreUsageLedger.js'
+import { createClassroomAssistantToolbox } from './classroomAssistantTools.js'
 import { GeminiClassroomAssistantError } from './geminiClassroomAssistant.js'
 import { InsightIdentityError, validateInsightIdentity } from './identity.js'
 import {
@@ -43,6 +44,7 @@ export function createInsightToolQuestionService(dependencies) {
       'The active teacher tenant could not be resolved.',
     ))
     let envelope
+    let toolbox
     try {
       envelope = validateEvidenceEnvelope(await deps.loadQuestionEvidence({
         teacherUid: tenant.teacherUid,
@@ -52,6 +54,9 @@ export function createInsightToolQuestionService(dependencies) {
         question: request.question,
         assistantMode: true,
       }))
+      toolbox = createClassroomAssistantToolbox(envelope.assistantEvidence, {
+        memoResolver: envelope.assistantMemoResolver,
+      })
     } catch (error) {
       if (
         error instanceof InsightQuestionEvidenceError &&
@@ -61,7 +66,7 @@ export function createInsightToolQuestionService(dependencies) {
       throw new InsightToolQuestionServiceError('evidence-unavailable', 'Question evidence could not be loaded.')
     }
     const quote = validateWorstCaseQuote(await guardedCall(
-      () => deps.quoteWorstCaseCost({ assistantEvidence: envelope.assistantEvidence }),
+      () => deps.quoteWorstCaseCost({ assistantEvidence: envelope.assistantEvidence, toolbox }),
       'cost-policy-unavailable',
       'The trusted classroom assistant cost policy is unavailable.',
     ))
@@ -84,6 +89,7 @@ export function createInsightToolQuestionService(dependencies) {
     try {
       const result = validateAssistantResult(await deps.assistant.answer({
         assistantEvidence: envelope.assistantEvidence,
+        toolbox,
       }))
       const actualCostMicroUsd = validateActualCost(await deps.priceActualUsage({
         rateCardId: quote.rateCardId,
@@ -172,6 +178,7 @@ function validateEvidenceEnvelope(value) {
     !isPlainObject(value) ||
     !Object.hasOwn(value, 'assistantEvidence') ||
     !isPlainObject(value.assistantEvidence) ||
+    typeof value.assistantMemoResolver !== 'function' ||
     typeof value.evidenceSignature !== 'string' ||
     !/^[a-f0-9]{64}$/.test(value.evidenceSignature)
   ) throw new InsightToolQuestionServiceError('evidence-unavailable', 'The question evidence envelope is malformed.')

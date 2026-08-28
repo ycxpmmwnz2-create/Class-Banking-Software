@@ -36,8 +36,6 @@ function transaction(ref, studentRef, date, amount) {
     category: 'Technology',
     purpose: 'other',
     status: 'Approved',
-    memo: 'Technology helper',
-    memoTruncated: false,
   }
 }
 
@@ -69,12 +67,21 @@ test('finds broad duplicate groups without exposing opaque refs in the group lab
 })
 
 test('keeps memos out by default and returns them only on explicit bounded requests', () => {
-  const toolbox = createClassroomAssistantToolbox(evidence())
+  let memoResolutions = 0
+  const toolbox = createClassroomAssistantToolbox(evidence(), {
+    memoResolver(transactionRef) {
+      memoResolutions += 1
+      assert.equal(transactionRef, 'transaction-00002')
+      return { text: 'Technology helper', truncated: false }
+    },
+  })
   const ordinary = toolbox.execute('list_transactions', { limit: 1 })
   assert.equal(Object.hasOwn(ordinary.transactions[0], 'memo'), false)
+  assert.equal(memoResolutions, 0)
   const withMemo = toolbox.execute('list_transactions', { includeMemos: true, limit: 1 })
   assert.equal(withMemo.transactions[0].memo, 'Technology helper')
   assert.equal(withMemo.transactions[0].memoTruncated, false)
+  assert.equal(memoResolutions, 1)
 })
 
 test('answers current negative-balance and balance-history questions', () => {
@@ -167,4 +174,12 @@ test('rejects unknown students and invalid ranges inside a safe tool error', () 
     startDate: '2026-08-27',
     endDate: '2026-08-20',
   }), { ok: false, error: 'The start date must not be after the end date.' })
+  assert.deepEqual(toolbox.execute('list_transactions', { sort: 'ascending' }), {
+    ok: false,
+    error: 'A tool option is unsupported.',
+  })
+  assert.deepEqual(
+    toolbox.execute('list_transactions', { sort: 'oldest', limit: 1 }).transactions.map(row => row.transactionRef),
+    ['transaction-00003'],
+  )
 })

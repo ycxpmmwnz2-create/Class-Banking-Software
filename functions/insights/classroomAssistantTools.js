@@ -101,7 +101,10 @@ export class ClassroomAssistantToolError extends Error {
   }
 }
 
-export function createClassroomAssistantToolbox(evidence) {
+export function createClassroomAssistantToolbox(evidence, { memoResolver } = {}) {
+  if (memoResolver !== undefined && typeof memoResolver !== 'function') {
+    fail('invalid-evidence', 'The classroom memo resolver is malformed.')
+  }
   const data = validateEvidence(evidence)
   const studentsByRef = new Map(data.students.map(student => [student.ref, student]))
   const dateKeyFormatter = new Intl.DateTimeFormat('en-CA', {
@@ -180,7 +183,7 @@ export function createClassroomAssistantToolbox(evidence) {
         }
         const filtered = filterTransactions(args, data, transactions, studentsByRef)
         return name === 'list_transactions'
-          ? listTransactions(args, filtered, studentsByRef)
+          ? listTransactions(args, filtered, studentsByRef, memoResolver)
           : aggregateTransactions(args, filtered, studentsByRef)
       } catch (error) {
         if (error instanceof ClassroomAssistantToolError) return toolError(error.message)
@@ -190,11 +193,12 @@ export function createClassroomAssistantToolbox(evidence) {
   })
 }
 
-function listTransactions(args, filtered, studentsByRef) {
+function listTransactions(args, filtered, studentsByRef, memoResolver) {
   const limit = integer(args.limit, 1, 100, 50)
   const includeMemos = boolean(args.includeMemos, false)
+  const sort = enumeration(args.sort ?? 'newest', ['newest', 'oldest'])
   const ordered = [...filtered].sort((left, right) => (
-    (args.sort === 'oldest' ? 1 : -1) * left.date.localeCompare(right.date)
+    (sort === 'oldest' ? 1 : -1) * left.date.localeCompare(right.date)
   ))
   return Object.freeze({
     ok: true,
@@ -215,12 +219,32 @@ function listTransactions(args, filtered, studentsByRef) {
         purpose: transaction.purpose,
       }
       if (includeMemos) {
-        row.memo = transaction.memo
-        row.memoTruncated = transaction.memoTruncated
+        const memo = resolveMemo(transaction.ref, memoResolver)
+        row.memo = memo.text
+        row.memoTruncated = memo.truncated
       }
       return Object.freeze(row)
     })),
   })
+}
+
+function resolveMemo(transactionRef, memoResolver) {
+  if (typeof memoResolver !== 'function') {
+    fail('memo-unavailable', 'Memo text is unavailable.')
+  }
+  const memo = memoResolver(transactionRef)
+  if (
+    !isPlainObject(memo) ||
+    Object.keys(memo).length !== 2 ||
+    !Object.hasOwn(memo, 'text') ||
+    !Object.hasOwn(memo, 'truncated') ||
+    typeof memo.text !== 'string' ||
+    [...memo.text].length > 501 ||
+    typeof memo.truncated !== 'boolean'
+  ) {
+    fail('memo-unavailable', 'Memo text is unavailable.')
+  }
+  return memo
 }
 
 function aggregateTransactions(args, filtered, studentsByRef) {
@@ -541,9 +565,7 @@ function validateEvidence(value) {
       !['Add', 'Subtract'].includes(transaction.type) ||
       !Number.isFinite(transaction.amount) ||
       !TRANSACTION_STATUSES.slice(0, 3).includes(transaction.status) ||
-      typeof transaction.category !== 'string' ||
-      typeof transaction.memo !== 'string' ||
-      typeof transaction.memoTruncated !== 'boolean'
+      typeof transaction.category !== 'string'
     ) fail('invalid-evidence', 'Classroom transaction evidence is malformed.')
   }
   return value

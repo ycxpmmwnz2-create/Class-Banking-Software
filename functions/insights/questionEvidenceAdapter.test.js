@@ -134,7 +134,7 @@ test('replaces a full or unique partial roster name before constructing provider
   }
 })
 
-test('builds one-classroom assistant evidence with first names and sanitized bounded memos', async () => {
+test('builds one-classroom assistant evidence and sanitizes bounded memos only when requested', async () => {
   const longMemo = `Call parent@example.com or 801-555-1212 ${'x'.repeat(600)}`
   const envelope = await loader(fixture({
     'classrooms/class-a/students/2': {
@@ -158,11 +158,14 @@ test('builds one-classroom assistant evidence with first names and sanitized bou
     'GianMarco S.',
   ])
   assert.equal(envelope.assistantEvidence.question, 'Compare GianMarco B. and GianMarco S.')
-  const memo = envelope.assistantEvidence.transactions[0]
-  assert.equal(memo.memoTruncated, true)
-  assert.match(memo.memo, /\[contact removed\]/)
-  assert.doesNotMatch(memo.memo, /example\.com|555-1212/)
-  assert.equal([...memo.memo.replace(/…$/u, '')].length, 500)
+  assert.equal(Object.hasOwn(envelope.assistantEvidence.transactions[0], 'memo'), false)
+  assert.equal(Object.hasOwn(envelope.assistantEvidence.transactions[0], 'memoTruncated'), false)
+  const memo = envelope.assistantMemoResolver('transaction-00001')
+  assert.equal(memo.truncated, true)
+  assert.match(memo.text, /\[contact removed\]/)
+  assert.doesNotMatch(memo.text, /example\.com|555-1212/)
+  assert.equal([...memo.text.replace(/…$/u, '')].length, 500)
+  assert.equal(envelope.assistantMemoResolver('transaction-99999'), null)
   assert.doesNotMatch(JSON.stringify(envelope.assistantEvidence), /teacher-a|class-a|Bellini|Salazar|"id"/)
 })
 
@@ -729,8 +732,9 @@ test('deduplicates case and whitespace equivalent categories while accumulating 
   )))
 })
 
-test('validates one distinct category label rather than repeating roster checks at read ceilings', { timeout: 10_000 }, async () => {
+test('builds maximum assistant evidence without eagerly sanitizing every memo', { timeout: 10_000 }, async () => {
   const base = fixture()['classrooms/class-a/transactions/101']
+  const rawMemo = `Ask GianMarco Bellini at parent@example.com ${'x'.repeat(600)}`
   const students = Object.fromEntries(Array.from({ length: 498 }, (_, index) => {
     const id = index + 3
     return [`classrooms/class-a/students/${id}`, {
@@ -746,15 +750,21 @@ test('validates one distinct category label rather than repeating roster checks 
       id,
       type: index % 2 ? 'Add' : 'Subtract',
       category: index % 2 ? 'Class job' : '  CLASS   JOB ',
+      memo: rawMemo,
     }]
   }))
   const startedAt = Date.now()
-  const envelope = await loader(fixture({ ...students, ...transactions }))({
+  const envelope = await loader(fixture({
+    ...students,
+    ...transactions,
+    'classrooms/class-a/transactions/101': { ...base, memo: rawMemo },
+  }))({
     teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
     question: 'Which category has the most transactions?',
+    assistantMode: true,
   })
   assert.ok(Date.now() - startedAt < 5_000)
   assert.deepEqual(envelope.providerInput.categoryCatalog, [{
@@ -762,6 +772,16 @@ test('validates one distinct category label rather than repeating roster checks 
     label: 'Class job',
     transactionTypes: ['Add', 'Subtract'],
   }])
+  assert.equal(envelope.assistantEvidence.transactions.length, 20_000)
+  assert.ok(envelope.assistantEvidence.transactions.every(transaction => (
+    !Object.hasOwn(transaction, 'memo') && !Object.hasOwn(transaction, 'memoTruncated')
+  )))
+  const memo = envelope.assistantMemoResolver('transaction-00001')
+  assert.equal(memo.truncated, true)
+  assert.match(memo.text, /GianMarco/)
+  assert.doesNotMatch(memo.text, /Bellini/)
+  assert.match(memo.text, /\[contact removed\]/)
+  assert.doesNotMatch(memo.text, /example\.com/)
 })
 
 test('category aliases are stable across transaction order and category catalog size fails closed', async () => {

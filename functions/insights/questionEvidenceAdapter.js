@@ -154,22 +154,20 @@ export function createFirestoreQuestionEvidenceLoader({
     const categoryAliasByKey = new Map(categoryCatalog.map(category => [category.key, category.alias]))
     const providerStudents = assistantMode ? buildProviderStudents(participants, raw.students) : []
     const providerStudentById = new Map(providerStudents.map(student => [student.id, student]))
-    const providerQuestion = assistantMode
-      ? sanitizeProviderQuestion(question, studentIdentities, providerStudentById)
-      : ''
+    const sanitizeForAssistant = assistantMode
+      ? createAssistantTextSanitizer(studentIdentities, providerStudentById)
+      : null
     const assistantTextCache = new Map()
     const safeAssistantText = (value, maximumCharacters) => {
       const cacheKey = `${maximumCharacters}\u0000${String(value ?? '')}`
       if (!assistantTextCache.has(cacheKey)) {
-        assistantTextCache.set(cacheKey, sanitizeAssistantText(
-          value,
-          maximumCharacters,
-          studentIdentities,
-          providerStudentById,
-        ))
+        assistantTextCache.set(cacheKey, sanitizeForAssistant(value, maximumCharacters))
       }
       return assistantTextCache.get(cacheKey)
     }
+    const providerQuestion = assistantMode ? safeAssistantText(question, 500).text : ''
+    const assistantMemoSourceByRef = assistantMode ? new Map() : null
+    const assistantMemoCache = assistantMode ? new Map() : null
     const answerEvidence = Object.freeze({
       configuredRentAmount: raw.configuredRentAmount,
       participants: Object.freeze(participants.map(student => Object.freeze({
@@ -240,9 +238,10 @@ export function createFirestoreQuestionEvidenceLoader({
         transactionTypes: category.transactionTypes,
       }))),
       transactions: Object.freeze(availableTransactions.map((transaction, index) => {
-        const memo = safeAssistantText(transaction.memo || transaction.reason, MAX_PROVIDER_MEMO_CHARACTERS)
+        const ref = `transaction-${String(index + 1).padStart(5, '0')}`
+        assistantMemoSourceByRef.set(ref, transaction.memo || transaction.reason)
         return Object.freeze({
-          ref: `transaction-${String(index + 1).padStart(5, '0')}`,
+          ref,
           studentRef: providerStudentById.get(transaction.studentId)?.ref,
           date: transaction.date,
           type: transaction.type,
@@ -250,15 +249,23 @@ export function createFirestoreQuestionEvidenceLoader({
           category: safeAssistantText(transaction.category, 120).text,
           purpose: transactionPurpose(transaction),
           status: transaction.status,
-          memo: memo.text,
-          memoTruncated: memo.truncated,
         })
       })),
+    }) : null
+    const assistantMemoResolver = assistantMode ? Object.freeze(transactionRef => {
+      if (typeof transactionRef !== 'string' || !assistantMemoSourceByRef.has(transactionRef)) return null
+      if (!assistantMemoCache.has(transactionRef)) {
+        assistantMemoCache.set(transactionRef, safeAssistantText(
+          assistantMemoSourceByRef.get(transactionRef),
+          MAX_PROVIDER_MEMO_CHARACTERS,
+        ))
+      }
+      return assistantMemoCache.get(transactionRef)
     }) : null
     return Object.freeze({
       generatedAt: generatedAt.toISOString(),
       providerInput,
-      ...(assistantEvidence ? { assistantEvidence } : {}),
+      ...(assistantEvidence ? { assistantEvidence, assistantMemoResolver } : {}),
       answerEvidence,
       allowedAliases: Object.freeze({
         studentAliases: Object.freeze(mentionedAliases),
@@ -329,42 +336,49 @@ function providerNameParts(value) {
   return Object.freeze({ first, lastInitial })
 }
 
-function sanitizeProviderQuestion(question, identities, providerStudentById) {
-  return sanitizeAssistantText(question, 500, identities, providerStudentById).text
-}
-
-function sanitizeAssistantText(value, maximumCharacters, identities, providerStudentById) {
-  const base = sanitizeProviderText(value, maximumCharacters)
-  let sanitized = base.text
+function createAssistantTextSanitizer(identities, providerStudentById) {
   const replacements = [...identities]
     .filter(identity => providerStudentById.has(identity.id))
     .sort((left, right) => right.name.length - left.name.length)
-  for (const identity of replacements) {
-    const displayName = providerStudentById.get(identity.id).displayName
-    const normalizedIdentityName = removeControlCharacters(identity.name.normalize('NFKC'))
-      .trim()
-      .replace(/\s+/gu, ' ')
-    const pattern = new RegExp(
-      `(^|[^\\p{L}\\p{N}])${escapeRegExp(normalizedIdentityName)}(?=$|[^\\p{L}\\p{N}])`,
-      'giu',
-    )
-    sanitized = sanitized.replace(pattern, (_match, prefix) => `${prefix}${displayName}`)
-    const nameTokens = normalizedIdentityName.split(/\s+/u).filter(Boolean)
-    const lastName = nameTokens.length > 1 ? nameTokens.at(-1) : ''
-    if (lastName.length >= 2) {
-      const lastNamePattern = new RegExp(
-        `(^|[^\\p{L}\\p{N}])${escapeRegExp(lastName)}(?=$|[^\\p{L}\\p{N}])`,
-        'giu',
+    .map(identity => {
+      const normalizedIdentityName = removeControlCharacters(identity.name.normalize('NFKC'))
+        .trim()
+        .replace(/\s+/gu, ' ')
+      const nameTokens = normalizedIdentityName.split(/\s+/u).filter(Boolean)
+      const lastName = nameTokens.length > 1 ? nameTokens.at(-1) : ''
+      return Object.freeze({
+        displayName: providerStudentById.get(identity.id).displayName,
+        fullNamePattern: new RegExp(
+          `(^|[^\\p{L}\\p{N}])${escapeRegExp(normalizedIdentityName)}(?=$|[^\\p{L}\\p{N}])`,
+          'giu',
+        ),
+        lastNamePattern: lastName.length >= 2 ? new RegExp(
+          `(^|[^\\p{L}\\p{N}])${escapeRegExp(lastName)}(?=$|[^\\p{L}\\p{N}])`,
+          'giu',
+        ) : null,
+        lastInitial: providerNameParts(identity.name).lastInitial,
+      })
+    })
+  return (value, maximumCharacters) => {
+    const base = sanitizeProviderText(value, maximumCharacters)
+    let sanitized = base.text
+    for (const replacement of replacements) {
+      sanitized = sanitized.replace(
+        replacement.fullNamePattern,
+        (_match, prefix) => `${prefix}${replacement.displayName}`,
       )
-      const lastInitial = providerNameParts(identity.name).lastInitial
-      sanitized = sanitized.replace(lastNamePattern, (_match, prefix) => `${prefix}${lastInitial}.`)
+      if (replacement.lastNamePattern) {
+        sanitized = sanitized.replace(
+          replacement.lastNamePattern,
+          (_match, prefix) => `${prefix}${replacement.lastInitial}.`,
+        )
+      }
     }
+    return Object.freeze({
+      text: sanitized.replace(/(\b\p{Lu})\.\.(?=$|\s)/gu, '$1.'),
+      truncated: base.truncated,
+    })
   }
-  const text = sanitized.replace(/(\b\p{Lu})\.\.(?=$|\s)/gu, '$1.')
-  return Object.freeze({
-    text,
-    truncated: base.truncated,
-  })
 }
 
 function sanitizeProviderText(value, maximumCharacters) {

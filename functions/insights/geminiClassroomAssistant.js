@@ -38,9 +38,9 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
   if (typeof generateContent !== 'function') throw new TypeError('generateContent must be a function.')
   if (typeof now !== 'function') throw new TypeError('now must be a function.')
   return Object.freeze({
-    async answer({ assistantEvidence } = {}) {
+    async answer({ assistantEvidence, toolbox: suppliedToolbox } = {}) {
       const deadline = now() + CLASSROOM_ASSISTANT_MAX_DURATION_MS
-      const toolbox = createClassroomAssistantToolbox(assistantEvidence)
+      const toolbox = resolveToolbox(assistantEvidence, suppliedToolbox)
       const contents = [Object.freeze({
         role: 'user',
         parts: Object.freeze([Object.freeze({
@@ -120,6 +120,20 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
       fail('provider-output-invalid', 'The provider did not finish within the classroom tool-turn limit.')
     },
   })
+}
+
+function resolveToolbox(assistantEvidence, suppliedToolbox) {
+  if (suppliedToolbox === undefined) return createClassroomAssistantToolbox(assistantEvidence)
+  if (
+    !suppliedToolbox ||
+    typeof suppliedToolbox !== 'object' ||
+    !suppliedToolbox.context ||
+    !Array.isArray(suppliedToolbox.declarations) ||
+    typeof suppliedToolbox.execute !== 'function'
+  ) {
+    fail('evidence-unavailable', 'The classroom tool boundary is malformed.')
+  }
+  return suppliedToolbox
 }
 
 export function buildGeminiClassroomAssistantRequest({
@@ -220,7 +234,9 @@ function describeEvidenceCall(call) {
 
 function assertAnswerNamesAreGrounded(answer, students) {
   const allowed = new Set(students.map(student => student.displayName.toLocaleLowerCase('en-US')))
-  const nameLikeTokens = answer.match(/\b[\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}]\.)?\b/gu) ?? []
+  const nameLikeTokens = answer.match(
+    /(?<![\p{L}\p{N}])[\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}]\.)?(?=$|[^\p{L}\p{N}])/gu,
+  ) ?? []
   const ordinary = new Set(['Morgan', 'Bank', 'Yes', 'No', 'Today', 'Yesterday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Add', 'Subtract', 'Approved', 'Pending', 'Denied'])
   for (const token of nameLikeTokens) {
     if (!ordinary.has(token) && !allowed.has(token.toLocaleLowerCase('en-US'))) {

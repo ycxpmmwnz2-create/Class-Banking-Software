@@ -191,26 +191,25 @@ export function parseGeminiUsageMetadata(value) {
 
   let thinkingTokens
   if (value.thoughtsTokenCount === undefined) {
-    thinkingTokens = totalTokens - inputTokens - outputTokens
+    thinkingTokens = totalTokens - inputTokens - outputTokens - toolTokens
   } else {
     thinkingTokens = nonNegativeInteger(value.thoughtsTokenCount, 'thoughtsTokenCount')
   }
   if (
     !Number.isSafeInteger(thinkingTokens) ||
     thinkingTokens < 0 ||
-    totalTokens < inputTokens + outputTokens + thinkingTokens
+    cachedTokens > inputTokens ||
+    totalTokens !== inputTokens + outputTokens + toolTokens + thinkingTokens ||
+    !Number.isSafeInteger(inputTokens + toolTokens)
   ) {
     fail('invalid-usage', 'Gemini usage totals are contradictory.')
   }
-  // Google may report cached and tool-use prompt tokens as informational
-  // subsets or additions depending on the model/runtime. Accept both forms
-  // while conservatively charging the larger prompt total.
+  // Gemini reports cached content as a subset of promptTokenCount, while
+  // toolUsePromptTokenCount is additive in totalTokenCount. Charge both prompt
+  // and tool-use prompt tokens and reject metadata that contradicts that
+  // provider contract.
   return Object.freeze({
-    inputTokens: Math.max(
-      inputTokens,
-      cachedTokens + toolTokens,
-      totalTokens - outputTokens - thinkingTokens,
-    ),
+    inputTokens: inputTokens + toolTokens,
     outputTokens,
     thinkingTokens,
   })
