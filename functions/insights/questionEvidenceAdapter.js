@@ -31,7 +31,6 @@ const RESERVED_PLACEHOLDER_PATTERN = /\[\s*(?:student|category)/iu
 const MAX_PROVIDER_MEMO_CHARACTERS = 500
 const MAX_SHORT_SURNAME_OBSCURING_CHARACTERS = 1
 const MAX_LONG_SURNAME_OBSCURING_CHARACTERS = 2
-const MAX_MULTI_TOKEN_OBSCURING_CHARACTERS = 8
 
 export class InsightQuestionEvidenceError extends Error {
   constructor(category, message) {
@@ -822,11 +821,7 @@ function containsObscuredMultiTokenName(value, name) {
 
 function containsResidualRosterName(run, nameTokens) {
   const candidate = collapseSensitiveText(run)
-  const maximumNameLength = nameTokens.reduce((total, token) => total + token.length, 0)
-  if (
-    candidate.length <= maximumNameLength + MAX_MULTI_TOKEN_OBSCURING_CHARACTERS &&
-    containsTwoNameTokensAsSubsequence(candidate, nameTokens)
-  ) return true
+  if (containsTwoNameTokensAsSubsequence(candidate, nameTokens)) return true
 
   const surname = nameTokens.at(-1)
   if (!candidate.includes(surname)) return false
