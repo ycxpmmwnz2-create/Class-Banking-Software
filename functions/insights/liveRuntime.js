@@ -4,7 +4,7 @@ export const VERSION3_GEMINI_LIVE_PROJECTS = Object.freeze({
 })
 
 export const REVIEWED_VERSION3_GEMINI_RELEASE_ID =
-  'gemini-3.6-flash-morgan-bank-assistant-v3'
+  'gemini-3.6-flash-morgan-bank-assistant-v4'
 
 export class Version3GeminiLiveRuntimeError extends Error {
   constructor(category, message) {

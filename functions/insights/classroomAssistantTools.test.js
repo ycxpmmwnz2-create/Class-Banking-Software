@@ -1,0 +1,170 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+import { createClassroomAssistantToolbox } from './classroomAssistantTools.js'
+
+function evidence() {
+  return {
+    question: 'Are there duplicate technology transactions today?',
+    generatedAt: '2026-08-27T18:00:00.000Z',
+    asOfDate: '2026-08-27',
+    timeZone: 'America/Denver',
+    periodDays: 7,
+    periodStart: '2026-08-20T18:00:00.000Z',
+    historyStart: '2026-05-29T18:00:00.000Z',
+    configuredRentAmount: 10,
+    students: [
+      { ref: 'student-001', displayName: 'Ava R.', current: true, balance: 8, frozen: false },
+      { ref: 'student-002', displayName: 'Ava S.', current: true, balance: -2, frozen: false },
+    ],
+    categories: [{ label: 'Technology', transactionTypes: ['Add'] }],
+    transactions: [
+      transaction('transaction-00001', 'student-001', '2026-08-27T15:00:00.000Z', 5),
+      transaction('transaction-00002', 'student-001', '2026-08-27T15:02:00.000Z', 5),
+      transaction('transaction-00003', 'student-002', '2026-08-26T16:00:00.000Z', 3),
+    ],
+  }
+}
+
+function transaction(ref, studentRef, date, amount) {
+  return {
+    ref,
+    studentRef,
+    date,
+    type: 'Add',
+    amount,
+    category: 'Technology',
+    purpose: 'other',
+    status: 'Approved',
+    memo: 'Technology helper',
+    memoTruncated: false,
+  }
+}
+
+test('finds broad duplicate groups without exposing opaque refs in the group label', () => {
+  const toolbox = createClassroomAssistantToolbox(evidence())
+  const result = toolbox.execute('aggregate_transactions', {
+    startDate: '2026-08-27',
+    endDate: '2026-08-27',
+    groupBy: ['student', 'category', 'transactionType', 'amount', 'status', 'purpose', 'calendarDay'],
+    metric: 'count',
+    minimumResult: 2,
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.resultCount, 1)
+  assert.deepEqual(result.rows[0], {
+    group: {
+      student: 'Ava R.',
+      category: 'Technology',
+      transactionType: 'Add',
+      amount: 5,
+      status: 'Approved',
+      purpose: 'other',
+      calendarDay: '2026-08-27',
+    },
+    value: 2,
+    transactionCount: 2,
+    sharePercent: 100,
+  })
+})
+
+test('keeps memos out by default and returns them only on explicit bounded requests', () => {
+  const toolbox = createClassroomAssistantToolbox(evidence())
+  const ordinary = toolbox.execute('list_transactions', { limit: 1 })
+  assert.equal(Object.hasOwn(ordinary.transactions[0], 'memo'), false)
+  const withMemo = toolbox.execute('list_transactions', { includeMemos: true, limit: 1 })
+  assert.equal(withMemo.transactions[0].memo, 'Technology helper')
+  assert.equal(withMemo.transactions[0].memoTruncated, false)
+})
+
+test('answers current negative-balance and balance-history questions', () => {
+  const toolbox = createClassroomAssistantToolbox(evidence())
+  const negatives = toolbox.execute('get_balances', { condition: 'negative' })
+  assert.deepEqual(negatives.students, [{
+    studentRef: 'student-002',
+    student: 'Ava S.',
+    currentBalance: -2,
+    frozen: false,
+  }])
+  assert.equal(negatives.matchedPercent, 50)
+  assert.equal(negatives.averageBalance, -2)
+  const history = toolbox.execute('get_balance_history', {
+    studentRefs: ['student-001'],
+    startDate: '2026-08-26',
+    endDate: '2026-08-27',
+  })
+  assert.deepEqual(history.rows, [
+    { studentRef: 'student-001', student: 'Ava R.', date: '2026-08-26', closingBalance: -2 },
+    { studentRef: 'student-001', student: 'Ava R.', date: '2026-08-27', closingBalance: 8 },
+  ])
+})
+
+test('default period filtering honors the exact rolling cutoff while explicit dates use classroom days', () => {
+  const data = evidence()
+  data.transactions = [
+    transaction('transaction-00001', 'student-001', '2026-08-20T17:59:00.000Z', 4),
+    transaction('transaction-00002', 'student-001', '2026-08-20T18:01:00.000Z', 5),
+  ]
+  const toolbox = createClassroomAssistantToolbox(data)
+  assert.equal(toolbox.execute('aggregate_transactions', {
+    groupBy: [],
+    metric: 'count',
+  }).matchedTransactionCount, 1)
+  assert.equal(toolbox.execute('aggregate_transactions', {
+    startDate: '2026-08-20',
+    endDate: '2026-08-20',
+    groupBy: [],
+    metric: 'count',
+  }).matchedTransactionCount, 2)
+
+  const ninetyDays = { ...data, periodDays: 90, periodStart: data.historyStart }
+  assert.equal(createClassroomAssistantToolbox(ninetyDays).execute('aggregate_transactions', {
+    groupBy: [],
+    metric: 'count',
+  }).ok, true)
+})
+
+test('supports open-ended summaries beyond the named example questions', () => {
+  const toolbox = createClassroomAssistantToolbox(evidence())
+  const median = toolbox.execute('aggregate_transactions', {
+    groupBy: [],
+    metric: 'amountMedian',
+  })
+  assert.equal(median.rows[0].value, 5)
+
+  const shares = toolbox.execute('aggregate_transactions', {
+    groupBy: ['student'],
+    metric: 'count',
+  })
+  assert.deepEqual(shares.rows.map(row => row.sharePercent), [66.7, 33.3])
+
+  const comparison = toolbox.execute('compare_periods', {
+    firstStartDate: '2026-08-26',
+    firstEndDate: '2026-08-26',
+    secondStartDate: '2026-08-27',
+    secondEndDate: '2026-08-27',
+    metric: 'amountTotal',
+  })
+  assert.equal(comparison.difference, 7)
+  assert.equal(comparison.percentChange, 233.3)
+})
+
+test('rejects unknown students and invalid ranges inside a safe tool error', () => {
+  const toolbox = createClassroomAssistantToolbox(evidence())
+  assert.deepEqual(toolbox.execute('get_balances', { studentRefs: ['student-999'] }), {
+    ok: false,
+    error: 'A tool list is malformed.',
+  })
+  assert.deepEqual(toolbox.execute('get_balances', { classroomId: 'another-classroom' }), {
+    ok: false,
+    error: 'Tool arguments contain an unsupported field.',
+  })
+  assert.deepEqual(toolbox.execute('compare_periods', {}), {
+    ok: false,
+    error: 'Tool arguments are missing a required field.',
+  })
+  assert.deepEqual(toolbox.execute('list_transactions', {
+    startDate: '2026-08-27',
+    endDate: '2026-08-20',
+  }), { ok: false, error: 'The start date must not be after the end date.' })
+})

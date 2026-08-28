@@ -135,13 +135,13 @@ test('timing-pattern evidence fails before the injected transport is called', as
   assert.equal(calls, 0)
 })
 
-test('invalid JSON, cached usage, and contradictory totals fail closed', () => {
+test('invalid JSON and contradictory totals fail closed while cached usage is accepted', () => {
   assert.throws(
     () => parseGeminiGenerateResponse({ text: '{', usageMetadata: {} }),
     GeminiProviderAdapterError,
   )
-  assert.throws(
-    () => parseGeminiGenerateResponse({
+  assert.deepEqual(
+    parseGeminiGenerateResponse({
       text: structuredResponse(),
       usageMetadata: {
         promptTokenCount: 10,
@@ -151,7 +151,21 @@ test('invalid JSON, cached usage, and contradictory totals fail closed', () => {
         cachedContentTokenCount: 1,
       },
     }),
-    error => error instanceof GeminiProviderAdapterError && error.category === 'invalid-usage',
+    { ...JSON.parse(structuredResponse()), usage: { inputTokens: 10, outputTokens: 5, thinkingTokens: 0 } },
+  )
+  assert.deepEqual(
+    parseGeminiGenerateResponse({
+      text: structuredResponse(),
+      usageMetadata: {
+        promptTokenCount: 10,
+        candidatesTokenCount: 5,
+        thoughtsTokenCount: 0,
+        totalTokenCount: 20,
+        cachedContentTokenCount: 1,
+        toolUsePromptTokenCount: 2,
+      },
+    }).usage,
+    { inputTokens: 15, outputTokens: 5, thinkingTokens: 0 },
   )
   assert.throws(
     () => parseGeminiGenerateResponse({

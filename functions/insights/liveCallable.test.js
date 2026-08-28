@@ -22,3 +22,24 @@ test('live composition returns the reviewed service without contacting Gemini', 
   assert.equal(typeof analyze, 'function')
   assert.equal(sdkConstructors, 1)
 })
+
+test('tool assistant is constructed only when its separate rollback gate is enabled', () => {
+  let sdkConstructors = 0
+  class FakeGoogleGenAI {
+    constructor() {
+      sdkConstructors += 1
+      this.models = { generateContent: async () => { throw new Error('must not run') } }
+    }
+  }
+  const handler = createVersion3GeminiLiveHandler({
+    firestore: {
+      collection() { throw new Error('must not run') },
+      runTransaction() { throw new Error('must not run') },
+    },
+    apiKey: 'test-only-key-with-more-than-twenty-characters',
+    GoogleGenAIClass: FakeGoogleGenAI,
+    toolAssistantEnabled: true,
+  })
+  assert.equal(typeof handler, 'function')
+  assert.equal(sdkConstructors, 2)
+})

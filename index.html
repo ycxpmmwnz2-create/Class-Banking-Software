@@ -2257,7 +2257,7 @@ function toggleStudentDropdown() {
           render();
           return;
         }
-        request = retryState.request;
+        request = freshProviderQuestionRetryRequest(retryState.request);
       } else {
         const questionElement = document.getElementById("providerQuestionInput");
         const question = String(questionElement?.value ?? providerQuestionDraft).trim();
@@ -2341,6 +2341,16 @@ function toggleStudentDropdown() {
     function retryProviderQuestion() {
       if (!providerQuestionRetryRequest) return;
       void askProviderQuestion(true);
+    }
+
+    function freshProviderQuestionRetryRequest(previousRequest) {
+      return {
+        requestId: providerInsightsClient.newRequestId(),
+        kind: previousRequest.kind,
+        periodDays: previousRequest.periodDays,
+        timeZone: previousRequest.timeZone,
+        question: previousRequest.question,
+      };
     }
 
     function changeProviderInsightsLocalDataForTest() {
@@ -4833,7 +4843,7 @@ link.click();
                 <span class="insights-eyebrow">Could not answer that question</span>
                 <p>${escapeHtml(providerQuestionError)}</p>
                 ${providerQuestionRetryRequest ? `
-                  <button type="button" data-testid="provider-question-retry" onclick="retryProviderQuestion()">Retry same question</button>
+                  <button type="button" data-testid="provider-question-retry" onclick="retryProviderQuestion()">Try again as a new request</button>
                 ` : ""}
               </section>
             ` : ""}

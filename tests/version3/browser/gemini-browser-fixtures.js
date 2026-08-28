@@ -110,7 +110,10 @@ async function seedTenant(db, tenant, uid, studentId, transactionId) {
   const earlierEarningTransactions = [1, 2].map(daysAgo => ({
     ...earningTransaction,
     id: transactionId + 8 + daysAgo,
-    date: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString(),
+    // Preserve the same two-minute offset as the current earning so a test
+    // seeded exactly on a time-of-day boundary cannot split identical daily
+    // earnings into different buckets in one browser run.
+    date: new Date(Date.now() - (daysAgo * 24 * 60 * 60 * 1000) - 120_000).toISOString(),
   }));
   const spendingTransaction = {
     id: transactionId + 2,

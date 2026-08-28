@@ -70,6 +70,11 @@ export const VERSION3_GEMINI_RELEASE_ID = defineString('VERSION3_GEMINI_RELEASE_
   default: '',
 })
 
+export const VERSION3_GEMINI_TOOL_ASSISTANT_ENABLED = defineBoolean(
+  'VERSION3_GEMINI_TOOL_ASSISTANT_ENABLED',
+  { default: false },
+)
+
 export const GEMINI_API_KEY = defineSecret('GEMINI_API_KEY')
 
 // This identifier is part of the reviewed Functions artifact. Production V2
@@ -298,6 +303,7 @@ export const analyzeTeacherInsightsV3 = onCall({
     const analyze = createVersion3GeminiLiveHandler({
       firestore: getFirestore(),
       apiKey,
+      toolAssistantEnabled: VERSION3_GEMINI_TOOL_ASSISTANT_ENABLED.value(),
     })
     return await analyze({ auth: request.auth, data: request.data })
   } catch (error) {

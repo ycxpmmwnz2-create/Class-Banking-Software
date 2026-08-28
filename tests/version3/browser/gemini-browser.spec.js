@@ -93,7 +93,7 @@ async function browserStorageSnapshot(page) {
   });
 }
 
-test("authenticated question keeps browser storage unchanged, blocks duplicates, safely retries the same replay, and renders only its tenant", async ({ page }) => {
+test("authenticated question keeps browser storage unchanged, blocks duplicates, retries with a fresh request, and renders only its tenant", async ({ page }) => {
   await openApp(page);
   await signIn(page, TENANT_A);
   const storageBefore = await browserStorageSnapshot(page);
@@ -105,7 +105,7 @@ test("authenticated question keeps browser storage unchanged, blocks duplicates,
   await releaseHeldResponses(page);
 
   await expect(page.getByTestId("provider-question-error")).toContainText(
-    "The result may still be finishing.",
+    "Try again as a new request.",
   );
   await expect(page.locator("#providerQuestionInput")).toHaveValue(RESTROOM_QUESTION);
   await page.getByTestId("provider-question-retry").click();
@@ -117,7 +117,8 @@ test("authenticated question keeps browser storage unchanged, blocks duplicates,
   const calls = await page.evaluate(() => window.__VERSION3_GEMINI_TEST__.calls());
   expect(calls).toHaveLength(2);
   expect(Object.keys(calls[0]).sort()).toEqual(["kind", "periodDays", "question", "requestId", "timeZone"]);
-  expect(calls[1]).toEqual(calls[0]);
+  expect(calls[1]).toEqual({ ...calls[0], requestId: calls[1].requestId });
+  expect(calls[1].requestId).not.toBe(calls[0].requestId);
   expect(await browserStorageSnapshot(page)).toEqual(storageBefore);
 });
 

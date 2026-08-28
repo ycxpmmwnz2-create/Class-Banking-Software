@@ -463,6 +463,10 @@ export function mapProviderInsightsError(error, { testMode = true } = {}) {
       "question-sensitive",
       "evidence-unavailable",
       "provider-output-invalid",
+      "provider-output-truncated",
+      "answer-unverified",
+      "tool-output-too-large",
+      "provider-rate-limited",
       "answer-unavailable",
     ].includes(details.category)
     ? details.category
@@ -472,6 +476,9 @@ export function mapProviderInsightsError(error, { testMode = true } = {}) {
   }
   if (detailCategory === "rate-limit-exhausted" && code === "resource-exhausted") {
     return Object.freeze({ ambiguous: false, message: `The hourly ${prefix} limit was reached. Try again later.` });
+  }
+  if (detailCategory === "provider-rate-limited" && code === "resource-exhausted") {
+    return Object.freeze({ ambiguous: false, message: `${prefix} is temporarily busy. Try again in a minute.` });
   }
   if (detailCategory === "request-unavailable" && code === "failed-precondition") {
     return Object.freeze({ ambiguous: false, message: `This ${prefix} request cannot be retried. Start a new request.` });
@@ -491,16 +498,16 @@ export function mapProviderInsightsError(error, { testMode = true } = {}) {
       message: "Morgan Bank couldn’t safely read the classroom records. Refresh and try again.",
     });
   }
-  if (["provider-output-invalid", "answer-unavailable"].includes(detailCategory) && code === "internal") {
+  if (["provider-output-invalid", "provider-output-truncated", "answer-unverified", "tool-output-too-large", "answer-unavailable"].includes(detailCategory) && code === "internal") {
     return Object.freeze({
       ambiguous: false,
-      message: "Morgan Bank couldn’t safely interpret that question. Try asking it another way.",
+      message: "Morgan Bank couldn’t finish that answer. Please try again.",
     });
   }
   if (["unavailable", "deadline-exceeded", "internal", "unknown", "cancelled"].includes(code)) {
     return Object.freeze({
       ambiguous: true,
-      message: "The result may still be finishing. Try the same request again.",
+      message: "Morgan Bank lost the connection while answering. Try again as a new request.",
     });
   }
   if (code === "resource-exhausted") {

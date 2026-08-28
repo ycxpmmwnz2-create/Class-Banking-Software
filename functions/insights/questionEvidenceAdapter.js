@@ -25,7 +25,10 @@ const MAX_CATEGORIES = 128
 const MAX_RENT_AMOUNT = 1_000_000
 const EMAIL_OR_URL_PATTERN = /(?:\bhttps?:\/\/|\bwww\.|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i
 const PHONE_PATTERN = /(?:\+?\d[\d\s().-]{7,}\d)/
+const EMAIL_OR_URL_REDACTION_PATTERN = new RegExp(EMAIL_OR_URL_PATTERN.source, 'giu')
+const PHONE_REDACTION_PATTERN = new RegExp(PHONE_PATTERN.source, 'gu')
 const RESERVED_PLACEHOLDER_PATTERN = /\[\s*(?:student|category)/iu
+const MAX_PROVIDER_MEMO_CHARACTERS = 500
 
 export class InsightQuestionEvidenceError extends Error {
   constructor(category, message) {
@@ -54,6 +57,7 @@ export function createFirestoreQuestionEvidenceLoader({
     periodDays,
     timeZone,
     question,
+    assistantMode = false,
   } = {}) {
     let teacher
     let classroom
@@ -126,11 +130,9 @@ export function createFirestoreQuestionEvidenceLoader({
       [student.id, `student-${String(index + 1).padStart(3, '0')}`]
     )))
     const categoryCatalog = buildCategoryCatalog(availableTransactions, studentIdentities)
-    const resolvedSubjects = resolveMentionedStudents(
-      question,
-      studentIdentities,
-      categoryCatalog,
-    )
+    const resolvedSubjects = assistantMode
+      ? Object.freeze({ directStudentIds: Object.freeze([]), subjectHints: Object.freeze([]) })
+      : resolveMentionedStudents(question, studentIdentities, categoryCatalog)
     const subjectStudentIds = [...new Set([
       ...resolvedSubjects.directStudentIds,
       ...resolvedSubjects.subjectHints.map(hint => hint.studentId),
@@ -139,15 +141,35 @@ export function createFirestoreQuestionEvidenceLoader({
       fail('question-ambiguous', 'Ask about no more than eight named students at a time.')
     }
     const mentionedAliases = subjectStudentIds.map(id => aliasesByStudentId.get(id))
-    const sanitizedQuestion = sanitizeQuestion({
-      question,
-      students: studentIdentities,
-      aliasesByStudentId,
-      mentionedStudentIds: resolvedSubjects.directStudentIds,
-    })
-    assertNoRosterNameLeak(sanitizedQuestion, studentIdentities)
+    const sanitizedQuestion = assistantMode
+      ? 'Tool assistant request; legacy planner input is unused.'
+      : sanitizeQuestion({
+        question,
+        students: studentIdentities,
+        aliasesByStudentId,
+        mentionedStudentIds: resolvedSubjects.directStudentIds,
+      })
+    if (!assistantMode) assertNoRosterNameLeak(sanitizedQuestion, studentIdentities)
 
     const categoryAliasByKey = new Map(categoryCatalog.map(category => [category.key, category.alias]))
+    const providerStudents = assistantMode ? buildProviderStudents(participants, raw.students) : []
+    const providerStudentById = new Map(providerStudents.map(student => [student.id, student]))
+    const providerQuestion = assistantMode
+      ? sanitizeProviderQuestion(question, studentIdentities, providerStudentById)
+      : ''
+    const assistantTextCache = new Map()
+    const safeAssistantText = (value, maximumCharacters) => {
+      const cacheKey = `${maximumCharacters}\u0000${String(value ?? '')}`
+      if (!assistantTextCache.has(cacheKey)) {
+        assistantTextCache.set(cacheKey, sanitizeAssistantText(
+          value,
+          maximumCharacters,
+          studentIdentities,
+          providerStudentById,
+        ))
+      }
+      return assistantTextCache.get(cacheKey)
+    }
     const answerEvidence = Object.freeze({
       configuredRentAmount: raw.configuredRentAmount,
       participants: Object.freeze(participants.map(student => Object.freeze({
@@ -197,9 +219,46 @@ export function createFirestoreQuestionEvidenceLoader({
       }))),
       periodDays,
     })
+    const assistantEvidence = assistantMode ? Object.freeze({
+      question: providerQuestion,
+      generatedAt: generatedAt.toISOString(),
+      asOfDate,
+      timeZone,
+      periodDays,
+      periodStart,
+      historyStart: new Date(historyCutoff).toISOString(),
+      configuredRentAmount: raw.configuredRentAmount,
+      students: Object.freeze(providerStudents.map(student => Object.freeze({
+        ref: student.ref,
+        displayName: student.displayName,
+        current: student.current,
+        balance: student.balance,
+        frozen: student.frozen,
+      }))),
+      categories: Object.freeze(categoryCatalog.map(category => Object.freeze({
+        label: safeAssistantText(category.label, 120).text,
+        transactionTypes: category.transactionTypes,
+      }))),
+      transactions: Object.freeze(availableTransactions.map((transaction, index) => {
+        const memo = safeAssistantText(transaction.memo || transaction.reason, MAX_PROVIDER_MEMO_CHARACTERS)
+        return Object.freeze({
+          ref: `transaction-${String(index + 1).padStart(5, '0')}`,
+          studentRef: providerStudentById.get(transaction.studentId)?.ref,
+          date: transaction.date,
+          type: transaction.type,
+          amount: transaction.amount,
+          category: safeAssistantText(transaction.category, 120).text,
+          purpose: transactionPurpose(transaction),
+          status: transaction.status,
+          memo: memo.text,
+          memoTruncated: memo.truncated,
+        })
+      })),
+    }) : null
     return Object.freeze({
       generatedAt: generatedAt.toISOString(),
       providerInput,
+      ...(assistantEvidence ? { assistantEvidence } : {}),
       answerEvidence,
       allowedAliases: Object.freeze({
         studentAliases: Object.freeze(mentionedAliases),
@@ -226,6 +285,105 @@ export function createFirestoreQuestionEvidenceLoader({
       })).digest('hex'),
     })
   }
+}
+
+function buildProviderStudents(participants, currentStudents) {
+  const currentById = new Map(currentStudents.map(student => [student.id, student]))
+  const firstNames = participants.map(student => providerNameParts(student.name).first)
+  const firstNameCounts = new Map(firstNames.map(name => [
+    name.toLocaleLowerCase('en-US'),
+    firstNames.filter(candidate => candidate.toLocaleLowerCase('en-US') === name.toLocaleLowerCase('en-US')).length,
+  ]))
+  const displayCounts = new Map()
+  return participants.map((participant, index) => {
+    const parts = providerNameParts(participant.name)
+    const duplicateFirstName = firstNameCounts.get(parts.first.toLocaleLowerCase('en-US')) > 1
+    const baseDisplayName = duplicateFirstName && parts.lastInitial
+      ? `${parts.first} ${parts.lastInitial}.`
+      : parts.first
+    const normalizedDisplay = baseDisplayName.toLocaleLowerCase('en-US')
+    const occurrence = (displayCounts.get(normalizedDisplay) ?? 0) + 1
+    displayCounts.set(normalizedDisplay, occurrence)
+    const current = currentById.get(participant.id)
+    return Object.freeze({
+      id: participant.id,
+      ref: `student-${String(index + 1).padStart(3, '0')}`,
+      displayName: occurrence === 1 ? baseDisplayName : `${baseDisplayName} (${occurrence})`,
+      current: Boolean(current),
+      balance: current?.balance ?? null,
+      frozen: current?.frozen ?? null,
+    })
+  })
+}
+
+function providerNameParts(value) {
+  const tokens = removeControlCharacters(String(value).normalize('NFKC'))
+    .replace(EMAIL_OR_URL_REDACTION_PATTERN, ' ')
+    .replace(PHONE_REDACTION_PATTERN, ' ')
+    .trim()
+    .split(/\s+/u)
+    .filter(token => /^[\p{L}][\p{L}'’-]{0,63}$/u.test(token))
+  const first = tokens[0] || 'Student'
+  const lastToken = tokens.length > 1 ? tokens.at(-1) : ''
+  const lastInitial = [...lastToken][0]?.toLocaleUpperCase('en-US') || ''
+  return Object.freeze({ first, lastInitial })
+}
+
+function sanitizeProviderQuestion(question, identities, providerStudentById) {
+  return sanitizeAssistantText(question, 500, identities, providerStudentById).text
+}
+
+function sanitizeAssistantText(value, maximumCharacters, identities, providerStudentById) {
+  const base = sanitizeProviderText(value, maximumCharacters)
+  let sanitized = base.text
+  const replacements = [...identities]
+    .filter(identity => providerStudentById.has(identity.id))
+    .sort((left, right) => right.name.length - left.name.length)
+  for (const identity of replacements) {
+    const displayName = providerStudentById.get(identity.id).displayName
+    const normalizedIdentityName = removeControlCharacters(identity.name.normalize('NFKC'))
+      .trim()
+      .replace(/\s+/gu, ' ')
+    const pattern = new RegExp(
+      `(^|[^\\p{L}\\p{N}])${escapeRegExp(normalizedIdentityName)}(?=$|[^\\p{L}\\p{N}])`,
+      'giu',
+    )
+    sanitized = sanitized.replace(pattern, (_match, prefix) => `${prefix}${displayName}`)
+    const nameTokens = normalizedIdentityName.split(/\s+/u).filter(Boolean)
+    const lastName = nameTokens.length > 1 ? nameTokens.at(-1) : ''
+    if (lastName.length >= 2) {
+      const lastNamePattern = new RegExp(
+        `(^|[^\\p{L}\\p{N}])${escapeRegExp(lastName)}(?=$|[^\\p{L}\\p{N}])`,
+        'giu',
+      )
+      const lastInitial = providerNameParts(identity.name).lastInitial
+      sanitized = sanitized.replace(lastNamePattern, (_match, prefix) => `${prefix}${lastInitial}.`)
+    }
+  }
+  const text = sanitized.replace(/(\b\p{Lu})\.\.(?=$|\s)/gu, '$1.')
+  return Object.freeze({
+    text,
+    truncated: base.truncated,
+  })
+}
+
+function sanitizeProviderText(value, maximumCharacters) {
+  let text = removeControlCharacters(String(value ?? '').normalize('NFKC'))
+    .replace(EMAIL_OR_URL_REDACTION_PATTERN, '[contact removed]')
+    .replace(PHONE_REDACTION_PATTERN, '[contact removed]')
+    .replace(/\s+/gu, ' ')
+    .trim()
+  const characters = [...text]
+  const truncated = characters.length > maximumCharacters
+  if (truncated) text = `${characters.slice(0, maximumCharacters).join('')}…`
+  return Object.freeze({ text, truncated })
+}
+
+function removeControlCharacters(value) {
+  return [...value].map(character => {
+    const codePoint = character.codePointAt(0)
+    return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159) ? ' ' : character
+  }).join('')
 }
 
 function transactionPurpose(transaction) {
@@ -576,6 +734,8 @@ function validateTransactionSnapshot(snapshot, timeZone) {
     amount: value.amount,
     category: boundedString(value.category, 0, 120, 'category'),
     reason: boundedString(value.reason, 0, 320, 'reason'),
+    memo: boundedString(value.memo, 0, 5_000, 'memo'),
+    source: boundedString(value.source, 0, 120, 'source'),
     studentName: boundedString(value.studentName, 0, 120, 'transaction student name'),
     status: value.status,
   })

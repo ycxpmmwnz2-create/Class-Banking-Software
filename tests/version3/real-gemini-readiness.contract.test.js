@@ -55,12 +55,14 @@ test('dormant adapter has no environment, secret, SDK, or direct network access'
   assert.match(adapterSource, /Timing-pattern evidence is disabled/)
 })
 
-test('live transport explicitly disables retries and keeps the dormant adapter pure', () => {
+test('live transport owns bounded transient retries and keeps the dormant adapter pure', () => {
   assert.match(transportSource, /from '@google\/genai'/)
   assert.match(transportSource, /retryOptions: Object\.freeze\(\{ attempts: 1 \}\)/)
   assert.match(transportSource, /timeout: 60_000/)
-  assert.doesNotMatch(transportSource, /setTimeout|for\s*\(|while\s*\(/)
-  assert.match(liveRuntimeSource, /gemini-3\.6-flash-morgan-bank-assistant-v3/)
+  assert.match(transportSource, /maxAttempts = 3/)
+  assert.match(transportSource, /TRANSIENT_HTTP_STATUSES/)
+  assert.match(transportSource, /provider-request-rejected/)
+  assert.match(liveRuntimeSource, /gemini-3\.6-flash-morgan-bank-assistant-v4/)
 })
 
 test('historical readiness plan records the external cutover gates being implemented', () => {

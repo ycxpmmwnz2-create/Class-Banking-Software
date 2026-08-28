@@ -26,11 +26,18 @@ or 90 day period.
 
 ## Provider and cost contract
 
-- All generated-insight and question-interpretation requests use exactly
-  `gemini-3.6-flash` with `thinkingLevel: minimal`; no fallback model, tool,
-  search, grounding, provider cache, or automatic retry exists.
-- The server uses a 4,096 thinking-token safety ceiling and rejects usage above
-  it. Minimal thinking is not described as guaranteed zero thinking.
+- All generated-insight and teacher-question requests use exactly
+  `gemini-3.6-flash` with `thinkingLevel: minimal`; there is no fallback model,
+  web search, code execution, or provider-owned data source. Teacher questions
+  may use only Morgan Bank's six server-owned read-only classroom tools.
+- A teacher question may use at most four provider turns, eight tool calls,
+  32 KiB of total tool output, 2,048 output tokens per turn, and 4,096 thinking
+  tokens per turn, all inside one 60-second assistant deadline. Cached and
+  tool-use token metadata is accepted and charged conservatively instead of
+  turning a valid answer into an error.
+- The transport retries only transient 408, 429, and 5xx failures, at most
+  three attempts with bounded backoff. Authentication, request-schema, and
+  answer-verification failures are not retried.
 - Cost reservations use the conservative post-promotion ceiling of $1.50 per
   million input tokens and $7.50 per million billed output tokens. The existing
   application-wide $7.50 ledger remains the hard application control and stays
@@ -45,25 +52,29 @@ or 90 day period.
   classroom ID, student ID, fact packet, model, prompt, price, or answer.
 - The callable resolves the active teacher tenant before reading one bounded
   classroom roster and transaction set.
-- Roster names are matched and replaced server-side with opaque aliases before
-  the question reaches the model. Email addresses, URLs, likely phone numbers,
-  ambiguous students, and questions naming more than one student fail before a
-  provider call.
-- The model maps the sanitized question to a composable, allowlisted read-only
-  analytics plan and allowed opaque aliases. It receives no classroom
-  transactions, balances, raw reasons, IDs, login data, PINs, teacher identity,
-  or classroom identity, and it never writes the factual answer.
-- Morgan Bank calculates the answer deterministically from the authorized
-  server data. Only the teacher response may restore a real student name.
-  Stored idempotency results contain the intent, alias, signature, and usage,
-  never the raw question, real name, factual answer, or raw evidence.
-- The plan vocabulary covers roster and balance questions, transaction counts
-  and amounts, date and time comparisons, current balance history, missing
-  payments, multiple simultaneous grouping dimensions, distinct-value counts,
-  amount ranges, and grouped numeric conditions. This is a composition model,
-  not a closed list of example questions. Requests requiring unavailable data,
-  data changes, causal or predictive claims, or unrelated information still
-  return a bounded refusal rather than an invented answer.
+- The server builds one classroom-scoped assistant view. Gemini may receive
+  first names; when first names collide it receives first name plus last
+  initial. It receives ephemeral student/transaction references, current
+  balances, frozen status, safe categories, server-calculated classroom dates,
+  and only the bounded tool results needed for the question.
+- Transaction memos are absent by default. A tool may request them only when
+  relevant; emails, phone numbers, links, and control characters are removed,
+  each memo is capped at 500 characters, and truncation is explicit.
+- Gemini never receives Auth UIDs, Firestore IDs or paths, teacher/classroom
+  identifiers, credentials, PINs, App Check data, secrets, another classroom,
+  or write authority. Tool arguments contain no tenant selector.
+- The six tools list transactions, aggregate transactions, read current
+  balances, calculate balance history, compare periods, and describe available
+  schema. Their filters, multidimensional groupings, totals, averages, medians,
+  ranges, percentages, distinct counts, and period comparisons are general
+  primitives for unforeseen questions, not sentence-specific fixes.
+- Gemini writes the direct teacher-facing answer, cites the executed tool-call
+  IDs, and cannot expose opaque references. Morgan Bank validates the final
+  envelope, evidence citations, output bounds, identities, usage, reservation,
+  and replay signature before returning it.
+- The previous schema-8 deterministic calculator remains available behind the
+  server feature switch as a rollback path. The new tool assistant is separately
+  gated by `VERSION3_GEMINI_TOOL_ASSISTANT_ENABLED`.
 
 ## Stale and external-state controls
 

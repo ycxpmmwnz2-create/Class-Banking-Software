@@ -4,6 +4,10 @@ const CLIENT_SAFE_CATEGORIES = Object.freeze(new Set([
   'request-unavailable',
   'evidence-unavailable',
   'provider-output-invalid',
+  'provider-output-truncated',
+  'answer-unverified',
+  'tool-output-too-large',
+  'provider-rate-limited',
   'answer-unavailable',
   'question-ambiguous',
   'question-sensitive',
@@ -22,6 +26,13 @@ const LOG_CATEGORIES = Object.freeze(new Set([
   'invalid-shape',
   'invalid-time',
   'provider-output-invalid',
+  'provider-output-truncated',
+  'answer-unverified',
+  'tool-output-too-large',
+  'provider-authentication-failed',
+  'provider-rate-limited',
+  'provider-request-rejected',
+  'provider-timeout',
   'provider-unavailable',
   'answer-unavailable',
   'question-ambiguous',
@@ -46,7 +57,8 @@ export function callableErrorCode(error) {
     category === 'rate-limit-exhausted'
   ) return 'resource-exhausted'
   if (category === 'request-unavailable') return 'failed-precondition'
-  if (category === 'provider-unavailable') return 'unavailable'
+  if (category === 'provider-rate-limited') return 'resource-exhausted'
+  if (category === 'provider-unavailable' || category === 'provider-timeout') return 'unavailable'
   if (category === 'invalid-runtime' || category === 'invalid-replay') {
     return 'failed-precondition'
   }

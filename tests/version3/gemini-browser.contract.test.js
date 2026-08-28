@@ -53,6 +53,9 @@ test("source contract: browser request carries only the teacher question control
   );
   assert.match(indexHtml, /Intl\.DateTimeFormat\(\)\.resolvedOptions\(\)\.timeZone \|\| "UTC"/);
   assert.match(browserClient, /resolvedOptions\(\)\.timeZone/);
+  assert.match(indexHtml, /request = freshProviderQuestionRetryRequest\(retryState\.request\)/);
+  assert.match(indexHtml, /function freshProviderQuestionRetryRequest\([\s\S]*?requestId: providerInsightsClient\.newRequestId\(\)/);
+  assert.match(indexHtml, /Try again as a new request/);
 });
 
 test("source contract: assisted state is in memory, reset with tenant state, and stale-checked", () => {

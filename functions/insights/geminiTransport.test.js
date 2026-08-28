@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createGeminiGenerateContentOnce } from './geminiTransport.js'
+import {
+  GeminiTransportError,
+  classifyGeminiTransportError,
+  createGeminiGenerateContent,
+  createGeminiGenerateContentOnce,
+} from './geminiTransport.js'
 
 const API_KEY = 'test-only-key-with-more-than-twenty-characters'
 
@@ -56,4 +61,33 @@ test('transport rejects missing key or malformed injected SDK before any request
     apiKey: API_KEY,
     GoogleGenAIClass: class {},
   }), /unavailable/)
+})
+
+test('retrying transport retries only transient failures and preserves a safe category', async () => {
+  let attempts = 0
+  const delays = []
+  class FakeGoogleGenAI {
+    constructor() {
+      this.models = {
+        async generateContent() {
+          attempts += 1
+          if (attempts < 3) throw Object.assign(new Error('secret provider detail'), { status: 503 })
+          return { text: '{}', usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 } }
+        },
+      }
+    }
+  }
+  const generate = createGeminiGenerateContent({
+    apiKey: API_KEY,
+    GoogleGenAIClass: FakeGoogleGenAI,
+    delay: async value => delays.push(value),
+  })
+  await generate({ model: 'gemini-test', contents: [], config: {} })
+  assert.equal(attempts, 3)
+  assert.deepEqual(delays, [250, 750])
+  const rejected = classifyGeminiTransportError({ status: 400, message: 'raw' })
+  assert.equal(rejected.category, 'provider-request-rejected')
+  assert.equal(rejected.retryable, false)
+  assert.equal(rejected.message, 'The Gemini request did not complete.')
+  assert.equal(rejected instanceof GeminiTransportError, true)
 })

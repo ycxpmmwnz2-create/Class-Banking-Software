@@ -221,11 +221,11 @@ test("question response accepts a bounded full-roster answer but rejects oversiz
 test("maps errors to short allowlisted messages and marks only ambiguous outcomes retryable", () => {
   assert.deepEqual(mapProviderInsightsError({ code: "functions/unavailable", message: "raw" }), {
     ambiguous: true,
-    message: "The result may still be finishing. Try the same request again.",
+    message: "Morgan Bank lost the connection while answering. Try again as a new request.",
   });
   assert.deepEqual(mapProviderInsightsError({ code: "functions/internal", message: "raw" }), {
     ambiguous: true,
-    message: "The result may still be finishing. Try the same request again.",
+    message: "Morgan Bank lost the connection while answering. Try again as a new request.",
   });
   assert.deepEqual(mapProviderInsightsError({ code: "functions/resource-exhausted" }), {
     ambiguous: false,
@@ -301,13 +301,13 @@ test("live errors use model-neutral AI Insights wording without exposing raw det
     ambiguous: false,
     message: "Morgan Bank couldn’t safely read the classroom records. Refresh and try again.",
   });
-  for (const category of ["provider-output-invalid", "answer-unavailable"]) {
+  for (const category of ["provider-output-invalid", "provider-output-truncated", "answer-unverified", "tool-output-too-large", "answer-unavailable"]) {
     assert.deepEqual(mapProviderInsightsError({
       code: "functions/internal",
       details: { category },
     }, { testMode: false }), {
       ambiguous: false,
-      message: "Morgan Bank couldn’t safely interpret that question. Try asking it another way.",
+      message: "Morgan Bank couldn’t finish that answer. Please try again.",
     });
   }
   assert.deepEqual(mapProviderInsightsError({
@@ -315,6 +315,6 @@ test("live errors use model-neutral AI Insights wording without exposing raw det
     message: "sensitive upstream detail",
   }, { testMode: false }), {
     ambiguous: true,
-    message: "The result may still be finishing. Try the same request again.",
+    message: "Morgan Bank lost the connection while answering. Try again as a new request.",
   });
 });

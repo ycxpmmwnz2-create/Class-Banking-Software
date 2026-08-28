@@ -111,6 +111,8 @@ const nonGeminiInsightJavaScript = await readJavaScriptTree(
       url.pathname.endsWith('/geminiCostPolicy.js') ||
       url.pathname.endsWith('/geminiQuestionAdapter.js') ||
       url.pathname.endsWith('/geminiQuestionCostPolicy.js') ||
+      url.pathname.endsWith('/geminiClassroomAssistant.js') ||
+      url.pathname.endsWith('/geminiToolAssistantCostPolicy.js') ||
       url.pathname.endsWith('/geminiTransport.js') ||
       url.pathname.endsWith('/liveCallable.js') ||
       url.pathname.endsWith('/liveRuntime.js')
@@ -289,6 +291,8 @@ test('source contract: V2 gates secret access and the live gate precedes Firesto
     /import\s+\{\s*createVersion3GeminiLiveHandler\s*\}\s+from\s+'\.\/insights\/liveCallable\.js'/,
   )
   assert.match(functionsIndexSource, /VERSION3_GEMINI_ENABLED = defineBoolean\([\s\S]*?default: false/)
+  assert.match(functionsIndexSource, /VERSION3_GEMINI_TOOL_ASSISTANT_ENABLED = defineBoolean\([\s\S]*?default: false/)
+  assert.match(callable, /toolAssistantEnabled: VERSION3_GEMINI_TOOL_ASSISTANT_ENABLED\.value\(\)/)
   assert.match(functionsIndexSource, /VERSION3_GEMINI_RELEASE_ID = defineString\([\s\S]*?default: ''/)
   assert.doesNotMatch(callable, /error\?\.message|console\.(?:log|error)\(error/)
 })
@@ -297,6 +301,7 @@ test('runtime contract: default Functions exports the protected live callable', 
   const functionsExports = await import('../../functions/index.js')
   assert.equal(Object.hasOwn(functionsExports, 'analyzeTeacherInsightsV3'), true)
   assert.equal(Object.hasOwn(functionsExports, 'GEMINI_API_KEY'), true)
+  assert.equal(Object.hasOwn(functionsExports, 'VERSION3_GEMINI_TOOL_ASSISTANT_ENABLED'), true)
 })
 
 test('runtime contract: the tenant resolver stays warm only in production', async () => {

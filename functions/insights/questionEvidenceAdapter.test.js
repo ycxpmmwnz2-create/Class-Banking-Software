@@ -134,6 +134,85 @@ test('replaces a full or unique partial roster name before constructing provider
   }
 })
 
+test('builds one-classroom assistant evidence with first names and sanitized bounded memos', async () => {
+  const longMemo = `Call parent@example.com or 801-555-1212 ${'x'.repeat(600)}`
+  const envelope = await loader(fixture({
+    'classrooms/class-a/students/2': {
+      ...fixture()['classrooms/class-a/students/2'],
+      name: 'GianMarco Salazar',
+    },
+    'classrooms/class-a/transactions/101': {
+      ...fixture()['classrooms/class-a/transactions/101'],
+      memo: longMemo,
+    },
+  }))({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 30,
+    timeZone: 'America/Denver',
+    question: 'Compare GianMarco Bellini and GianMarco Salazar.',
+    assistantMode: true,
+  })
+  assert.deepEqual(envelope.assistantEvidence.students.map(student => student.displayName), [
+    'GianMarco B.',
+    'GianMarco S.',
+  ])
+  assert.equal(envelope.assistantEvidence.question, 'Compare GianMarco B. and GianMarco S.')
+  const memo = envelope.assistantEvidence.transactions[0]
+  assert.equal(memo.memoTruncated, true)
+  assert.match(memo.memo, /\[contact removed\]/)
+  assert.doesNotMatch(memo.memo, /example\.com|555-1212/)
+  assert.equal([...memo.memo.replace(/…$/u, '')].length, 500)
+  assert.doesNotMatch(JSON.stringify(envelope.assistantEvidence), /teacher-a|class-a|Bellini|Salazar|"id"/)
+})
+
+test('tool-assistant evidence is not blocked by the legacy single-subject grammar', async () => {
+  const data = fixture({
+    'classrooms/class-a/students/1': { ...fixture()['classrooms/class-a/students/1'], name: 'Ava Reed' },
+    'classrooms/class-a/students/2': { ...fixture()['classrooms/class-a/students/2'], name: 'Ava Stone' },
+  })
+  const envelope = await loader(data)({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 7,
+    timeZone: 'America/Denver',
+    question: 'Compare Ava R. and Ava S. and tell me who has duplicate transactions.',
+    assistantMode: true,
+  })
+  assert.equal(envelope.assistantEvidence.question, 'Compare Ava R. and Ava S. and tell me who has duplicate transactions.')
+  assert.deepEqual(envelope.assistantEvidence.students.map(student => student.displayName), ['Ava R.', 'Ava S.'])
+  assert.deepEqual(envelope.providerInput.subjectAliases, [])
+})
+
+test('tool-assistant normalization cannot reveal a compatibility-form surname or contact-shaped roster name', async () => {
+  const normalized = await loader()({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 7,
+    timeZone: 'America/Denver',
+    question: 'How much did ＧｉａｎＭａｒｃｏ Ｂｅｌｌｉｎｉ earn?',
+    assistantMode: true,
+  })
+  assert.equal(normalized.assistantEvidence.question, 'How much did GianMarco earn?')
+  assert.doesNotMatch(JSON.stringify(normalized.assistantEvidence), /Bellini|Ｂｅｌｌｉｎｉ/)
+
+  const contactName = await loader(fixture({
+    'classrooms/class-a/students/1': {
+      ...fixture()['classrooms/class-a/students/1'],
+      name: 'parent@example.com',
+    },
+  }))({
+    teacherUid: 'teacher-a',
+    classroomId: 'class-a',
+    periodDays: 7,
+    timeZone: 'America/Denver',
+    question: 'Who has duplicate transactions?',
+    assistantMode: true,
+  })
+  assert.equal(contactName.assistantEvidence.students[0].displayName, 'Student')
+  assert.doesNotMatch(JSON.stringify(contactName.assistantEvidence), /parent@example\.com/)
+})
+
 test('safe student aliases do not collide with an unrelated roster name token', async () => {
   const data = fixture({
     'classrooms/class-a/students/1': {

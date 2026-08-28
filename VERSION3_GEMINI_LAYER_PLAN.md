@@ -154,3 +154,26 @@ grouped results. Repeated transactions are one composition of those generic
 primitives, not a privileged intent. The browser authority, tenant resolution,
 evidence signature, provider data boundary, Functions-owned calculation,
 reservation, replay, and no-write guarantees remain unchanged.
+
+## Tool-assistant evolution
+
+The teacher question route now has a separately gated version-4 redesign. It
+replaces data-blind plan generation with a bounded Gemini function-calling loop
+over six server-owned read-only tools. This is the approved general-purpose
+route for unforeseen classroom questions. The schema-8 planner remains dormant
+code for immediate rollback while the tool-assistant flag is off.
+
+The server still resolves the authenticated reciprocal teacher/classroom pair
+before reading any data. The provider receives one classroom only, first names
+or first name plus last initial, ephemeral references, safe categories, dates,
+and bounded tool results. Memo text is on-demand, contact-sanitized, limited to
+500 characters, and marked when truncated. No tool accepts a classroom or
+teacher selector, and no write tool exists.
+
+The loop is limited to four provider turns, eight calls, 32 KiB of tool output,
+one 60-second overall deadline, and a 1,200-character final answer. The first
+turn must call a tool; the final JSON cites executed call IDs. The server rejects
+uncited results, opaque refs, unknown two-part identities, output truncation,
+malformed usage, and exhausted limits. Transient provider transport errors
+receive bounded retries inside that one deadline; request, authentication, and
+verification failures do not.

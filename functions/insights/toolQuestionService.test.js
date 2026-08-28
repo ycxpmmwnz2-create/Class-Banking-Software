@@ -1,0 +1,129 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+import { GeminiClassroomAssistantError } from './geminiClassroomAssistant.js'
+import {
+  InsightToolQuestionServiceError,
+  createInsightToolQuestionService,
+} from './toolQuestionService.js'
+
+const REQUEST = Object.freeze({
+  requestId: '12345678-1234-4234-8234-123456789abc',
+  kind: 'question',
+  periodDays: 7,
+  timeZone: 'America/Denver',
+  question: 'Are there duplicate transactions today?',
+})
+
+function fixture() {
+  const calls = []
+  const assistantEvidence = {
+    question: REQUEST.question,
+    generatedAt: '2026-08-27T18:00:00.000Z',
+    asOfDate: '2026-08-27',
+    timeZone: REQUEST.timeZone,
+    periodDays: 7,
+    periodStart: '2026-08-20T18:00:00.000Z',
+    historyStart: '2026-05-29T18:00:00.000Z',
+    configuredRentAmount: 10,
+    students: [],
+    categories: [],
+    transactions: [],
+  }
+  const completed = []
+  const deps = {
+    now: () => new Date('2026-08-27T18:00:00.000Z'),
+    async resolveActiveTeacherTenant() {
+      calls.push('tenant')
+      return { teacherUid: 'teacher-a', classroomId: 'class-a' }
+    },
+    async loadQuestionEvidence() {
+      calls.push('evidence')
+      return { assistantEvidence, evidenceSignature: 'a'.repeat(64) }
+    },
+    async quoteWorstCaseCost() {
+      calls.push('quote')
+      return { rateCardId: 'rate-card', worstCaseCostMicroUsd: 100 }
+    },
+    assistant: {
+      async answer() {
+        calls.push('assistant')
+        return {
+          answer: 'No. There are no duplicate transactions today.',
+          evidence: ['Calculated 0 grouped results from 3 matching transactions.'],
+          usage: { inputTokens: 20, outputTokens: 10, thinkingTokens: 0 },
+          toolCallCount: 1,
+        }
+      },
+    },
+    async priceActualUsage() {
+      calls.push('price')
+      return 10
+    },
+    usageLedger: {
+      async reserve() {
+        calls.push('reserve')
+        return {
+          kind: 'reserved',
+          reservationId: 'reservation-a',
+          reservedCostMicroUsd: 100,
+          remainingAfterReservationMicroUsd: 1000,
+        }
+      },
+      async commit(value) {
+        calls.push('commit')
+        completed.push(value)
+      },
+      async markUncertain() { calls.push('uncertain') },
+    },
+  }
+  return { calls, completed, deps }
+}
+
+test('resolves tenant, reserves, runs the tool assistant, and commits a natural answer', async () => {
+  const setup = fixture()
+  const service = createInsightToolQuestionService(setup.deps)
+  const result = await service({ auth: { uid: 'teacher-a' }, data: REQUEST })
+  assert.equal(result.answer, 'No. There are no duplicate transactions today.')
+  assert.deepEqual(setup.calls, ['tenant', 'evidence', 'quote', 'reserve', 'assistant', 'price', 'commit'])
+  assert.equal(setup.completed[0].result.source, 'provider-tool-assistant')
+  assert.equal(setup.completed[0].result.usage.costMicroUsd, 10)
+})
+
+test('retains the reservation and preserves the safe provider failure category', async () => {
+  const setup = fixture()
+  setup.deps.assistant.answer = async () => {
+    throw new GeminiClassroomAssistantError('provider-rate-limited', 'raw provider text')
+  }
+  await assert.rejects(
+    createInsightToolQuestionService(setup.deps)({ auth: { uid: 'teacher-a' }, data: REQUEST }),
+    error => error instanceof InsightToolQuestionServiceError &&
+      error.category === 'provider-rate-limited' &&
+      !error.message.includes('raw provider text'),
+  )
+  assert.equal(setup.calls.includes('uncertain'), true)
+  assert.equal(setup.calls.includes('commit'), false)
+})
+
+test('replays only an exact tool-assistant result bound to current evidence', async () => {
+  const setup = fixture()
+  setup.deps.usageLedger.reserve = async () => ({
+    kind: 'completed',
+    result: {
+      schemaVersion: 1,
+      source: 'provider-tool-assistant',
+      periodDays: 7,
+      evidenceSignature: 'a'.repeat(64),
+      generatedAt: '2026-08-27T18:00:00.000Z',
+      answer: 'Yes. Ava has two matching transactions today.',
+      evidence: ['Checked 2 matching transactions.'],
+      usage: { inputTokens: 20, outputTokens: 10, thinkingTokens: 0, costMicroUsd: 10 },
+    },
+  })
+  const result = await createInsightToolQuestionService(setup.deps)({
+    auth: { uid: 'teacher-a' },
+    data: REQUEST,
+  })
+  assert.equal(result.answer, 'Yes. Ava has two matching transactions today.')
+  assert.equal(setup.calls.includes('assistant'), false)
+})

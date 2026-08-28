@@ -7,7 +7,7 @@ Gemini callable. It does not authorize a secret change, Functions deployment,
 feature-gate activation, provider call, or production operation.
 
 The reviewed AI Insights experience requires release ID
-`gemini-3.6-flash-morgan-bank-assistant-v3`. A deployment using another release
+`gemini-3.6-flash-morgan-bank-assistant-v4`. A deployment using another release
 ID stays fail-closed. Changing the deployed runtime flag or release ID remains
 a separate external-state authorization after code review.
 
@@ -39,6 +39,12 @@ deploy-time requirement.
 5. Keep the Gemini runtime gate off until the callable, App Check enforcement,
    budget controls, and synthetic staging canary have each passed their own
    evidence and authorization gates.
+6. `VERSION3_GEMINI_TOOL_ASSISTANT_ENABLED` is a separate rollback gate and
+   defaults to false. Enabling it requires its own authorization after a real
+   staging canary succeeds twice back-to-back. The canary must verify tool
+   calls, cached-token metadata, finish reasons, memo sanitization, natural
+   answer text, and a fresh-request retry. Keep the schema-8 route available
+   until production behavior is confirmed.
 
 If unrelated Functions must be independently deployable before the Gemini
 secret is provisioned, stop and move the live callable to a separately reviewed

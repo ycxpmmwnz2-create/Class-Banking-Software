@@ -188,9 +188,6 @@ export function parseGeminiUsageMetadata(value) {
     value.toolUsePromptTokenCount,
     'toolUsePromptTokenCount',
   )
-  if (cachedTokens !== 0 || toolTokens !== 0) {
-    fail('invalid-usage', 'Cached or tool-use tokens are outside the reviewed provider contract.')
-  }
 
   let thinkingTokens
   if (value.thoughtsTokenCount === undefined) {
@@ -201,11 +198,22 @@ export function parseGeminiUsageMetadata(value) {
   if (
     !Number.isSafeInteger(thinkingTokens) ||
     thinkingTokens < 0 ||
-    inputTokens + outputTokens + thinkingTokens !== totalTokens
+    totalTokens < inputTokens + outputTokens + thinkingTokens
   ) {
     fail('invalid-usage', 'Gemini usage totals are contradictory.')
   }
-  return Object.freeze({ inputTokens, outputTokens, thinkingTokens })
+  // Google may report cached and tool-use prompt tokens as informational
+  // subsets or additions depending on the model/runtime. Accept both forms
+  // while conservatively charging the larger prompt total.
+  return Object.freeze({
+    inputTokens: Math.max(
+      inputTokens,
+      cachedTokens + toolTokens,
+      totalTokens - outputTokens - thinkingTokens,
+    ),
+    outputTokens,
+    thinkingTokens,
+  })
 }
 
 function optionalNonNegativeInteger(value, label) {
