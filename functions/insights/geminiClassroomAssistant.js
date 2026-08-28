@@ -357,6 +357,7 @@ function numericClaimKind(claim, before, after) {
   if (/^\s+(?:approved\s+)?(?:transactions?|payments?|credits?)\b/iu.test(after)) return 'transaction-count'
   if (/^\s+days?\b/iu.test(after)) return 'day-count'
   if (/^\s+(?:matching\s+)?balances?\b/iu.test(after)) return 'student-count'
+  if (/\bshowing\s+(?:only\s+|the\s+first\s+)?\d[\d,]*\s+(?:of|out\s+of)\s+\d[\d,]*\s+(?:matching\s+)?balances?\b/iu.test(context)) return 'student-count'
   if (/\b(?:balance|amount|total|average|dollars?|money|paid|earned|spent)\b/iu.test(before) || /^\s+dollars?\b/iu.test(after)) return 'money'
   if (/\b(?:students?)\b/iu.test(context)) return 'student-count'
   if (/\b(?:transactions?|payments?|credits?)\b/iu.test(context)) return 'transaction-count'

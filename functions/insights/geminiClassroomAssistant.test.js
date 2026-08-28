@@ -456,15 +456,18 @@ test('requires exact returned and total counts for every truncated tool shape', 
     },
     {
       name: 'get_balances',
-      args: { limit: 1 },
-      answer: 'Showing 1 of 2 matching balances.',
+      args: { limit: 25 },
+      answer: 'Showing 25 of 60 balances.',
       factRefs: ['/returnedCount', '/matchedCount'],
       assistantEvidence: {
         ...evidence(),
-        students: [
-          ...evidence().students,
-          { ref: 'student-002', displayName: 'Ben', current: true, balance: 5, frozen: false },
-        ],
+        students: Array.from({ length: 60 }, (_, index) => ({
+          ref: `student-${String(index + 1).padStart(3, '0')}`,
+          displayName: `Learner ${String(index + 1).padStart(3, '0')}`,
+          current: true,
+          balance: index,
+          frozen: false,
+        })),
       },
     },
   ]
