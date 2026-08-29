@@ -27,6 +27,8 @@ export const CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES = Object.freeze(new Se
   'uncited-roster-name',
   'unknown-identity',
   'truncation-not-disclosed',
+  'window-scope-mismatch',
+  'quoted-span-unverified',
 ]))
 
 const SYSTEM_INSTRUCTION = [
@@ -231,6 +233,7 @@ function parseFinalAnswer(text, { executed, assistantEvidence, usage, toolCallCo
   ) fail('answer-unverified', 'The provider answer did not cite executed classroom tools.', 'evidence-call-ids')
   const cited = [...new Set(parsed.evidenceCallIds)].map(id => executed.get(id))
   const facts = validateFactRefs(parsed.factRefs, parsed.evidenceCallIds, executed)
+  assertQuotedSpansAreCited(parsed.answer, facts)
   assertAnswerNamesAreGrounded(parsed.answer, assistantEvidence.students, facts)
   assertNumericClaimsAreGrounded(parsed.answer, facts, assistantEvidence)
   assertTruncationDisclosed(parsed.answer, cited)
@@ -272,6 +275,7 @@ function validateFactRefs(value, evidenceCallIds, executed) {
       callId: reference.callId,
       path: reference.path,
       value: valueAtPath,
+      window: resultWindowKey(executed.get(reference.callId).result),
       kind: factKind(
         reference.path,
         executed.get(reference.callId).result,
@@ -296,6 +300,15 @@ function resolveJsonPointer(root, pointer) {
     current = current[segment]
   }
   return current
+}
+
+// The date range a tool result actually covers, or null when the result is not
+// window-scoped. describe_schema reports the same range as a defaulted
+// transaction window, so both resolve to one comparable key.
+function resultWindowKey(result) {
+  const start = result?.windowStartDate ?? result?.selectedDateRange?.start
+  const end = result?.windowEndDate ?? result?.selectedDateRange?.end
+  return typeof start === 'string' && typeof end === 'string' ? `${start}\u0000${end}` : null
 }
 
 function factKind(path, result, callName) {
@@ -332,22 +345,52 @@ function assertNumericClaimsAreGrounded(answer, facts, assistantEvidence) {
     fail('answer-unverified', 'The provider answer must use digits for factual quantities.', 'number-words')
   }
   const withoutDates = removeVerifiedDates(answer, facts, assistantEvidence)
-  const claims = [...withoutDates.matchAll(/-?\$?\d[\d,]*(?:\.\d+)?%?/gu)]
-  for (const match of claims) {
+  const claims = [...withoutDates.matchAll(/-?\$?\d[\d,]*(?:\.\d+)?%?/gu)].map(match => {
     const claim = match[0]
-    const normalized = Number(claim.replace(/[$,%]/gu, ''))
     const before = withoutDates.slice(Math.max(0, match.index - 24), match.index)
     const after = withoutDates.slice(match.index + claim.length, match.index + claim.length + 24)
-    const kind = numericClaimKind(claim, before, after)
-    const supported = facts.some(fact => (
-      typeof fact.value === 'number' &&
-      Object.is(Number(fact.value), normalized) &&
-      factKindSupportsClaim(fact.kind, kind)
+    return Object.freeze({
+      normalized: Number(claim.replace(/[$,%]/gu, '')),
+      kind: numericClaimKind(claim, before, after),
+    })
+  })
+  const scope = declaredWindowScope(claims, facts)
+  for (const claim of claims) {
+    const supported = supportingFacts(claim, facts).some(fact => (
+      fact.window === null || scope === null || fact.window === scope
     ))
     if (!supported) {
       fail('answer-unverified', 'The provider answer contains an unsupported number.', 'unsupported-number')
     }
   }
+}
+
+function supportingFacts(claim, facts) {
+  return facts.filter(fact => (
+    typeof fact.value === 'number' &&
+    Object.is(Number(fact.value), claim.normalized) &&
+    factKindSupportsClaim(fact.kind, claim.kind)
+  ))
+}
+
+// Stating a window length declares the scope the rest of the answer speaks
+// about. Every other window-scoped quantity must then come from a call that
+// filtered that same range, so a 30-day framing cannot carry a one-day count.
+function declaredWindowScope(claims, facts) {
+  const windows = new Set()
+  for (const claim of claims) {
+    for (const fact of supportingFacts(claim, facts)) {
+      if (fact.kind === 'day-count' && fact.window !== null) windows.add(fact.window)
+    }
+  }
+  if (windows.size > 1) {
+    fail(
+      'answer-unverified',
+      'The provider answer mixed date ranges in one claim set.',
+      'window-scope-mismatch',
+    )
+  }
+  return windows.size === 1 ? [...windows][0] : null
 }
 
 function factKindSupportsClaim(factKindValue, claimKind) {
@@ -485,17 +528,48 @@ function removeCitedStringFacts(answer, facts) {
   return remaining
 }
 
+// Once an answer quotes memo wording, every quotation in it must reproduce a
+// cited result string exactly. Without this, an interior slice of a memo can
+// invert its meaning and still pass, because the identity scan only inspects
+// capitalized tokens and a lowercase slice carries none.
+function assertQuotedSpansAreCited(answer, facts) {
+  const citesMemo = facts.some(fact => (
+    typeof fact.value === 'string' && /(?:^|\/)memo$/u.test(fact.path)
+  ))
+  if (!citesMemo) return
+  const citedStrings = new Set(facts
+    .filter(fact => typeof fact.value === 'string')
+    .map(fact => comparableMemoText(fact.value)))
+  for (const [, straight, curly] of answer.matchAll(/"([^"\r\n]*)"|“([^”\r\n]*)”/gu)) {
+    const comparable = comparableMemoText(straight ?? curly)
+    if (comparable.length > 0 && !citedStrings.has(comparable)) {
+      fail(
+        'answer-unverified',
+        'The provider answer quoted text that no cited result contains.',
+        'quoted-span-unverified',
+      )
+    }
+  }
+}
+
+// A quoted span may be masked only when it reproduces a cited memo in full.
+// An interior slice of a memo can invert its meaning, so substring provenance
+// is not sufficient: "Do not treat this as rent" must never license quoting
+// "treat this as rent".
 function maskQuotedCitedMemoSpans(answer, facts) {
   const citedMemos = facts
     .filter(fact => typeof fact.value === 'string' && /(?:^|\/)memo$/u.test(fact.path))
-    .map(fact => fact.value.normalize('NFKC'))
+    .map(fact => comparableMemoText(fact.value))
   if (citedMemos.length === 0) return answer
   return answer.replace(/"([^"\r\n]*)"|“([^”\r\n]*)”/gu, (span, straight, curly) => {
-    const quoted = (straight ?? curly).normalize('NFKC')
-    const comparable = quoted.replace(/[.,;:!?]$/u, '')
-    if (comparable.length === 0 || !citedMemos.some(memo => memo.includes(comparable))) return span
+    const comparable = comparableMemoText(straight ?? curly)
+    if (comparable.length === 0 || !citedMemos.includes(comparable)) return span
     return ' '.repeat(span.length)
   })
+}
+
+function comparableMemoText(value) {
+  return value.normalize('NFKC').replace(/[.,;:!?]$/u, '')
 }
 
 function nameLikeTokens(value) {

@@ -58,6 +58,8 @@ export const CALLABLE_LOG_SUBCATEGORIES = Object.freeze(new Set([
   'uncited-roster-name',
   'unknown-identity',
   'truncation-not-disclosed',
+  'window-scope-mismatch',
+  'quoted-span-unverified',
 ]))
 
 export function callableErrorCode(error) {

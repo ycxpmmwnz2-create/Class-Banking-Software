@@ -807,11 +807,13 @@ test('allows only exact quoted spans from cited memo fields', async () => {
       memo: 'Ask Jordan Blake about this',
       answer: '"Ask Jordan Blake about this" is the cited memo. Jordan Blake appears again.',
       shouldPass: false,
+      subcategory: 'unknown-identity',
     },
     {
       memo: 'Rent payment for the week',
       answer: '"Rent payment for the month" is the cited memo.',
       shouldPass: false,
+      subcategory: 'quoted-span-unverified',
     },
   ]) {
     const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
@@ -835,7 +837,7 @@ test('allows only exact quoted spans from cited memo fields', async () => {
         operation,
         error => error instanceof GeminiClassroomAssistantError &&
           error.category === 'answer-unverified' &&
-          error.subcategory === 'unknown-identity',
+          error.subcategory === scenario.subcategory,
       )
     }
   }
@@ -954,5 +956,185 @@ test('every final-answer validation failure carries an allowlisted subcategory',
         error.subcategory === scenario.subcategory &&
         CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES.has(error.subcategory),
     )
+  }
+})
+
+function answerWithTools({ assistantEvidence, toolbox, calls, answer, factRefs }) {
+  let turn = 0
+  const assistant = createGeminiClassroomAssistant({
+    async generateContent() {
+      turn += 1
+      if (turn === 1) return {
+        functionCalls: calls,
+        candidateContent: {
+          role: 'model',
+          parts: calls.map(call => ({ functionCall: { id: call.id, name: call.name, args: call.args } })),
+        },
+        finishReason: 'STOP',
+        usageMetadata: USAGE,
+      }
+      return {
+        text: JSON.stringify({ answer, evidenceCallIds: calls.map(call => call.id), factRefs }),
+        functionCalls: [],
+        finishReason: 'STOP',
+        usageMetadata: USAGE,
+      }
+    },
+  })
+  return assistant.answer({ assistantEvidence, toolbox })
+}
+
+function twoStudentEvidence() {
+  const generatedAt = new Date('2026-08-29T18:00:00.000Z')
+  return {
+    question: 'How did the class do?',
+    generatedAt: generatedAt.toISOString(),
+    asOfDate: '2026-08-29',
+    timeZone: 'America/Denver',
+    periodDays: 30,
+    periodStart: new Date(generatedAt.getTime() - 30 * 86_400_000).toISOString(),
+    historyStart: new Date(generatedAt.getTime() - 90 * 86_400_000).toISOString(),
+    configuredRentAmount: 10,
+    students: [
+      { ref: 'student-001', displayName: 'Ava', current: true, balance: 10, frozen: false },
+      { ref: 'student-002', displayName: 'Ben', current: true, balance: 5, frozen: false },
+    ],
+    categories: [{ label: 'Technology', transactionTypes: ['Add'] }],
+    transactions: [1, 2, 3].map(index => ({
+      ref: `transaction-0000${index}`,
+      studentRef: 'student-001',
+      date: `2026-08-2${index}T15:00:00.000Z`,
+      type: 'Add',
+      amount: 5,
+      category: 'Technology',
+      purpose: 'other',
+      status: 'Approved',
+    })),
+  }
+}
+
+const DEFAULT_LIST = { id: 'default-list', name: 'list_transactions', args: {} }
+const ONE_DAY_LIST = {
+  id: 'one-day-list',
+  name: 'list_transactions',
+  args: { startDate: '2026-08-21', endDate: '2026-08-21' },
+}
+const DEFAULT_WITHOUT = { id: 'default-without', name: 'find_students_without_transactions', args: {} }
+const SCHEMA = { id: 'schema', name: 'describe_schema', args: {} }
+
+test('rejects a window length paired with a count from a different date range', async () => {
+  const assistantEvidence = twoStudentEvidence()
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Rent payment', truncated: false }),
+  })
+  assert.equal(toolbox.execute('list_transactions', {}).matchedCount, 3)
+  assert.equal(toolbox.execute('list_transactions', ONE_DAY_LIST.args).matchedCount, 1)
+  for (const dayCountCall of [DEFAULT_LIST, SCHEMA]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence,
+        toolbox,
+        calls: [dayCountCall, ONE_DAY_LIST],
+        answer: 'In the last 30 days there was 1 transaction.',
+        factRefs: [
+          { callId: dayCountCall.id, path: '/selectedPeriodDays' },
+          { callId: ONE_DAY_LIST.id, path: '/matchedCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.category === 'answer-unverified' &&
+        error.subcategory === 'unsupported-number',
+    )
+  }
+})
+
+test('accepts counts drawn from separate calls that filtered the same window', async () => {
+  const assistantEvidence = twoStudentEvidence()
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Rent payment', truncated: false }),
+  })
+  const answer = 'In the last 30 days there were 3 transactions and 1 student had none.'
+  const result = await answerWithTools({
+    assistantEvidence,
+    toolbox,
+    calls: [DEFAULT_LIST, DEFAULT_WITHOUT],
+    answer,
+    factRefs: [
+      { callId: DEFAULT_LIST.id, path: '/selectedPeriodDays' },
+      { callId: DEFAULT_LIST.id, path: '/matchedCount' },
+      { callId: DEFAULT_WITHOUT.id, path: '/studentsWithoutCount' },
+    ],
+  })
+  assert.equal(result.answer, answer)
+})
+
+test('rejects two cited window lengths that describe different date ranges', async () => {
+  const assistantEvidence = twoStudentEvidence()
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Rent payment', truncated: false }),
+  })
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence,
+      toolbox,
+      calls: [DEFAULT_LIST, ONE_DAY_LIST],
+      answer: 'The 30 day window and the 1 day window differ.',
+      factRefs: [
+        { callId: DEFAULT_LIST.id, path: '/selectedPeriodDays' },
+        { callId: ONE_DAY_LIST.id, path: '/windowDays' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.category === 'answer-unverified' &&
+      error.subcategory === 'window-scope-mismatch',
+  )
+})
+
+test('rejects a quoted memo fragment that the cited memo does not state', async () => {
+  const assistantEvidence = evidence()
+  assistantEvidence.transactions = assistantEvidence.transactions.slice(0, 1)
+  for (const scenario of [
+    { memo: 'Do not treat this as rent', answer: 'The newest memo is "treat this as rent".' },
+    { memo: 'Paid rent, but the check bounced', answer: 'The newest memo is "Paid rent".' },
+    { memo: 'Rent payment for the week', answer: 'The newest memo is "Rent payment for the month".' },
+  ]) {
+    const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+      memoResolver: () => ({ text: scenario.memo, truncated: false }),
+    })
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence,
+        toolbox,
+        name: 'list_transactions',
+        args: { includeMemos: true, limit: 1 },
+        answer: scenario.answer,
+        factRefs: [{ callId: 'call', path: '/transactions/0/memo' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.category === 'answer-unverified' &&
+        error.subcategory === 'quoted-span-unverified',
+    )
+  }
+})
+
+test('accepts a full memo quotation including its trailing punctuation', async () => {
+  const assistantEvidence = evidence()
+  assistantEvidence.transactions = assistantEvidence.transactions.slice(0, 1)
+  for (const scenario of [
+    { memo: 'Do not treat this as rent', answer: 'The newest memo is "Do not treat this as rent".' },
+    { memo: 'Paid rent, but the check bounced.', answer: 'The newest memo is "Paid rent, but the check bounced."' },
+  ]) {
+    const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+      memoResolver: () => ({ text: scenario.memo, truncated: false }),
+    })
+    const result = await answerWithTool({
+      assistantEvidence,
+      toolbox,
+      name: 'list_transactions',
+      args: { includeMemos: true, limit: 1 },
+      answer: scenario.answer,
+      factRefs: [{ callId: 'call', path: '/transactions/0/memo' }],
+    })
+    assert.equal(result.answer, scenario.answer)
   }
 })
