@@ -11,6 +11,7 @@ import { GeminiTransportError } from './geminiTransport.js'
 export const CLASSROOM_ASSISTANT_MAX_TOOL_CALLS = 8
 export const CLASSROOM_ASSISTANT_MAX_TOOL_BYTES = 32 * 1024
 export const CLASSROOM_ASSISTANT_MAX_DURATION_MS = 60_000
+const CONTACT_PLACEHOLDER = '[contact removed]'
 export const CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES = Object.freeze(new Set([
   'answer-shape',
   'answer-contact-pattern',
@@ -27,7 +28,6 @@ export const CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES = Object.freeze(new Se
   'uncited-roster-name',
   'unknown-identity',
   'truncation-not-disclosed',
-  'window-scope-mismatch',
   'quoted-span-unverified',
 ]))
 
@@ -275,7 +275,7 @@ function validateFactRefs(value, evidenceCallIds, executed) {
       callId: reference.callId,
       path: reference.path,
       value: valueAtPath,
-      window: resultWindowKey(executed.get(reference.callId).result),
+      window: factWindowKey(executed.get(reference.callId).result, reference.path),
       kind: factKind(
         reference.path,
         executed.get(reference.callId).result,
@@ -302,12 +302,30 @@ function resolveJsonPointer(root, pointer) {
   return current
 }
 
-// The date range a tool result actually covers, or null when the result is not
-// window-scoped. describe_schema reports the same range as a defaulted
-// transaction window, so both resolve to one comparable key.
-function resultWindowKey(result) {
-  const start = result?.windowStartDate ?? result?.selectedDateRange?.start
-  const end = result?.windowEndDate ?? result?.selectedDateRange?.end
+// The date range a cited field actually covers, or null when nothing enclosing
+// it is window-scoped. The nearest enclosing object wins, so each compare_periods
+// period reports its own range instead of inheriting a result-wide one, and
+// describe_schema resolves to the same key as a defaulted transaction window.
+function factWindowKey(result, path) {
+  const enclosing = [result]
+  let current = result
+  for (const encoded of path.slice(1).split('/')) {
+    const segment = encoded.replace(/~1/gu, '/').replace(/~0/gu, '~')
+    if (current === null || typeof current !== 'object' || !Object.hasOwn(current, segment)) break
+    current = current[segment]
+    enclosing.push(current)
+  }
+  for (let index = enclosing.length - 1; index >= 0; index -= 1) {
+    const key = windowKeyOf(enclosing[index])
+    if (key !== null) return key
+  }
+  return null
+}
+
+function windowKeyOf(value) {
+  if (!value || typeof value !== 'object') return null
+  const start = value.windowStartDate ?? value.selectedDateRange?.start ?? value.startDate
+  const end = value.windowEndDate ?? value.selectedDateRange?.end ?? value.endDate
   return typeof start === 'string' && typeof end === 'string' ? `${start}\u0000${end}` : null
 }
 
@@ -354,10 +372,10 @@ function assertNumericClaimsAreGrounded(answer, facts, assistantEvidence) {
       kind: numericClaimKind(claim, before, after),
     })
   })
-  const scope = declaredWindowScope(claims, facts)
+  const licensed = licensedWindows(claims, facts)
   for (const claim of claims) {
     const supported = supportingFacts(claim, facts).some(fact => (
-      fact.window === null || scope === null || fact.window === scope
+      fact.window === null || licensed.size === 0 || licensed.has(fact.window)
     ))
     if (!supported) {
       fail('answer-unverified', 'The provider answer contains an unsupported number.', 'unsupported-number')
@@ -373,24 +391,18 @@ function supportingFacts(claim, facts) {
   ))
 }
 
-// Stating a window length declares the scope the rest of the answer speaks
-// about. Every other window-scoped quantity must then come from a call that
-// filtered that same range, so a 30-day framing cannot carry a one-day count.
-function declaredWindowScope(claims, facts) {
+// Stating a window length licenses that range for the rest of the answer. Every
+// window-scoped quantity must come from a call that filtered a licensed range,
+// so a 30-day framing cannot carry an undisclosed one-day count. An answer that
+// states two window lengths licenses both, which keeps honest comparisons legal.
+function licensedWindows(claims, facts) {
   const windows = new Set()
   for (const claim of claims) {
     for (const fact of supportingFacts(claim, facts)) {
       if (fact.kind === 'day-count' && fact.window !== null) windows.add(fact.window)
     }
   }
-  if (windows.size > 1) {
-    fail(
-      'answer-unverified',
-      'The provider answer mixed date ranges in one claim set.',
-      'window-scope-mismatch',
-    )
-  }
-  return windows.size === 1 ? [...windows][0] : null
+  return windows
 }
 
 function factKindSupportsClaim(factKindValue, claimKind) {
@@ -495,6 +507,7 @@ function assertAnswerNamesAreGrounded(answer, students, facts) {
     'Results', 'Result', 'Counts', 'Count', 'Total', 'Average', 'Checked', 'Found', 'Calculated',
     'Deposits', 'Deposit', 'Withdrawals', 'Withdrawal', 'Savings', 'Spending',
     'Week', 'Weeks', 'Month', 'Months', 'Year', 'Years',
+    'Contact', 'Details', 'Memo', 'Memos', 'Wording', 'Quoted', 'Exactly',
   ])
   const ordinaryKeys = new Set([...ordinary].map(normalizedNameLikeToken))
   for (const token of answerNameLikeTokens) {
@@ -528,18 +541,18 @@ function removeCitedStringFacts(answer, facts) {
   return remaining
 }
 
-// Once an answer quotes memo wording, every quotation in it must reproduce a
-// cited result string exactly. Without this, an interior slice of a memo can
-// invert its meaning and still pass, because the identity scan only inspects
-// capitalized tokens and a lowercase slice carries none.
+// Every quotation in an answer must reproduce a cited result string exactly.
+// Without this, an interior slice of a memo can invert its meaning and still
+// pass, because the identity scan only inspects capitalized tokens and a
+// lowercase slice carries none. The sanitizer's own redaction placeholder is
+// quotable only when a cited memo actually contains it.
 function assertQuotedSpansAreCited(answer, facts) {
-  const citesMemo = facts.some(fact => (
-    typeof fact.value === 'string' && /(?:^|\/)memo$/u.test(fact.path)
-  ))
-  if (!citesMemo) return
   const citedStrings = new Set(facts
     .filter(fact => typeof fact.value === 'string')
     .map(fact => comparableMemoText(fact.value)))
+  if (citedStrings.has(CONTACT_PLACEHOLDER) || [...citedStrings].some(value => value.includes(CONTACT_PLACEHOLDER))) {
+    citedStrings.add(CONTACT_PLACEHOLDER)
+  }
   for (const [, straight, curly] of answer.matchAll(/"([^"\r\n]*)"|“([^”\r\n]*)”/gu)) {
     const comparable = comparableMemoText(straight ?? curly)
     if (comparable.length > 0 && !citedStrings.has(comparable)) {

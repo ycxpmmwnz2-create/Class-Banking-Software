@@ -1068,7 +1068,62 @@ test('accepts counts drawn from separate calls that filtered the same window', a
   assert.equal(result.answer, answer)
 })
 
-test('rejects two cited window lengths that describe different date ranges', async () => {
+test('accepts an answer that states and cites both date ranges it compares', async () => {
+  const assistantEvidence = twoStudentEvidence()
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Rent payment', truncated: false }),
+  })
+  const answer = 'The last 30 days had 3 transactions and the last 1 day had 1.'
+  const result = await answerWithTools({
+    assistantEvidence,
+    toolbox,
+    calls: [DEFAULT_LIST, ONE_DAY_LIST],
+    answer,
+    factRefs: [
+      { callId: DEFAULT_LIST.id, path: '/selectedPeriodDays' },
+      { callId: DEFAULT_LIST.id, path: '/matchedCount' },
+      { callId: ONE_DAY_LIST.id, path: '/windowDays' },
+      { callId: ONE_DAY_LIST.id, path: '/matchedCount' },
+    ],
+  })
+  assert.equal(result.answer, answer)
+})
+
+test('binds a compare_periods window length to that period only', async () => {
+  const assistantEvidence = twoStudentEvidence()
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Rent payment', truncated: false }),
+  })
+  const compare = {
+    id: 'compare',
+    name: 'compare_periods',
+    args: {
+      firstStartDate: '2026-07-31',
+      firstEndDate: '2026-08-29',
+      secondStartDate: '2026-08-21',
+      secondEndDate: '2026-08-21',
+      metric: 'count',
+    },
+  }
+  assert.equal(toolbox.execute('compare_periods', compare.args).periods[0].windowDays, 30)
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence,
+      toolbox,
+      calls: [compare, ONE_DAY_LIST],
+      answer: 'In the last 30 days there was 1 transaction.',
+      factRefs: [
+        { callId: compare.id, path: '/periods/0/windowDays' },
+        { callId: ONE_DAY_LIST.id, path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.category === 'answer-unverified' &&
+      error.subcategory === 'unsupported-number',
+  )
+})
+
+test('rejects a fabricated quotation when the answer cites no memo', async () => {
   const assistantEvidence = twoStudentEvidence()
   const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
     memoResolver: () => ({ text: 'Rent payment', truncated: false }),
@@ -1077,17 +1132,33 @@ test('rejects two cited window lengths that describe different date ranges', asy
     answerWithTools({
       assistantEvidence,
       toolbox,
-      calls: [DEFAULT_LIST, ONE_DAY_LIST],
-      answer: 'The 30 day window and the 1 day window differ.',
-      factRefs: [
-        { callId: DEFAULT_LIST.id, path: '/selectedPeriodDays' },
-        { callId: ONE_DAY_LIST.id, path: '/windowDays' },
-      ],
+      calls: [DEFAULT_LIST],
+      answer: 'The newest memo is "treat this as rent".',
+      factRefs: [{ callId: DEFAULT_LIST.id, path: '/matchedCount' }],
     }),
     error => error instanceof GeminiClassroomAssistantError &&
       error.category === 'answer-unverified' &&
-      error.subcategory === 'window-scope-mismatch',
+      error.subcategory === 'quoted-span-unverified',
   )
+})
+
+test('accepts the redaction placeholder quoted beside a cited memo that contains it', async () => {
+  const assistantEvidence = evidence()
+  assistantEvidence.transactions = assistantEvidence.transactions.slice(0, 1)
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Paid rent [contact removed] thanks', truncated: false }),
+  })
+  const answer =
+    'The memo is "Paid rent [contact removed] thanks". Contact details show as "[contact removed]".'
+  const result = await answerWithTool({
+    assistantEvidence,
+    toolbox,
+    name: 'list_transactions',
+    args: { includeMemos: true, limit: 1 },
+    answer,
+    factRefs: [{ callId: 'call', path: '/transactions/0/memo' }],
+  })
+  assert.equal(result.answer, answer)
 })
 
 test('rejects a quoted memo fragment that the cited memo does not state', async () => {
