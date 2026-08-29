@@ -30,7 +30,9 @@ The repository uses a Codex, Claude, and Grok engineering workflow:
 
 These fixed roles deliberately replace the former rotating builder/reviewer
 assignment: Codex remains the primary implementer, Claude remains the detailed
-reviewer, and Grok remains the final systems-level reviewer.
+reviewer, and Grok remains the final systems-level reviewer. The single standing
+exception is the AI Insights work described in "AI Insights ownership" below,
+where Claude implements and Codex reviews.
 
 There is no unattended AI reviewer and no repository-stored model credential.
 The retired Meta/OpenCode workflow must not be reintroduced without Andrew's
@@ -46,6 +48,52 @@ time pressure.
 
 Gemini or another model may be used for a deliberately bounded task, but is not
 a standing gate and does not replace Claude or Grok.
+
+## AI Insights ownership
+
+Andrew placed Claude in charge of the AI Insights portion of Morgan Bank on
+2026-08-28, after two real staging canaries were refused with
+`answer-unverified` on ordinary teacher questions. The builder and reviewer
+roles are swapped for this work and only for this work.
+
+Scope: the Version 3 AI Insights feature — `functions/insights/`, the Gemini
+provider and tool-assistant layers, the AI question and answer contracts, and
+the client code that renders their results. Everything outside that scope keeps
+the standard order in "Standard implementation workflow" below, with Codex
+implementing, Claude reviewing, and Grok closing.
+
+Within that scope:
+
+1. **Claude** is the architect and owner. Claude decides what gets built and
+   how, and Claude implements it.
+2. **Codex** is the independent reviewer. Codex did not write the change, and
+   reviews it adversarially: design, security invariants, grounding and
+   deidentification boundaries, production wiring, and test quality. Codex must
+   specifically check that regression tests reproduce the reported failure
+   rather than agreeing with the implementation, and must confirm a failing-
+   before result for each one.
+3. **Claude** validates Codex's findings against repository evidence and
+   corrects what is accepted. A reviewer verdict is evidence to investigate, not
+   authority to change code.
+4. **Grok** performs the final 5,000-foot review. Claude decides when the work
+   is ready for Grok and writes the complete Grok handoff. This supersedes
+   step 4 of `GROK_REVIEW_HANDOFF.md`, which still names Codex as the author of
+   the handoff prompt.
+5. **Andrew** separately authorizes every commit, push, deployment, feature-gate
+   change, and other external mutation. Nothing in this section grants any of
+   them, and a Codex or Grok PASS authorizes none of them.
+
+This ownership does not weaken any other rule in this document. The operating
+rules, evidence standards, fail-closed requirements, secret handling, and
+release gates apply unchanged, and the reviewer of record still may not edit
+files, commit, push, deploy, or change gates.
+
+Direction for the work itself: the AI assistant is intended to answer a wide
+range of teacher questions with specific, correct answers. A reasonable teacher
+question the assistant cannot answer is a defect to fix, not correct fail-closed
+behavior. The one boundary that does not move is grounding — never loosen a
+validator so the assistant can state a number or a name it cannot cite from a
+tool result. Make the value citable instead.
 
 ## Non-negotiable operating rules
 
@@ -169,7 +217,9 @@ gate activation, production operation, or later phase.
 ### 7. Run the final 5,000-foot Grok checkpoint
 
 After Claude's detailed review closes, Codex follows `GROK_REVIEW_HANDOFF.md`
-and gives Andrew a bounded copy/paste prompt for Grok. Grok reviews the completed
+and gives Andrew a bounded copy/paste prompt for Grok. For AI Insights work,
+Claude decides Grok readiness and writes that prompt instead; see "AI Insights
+ownership" above. Grok reviews the completed
 item at a systems level rather than duplicating Claude's line-by-line review.
 The prompt asks whether the completed result has any glaring cross-module,
 security, data-integrity, tenant-isolation, sequencing, rollback, operational,
