@@ -693,14 +693,10 @@ test('answers the memo-wording question over a stated 30-day window', async () =
     assistantEvidence,
     toolbox,
     name: 'list_transactions',
-    args: {
-      startDate: '2026-07-29',
-      endDate: '2026-08-27',
-      includeMemos: true,
-    },
+    args: { includeMemos: true },
     answer,
     factRefs: [
-      { callId: 'call', path: '/windowDays' },
+      { callId: 'call', path: '/selectedPeriodDays' },
       { callId: 'call', path: '/transactions/0/memo' },
       { callId: 'call', path: '/matchedCount' },
     ],
@@ -725,20 +721,41 @@ test('answers the newest sanitized memo question inside a 30-day period', async 
     toolbox,
     name: 'list_transactions',
     args: {
-      startDate: '2026-07-29',
-      endDate: '2026-08-27',
       includeMemos: true,
       limit: 1,
       sort: 'newest',
     },
     answer,
     factRefs: [
-      { callId: 'call', path: '/windowDays' },
+      { callId: 'call', path: '/selectedPeriodDays' },
       { callId: 'call', path: '/transactions/0/memo' },
       { callId: 'call', path: '/transactions/0/classroomDate' },
     ],
   })
   assert.equal(result.answer, answer)
+})
+
+test('rejects selected-window wording when only the default calendar span is cited', async () => {
+  const assistantEvidence = {
+    ...evidence(),
+    question: 'What happened in the last 30 days?',
+    periodDays: 30,
+    periodStart: '2026-07-28T18:00:00.000Z',
+  }
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence,
+      name: 'list_transactions',
+      answer: 'Across the last 30 days, there are 2 matching transactions.',
+      factRefs: [
+        { callId: 'call', path: '/windowDays' },
+        { callId: 'call', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.category === 'answer-unverified' &&
+      error.subcategory === 'unsupported-number',
+  )
 })
 
 test('rejects a stated window length that is absent or does not match the applied range', async () => {
@@ -775,6 +792,18 @@ test('allows only exact quoted spans from cited memo fields', async () => {
       shouldPass: true,
     },
     {
+      memo: 'Bonus for Technology help',
+      answer: '"Bonus for Technology help" is the cited memo.',
+      additionalFactRefs: [{ callId: 'call', path: '/transactions/0/category' }],
+      shouldPass: true,
+    },
+    {
+      memo: 'Paid Ava back for lunch',
+      answer: '"Paid Ava back for lunch" is the cited memo.',
+      additionalFactRefs: [{ callId: 'call', path: '/transactions/0/student' }],
+      shouldPass: true,
+    },
+    {
       memo: 'Ask Jordan Blake about this',
       answer: '"Ask Jordan Blake about this" is the cited memo. Jordan Blake appears again.',
       shouldPass: false,
@@ -794,7 +823,10 @@ test('allows only exact quoted spans from cited memo fields', async () => {
       name: 'list_transactions',
       args: { includeMemos: true, limit: 1 },
       answer: scenario.answer,
-      factRefs: [{ callId: 'call', path: '/transactions/0/memo' }],
+      factRefs: [
+        { callId: 'call', path: '/transactions/0/memo' },
+        ...(scenario.additionalFactRefs ?? []),
+      ],
     })
     if (scenario.shouldPass) {
       assert.equal((await operation).answer, scenario.answer)

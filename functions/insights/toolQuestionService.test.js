@@ -125,24 +125,29 @@ test('returns and commits valid usage at the exact accumulated multi-turn ceilin
   assert.equal(setup.completed[0].result.usage.outputTokens, 8_192)
 })
 
-test('retains the reservation and preserves the safe provider failure category', async () => {
-  const setup = fixture()
-  setup.deps.assistant.answer = async () => {
-    throw new GeminiClassroomAssistantError(
-      'answer-unverified',
-      'raw provider text',
-      'unsupported-number',
+test('retains the reservation and preserves safe provider failure categories', async () => {
+  for (const scenario of [
+    { category: 'provider-rate-limited', subcategory: null },
+    { category: 'answer-unverified', subcategory: 'unsupported-number' },
+  ]) {
+    const setup = fixture()
+    setup.deps.assistant.answer = async () => {
+      throw new GeminiClassroomAssistantError(
+        scenario.category,
+        'raw provider text',
+        scenario.subcategory,
+      )
+    }
+    await assert.rejects(
+      createInsightToolQuestionService(setup.deps)({ auth: { uid: 'teacher-a' }, data: REQUEST }),
+      error => error instanceof InsightToolQuestionServiceError &&
+        error.category === scenario.category &&
+        error.subcategory === scenario.subcategory &&
+        !error.message.includes('raw provider text'),
     )
+    assert.equal(setup.calls.includes('uncertain'), true)
+    assert.equal(setup.calls.includes('commit'), false)
   }
-  await assert.rejects(
-    createInsightToolQuestionService(setup.deps)({ auth: { uid: 'teacher-a' }, data: REQUEST }),
-    error => error instanceof InsightToolQuestionServiceError &&
-      error.category === 'answer-unverified' &&
-      error.subcategory === 'unsupported-number' &&
-      !error.message.includes('raw provider text'),
-  )
-  assert.equal(setup.calls.includes('uncertain'), true)
-  assert.equal(setup.calls.includes('commit'), false)
 })
 
 test('rejects an obscured-name question before quoting, reserving, or invoking Gemini', async () => {

@@ -227,6 +227,9 @@ function findStudentsWithoutTransactions(args, students, filteredTransactions) {
     windowStartDate: filteredTransactions.windowStartDate,
     windowEndDate: filteredTransactions.windowEndDate,
     windowDays: filteredTransactions.windowDays,
+    ...(filteredTransactions.selectedPeriodDays === undefined
+      ? {}
+      : { selectedPeriodDays: filteredTransactions.selectedPeriodDays }),
     currentStudentCount: currentStudents.length,
     consideredStudentCount: selectedStudents.length,
     matchedTransactionCount: filteredTransactions.transactions.length,
@@ -254,6 +257,9 @@ function listTransactions(args, filtered, studentsByRef, memoResolver) {
     windowStartDate: filtered.windowStartDate,
     windowEndDate: filtered.windowEndDate,
     windowDays: filtered.windowDays,
+    ...(filtered.selectedPeriodDays === undefined
+      ? {}
+      : { selectedPeriodDays: filtered.selectedPeriodDays }),
     matchedCount: ordered.length,
     returnedCount: Math.min(limit, ordered.length),
     truncated: ordered.length > limit,
@@ -334,6 +340,9 @@ function aggregateTransactions(args, filtered, studentsByRef) {
     windowStartDate: filtered.windowStartDate,
     windowEndDate: filtered.windowEndDate,
     windowDays: filtered.windowDays,
+    ...(filtered.selectedPeriodDays === undefined
+      ? {}
+      : { selectedPeriodDays: filtered.selectedPeriodDays }),
     metric,
     groupBy: Object.freeze(groupBy),
     matchedTransactionCount: filtered.transactions.length,
@@ -452,6 +461,7 @@ function comparePeriods(args, data, transactions, studentsByRef) {
 function filterTransactions(args, data, transactions, studentsByRef) {
   assertOnlyKnownStudentRefs(args.studentRefs, studentsByRef)
   const refs = Array.isArray(args.studentRefs) ? args.studentRefs : []
+  const defaultedWindow = args.startDate === undefined && args.endDate === undefined
   const startDate = validatedDate(
     args.startDate ?? localDateKey(data.periodStart, data.timeZone),
     'startDate',
@@ -485,6 +495,7 @@ function filterTransactions(args, data, transactions, studentsByRef) {
     windowStartDate: startDate,
     windowEndDate: endDate,
     windowDays: daysBetweenInclusive(startDate, endDate),
+    ...(defaultedWindow ? { selectedPeriodDays: data.periodDays } : {}),
   })
 }
 

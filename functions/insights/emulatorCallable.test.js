@@ -10,6 +10,8 @@ import {
   callableLogCategory,
   callableLogSubcategory,
 } from './emulatorCallable.js'
+import { CALLABLE_LOG_SUBCATEGORIES } from './callableErrors.js'
+import { CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES } from './geminiClassroomAssistant.js'
 
 function validRuntime(overrides = {}) {
   return {
@@ -76,4 +78,11 @@ test('maps only allowlisted callable error categories', () => {
   assert.equal(callableLogCategory({ category: 'private-internal-detail' }), 'internal')
   assert.equal(callableLogSubcategory({ subcategory: 'unsupported-number' }), 'unsupported-number')
   assert.equal(callableLogSubcategory({ subcategory: 'private-internal-detail' }), null)
+})
+
+test('callable and assistant validation subcategory allowlists stay aligned', () => {
+  assert.deepEqual(
+    [...CALLABLE_LOG_SUBCATEGORIES].sort(),
+    [...CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES].sort(),
+  )
 })

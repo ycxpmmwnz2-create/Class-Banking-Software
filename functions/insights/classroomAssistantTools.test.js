@@ -193,6 +193,9 @@ test('default period filtering honors the exact rolling cutoff while explicit da
     [defaultWindow.windowStartDate, defaultWindow.windowEndDate, defaultWindow.windowDays],
     ['2026-08-20', '2026-08-27', 8],
   )
+  assert.equal(defaultWindow.selectedPeriodDays, 7)
+  assert.equal(toolbox.execute('list_transactions', {}).selectedPeriodDays, 7)
+  assert.equal(toolbox.execute('find_students_without_transactions', {}).selectedPeriodDays, 7)
   const explicitWindow = toolbox.execute('aggregate_transactions', {
     startDate: '2026-08-20',
     endDate: '2026-08-20',
@@ -204,6 +207,7 @@ test('default period filtering honors the exact rolling cutoff while explicit da
     [explicitWindow.windowStartDate, explicitWindow.windowEndDate, explicitWindow.windowDays],
     ['2026-08-20', '2026-08-20', 1],
   )
+  assert.equal(Object.hasOwn(explicitWindow, 'selectedPeriodDays'), false)
 
   const ninetyDays = { ...data, periodDays: 90, periodStart: data.historyStart }
   assert.equal(createClassroomAssistantToolbox(ninetyDays).execute('aggregate_transactions', {
@@ -236,6 +240,7 @@ test('supports open-ended summaries beyond the named example questions', () => {
   assert.equal(comparison.difference, 7)
   assert.equal(comparison.percentChange, 233.3)
   assert.deepEqual(comparison.periods.map(period => period.windowDays), [1, 1])
+  assert.equal(comparison.periods.some(period => Object.hasOwn(period, 'selectedPeriodDays')), false)
   assert.equal(toolbox.execute('describe_schema', {}).selectedPeriodDays, 7)
 })
 

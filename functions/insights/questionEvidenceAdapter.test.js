@@ -1245,14 +1245,19 @@ test('shared partial student subjects request a full name while duplicate full n
     }),
     error => error instanceof InsightQuestionEvidenceError && error.category === 'question-ambiguous',
   )
-  await assert.rejects(
-    loader()({
-      teacherUid: 'teacher-a',
-      classroomId: 'class-a',
-      periodDays: 30,
-      timeZone: 'America/Denver',
-      question: 'Email the answer to teacher@example.com',
-    }),
-    error => error instanceof InsightQuestionEvidenceError && error.category === 'question-sensitive',
-  )
+  for (const question of [
+    'Email the answer to teacher@example.com',
+    'Visit www. example . com for details',
+  ]) {
+    await assert.rejects(
+      loader()({
+        teacherUid: 'teacher-a',
+        classroomId: 'class-a',
+        periodDays: 30,
+        timeZone: 'America/Denver',
+        question,
+      }),
+      error => error instanceof InsightQuestionEvidenceError && error.category === 'question-sensitive',
+    )
+  }
 })
