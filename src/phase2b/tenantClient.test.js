@@ -2181,7 +2181,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     );
   });
 
-  test("SOURCE GUARD: the ready teacher header displays only the resolved tenant classroom code", () => {
+  test("SOURCE GUARD: the ready teacher header omits the duplicate classroom code", () => {
     const source = readFileSync(INDEX_HTML_PATH, "utf8");
     const helperStart = source.indexOf("function resolvedStudentLoginCode() {");
     const helperEnd = source.indexOf("\n    function render() {", helperStart);
@@ -2199,10 +2199,31 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       /resolvedClassroom \|\| v2TenantSession\?\.classroom \|\| null/,
       "the code must come from the authoritatively resolved classroom object"
     );
+    const heroStart = source.indexOf('<section class="hero">');
+    const heroEnd = source.indexOf('${(message && screen !== "login"', heroStart);
+    assert.notEqual(heroStart, -1, "the hero must exist");
+    assert.notEqual(heroEnd, -1, "the hero must have a bounded source block");
+    const heroBlock = source.slice(heroStart, heroEnd);
+
+    assert.doesNotMatch(
+      heroBlock,
+      /Classroom code:|resolvedStudentLoginCode\(\)/,
+      "the hero must not repeat the classroom code shown in the Student Login card"
+    );
     assert.match(
       source,
-      /Classroom code: <span class="classroom-code">\$\{escapeHtml\(resolvedStudentLoginCode\(\)\)\}<\/span>/,
-      "the ready header must HTML-escape the resolved classroom code"
+      /id="teacherStudentClassroomCode"[^>]*>\$\{escapeHtml\(studentLoginCode\)\}<\/span>/,
+      "the Student Login card must keep the escaped classroom code"
+    );
+  });
+
+  test("SOURCE GUARD: an empty dashboard message does not render a blank status strip", () => {
+    const source = readFileSync(INDEX_HTML_PATH, "utf8");
+
+    assert.match(
+      source,
+      /\$\{\(message && screen !== "login" && message !== "Teacher dashboard unlocked\."\) \? `<p class="message">/,
+      "the dashboard status strip must require a non-empty message"
     );
   });
 

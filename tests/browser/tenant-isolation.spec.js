@@ -329,7 +329,7 @@ test("platform-admin invitation UI is authority-gated and creates a server-only 
   await expect(page.getByRole("heading", { name: "Teacher Invitations" })).toHaveCount(0);
 });
 
-test("ready teacher header shows only the resolved tenant classroom code", async ({ page }) => {
+test("ready teacher header omits the duplicate classroom code", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -347,8 +347,10 @@ test("ready teacher header shows only the resolved tenant classroom code", async
   await assertTenantEstablished(page, TENANT_A, seeded.aUid);
 
   const badge = page.locator(".hero-badge");
-  await expect(badge).toContainText(`Classroom code: ${TENANT_A.studentLoginCode}`);
-  await expect(badge).not.toContainText(TENANT_B.studentLoginCode);
+  await expect(badge).toContainText(`Classroom: ${TENANT_A.classroomName}`);
+  await expect(badge).not.toContainText("Classroom code:");
+  await expect(badge).not.toContainText(TENANT_A.studentLoginCode);
+  await expect(page.locator("p.message")).toHaveCount(0);
   const desktopHeader = await page.evaluate(() => {
     const hero = document.querySelector(".hero");
     const title = hero?.querySelector("h1");
@@ -548,8 +550,9 @@ test("ready teacher header shows only the resolved tenant classroom code", async
   await waitForQuiescence(page);
   await assertTenantEstablished(page, TENANT_B, seeded.bUid);
 
-  await expect(badge).toContainText(`Classroom code: ${TENANT_B.studentLoginCode}`);
-  await expect(badge).not.toContainText(TENANT_A.studentLoginCode);
+  await expect(badge).toContainText(`Classroom: ${TENANT_B.classroomName}`);
+  await expect(badge).not.toContainText("Classroom code:");
+  await expect(badge).not.toContainText(TENANT_B.studentLoginCode);
   await expect(loginInfo.locator("#teacherStudentClassroomCode")).toHaveText(TENANT_B.studentLoginCode);
 });
 

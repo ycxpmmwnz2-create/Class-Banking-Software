@@ -4491,11 +4491,11 @@ link.click();
               <h1>Mr. Morgan's Class Cash</h1>
               <p class="tagline">Classroom Banking Platform · Positive Vibes Only</p>
             </div>
-            ${resolvedClassroomHeaderLabel() ? `<div class="hero-badge"><span class="hero-meta-item">Classroom: ${escapeHtml(resolvedClassroomHeaderLabel())}</span>${resolvedStudentLoginCode() ? `<span class="hero-meta-item">Classroom code: <span class="classroom-code">${escapeHtml(resolvedStudentLoginCode())}</span></span>` : ""}${resolvedTeacherLabel() ? `<span class="hero-meta-item">Teacher: ${escapeHtml(resolvedTeacherLabel())}</span>` : ""}${v2IsOffline ? '<span class="hero-meta-item offline-badge" style="background: #f59e0b; color: white;">Offline view</span>' : ""}</div>` : '<div class="hero-badge"><span class="hero-meta-item">Fast, Simple and Student Friendly</span></div>'}
+            ${resolvedClassroomHeaderLabel() ? `<div class="hero-badge"><span class="hero-meta-item">Classroom: ${escapeHtml(resolvedClassroomHeaderLabel())}</span>${resolvedTeacherLabel() ? `<span class="hero-meta-item">Teacher: ${escapeHtml(resolvedTeacherLabel())}</span>` : ""}${v2IsOffline ? '<span class="hero-meta-item offline-badge" style="background: #f59e0b; color: white;">Offline view</span>' : ""}</div>` : '<div class="hero-badge"><span class="hero-meta-item">Fast, Simple and Student Friendly</span></div>'}
           </div>
         </section>
 
-        ${(screen !== "login" && message !== "Teacher dashboard unlocked.") ? `<p class="message">${escapeHtml(message)}</p>` : ""}
+        ${(message && screen !== "login" && message !== "Teacher dashboard unlocked.") ? `<p class="message">${escapeHtml(message)}</p>` : ""}
 
         ${(isTeacher || loggedInStudentId) ? `
           <div class="button-bar no-print">
