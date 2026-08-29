@@ -42,6 +42,24 @@ const LOG_CATEGORIES = Object.freeze(new Set([
   'usage-invalid',
 ]))
 
+export const CALLABLE_LOG_SUBCATEGORIES = Object.freeze(new Set([
+  'answer-shape',
+  'answer-contact-pattern',
+  'answer-opaque-ref',
+  'evidence-call-ids',
+  'fact-refs-shape',
+  'fact-ref-duplicate',
+  'fact-ref-unsafe-path',
+  'fact-ref-unavailable',
+  'fact-ref-non-scalar',
+  'number-words',
+  'unsupported-number',
+  'unsupported-date',
+  'uncited-roster-name',
+  'unknown-identity',
+  'truncation-not-disclosed',
+]))
+
 export function callableErrorCode(error) {
   const category = typeof error?.category === 'string' ? error.category : ''
   if (category === 'authorization-failed') return 'unauthenticated'
@@ -73,4 +91,8 @@ export function callableErrorDetails(error) {
 
 export function callableLogCategory(error) {
   return LOG_CATEGORIES.has(error?.category) ? error.category : 'internal'
+}
+
+export function callableLogSubcategory(error) {
+  return CALLABLE_LOG_SUBCATEGORIES.has(error?.subcategory) ? error.subcategory : null
 }

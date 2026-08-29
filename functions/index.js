@@ -37,6 +37,7 @@ import {
   callableErrorCode,
   callableErrorDetails,
   callableLogCategory,
+  callableLogSubcategory,
 } from './insights/callableErrors.js'
 import {
   assertVersion3GeminiLiveRuntime,
@@ -311,6 +312,7 @@ export const analyzeTeacherInsightsV3 = onCall({
     globalThis.console.warn('Version 3 Gemini live analysis refused.', {
       operation: 'analyzeTeacherInsightsV3',
       category: callableLogCategory(error),
+      subcategory: callableLogSubcategory(error),
     })
     throw new HttpsError(
       callableErrorCode(error),

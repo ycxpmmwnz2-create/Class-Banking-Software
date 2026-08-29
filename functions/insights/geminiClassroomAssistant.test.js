@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES,
   GeminiClassroomAssistantError,
   createGeminiClassroomAssistant,
 } from './geminiClassroomAssistant.js'
@@ -38,6 +39,39 @@ function evidence() {
       status: 'Approved',
     })),
   }
+}
+
+function answerWithTool({
+  assistantEvidence = evidence(),
+  toolbox,
+  name = 'get_balances',
+  args = {},
+  answer = 'There is 1 matching balance.',
+  evidenceCallIds = ['call'],
+  factRefs = [{ callId: 'call', path: '/matchedCount' }],
+  finalFinishReason = 'STOP',
+  usageByTurn = [USAGE, USAGE],
+} = {}) {
+  let turn = 0
+  const assistant = createGeminiClassroomAssistant({
+    async generateContent() {
+      const usageMetadata = usageByTurn[turn] ?? USAGE
+      turn += 1
+      if (turn === 1) return {
+        functionCalls: [{ id: 'call', name, args }],
+        candidateContent: { role: 'model', parts: [{ functionCall: { id: 'call', name, args } }] },
+        finishReason: 'STOP',
+        usageMetadata,
+      }
+      return {
+        text: JSON.stringify({ answer, evidenceCallIds, factRefs }),
+        functionCalls: [],
+        finishReason: finalFinishReason,
+        usageMetadata,
+      }
+    },
+  })
+  return assistant.answer({ assistantEvidence, ...(toolbox ? { toolbox } : {}) })
 }
 
 test('runs a grounded tool turn and returns a direct conversational answer', async () => {
@@ -640,6 +674,253 @@ test('requires exact returned and total counts for every truncated tool shape', 
     assert.equal(
       (await assistant.answer({ assistantEvidence: scenario.assistantEvidence })).answer,
       scenario.answer,
+    )
+  }
+})
+
+test('answers the memo-wording question over a stated 30-day window', async () => {
+  const assistantEvidence = {
+    ...evidence(),
+    question: 'In the last 30 days, what wording appears in the transaction memos?',
+    periodDays: 30,
+    periodStart: '2026-07-28T18:00:00.000Z',
+  }
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Rent payment for the week', truncated: false }),
+  })
+  const answer = 'Across the last 30 days, the memo wording includes "Rent payment for the week" in a list of 2 matching transactions.'
+  const result = await answerWithTool({
+    assistantEvidence,
+    toolbox,
+    name: 'list_transactions',
+    args: {
+      startDate: '2026-07-29',
+      endDate: '2026-08-27',
+      includeMemos: true,
+    },
+    answer,
+    factRefs: [
+      { callId: 'call', path: '/windowDays' },
+      { callId: 'call', path: '/transactions/0/memo' },
+      { callId: 'call', path: '/matchedCount' },
+    ],
+  })
+  assert.equal(result.answer, answer)
+})
+
+test('answers the newest sanitized memo question inside a 30-day period', async () => {
+  const assistantEvidence = {
+    ...evidence(),
+    question: 'What is the sanitized memo on the newest transaction in this 30-day period?',
+    periodDays: 30,
+    periodStart: '2026-07-28T18:00:00.000Z',
+  }
+  assistantEvidence.transactions = assistantEvidence.transactions.slice(0, 1)
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Paid rent [contact removed] thanks', truncated: false }),
+  })
+  const answer = 'In this 30-day period, the newest transaction on August 27, 2026 has the memo "Paid rent [contact removed] thanks".'
+  const result = await answerWithTool({
+    assistantEvidence,
+    toolbox,
+    name: 'list_transactions',
+    args: {
+      startDate: '2026-07-29',
+      endDate: '2026-08-27',
+      includeMemos: true,
+      limit: 1,
+      sort: 'newest',
+    },
+    answer,
+    factRefs: [
+      { callId: 'call', path: '/windowDays' },
+      { callId: 'call', path: '/transactions/0/memo' },
+      { callId: 'call', path: '/transactions/0/classroomDate' },
+    ],
+  })
+  assert.equal(result.answer, answer)
+})
+
+test('rejects a stated window length that is absent or does not match the applied range', async () => {
+  for (const [answer, factRefs] of [
+    ['Across the last 30 days, there are 2 matching transactions.', [
+      { callId: 'call', path: '/matchedCount' },
+    ]],
+    ['Across the last 14 days, there are 2 matching transactions.', [
+      { callId: 'call', path: '/windowDays' },
+      { callId: 'call', path: '/matchedCount' },
+    ]],
+  ]) {
+    await assert.rejects(
+      answerWithTool({
+        name: 'list_transactions',
+        args: { startDate: '2026-07-29', endDate: '2026-08-27' },
+        answer,
+        factRefs,
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.category === 'answer-unverified' &&
+        error.subcategory === 'unsupported-number',
+    )
+  }
+})
+
+test('allows only exact quoted spans from cited memo fields', async () => {
+  const assistantEvidence = evidence()
+  assistantEvidence.transactions = assistantEvidence.transactions.slice(0, 1)
+  for (const scenario of [
+    {
+      memo: 'Rent payment for the week',
+      answer: '"Rent payment for the week" is the cited memo.',
+      shouldPass: true,
+    },
+    {
+      memo: 'Ask Jordan Blake about this',
+      answer: '"Ask Jordan Blake about this" is the cited memo. Jordan Blake appears again.',
+      shouldPass: false,
+    },
+    {
+      memo: 'Rent payment for the week',
+      answer: '"Rent payment for the month" is the cited memo.',
+      shouldPass: false,
+    },
+  ]) {
+    const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+      memoResolver: () => ({ text: scenario.memo, truncated: false }),
+    })
+    const operation = answerWithTool({
+      assistantEvidence,
+      toolbox,
+      name: 'list_transactions',
+      args: { includeMemos: true, limit: 1 },
+      answer: scenario.answer,
+      factRefs: [{ callId: 'call', path: '/transactions/0/memo' }],
+    })
+    if (scenario.shouldPass) {
+      assert.equal((await operation).answer, scenario.answer)
+    } else {
+      await assert.rejects(
+        operation,
+        error => error instanceof GeminiClassroomAssistantError &&
+          error.category === 'answer-unverified' &&
+          error.subcategory === 'unknown-identity',
+      )
+    }
+  }
+})
+
+test('rejects an uncited roster name even inside a correctly quoted memo', async () => {
+  const assistantEvidence = evidence()
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Ava paid rent', truncated: false }),
+  })
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence,
+      toolbox,
+      name: 'list_transactions',
+      args: { includeMemos: true, limit: 1 },
+      answer: '"Ava paid rent" is the cited memo.',
+      factRefs: [{ callId: 'call', path: '/transactions/0/memo' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.category === 'answer-unverified' &&
+      error.subcategory === 'uncited-roster-name',
+  )
+})
+
+test('requires the exact showing-of disclosure when a memo listing is truncated', async () => {
+  const assistantEvidence = evidence()
+  assistantEvidence.transactions = Array.from({ length: 60 }, (_, index) => ({
+    ...assistantEvidence.transactions[index % assistantEvidence.transactions.length],
+    ref: `transaction-${String(index + 1).padStart(5, '0')}`,
+    date: `2026-08-${String(21 + (index % 7)).padStart(2, '0')}T15:${String(index % 60).padStart(2, '0')}:00.000Z`,
+  }))
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Rent payment for the week', truncated: false }),
+  })
+  const factRefs = [
+    { callId: 'call', path: '/returnedCount' },
+    { callId: 'call', path: '/matchedCount' },
+    { callId: 'call', path: '/transactions/0/memo' },
+  ]
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence,
+      toolbox,
+      name: 'list_transactions',
+      args: { includeMemos: true },
+      answer: 'The first memo is "Rent payment for the week".',
+      factRefs,
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'truncation-not-disclosed',
+  )
+  const answer = 'Showing 50 of 60 matching transactions. The first memo is "Rent payment for the week".'
+  assert.equal((await answerWithTool({
+    assistantEvidence,
+    toolbox,
+    name: 'list_transactions',
+    args: { includeMemos: true },
+    answer,
+    factRefs,
+  })).answer, answer)
+})
+
+test('rejects a MAX_TOKENS turn as provider-output-truncated', async () => {
+  await assert.rejects(
+    answerWithTool({ finalFinishReason: 'MAX_TOKENS' }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.category === 'provider-output-truncated',
+  )
+})
+
+test('accumulates cached and tool-use prompt tokens across turns', async () => {
+  const firstUsage = {
+    promptTokenCount: 10,
+    candidatesTokenCount: 4,
+    thoughtsTokenCount: 1,
+    cachedContentTokenCount: 7,
+    toolUsePromptTokenCount: 3,
+    totalTokenCount: 18,
+  }
+  const secondUsage = {
+    promptTokenCount: 12,
+    candidatesTokenCount: 5,
+    thoughtsTokenCount: 2,
+    cachedContentTokenCount: 8,
+    toolUsePromptTokenCount: 4,
+    totalTokenCount: 23,
+  }
+  const result = await answerWithTool({ usageByTurn: [firstUsage, secondUsage] })
+  assert.deepEqual(result.usage, { inputTokens: 29, outputTokens: 9, thinkingTokens: 3 })
+})
+
+test('every final-answer validation failure carries an allowlisted subcategory', async () => {
+  assert.equal(Object.isFrozen(CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES), true)
+  const validFactRefs = [{ callId: 'call', path: '/matchedCount' }]
+  const scenarios = [
+    { answer: 'x', factRefs: validFactRefs, subcategory: 'answer-shape' },
+    { answer: 'Visit https://example.com.', factRefs: validFactRefs, subcategory: 'answer-contact-pattern' },
+    { answer: 'The student-001 record is present.', factRefs: validFactRefs, subcategory: 'answer-opaque-ref' },
+    { answer: 'There is 1 matching balance.', evidenceCallIds: [], factRefs: validFactRefs, subcategory: 'evidence-call-ids' },
+    { answer: 'There is 1 matching balance.', factRefs: [], subcategory: 'fact-refs-shape' },
+    { answer: 'There is 1 matching balance.', factRefs: [...validFactRefs, ...validFactRefs], subcategory: 'fact-ref-duplicate' },
+    { answer: 'There is 1 matching balance.', factRefs: [{ callId: 'call', path: '/__proto__' }], subcategory: 'fact-ref-unsafe-path' },
+    { answer: 'There is 1 matching balance.', factRefs: [{ callId: 'call', path: '/missing' }], subcategory: 'fact-ref-unavailable' },
+    { answer: 'There is 1 matching balance.', factRefs: [{ callId: 'call', path: '/students' }], subcategory: 'fact-ref-non-scalar' },
+    { answer: 'There is one balance.', factRefs: validFactRefs, subcategory: 'number-words' },
+    { answer: 'There are 2 matching balances.', factRefs: validFactRefs, subcategory: 'unsupported-number' },
+    { answer: 'The date is August 26, 2026.', factRefs: validFactRefs, subcategory: 'unsupported-date' },
+    { answer: 'Ava is listed.', factRefs: validFactRefs, subcategory: 'uncited-roster-name' },
+    { answer: 'Priya is listed.', factRefs: validFactRefs, subcategory: 'unknown-identity' },
+  ]
+  for (const scenario of scenarios) {
+    await assert.rejects(
+      answerWithTool(scenario),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === scenario.subcategory &&
+        CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES.has(error.subcategory),
     )
   }
 })

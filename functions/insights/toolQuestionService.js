@@ -25,10 +25,11 @@ const RESERVATION_FAILURE_MESSAGES = Object.freeze({
 })
 
 export class InsightToolQuestionServiceError extends Error {
-  constructor(category, message) {
+  constructor(category, message, subcategory = null) {
     super(message)
     this.name = 'InsightToolQuestionServiceError'
     this.category = category
+    this.subcategory = subcategory
   }
 }
 
@@ -122,7 +123,11 @@ export function createInsightToolQuestionService(dependencies) {
       })
       if (error instanceof InsightToolQuestionServiceError) throw error
       if (error instanceof GeminiClassroomAssistantError) {
-        throw new InsightToolQuestionServiceError(error.category, 'The classroom assistant could not complete the answer.')
+        throw new InsightToolQuestionServiceError(
+          error.category,
+          'The classroom assistant could not complete the answer.',
+          error.subcategory,
+        )
       }
       throw new InsightToolQuestionServiceError('provider-unavailable', 'The classroom assistant is unavailable.')
     }

@@ -11,6 +11,7 @@ export {
   callableErrorCode,
   callableErrorDetails,
   callableLogCategory,
+  callableLogSubcategory,
 } from './callableErrors.js'
 
 export const VERSION3_GEMINI_CALLABLE_DEMO_PROJECT =

@@ -63,6 +63,60 @@ test('transport rejects missing key or malformed injected SDK before any request
   }), /unavailable/)
 })
 
+test('does not read response text when the candidate returned function calls', async () => {
+  let textReads = 0
+  class FakeGoogleGenAI {
+    constructor() {
+      this.models = {
+        generateContent: async () => ({
+          get text() {
+            textReads += 1
+            throw new Error('text getter must not run for a tool-call turn')
+          },
+          functionCalls: [{ id: 'call', name: 'get_balances', args: {} }],
+          candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: 'get_balances' } }] }, finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+      }
+    }
+  }
+  const generateOnce = createGeminiGenerateContentOnce({
+    apiKey: API_KEY,
+    GoogleGenAIClass: FakeGoogleGenAI,
+  })
+  const result = await generateOnce({ model: 'gemini-test', contents: [], config: {} })
+  assert.equal(textReads, 0)
+  assert.equal(result.text, undefined)
+  assert.equal(result.functionCalls.length, 1)
+})
+
+test('reads response text when no function calls are returned', async () => {
+  let textReads = 0
+  class FakeGoogleGenAI {
+    constructor() {
+      this.models = {
+        generateContent: async () => ({
+          get text() {
+            textReads += 1
+            return '{"answer":"done"}'
+          },
+          functionCalls: [],
+          candidates: [{ content: { role: 'model', parts: [{ text: '{}' }] }, finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+      }
+    }
+  }
+  const generateOnce = createGeminiGenerateContentOnce({
+    apiKey: API_KEY,
+    GoogleGenAIClass: FakeGoogleGenAI,
+  })
+  const result = await generateOnce({ model: 'gemini-test', contents: [], config: {} })
+  assert.equal(textReads, 1)
+  assert.equal(result.text, '{"answer":"done"}')
+  assert.deepEqual(result.functionCalls, [])
+})
+
 test('retrying transport retries only transient failures and preserves a safe category', async () => {
   let attempts = 0
   const delays = []

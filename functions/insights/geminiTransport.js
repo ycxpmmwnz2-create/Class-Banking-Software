@@ -62,15 +62,16 @@ export function createGeminiGenerateContentOnce({
       },
     })
     const firstCandidate = Array.isArray(response?.candidates) ? response.candidates[0] : undefined
+    const functionCalls = Array.isArray(response?.functionCalls)
+      ? Object.freeze(response.functionCalls.map(call => Object.freeze({
+        id: call?.id,
+        name: call?.name,
+        args: call?.args,
+      })))
+      : undefined
     return Object.freeze({
-      text: response?.text,
-      functionCalls: Array.isArray(response?.functionCalls)
-        ? Object.freeze(response.functionCalls.map(call => Object.freeze({
-          id: call?.id,
-          name: call?.name,
-          args: call?.args,
-        })))
-        : undefined,
+      text: functionCalls?.length ? undefined : response?.text,
+      functionCalls,
       candidateContent: firstCandidate?.content,
       finishReason: firstCandidate?.finishReason,
       usageMetadata: response?.usageMetadata,

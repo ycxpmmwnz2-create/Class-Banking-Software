@@ -135,7 +135,7 @@ test('replaces a full or unique partial roster name before constructing provider
 })
 
 test('builds one-classroom assistant evidence and sanitizes bounded memos only when requested', async () => {
-  const longMemo = `Call parent@example.com or 801-555-1212 ${'x'.repeat(600)}`
+  const longMemo = `Call parent@example.com or 801-555-1212 and visit https://example.com/help ${'x'.repeat(600)}`
   const envelope = await loader(fixture({
     'classrooms/class-a/students/2': {
       ...fixture()['classrooms/class-a/students/2'],
@@ -162,8 +162,8 @@ test('builds one-classroom assistant evidence and sanitizes bounded memos only w
   assert.equal(Object.hasOwn(envelope.assistantEvidence.transactions[0], 'memoTruncated'), false)
   const memo = envelope.assistantMemoResolver('transaction-00001')
   assert.equal(memo.truncated, true)
-  assert.match(memo.text, /\[contact removed\]/)
-  assert.doesNotMatch(memo.text, /example\.com|555-1212/)
+  assert.equal(memo.text.match(/\[contact removed\]/gu)?.length, 3)
+  assert.doesNotMatch(memo.text, /example\.com|555-1212|https?:\/\//)
   assert.equal([...memo.text.replace(/…$/u, '')].length, 500)
   assert.equal(envelope.assistantMemoResolver('transaction-99999'), null)
   assert.doesNotMatch(JSON.stringify(envelope.assistantEvidence), /teacher-a|class-a|Bellini|Salazar|"id"/)

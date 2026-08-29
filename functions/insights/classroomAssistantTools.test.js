@@ -140,6 +140,9 @@ test('finds the exact current students without matching transactions', () => {
   })
   assert.deepEqual(result, {
     ok: true,
+    windowStartDate: '2026-08-27',
+    windowEndDate: '2026-08-27',
+    windowDays: 1,
     currentStudentCount: 3,
     consideredStudentCount: 3,
     matchedTransactionCount: 2,
@@ -181,16 +184,26 @@ test('default period filtering honors the exact rolling cutoff while explicit da
     transaction('transaction-00002', 'student-001', '2026-08-20T18:01:00.000Z', 5),
   ]
   const toolbox = createClassroomAssistantToolbox(data)
-  assert.equal(toolbox.execute('aggregate_transactions', {
+  const defaultWindow = toolbox.execute('aggregate_transactions', {
     groupBy: [],
     metric: 'count',
-  }).matchedTransactionCount, 1)
-  assert.equal(toolbox.execute('aggregate_transactions', {
+  })
+  assert.equal(defaultWindow.matchedTransactionCount, 1)
+  assert.deepEqual(
+    [defaultWindow.windowStartDate, defaultWindow.windowEndDate, defaultWindow.windowDays],
+    ['2026-08-20', '2026-08-27', 8],
+  )
+  const explicitWindow = toolbox.execute('aggregate_transactions', {
     startDate: '2026-08-20',
     endDate: '2026-08-20',
     groupBy: [],
     metric: 'count',
-  }).matchedTransactionCount, 2)
+  })
+  assert.equal(explicitWindow.matchedTransactionCount, 2)
+  assert.deepEqual(
+    [explicitWindow.windowStartDate, explicitWindow.windowEndDate, explicitWindow.windowDays],
+    ['2026-08-20', '2026-08-20', 1],
+  )
 
   const ninetyDays = { ...data, periodDays: 90, periodStart: data.historyStart }
   assert.equal(createClassroomAssistantToolbox(ninetyDays).execute('aggregate_transactions', {
@@ -222,6 +235,8 @@ test('supports open-ended summaries beyond the named example questions', () => {
   })
   assert.equal(comparison.difference, 7)
   assert.equal(comparison.percentChange, 233.3)
+  assert.deepEqual(comparison.periods.map(period => period.windowDays), [1, 1])
+  assert.equal(toolbox.execute('describe_schema', {}).selectedPeriodDays, 7)
 })
 
 test('rejects unknown students and invalid ranges inside a safe tool error', () => {

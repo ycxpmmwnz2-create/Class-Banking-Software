@@ -128,12 +128,17 @@ test('returns and commits valid usage at the exact accumulated multi-turn ceilin
 test('retains the reservation and preserves the safe provider failure category', async () => {
   const setup = fixture()
   setup.deps.assistant.answer = async () => {
-    throw new GeminiClassroomAssistantError('provider-rate-limited', 'raw provider text')
+    throw new GeminiClassroomAssistantError(
+      'answer-unverified',
+      'raw provider text',
+      'unsupported-number',
+    )
   }
   await assert.rejects(
     createInsightToolQuestionService(setup.deps)({ auth: { uid: 'teacher-a' }, data: REQUEST }),
     error => error instanceof InsightToolQuestionServiceError &&
-      error.category === 'provider-rate-limited' &&
+      error.category === 'answer-unverified' &&
+      error.subcategory === 'unsupported-number' &&
       !error.message.includes('raw provider text'),
   )
   assert.equal(setup.calls.includes('uncertain'), true)

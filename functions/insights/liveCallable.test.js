@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { callableErrorDetails } from './callableErrors.js'
 import { createVersion3GeminiLiveHandler } from './liveCallable.js'
+
+test('the validation subcategory never reaches the client', () => {
+  assert.deepEqual(callableErrorDetails({
+    category: 'answer-unverified',
+    subcategory: 'unsupported-number',
+  }), { category: 'answer-unverified' })
+})
 
 test('live composition returns the reviewed service without contacting Gemini', () => {
   let sdkConstructors = 0

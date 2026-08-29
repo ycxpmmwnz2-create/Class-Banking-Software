@@ -121,6 +121,15 @@ test("source contract: tenant and data changes discard question answers", () => 
   assert.match(indexHtml, /function resetAllGlobalState\(\)[\s\S]*?insightsPeriodDays = 30;[\s\S]*?resetProviderInsightsState\(\);/);
 });
 
+test("source contract: the retry button offers a fresh request", () => {
+  assert.match(indexHtml, /Try again as a new request/);
+  assert.match(
+    indexHtml,
+    /if \(retry\)[\s\S]*?request = freshProviderQuestionRetryRequest\(retryState\.request\);/,
+  );
+  assert.doesNotMatch(indexHtml, /Retry same question/);
+});
+
 test("source contract: the focused Version 3 test command remains local", () => {
   const scripts = JSON.parse(packageJson).scripts;
   assert.equal(

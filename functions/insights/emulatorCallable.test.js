@@ -8,6 +8,7 @@ import {
   callableErrorCode,
   callableErrorDetails,
   callableLogCategory,
+  callableLogSubcategory,
 } from './emulatorCallable.js'
 
 function validRuntime(overrides = {}) {
@@ -66,7 +67,13 @@ test('maps only allowlisted callable error categories', () => {
     assert.equal(callableLogCategory({ category }), category)
   }
   assert.equal(callableErrorDetails({ category: 'private-internal-detail' }), undefined)
+  assert.deepEqual(callableErrorDetails({
+    category: 'answer-unverified',
+    subcategory: 'unsupported-number',
+  }), { category: 'answer-unverified' })
   assert.equal(callableLogCategory({ category: 'budget-unavailable' }), 'budget-unavailable')
   assert.equal(callableLogCategory({ category: 'rate-limit-exhausted' }), 'rate-limit-exhausted')
   assert.equal(callableLogCategory({ category: 'private-internal-detail' }), 'internal')
+  assert.equal(callableLogSubcategory({ subcategory: 'unsupported-number' }), 'unsupported-number')
+  assert.equal(callableLogSubcategory({ subcategory: 'private-internal-detail' }), null)
 })

@@ -203,7 +203,7 @@ export function createClassroomAssistantToolbox(evidence, { memoResolver } = {})
 
 function findStudentsWithoutTransactions(args, students, filteredTransactions) {
   const requestedRefs = studentRefs(args.studentRefs, students)
-  const matchingStudentRefs = new Set(filteredTransactions.map(transaction => transaction.studentRef))
+  const matchingStudentRefs = new Set(filteredTransactions.transactions.map(transaction => transaction.studentRef))
   const currentStudents = students.filter(student => student.current)
   const selectedStudents = requestedRefs.length === 0
     ? currentStudents
@@ -224,9 +224,12 @@ function findStudentsWithoutTransactions(args, students, filteredTransactions) {
   const limit = integer(args.limit, 1, 25, 25)
   return Object.freeze({
     ok: true,
+    windowStartDate: filteredTransactions.windowStartDate,
+    windowEndDate: filteredTransactions.windowEndDate,
+    windowDays: filteredTransactions.windowDays,
     currentStudentCount: currentStudents.length,
     consideredStudentCount: selectedStudents.length,
-    matchedTransactionCount: filteredTransactions.length,
+    matchedTransactionCount: filteredTransactions.transactions.length,
     studentsWithoutCount: withoutTransactions.length,
     returnedCount: Math.min(limit, withoutTransactions.length),
     truncated: withoutTransactions.length > limit,
@@ -243,11 +246,14 @@ function listTransactions(args, filtered, studentsByRef, memoResolver) {
   const limit = integer(args.limit, 1, 100, 50)
   const includeMemos = boolean(args.includeMemos, false)
   const sort = enumeration(args.sort ?? 'newest', ['newest', 'oldest'])
-  const ordered = [...filtered].sort((left, right) => (
+  const ordered = [...filtered.transactions].sort((left, right) => (
     (sort === 'oldest' ? 1 : -1) * left.date.localeCompare(right.date)
   ))
   return Object.freeze({
     ok: true,
+    windowStartDate: filtered.windowStartDate,
+    windowEndDate: filtered.windowEndDate,
+    windowDays: filtered.windowDays,
     matchedCount: ordered.length,
     returnedCount: Math.min(limit, ordered.length),
     truncated: ordered.length > limit,
@@ -299,7 +305,7 @@ function aggregateTransactions(args, filtered, studentsByRef) {
   const minimumResult = optionalNumber(args.minimumResult, 0, 1_000_000)
   const limit = integer(args.limit, 1, 50, 20)
   const groups = new Map()
-  for (const transaction of filtered) {
+  for (const transaction of filtered.transactions) {
     const values = groupBy.map(field => groupValue(field, transaction, studentsByRef))
     const key = JSON.stringify(values)
     const group = groups.get(key) ?? { values, transactions: [] }
@@ -308,9 +314,9 @@ function aggregateTransactions(args, filtered, studentsByRef) {
   }
   if (groupBy.length === 0 && groups.size === 0) groups.set('[]', { values: [], transactions: [] })
   const denominator = metric === 'count'
-    ? filtered.length
+    ? filtered.transactions.length
     : metric === 'amountTotal'
-      ? metricValue('amountTotal', filtered)
+      ? metricValue('amountTotal', filtered.transactions)
       : null
   let rows = [...groups.values()].map(group => {
     const value = metricValue(metric, group.transactions)
@@ -325,9 +331,12 @@ function aggregateTransactions(args, filtered, studentsByRef) {
   rows.sort(rowSorter(args.sort))
   return Object.freeze({
     ok: true,
+    windowStartDate: filtered.windowStartDate,
+    windowEndDate: filtered.windowEndDate,
+    windowDays: filtered.windowDays,
     metric,
     groupBy: Object.freeze(groupBy),
-    matchedTransactionCount: filtered.length,
+    matchedTransactionCount: filtered.transactions.length,
     resultCount: rows.length,
     returnedCount: Math.min(limit, rows.length),
     truncated: rows.length > limit,
@@ -421,7 +430,13 @@ function comparePeriods(args, data, transactions, studentsByRef) {
   periods.forEach(([start, end]) => assertDateRange(start, end))
   const values = periods.map(([startDate, endDate]) => {
     const filtered = filterTransactions({ ...args, startDate, endDate }, data, transactions, studentsByRef)
-    return Object.freeze({ startDate, endDate, value: metricValue(metric, filtered), transactionCount: filtered.length })
+    return Object.freeze({
+      startDate: filtered.windowStartDate,
+      endDate: filtered.windowEndDate,
+      windowDays: filtered.windowDays,
+      value: metricValue(metric, filtered.transactions),
+      transactionCount: filtered.transactions.length,
+    })
   })
   return Object.freeze({
     ok: true,
@@ -453,7 +468,7 @@ function filterTransactions(args, data, transactions, studentsByRef) {
   if (minimumAmount !== null && maximumAmount !== null && minimumAmount > maximumAmount) {
     fail('invalid-tool-arguments', 'minimumAmount cannot be greater than maximumAmount.')
   }
-  return transactions.filter(transaction => (
+  const filtered = transactions.filter(transaction => (
     transaction.calendarDay >= startDate &&
     transaction.calendarDay <= endDate &&
     (args.startDate !== undefined || Date.parse(transaction.date) >= Date.parse(data.periodStart)) &&
@@ -465,6 +480,12 @@ function filterTransactions(args, data, transactions, studentsByRef) {
     (minimumAmount === null || transaction.amount >= minimumAmount) &&
     (maximumAmount === null || transaction.amount <= maximumAmount)
   ))
+  return Object.freeze({
+    transactions: Object.freeze(filtered),
+    windowStartDate: startDate,
+    windowEndDate: endDate,
+    windowDays: daysBetweenInclusive(startDate, endDate),
+  })
 }
 
 function describeSchema(context) {
@@ -476,6 +497,7 @@ function describeSchema(context) {
     availableDateRange: context.availableDateRange,
     retainedFrom: context.retainedFrom,
     selectedDateRange: context.selectedDateRange,
+    selectedPeriodDays: context.selectedPeriodDays,
     studentFields: Object.freeze(['studentRef', 'first name or first name plus last initial', 'currentBalance', 'frozen']),
     transactionFields: Object.freeze(['transactionRef', 'studentRef', 'timestamp', 'type', 'amount', 'category', 'status', 'purpose']),
     memoPolicy: 'Memos are returned only when includeMemos is true. Contact details are removed and each memo is capped at 500 characters with a truncation marker.',
@@ -632,10 +654,14 @@ function validatedDate(value, field) {
 
 function assertDateRange(start, end, maximumCalendarDays = 90) {
   if (start > end) fail('invalid-tool-arguments', 'The start date must not be after the end date.')
-  const calendarDays = Math.floor(
+  const calendarDays = daysBetweenInclusive(start, end)
+  if (calendarDays > maximumCalendarDays) fail('invalid-tool-arguments', 'A tool date range cannot exceed 90 days.')
+}
+
+function daysBetweenInclusive(start, end) {
+  return Math.floor(
     (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000,
   ) + 1
-  if (calendarDays > maximumCalendarDays) fail('invalid-tool-arguments', 'A tool date range cannot exceed 90 days.')
 }
 
 function assertAvailableDateRange(start, end, data) {
