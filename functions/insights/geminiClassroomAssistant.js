@@ -383,18 +383,12 @@ function assertAnswerNamesAreGrounded(answer, students, facts) {
   const allowed = new Set(facts
     .filter(fact => typeof fact.value === 'string' && /(?:^|\/)student$/u.test(fact.path))
     .map(fact => fact.value.toLocaleLowerCase('en-US')))
-  const citedLabels = new Set(facts
-    .filter(fact => typeof fact.value === 'string')
-    .map(fact => fact.value.toLocaleLowerCase('en-US')))
-  const citedLabelTokens = new Set(facts
-    .filter(fact => typeof fact.value === 'string')
-    .flatMap(fact => nameLikeTokens(fact.value).map(normalizedNameLikeToken)))
   for (const name of rosterNames) {
     if (containsWholeText(answer, name) && !allowed.has(name)) {
       fail('answer-unverified', 'The provider answer used a student name without citing its result field.')
     }
   }
-  const answerNameLikeTokens = nameLikeTokens(answer)
+  const answerNameLikeTokens = nameLikeTokens(removeCitedStringFacts(answer, facts))
   const ordinary = new Set([
     'Morgan', 'Bank', 'Yes', 'No', 'Not', 'Today', 'Yesterday',
     'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
@@ -408,20 +402,45 @@ function assertAnswerNamesAreGrounded(answer, students, facts) {
     'Showing', 'Additional', 'None', 'All', 'Only', 'Most', 'Current', 'Class',
     'Everyone', 'Nobody', 'Each', 'Both', 'Neither', 'Either',
     'Overall', 'However', 'Also', 'Because', 'Although', 'Here', 'First', 'Next', 'Finally',
+    'If', 'When', 'While', 'Since', 'So', 'But', 'You', 'Your', 'We', 'Our',
+    'Some', 'Any', 'Several', 'Nothing', 'Right', 'Unfortunately', 'Note',
+    "I'm", "I've", "I'll", "I'd", "We're", "We've", "We'll", "We'd",
+    "You're", "You've", "You'll", "You'd",
     'Students', 'Student', 'Transactions', 'Transaction', 'Balances', 'Balance',
     'Results', 'Result', 'Counts', 'Count', 'Total', 'Average', 'Checked', 'Found', 'Calculated',
+    'Deposits', 'Deposit', 'Withdrawals', 'Withdrawal', 'Savings', 'Spending',
+    'Week', 'Weeks', 'Month', 'Months', 'Year', 'Years',
   ])
+  const ordinaryKeys = new Set([...ordinary].map(normalizedNameLikeToken))
   for (const token of answerNameLikeTokens) {
     const tokenKey = normalizedNameLikeToken(token)
     if (
-      !ordinary.has(token) &&
-      !allowed.has(tokenKey) &&
-      !citedLabels.has(tokenKey) &&
-      !citedLabelTokens.has(tokenKey)
+      !ordinaryKeys.has(tokenKey) &&
+      !allowed.has(tokenKey)
     ) {
       fail('answer-unverified', 'The provider answer contains an unknown student identity.')
     }
   }
+}
+
+function removeCitedStringFacts(answer, facts) {
+  // Memo text is untrusted free text and must never authorize an identity token.
+  const citedStrings = [...new Set(facts
+    .filter(fact => (
+      typeof fact.value === 'string' &&
+      fact.value.length > 0 &&
+      !/(?:^|\/)memo$/u.test(fact.path)
+    ))
+    .map(fact => fact.value))]
+    .sort((left, right) => right.length - left.length)
+  let remaining = answer
+  for (const value of citedStrings) {
+    remaining = remaining.replace(
+      new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(value)}(?![\\p{L}\\p{N}])`, 'giu'),
+      match => ' '.repeat(match.length),
+    )
+  }
+  return remaining
 }
 
 function nameLikeTokens(value) {
@@ -435,7 +454,7 @@ function containsWholeText(answer, value) {
 }
 
 function normalizedNameLikeToken(token) {
-  return token.replace(/(?:'s|’s)$/iu, '').toLocaleLowerCase('en-US')
+  return token.replace(/’/gu, "'").replace(/'s$/iu, '').toLocaleLowerCase('en-US')
 }
 
 function assertTruncationDisclosed(answer, cited) {

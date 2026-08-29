@@ -5,6 +5,7 @@ import {
   GeminiClassroomAssistantError,
   createGeminiClassroomAssistant,
 } from './geminiClassroomAssistant.js'
+import { createClassroomAssistantToolbox } from './classroomAssistantTools.js'
 
 const USAGE = Object.freeze({
   promptTokenCount: 10,
@@ -128,6 +129,90 @@ test('accepts cited multiword category labels without treating their words as st
     assert.equal(
       (await assistant.answer({ assistantEvidence: customEvidence })).answer,
       `${category} had 2 matching transactions.`,
+    )
+  }
+})
+
+test('does not let cited free text or labels authorize invented student names elsewhere', async () => {
+  for (const [category, answer] of [
+    ['Priya Fund', "Priya's balance is $5."],
+    ['Priya Fund', "Priya Fund is the cited category. Priya's balance is $5."],
+    ['Ava Fund', 'Ava spent $5.'],
+  ]) {
+    let count = 0
+    const assistant = createGeminiClassroomAssistant({
+      async generateContent() {
+        count += 1
+        if (count === 1) return {
+          functionCalls: [{ id: 'category', name: 'list_transactions', args: {} }],
+          candidateContent: { role: 'model', parts: [{ functionCall: { id: 'category', name: 'list_transactions', args: {} } }] },
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+        return {
+          text: JSON.stringify({
+            answer,
+            evidenceCallIds: ['category'],
+            factRefs: [
+              { callId: 'category', path: '/transactions/0/category' },
+              { callId: 'category', path: '/transactions/0/amount' },
+            ],
+          }),
+          functionCalls: [],
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+      },
+    })
+    const customEvidence = evidence()
+    customEvidence.students = [{
+      ...customEvidence.students[0],
+      displayName: category.startsWith('Ava') ? 'Ava P.' : 'Ava',
+    }]
+    customEvidence.categories = [{ label: category, transactionTypes: ['Add'] }]
+    customEvidence.transactions = customEvidence.transactions.map(transaction => ({
+      ...transaction,
+      category,
+    }))
+    await assert.rejects(
+      assistant.answer({ assistantEvidence: customEvidence }),
+      error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
+    )
+  }
+
+  for (const memo of ['Paid Priya back for the pencil', 'Priya']) {
+    let count = 0
+    const assistant = createGeminiClassroomAssistant({
+      async generateContent() {
+        count += 1
+        if (count === 1) return {
+          functionCalls: [{ id: 'memo', name: 'list_transactions', args: { includeMemos: true } }],
+          candidateContent: { role: 'model', parts: [{ functionCall: { id: 'memo', name: 'list_transactions', args: { includeMemos: true } } }] },
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+        return {
+          text: JSON.stringify({
+            answer: 'Priya: $5.',
+            evidenceCallIds: ['memo'],
+            factRefs: [
+              { callId: 'memo', path: '/transactions/0/memo' },
+              { callId: 'memo', path: '/transactions/0/amount' },
+            ],
+          }),
+          functionCalls: [],
+          finishReason: 'STOP',
+          usageMetadata: USAGE,
+        }
+      },
+    })
+    const assistantEvidence = evidence()
+    const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+      memoResolver: () => Object.freeze({ text: memo, truncated: false }),
+    })
+    await assert.rejects(
+      assistant.answer({ assistantEvidence, toolbox }),
+      error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
     )
   }
 })
@@ -261,6 +346,12 @@ test('rejects every uncited capitalized identity while preserving ordinary langu
     ['There is 1 matching balance for Ava.', '/matchedCount', true],
     ['Overall, there is 1 matching balance for Ava.', '/matchedCount', true],
     ["Ava's balance is $10.", '/students/0/currentBalance', true],
+    ["Today's balance total is $10.", '/students/0/currentBalance', true],
+    ["It's 1 matching balance.", '/matchedCount', true],
+    ['I’m seeing 1 matching balance.', '/matchedCount', true],
+    ['Unfortunately, there is 1 matching balance.', '/matchedCount', true],
+    ['Some students have 1 matching balance.', '/matchedCount', true],
+    ['Deposits show 1 matching balance.', '/matchedCount', true],
   ]) {
     let count = 0
     const assistant = createGeminiClassroomAssistant({
