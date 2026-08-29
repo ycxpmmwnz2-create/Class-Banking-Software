@@ -1251,10 +1251,30 @@
 
     .luther-ai-credit strong { color: var(--text); }
 
+    .site-credit {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 22px 12px 18px;
+      color: var(--muted);
+      font-size: 0.68rem;
+      letter-spacing: 0.09em;
+      opacity: 0.75;
+    }
+    .site-credit svg {
+      display: block;
+      width: 15px;
+      height: 15px;
+      flex: none;
+    }
+    .site-credit strong { font-weight: 600; letter-spacing: 0.16em; }
+
     @media print {
       body { background: #dff3f0; padding: 16px; }
       .no-print { display: none !important; }
       .luther-ai-credit { display: none; }
+      .site-credit { display: none; }
       .print-only { display: block; }
       .card { border: none; padding: 0; box-shadow: none; }
       table { min-width: 0; font-size: 14px; }
@@ -1427,6 +1447,16 @@
     TEST VERSION - USE FAKE DATA ONLY
   </div>
   <div id="app"></div>
+  <footer class="site-credit" aria-label="Site ownership">
+    <svg viewBox="-74 -74 148 148" role="img" aria-hidden="true" focusable="false">
+      <g fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M0 0C-20-26-32-44-20-57C-10-68 10-68 20-57C32-44 20-26 0 0Z" />
+        <path d="M0 0C-20-26-32-44-20-57C-10-68 10-68 20-57C32-44 20-26 0 0Z" transform="rotate(120)" />
+        <path d="M0 0C-20-26-32-44-20-57C-10-68 10-68 20-57C32-44 20-26 0 0Z" transform="rotate(240)" />
+      </g>
+    </svg>
+    <span>&copy; 2026 <strong>AGM LUTHCORP</strong></span>
+  </footer>
   <script type="module">
 import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured, firebaseDeploymentTier, providerAppCheckReadyPromise } from "./src/firebase/firebase.js";
 import { browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider, inMemoryPersistence, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
