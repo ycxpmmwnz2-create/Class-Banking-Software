@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES,
   GeminiClassroomAssistantError,
+  buildGeminiClassroomAssistantRequest,
   createGeminiClassroomAssistant,
 } from './geminiClassroomAssistant.js'
 import { createClassroomAssistantToolbox } from './classroomAssistantTools.js'
@@ -73,6 +74,44 @@ function answerWithTool({
   })
   return assistant.answer({ assistantEvidence, ...(toolbox ? { toolbox } : {}) })
 }
+
+test('the outbound system instruction roots factRef paths at the call result and forbids wrapper prefixes', () => {
+  const request = buildGeminiClassroomAssistantRequest({
+    contents: [{ role: 'user', parts: [{ text: 'test' }] }],
+    declarations: [],
+    requireTool: false,
+  })
+  const instruction = request.config.systemInstruction
+  assert.match(instruction, /rooted directly at that call.s result object/u)
+  assert.match(instruction, /\/windowDays/u)
+  assert.match(instruction, /\/rows\/0\/group\/category/u)
+  assert.match(instruction, /never prefix a path with the tool name, the call id, or a wrapper word like result or output/iu)
+})
+
+test('the outbound system instruction tells the model to omit dates for a standard rolling window', () => {
+  const request = buildGeminiClassroomAssistantRequest({
+    contents: [{ role: 'user', parts: [{ text: 'test' }] }],
+    declarations: [],
+    requireTool: false,
+  })
+  const instruction = request.config.systemInstruction
+  assert.match(instruction, /call it without startDate or endDate whenever the requested window is 7, 30, or 90 days/iu)
+  assert.match(instruction, /do not set your own startDate or endDate on those three tools just to match a day count the teacher stated/iu)
+  assert.match(instruction, /list_transactions, aggregate_transactions, or find_students_without_transactions/iu)
+  assert.match(instruction, /get_balances and get_balance_history never include selectedPeriodDays/iu)
+  assert.match(instruction, /call describe_schema and cite its selectedPeriodDays instead/iu)
+})
+
+test('the outbound system instruction requires a citation for every named category even without a number', () => {
+  const request = buildGeminiClassroomAssistantRequest({
+    contents: [{ role: 'user', parts: [{ text: 'test' }] }],
+    declarations: [],
+    requireTool: false,
+  })
+  const instruction = request.config.systemInstruction
+  assert.match(instruction, /a category or label you name only for comparison, contrast, or context/iu)
+  assert.match(instruction, /never name a student, category, or label in your answer unless you also cite the exact tool result field/iu)
+})
 
 test('runs a grounded tool turn and returns a direct conversational answer', async () => {
   const requests = []
@@ -167,11 +206,11 @@ test('accepts cited multiword category labels without treating their words as st
   }
 })
 
-test('does not let cited free text or labels authorize invented student names elsewhere', async () => {
-  for (const [category, answer] of [
-    ['Priya Fund', "Priya's balance is $5."],
-    ['Priya Fund', "Priya Fund is the cited category. Priya's balance is $5."],
-    ['Ava Fund', 'Ava spent $5.'],
+test('applies roster-only grounding to names found in cited free text and labels', async () => {
+  for (const [category, answer, shouldPass] of [
+    ['Priya Fund', "Priya's balance is $5.", true],
+    ['Priya Fund', "Priya Fund is the cited category. Priya's balance is $5.", true],
+    ['Ava Fund', 'Ava spent $5.', false],
   ]) {
     let count = 0
     const assistant = createGeminiClassroomAssistant({
@@ -208,10 +247,16 @@ test('does not let cited free text or labels authorize invented student names el
       ...transaction,
       category,
     }))
-    await assert.rejects(
-      assistant.answer({ assistantEvidence: customEvidence }),
-      error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
-    )
+    const operation = assistant.answer({ assistantEvidence: customEvidence })
+    if (shouldPass) {
+      assert.equal((await operation).answer, answer)
+    } else {
+      await assert.rejects(
+        operation,
+        error => error instanceof GeminiClassroomAssistantError &&
+          error.subcategory === 'uncited-roster-name',
+      )
+    }
   }
 
   for (const memo of ['Paid Priya back for the pencil', 'Priya']) {
@@ -244,9 +289,9 @@ test('does not let cited free text or labels authorize invented student names el
     const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
       memoResolver: () => Object.freeze({ text: memo, truncated: false }),
     })
-    await assert.rejects(
-      assistant.answer({ assistantEvidence, toolbox }),
-      error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
+    assert.equal(
+      (await assistant.answer({ assistantEvidence, toolbox })).answer,
+      'Priya: $5.',
     )
   }
 })
@@ -342,7 +387,7 @@ test('rejects uncited, opaque, or truncated provider answers', async () => {
   }
 })
 
-test('rejects an unknown two-part student identity even when tool evidence is cited', async () => {
+test('accepts a non-roster two-part identity under the roster-only contract', async () => {
   let count = 0
   const assistant = createGeminiClassroomAssistant({
     async generateContent() {
@@ -365,27 +410,27 @@ test('rejects an unknown two-part student identity even when tool evidence is ci
       }
     },
   })
-  await assert.rejects(
-    assistant.answer({ assistantEvidence: evidence() }),
-    error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
+  assert.equal(
+    (await assistant.answer({ assistantEvidence: evidence() })).answer,
+    'Michael R. has 1 matching balance.',
   )
 })
 
-test('rejects every uncited capitalized identity while preserving ordinary language and cited names', async () => {
-  for (const [answer, factPath, shouldPass] of [
-    ['Priya has 1 matching balance.', '/matchedCount', false],
-    ["Priya's balance is $10.", '/students/0/currentBalance', false],
-    ['Ava and Priya have 1 matching balance.', '/matchedCount', false],
-    ['Priya: $10.', '/students/0/currentBalance', false],
-    ['There is 1 matching balance for Ava.', '/matchedCount', true],
-    ['Overall, there is 1 matching balance for Ava.', '/matchedCount', true],
-    ["Ava's balance is $10.", '/students/0/currentBalance', true],
-    ["Today's balance total is $10.", '/students/0/currentBalance', true],
-    ["It's 1 matching balance.", '/matchedCount', true],
-    ['I’m seeing 1 matching balance.', '/matchedCount', true],
-    ['Unfortunately, there is 1 matching balance.', '/matchedCount', true],
-    ['Some students have 1 matching balance.', '/matchedCount', true],
-    ['Deposits show 1 matching balance.', '/matchedCount', true],
+test('accepts non-roster identities while preserving cited roster names and ordinary language', async () => {
+  for (const [answer, factPath] of [
+    ['Priya has 1 matching balance.', '/matchedCount'],
+    ["Priya's balance is $10.", '/students/0/currentBalance'],
+    ['Ava and Priya have 1 matching balance.', '/matchedCount'],
+    ['Priya: $10.', '/students/0/currentBalance'],
+    ['There is 1 matching balance for Ava.', '/matchedCount'],
+    ['Overall, there is 1 matching balance for Ava.', '/matchedCount'],
+    ["Ava's balance is $10.", '/students/0/currentBalance'],
+    ["Today's balance total is $10.", '/students/0/currentBalance'],
+    ["It's 1 matching balance.", '/matchedCount'],
+    ['I’m seeing 1 matching balance.', '/matchedCount'],
+    ['Unfortunately, there is 1 matching balance.', '/matchedCount'],
+    ['Some students have 1 matching balance.', '/matchedCount'],
+    ['Deposits show 1 matching balance.', '/matchedCount'],
   ]) {
     let count = 0
     const assistant = createGeminiClassroomAssistant({
@@ -412,14 +457,7 @@ test('rejects every uncited capitalized identity while preserving ordinary langu
         }
       },
     })
-    if (shouldPass) {
-      assert.equal((await assistant.answer({ assistantEvidence: evidence() })).answer, answer)
-    } else {
-      await assert.rejects(
-        assistant.answer({ assistantEvidence: evidence() }),
-        error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
-      )
-    }
+    assert.equal((await assistant.answer({ assistantEvidence: evidence() })).answer, answer)
   }
 })
 
@@ -806,8 +844,7 @@ test('allows only exact quoted spans from cited memo fields', async () => {
     {
       memo: 'Ask Jordan Blake about this',
       answer: '"Ask Jordan Blake about this" is the cited memo. Jordan Blake appears again.',
-      shouldPass: false,
-      subcategory: 'unknown-identity',
+      shouldPass: true,
     },
     {
       memo: 'Rent payment for the week',
@@ -947,7 +984,6 @@ test('every final-answer validation failure carries an allowlisted subcategory',
     { answer: 'There are 2 matching balances.', factRefs: validFactRefs, subcategory: 'unsupported-number' },
     { answer: 'The date is August 26, 2026.', factRefs: validFactRefs, subcategory: 'unsupported-date' },
     { answer: 'Ava is listed.', factRefs: validFactRefs, subcategory: 'uncited-roster-name' },
-    { answer: 'Priya is listed.', factRefs: validFactRefs, subcategory: 'unknown-identity' },
   ]
   for (const scenario of scenarios) {
     await assert.rejects(
@@ -956,6 +992,442 @@ test('every final-answer validation failure carries an allowlisted subcategory',
         error.subcategory === scenario.subcategory &&
         CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES.has(error.subcategory),
     )
+  }
+})
+
+test('a refusal over a student name carries no diagnostic detail at all', async () => {
+  // The only token this check can flag is a real roster name, so there is
+  // nothing about it that is safe to put in a log.
+  const assistantEvidence = evidence()
+  assistantEvidence.students = [
+    { ref: 'student-001', displayName: 'Ava Chen', current: true, balance: 10, frozen: false },
+  ]
+  let error
+  await assert.rejects(
+    answerWithTool({ assistantEvidence, answer: 'Chen has 1 matching balance.' }),
+    caught => {
+      error = caught
+      return caught instanceof GeminiClassroomAssistantError &&
+        caught.subcategory === 'uncited-roster-name'
+    },
+  )
+  assert.equal(error.diagnostic, null)
+  assert.equal(JSON.stringify(error.diagnostic ?? {}).includes('Chen'), false)
+})
+
+test('ordinary capitalized words are unaffected by roster-only grounding', async () => {
+  for (const answer of [
+    'Approximately 1 matching balance is recorded.',
+    'Interestingly, there is 1 matching balance.',
+    'Significantly fewer than 1 matching balance would be unusual; there is 1 matching balance.',
+    'Encouragingly, there is 1 matching balance.',
+  ]) {
+    const result = await answerWithTool({ answer })
+    assert.equal(result.answer, answer)
+  }
+})
+
+test('ordinary sentence openers are unaffected by roster-only grounding', async () => {
+  const openers = [
+    'Interestingly', 'Approximately', 'Significantly', 'Alternatively',
+    'Encouragingly', 'Comparatively', 'Understanding', 'Participation',
+    'Additionally', 'Specifically', 'Nevertheless', 'Consistently',
+    'Historically', 'Collectively', 'Notably', 'Meanwhile', 'Similarly',
+    'Conversely', 'Combined', 'Together', 'Looking', 'Given', 'Assuming',
+    'Considering', 'Roughly', 'Nearly', 'Almost', 'Slightly', 'Therefore',
+    'Please', 'Remember', 'Consider', 'Ranked', 'Sorted', 'Grouped',
+  ]
+  for (const opener of openers) {
+    for (const answer of [
+      `${opener}, there is 1 matching balance.`,
+      `${opener} the class has 1 matching balance.`,
+    ]) {
+      assert.equal((await answerWithTool({ answer })).answer, answer)
+    }
+  }
+})
+
+test('accepts non-roster identities regardless of sentence position', async () => {
+  for (const answer of [
+    'Priya has 1 matching balance.',
+    "Priya's balance is 1 matching balance.",
+    'There is 1 matching balance for Priya.',
+    'The only current student is Priya.',
+    // A label, a roll call, and a conjunction each attribute as surely as a verb.
+    'Priya: 1 matching balance.',
+    'Priya, Marco, and Ben share 1 matching balance.',
+    'Top savers: Priya and Marco across 1 matching balance.',
+    'Jordan Blake appears in 1 matching balance.',
+    // Verbs outside the common set still read as a person acting.
+    'Priya appears in 1 matching balance.',
+    'Priya shows 1 matching balance.',
+    'Priya recorded 1 matching balance.',
+    'Priya seems to hold 1 matching balance.',
+  ]) {
+    assert.equal((await answerWithTool({ answer })).answer, answer)
+  }
+})
+
+test('requires an uncited roster name part in every sentence position', async () => {
+  const assistantEvidence = evidence()
+  assistantEvidence.students = [
+    { ref: 'student-001', displayName: 'Ava Chen', current: true, balance: 10, frozen: false },
+  ]
+  for (const answer of [
+    'Chen has 1 matching balance.',
+    'Chen appears in 1 matching balance.',
+    'Chen, Marco, and Ben share 1 matching balance.',
+    'There is 1 matching balance for Chen.',
+  ]) {
+    await assert.rejects(
+      answerWithTool({ assistantEvidence, answer }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'uncited-roster-name',
+    )
+  }
+})
+
+test('a cited roster display name grounds both the full name and its parts', async () => {
+  const assistantEvidence = evidence()
+  assistantEvidence.students = [
+    { ref: 'student-001', displayName: 'Ava Chen', current: true, balance: 10, frozen: false },
+  ]
+  const factRefs = [
+    { callId: 'call', path: '/students/0/student' },
+    { callId: 'call', path: '/matchedCount' },
+  ]
+  for (const answer of [
+    'Ava Chen has 1 matching balance.',
+    'Ava has 1 matching balance.',
+    'Chen has 1 matching balance.',
+  ]) {
+    assert.equal((await answerWithTool({ assistantEvidence, answer, factRefs })).answer, answer)
+  }
+})
+
+test('ordinary lowercase name words remain usable while capitalized roster references are grounded', async () => {
+  const assistantEvidence = evidence()
+  assistantEvidence.students = [
+    { ref: 'student-001', displayName: 'May Grace', current: true, balance: 10, frozen: false },
+  ]
+  for (const answer of [
+    'We may have 1 matching balance.',
+    'This grace period has 1 matching balance.',
+  ]) {
+    assert.equal((await answerWithTool({ assistantEvidence, answer })).answer, answer)
+  }
+  for (const answer of [
+    'May has 1 matching balance.',
+    'GRACE has 1 matching balance.',
+  ]) {
+    await assert.rejects(
+      answerWithTool({ assistantEvidence, answer }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'uncited-roster-name',
+    )
+  }
+})
+
+test('an uncited single-word roster name requires name-like capitalization', async () => {
+  const assistantEvidence = evidence()
+  assistantEvidence.students = [
+    { ref: 'student-001', displayName: 'Will', current: true, balance: 10, frozen: false },
+  ]
+  await assert.rejects(
+    answerWithTool({ assistantEvidence, answer: 'Will has 1 matching balance.' }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'uncited-roster-name',
+  )
+  const ordinaryProse = 'Students will reach 1 matching balance.'
+  assert.equal(
+    (await answerWithTool({ assistantEvidence, answer: ordinaryProse })).answer,
+    ordinaryProse,
+  )
+})
+
+test('attributes overlapping full roster labels to the longest exact match', async () => {
+  for (const scenario of [
+    {
+      displayNames: ['Ava P.', 'Ava P. (2)'],
+      citedIndex: 1,
+      answer: 'Ava P. has 2 matching balances.',
+      shouldPass: false,
+    },
+    {
+      displayNames: ['Ava', 'Ava (2)'],
+      citedIndex: 1,
+      answer: 'Ava has 2 matching balances.',
+      shouldPass: false,
+    },
+    {
+      displayNames: ['Ava P.', 'Ava P. (2)'],
+      citedIndex: 0,
+      answer: 'Ava P. (2) has 2 matching balances.',
+      shouldPass: false,
+    },
+    {
+      displayNames: ['Ava P.', 'Ava P. (2)'],
+      citedIndex: 1,
+      answer: 'Ava P. (2) has 2 matching balances.',
+      shouldPass: true,
+    },
+    {
+      displayNames: ['Ava P.', 'Ava S.'],
+      citedIndex: 0,
+      answer: 'Ava has 2 matching balances.',
+      shouldPass: true,
+    },
+  ]) {
+    const assistantEvidence = evidence()
+    assistantEvidence.students = scenario.displayNames.map((displayName, index) => ({
+      ref: `student-${String(index + 1).padStart(3, '0')}`,
+      displayName,
+      current: true,
+      balance: 10 - index,
+      frozen: false,
+    }))
+    const operation = answerWithTool({
+      assistantEvidence,
+      answer: scenario.answer,
+      factRefs: [
+        { callId: 'call', path: `/students/${scenario.citedIndex}/student` },
+        { callId: 'call', path: '/matchedCount' },
+      ],
+    })
+    if (scenario.shouldPass) {
+      assert.equal((await operation).answer, scenario.answer)
+    } else {
+      await assert.rejects(
+        operation,
+        error => error instanceof GeminiClassroomAssistantError &&
+          error.subcategory === 'uncited-roster-name',
+      )
+    }
+  }
+})
+
+test('a non-roster name repeated from a cited memo does not trigger identity grounding', async () => {
+  const assistantEvidence = evidence()
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => Object.freeze({ text: 'priya', truncated: false }),
+  })
+  const factRefs = [
+    { callId: 'call', path: '/transactions/0/memo' },
+    { callId: 'call', path: '/transactions/0/amount' },
+  ]
+  assert.equal((await answerWithTool({
+    toolbox,
+    name: 'list_transactions',
+    args: { includeMemos: true },
+    answer: 'Priya is listed.',
+    factRefs,
+  })).answer, 'Priya is listed.')
+})
+
+test('unsupported-number diagnostic includes numeric facts only', async () => {
+  const privateLabel = 'Private Classroom Label'
+  const assistantEvidence = evidence()
+  assistantEvidence.categories = [{ label: privateLabel, transactionTypes: ['Add'] }]
+  assistantEvidence.transactions = assistantEvidence.transactions.map(transaction => ({
+    ...transaction,
+    category: privateLabel,
+  }))
+  let diagnostic
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence,
+      name: 'list_transactions',
+      answer: `${privateLabel} had 99 matching transactions.`,
+      factRefs: [
+        { callId: 'call', path: '/transactions/0/category' },
+        { callId: 'call', path: '/matchedCount' },
+      ],
+    }),
+    error => {
+      diagnostic = error.diagnostic
+      return error instanceof GeminiClassroomAssistantError &&
+        error.category === 'answer-unverified' &&
+        error.subcategory === 'unsupported-number'
+    },
+  )
+  assert.deepEqual(diagnostic, {
+    claimValue: 99,
+    claimKind: 'transaction-count',
+    numericFacts: [{ value: 2, kind: 'transaction-count', window: 'window-1' }],
+  })
+  assert.equal(JSON.stringify(diagnostic).includes(privateLabel), false)
+})
+
+test('unsupported-number diagnostic anonymizes matching and different fact windows', async () => {
+  const assistantEvidence = twoStudentEvidence()
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Private memo text', truncated: false }),
+  })
+  const calls = [DEFAULT_LIST, DEFAULT_WITHOUT, ONE_DAY_LIST]
+  const factRefs = [
+    { callId: DEFAULT_LIST.id, path: '/matchedCount' },
+    { callId: DEFAULT_WITHOUT.id, path: '/studentsWithoutCount' },
+    { callId: ONE_DAY_LIST.id, path: '/matchedCount' },
+  ]
+  let diagnostic
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence,
+      toolbox,
+      calls,
+      answer: 'There are 999 results.',
+      factRefs,
+    }),
+    error => {
+      diagnostic = error.diagnostic
+      return error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-number'
+    },
+  )
+  assert.equal(diagnostic.numericFacts[0].window, diagnostic.numericFacts[1].window)
+  assert.notEqual(diagnostic.numericFacts[0].window, diagnostic.numericFacts[2].window)
+  assert.deepEqual(
+    diagnostic.numericFacts.map(fact => fact.window),
+    ['window-1', 'window-1', 'window-2'],
+  )
+  const serialized = JSON.stringify(diagnostic)
+  for (const call of calls) {
+    const result = toolbox.execute(call.name, call.args)
+    for (const date of [result.windowStartDate, result.windowEndDate]) {
+      if (typeof date === 'string') assert.equal(serialized.includes(date), false)
+    }
+  }
+})
+
+test('fact-ref-unavailable diagnostic allowlists schema fields and redacts every other segment', async () => {
+  for (const unsafeSegment of ['memo with spaces', 'Andrew']) {
+    let diagnostic
+    await assert.rejects(
+      answerWithTool({
+        name: 'list_transactions',
+        answer: 'There is 1 matching transaction.',
+        factRefs: [{ callId: 'call', path: `/transactions/0/${unsafeSegment}` }],
+      }),
+      error => {
+        diagnostic = error.diagnostic
+        return error instanceof GeminiClassroomAssistantError &&
+          error.subcategory === 'fact-ref-unavailable'
+      },
+    )
+    assert.equal(diagnostic.toolName, 'list_transactions')
+    assert.equal(diagnostic.path, '/transactions/0/<redacted>')
+    assert.equal(diagnostic.failedAtSegment, '<redacted>')
+    assert.equal(JSON.stringify(diagnostic).includes(unsafeSegment), false)
+  }
+
+  const unsafeKeyToolbox = {
+    context: {},
+    declarations: [],
+    execute() {
+      return { ok: true, Andrew: 1, 'memo with spaces': 2 }
+    },
+  }
+  let availableKeysDiagnostic
+  await assert.rejects(
+    answerWithTool({
+      toolbox: unsafeKeyToolbox,
+      name: 'list_transactions',
+      answer: 'There is 1 matching transaction.',
+      factRefs: [{ callId: 'call', path: '/matchedCount' }],
+    }),
+    error => {
+      availableKeysDiagnostic = error.diagnostic
+      return error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'fact-ref-unavailable'
+    },
+  )
+  assert.deepEqual(
+    availableKeysDiagnostic.availableKeysAtFailure,
+    ['ok', '<redacted>', '<redacted>'],
+  )
+  assert.equal(JSON.stringify(availableKeysDiagnostic).includes('Andrew'), false)
+  assert.equal(JSON.stringify(availableKeysDiagnostic).includes('memo with spaces'), false)
+
+  let diagnostic
+  await assert.rejects(
+    answerWithTool({
+      name: 'list_transactions',
+      answer: 'There is 1 matching transaction.',
+      factRefs: [{ callId: 'call', path: '/transactions/0/transactionCount' }],
+    }),
+    error => {
+      diagnostic = error.diagnostic
+      return error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'fact-ref-unavailable'
+    },
+  )
+  assert.equal(diagnostic.path, '/transactions/0/transactionCount')
+  assert.equal(diagnostic.failedAtSegment, 'transactionCount')
+})
+
+test('fact-ref-unavailable diagnostic classifies a prefixed call ID without logging it', async () => {
+  const assistantEvidence = twoStudentEvidence()
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Private memo text', truncated: false }),
+  })
+  const call = {
+    id: 'tool-call-01',
+    name: 'aggregate_transactions',
+    args: { groupBy: ['category'], metric: 'count' },
+  }
+  const scenarios = [
+    {
+      prefix: call.id,
+      matchesCallId: true,
+      matchesToolName: false,
+    },
+    {
+      prefix: call.name,
+      matchesCallId: false,
+      matchesToolName: true,
+    },
+    {
+      prefix: 'bogus-prefix',
+      matchesCallId: false,
+      matchesToolName: false,
+    },
+    {
+      prefix: 'result',
+      matchesCallId: false,
+      matchesToolName: false,
+      wrapperGuess: 'result',
+    },
+  ]
+  for (const scenario of scenarios) {
+    let diagnostic
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence,
+        toolbox,
+        calls: [call],
+        answer: 'There is 1 matching result.',
+        factRefs: [{
+          callId: call.id,
+          path: `/${scenario.prefix}/rows/0/group/category`,
+        }],
+      }),
+      error => {
+        diagnostic = error.diagnostic
+        return error instanceof GeminiClassroomAssistantError &&
+          error.subcategory === 'fact-ref-unavailable'
+      },
+    )
+    assert.equal(diagnostic.toolName, call.name)
+    assert.equal(diagnostic.path, '/<redacted>/rows/0/group/category')
+    assert.equal(diagnostic.failedAtSegment, '<redacted>')
+    assert.equal(diagnostic.failedSegmentMatchesCallId, scenario.matchesCallId)
+    assert.equal(diagnostic.failedSegmentMatchesToolName, scenario.matchesToolName)
+    assert.equal(diagnostic.failedSegmentLength, scenario.prefix.length)
+    assert.equal(diagnostic.failedSegmentHasHyphen, scenario.prefix.includes('-'))
+    assert.equal(diagnostic.failedSegmentWrapperGuess, scenario.wrapperGuess ?? null)
+    if (!scenario.matchesCallId && !scenario.matchesToolName && !scenario.wrapperGuess) {
+      assert.equal(JSON.stringify(diagnostic).includes(scenario.prefix), false)
+    }
   }
 })
 

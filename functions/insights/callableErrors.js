@@ -56,7 +56,6 @@ export const CALLABLE_LOG_SUBCATEGORIES = Object.freeze(new Set([
   'unsupported-number',
   'unsupported-date',
   'uncited-roster-name',
-  'unknown-identity',
   'truncation-not-disclosed',
   'quoted-span-unverified',
 ]))
