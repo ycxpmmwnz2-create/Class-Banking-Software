@@ -995,6 +995,119 @@ test('every final-answer validation failure carries an allowlisted subcategory',
   }
 })
 
+// Teachers read a date as "August 27", not "2026-08-27". Requiring the year
+// left the day number in the answer for the numeric scan to find, so an
+// ordinary correct sentence was refused as an uncited quantity. Verification
+// still binds every spelling to a date the answer actually cited.
+// A modifier between the number word and the noun hid a spelled-out quantity
+// from both this check and the digit scan, so a false count could reach the
+// teacher. This is the one failure in this family that admits a wrong answer
+// rather than refusing a right one.
+test('a spelled-out quantity is refused even behind a modifier', async () => {
+  for (const claim of [
+    'There are seven transactions',
+    'There are seven matching transactions',
+    'There are twelve approved transactions',
+    'There are five recently approved payments',
+    'Three current students earned money',
+    'There are two matching balances',
+  ]) {
+    await assert.rejects(
+      answerWithTool({ answer: `${claim}.` }),
+      error => error instanceof GeminiClassroomAssistantError && error.subcategory === 'number-words',
+    )
+  }
+})
+
+test('ordinary partitive wording is not read as a spelled-out quantity', async () => {
+  // "one of the students" is how the sentence reads, not a count written out.
+  // Refusing it would trade a false-answer bug for a false-refusal bug.
+  for (const phrasing of [
+    'There is 1 matching balance, one of the balances in the class',
+    'There is 1 matching balance for one of the students',
+  ]) {
+    const result = await answerWithTool({ answer: `${phrasing}.` })
+    assert.equal(result.answer, `${phrasing}.`)
+  }
+})
+
+test('a cited date is verified in the spellings a teacher actually writes', async () => {
+  for (const phrasing of [
+    'on 2026-08-27',
+    'on August 27, 2026',
+    'on August 27',
+    'on Aug 27',
+    'on August 27th',
+    'on Thursday, August 27',
+  ]) {
+    const result = await answerWithTool({ answer: `There is 1 matching balance ${phrasing}.` })
+    assert.equal(result.answer, `There is 1 matching balance ${phrasing}.`)
+  }
+})
+
+test('widening date spellings still refuses a date no cited fact covers', async () => {
+  for (const phrasing of [
+    'on August 26',
+    'on Aug 26',
+    'on August 26th',
+    'on Wednesday, August 26',
+    'on August 27, 2024',
+    'on February 30',
+  ]) {
+    await assert.rejects(
+      answerWithTool({ answer: `There is 1 matching balance ${phrasing}.` }),
+      error => error instanceof GeminiClassroomAssistantError && error.subcategory === 'unsupported-date',
+    )
+  }
+})
+
+test('a bare ordinal naming a cited day reads as a date', async () => {
+  for (const phrasing of [
+    'on the 27th',
+    'from the 27th',
+    'on the 27th and the 27th',
+  ]) {
+    const result = await answerWithTool({ answer: `There is 1 matching balance ${phrasing}.` })
+    assert.equal(result.answer, `There is 1 matching balance ${phrasing}.`)
+  }
+})
+
+test('a bare ordinal naming an uncited day is still refused', async () => {
+  for (const phrasing of ['on the 14th', 'from the 1st', 'on the 30th']) {
+    await assert.rejects(
+      answerWithTool({ answer: `There is 1 matching balance ${phrasing}.` }),
+      error => error instanceof GeminiClassroomAssistantError && error.subcategory === 'unsupported-date',
+    )
+  }
+})
+
+test('an ordinal that ranks something still needs a citation', async () => {
+  // A rank names the thing it ranks, which is what separates it from a date.
+  // "the 27th transaction" must not ride through on the cited 27th.
+  for (const phrasing of [
+    'and it is the 3rd transaction',
+    'and it is the 27th transaction',
+    'and it is the 2nd highest balance',
+    'and Ava is the 5th student listed',
+  ]) {
+    await assert.rejects(
+      answerWithTool({ answer: `There is 1 matching balance ${phrasing}.` }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        ['unsupported-number', 'uncited-roster-name'].includes(error.subcategory),
+    )
+  }
+})
+
+test('a month word cannot launder an uncited count into a date', async () => {
+  // "In May 5 students earned money" reads as a date to the scanner. It must
+  // not become a way to state 5 without citing it.
+  await assert.rejects(
+    answerWithTool({ answer: 'There is 1 matching balance. In May 5 students earned money.' }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      ['unsupported-date', 'unsupported-number'].includes(error.subcategory),
+  )
+})
+
 test('a refusal over a student name carries no diagnostic detail at all', async () => {
   // The only token this check can flag is a real roster name, so there is
   // nothing about it that is safe to put in a log.
@@ -1250,11 +1363,22 @@ test('unsupported-number diagnostic includes numeric facts only', async () => {
         error.subcategory === 'unsupported-number'
     },
   )
+  // The comparison set is every scalar in the cited results, so the diagnostic
+  // reports the kinds available to match the claim and never their values.
   assert.deepEqual(diagnostic, {
-    claimValue: 99,
     claimKind: 'transaction-count',
-    numericFacts: [{ value: 2, kind: 'transaction-count', window: 'window-1' }],
+    numericFactCount: diagnostic.numericFactCount,
+    numericFactKinds: diagnostic.numericFactKinds,
+    distinctWindowCount: diagnostic.distinctWindowCount,
   })
+  // The guarantee is the key set: no classroom value can appear in a log that
+  // carries only a claim kind, two counts, and a list of kinds.
+  assert.deepEqual(
+    Object.keys(diagnostic).sort(),
+    ['claimKind', 'distinctWindowCount', 'numericFactCount', 'numericFactKinds'],
+  )
+  assert.ok(diagnostic.numericFactKinds.includes('transaction-count'))
+  assert.equal(diagnostic.numericFactKinds.every(kind => typeof kind === 'string'), true)
   assert.equal(JSON.stringify(diagnostic).includes(privateLabel), false)
 })
 
@@ -1284,12 +1408,10 @@ test('unsupported-number diagnostic anonymizes matching and different fact windo
         error.subcategory === 'unsupported-number'
     },
   )
-  assert.equal(diagnostic.numericFacts[0].window, diagnostic.numericFacts[1].window)
-  assert.notEqual(diagnostic.numericFacts[0].window, diagnostic.numericFacts[2].window)
-  assert.deepEqual(
-    diagnostic.numericFacts.map(fact => fact.window),
-    ['window-1', 'window-1', 'window-2'],
-  )
+  // Two of the three calls share a range and the third does not, so the
+  // diagnostic reports two distinct windows without naming either one.
+  assert.equal(diagnostic.distinctWindowCount, 2)
+  assert.equal(Object.hasOwn(diagnostic, 'numericFacts'), false)
   const serialized = JSON.stringify(diagnostic)
   for (const call of calls) {
     const result = toolbox.execute(call.name, call.args)
