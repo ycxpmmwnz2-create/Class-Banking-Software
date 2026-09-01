@@ -333,7 +333,7 @@ function parseFinalAnswer(text, { executed, assistantEvidence, usage, toolCallCo
   const facts = validateFactRefs(parsed.factRefs, parsed.evidenceCallIds, executed)
   assertQuotedSpansAreCited(parsed.answer, facts)
   assertAnswerNamesAreGrounded(parsed.answer, assistantEvidence.students, facts)
-  assertNumericClaimsAreGrounded(parsed.answer, facts, assistantEvidence)
+  assertNumericClaimsAreGrounded(parsed.answer, groundingFacts(facts, cited), assistantEvidence)
   assertTruncationDisclosed(parsed.answer, cited)
   return Object.freeze({
     answer: parsed.answer,
@@ -386,6 +386,64 @@ function validateFactRefs(value, evidenceCallIds, executed) {
       ),
     })
   }))
+}
+
+// A stated window length is not a value read from a row -- it asserts which
+// records were examined, and every window-scoped quantity in the answer is then
+// held to that range. A result carries the teacher's selected period whether or
+// not the call filtered to it, so widening day-counts would let a count drawn
+// from one range be presented as covering another. Day-counts therefore stay
+// with the declared references; every other quantity is grounded in the cited
+// results.
+function groundingFacts(declared, cited) {
+  return Object.freeze([
+    ...declared,
+    ...scalarFactsFromCitedCalls(cited).filter(fact => fact.kind !== 'day-count'),
+  ])
+}
+
+// A quantity is grounded when it appears in a result the answer cited, whether
+// or not the model also declared it in factRefs. Requiring the declaration made
+// grounding depend on the model completing paperwork for every number it
+// mentioned in passing, and a missed declaration refused an answer whose figure
+// was correct. The model still chooses which calls it used, so a number must
+// still come from this classroom's own records; factRefs continue to govern
+// quoted memo wording and roster names, where attributing real text to the
+// wrong row misleads in a way a stray correct number does not.
+function scalarFactsFromCitedCalls(cited) {
+  const facts = []
+  for (const call of cited) {
+    collectScalarFacts(call.result, '', call, facts)
+  }
+  return Object.freeze(facts)
+}
+
+const MAX_COLLECTED_SCALAR_FACTS = 4_096
+
+function collectScalarFacts(value, pointer, call, facts) {
+  if (facts.length >= MAX_COLLECTED_SCALAR_FACTS) return
+  if (typeof value === 'number' || typeof value === 'string') {
+    if (typeof value === 'number' && !Number.isFinite(value)) return
+    facts.push(Object.freeze({
+      value,
+      window: factWindowKey(call.result, pointer === '' ? '/' : pointer),
+      kind: factKind(pointer === '' ? '/' : pointer, call.result, call.name),
+    }))
+    return
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => collectScalarFacts(item, `${pointer}/${index}`, call, facts))
+    return
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) {
+      collectScalarFacts(child, `${pointer}/${encodePointerSegment(key)}`, call, facts)
+    }
+  }
+}
+
+function encodePointerSegment(key) {
+  return key.replace(/~/gu, '~0').replace(/\//gu, '~1')
 }
 
 function resolveJsonPointer(root, pointer, diagnosticContext) {
@@ -489,8 +547,17 @@ function factKind(path, result, callName) {
   return 'generic'
 }
 
+// Quantities must be written in digits so the grounding check below can read
+// them. Requiring the number word to sit directly against the noun let a
+// modifier carry a spelled-out quantity straight through -- "seven matching
+// transactions" was neither rejected here nor visible to the digit scan, so a
+// false count reached the teacher. Modifiers are skipped; the function words
+// that begin a partitive are not, because "one of the students" is ordinary
+// wording rather than a spelled-out count.
+const NUMBER_WORD_QUANTITY_PATTERN = /\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\s+(?:(?!(?:of|the|a|an|in|at|on|for|to|from|out|and|or)\b)\p{L}+\s+){0,2}(?:transactions?|students?|days?|times?|records?|matches?|results?|balances?|credits?|payments?|dollars?)\b/iu
+
 function assertNumericClaimsAreGrounded(answer, facts, assistantEvidence) {
-  if (/\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\s+(?:transactions?|students?|days?|times?|records?|matches?|results?|balances?|credits?|payments?|dollars?)\b/iu.test(answer)) {
+  if (NUMBER_WORD_QUANTITY_PATTERN.test(answer)) {
     fail('answer-unverified', 'The provider answer must use digits for factual quantities.', 'number-words')
   }
   const withoutDates = removeVerifiedDates(answer, facts, assistantEvidence)
@@ -510,16 +577,16 @@ function assertNumericClaimsAreGrounded(answer, facts, assistantEvidence) {
       fact.window === null || licensed.size === 0 || licensed.has(fact.window)
     ))
     if (!supported) {
+      // The comparison set is now every scalar in the cited results, so listing
+      // its values would put classroom figures in a log. The claim kind and the
+      // kinds available to match it are what actually diagnose this refusal.
       fail('answer-unverified', 'The provider answer contains an unsupported number.', 'unsupported-number', {
-        claimValue: claim.normalized,
         claimKind: claim.kind,
-        numericFacts: facts
+        numericFactCount: facts.filter(fact => typeof fact.value === 'number').length,
+        numericFactKinds: [...new Set(facts
           .filter(fact => typeof fact.value === 'number')
-          .map(fact => ({
-            value: fact.value,
-            kind: fact.kind,
-            window: windowLabels.get(fact) ?? null,
-          })),
+          .map(fact => fact.kind))].sort(),
+        distinctWindowCount: new Set([...windowLabels.values()]).size,
       })
     }
   }
@@ -570,26 +637,87 @@ function removeVerifiedDates(answer, facts, assistantEvidence) {
   ])
   const patterns = [
     /\b\d{4}-\d{2}-\d{2}\b/gu,
-    /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b/giu,
+    SPOKEN_DATE_PATTERN,
     /\b\d{1,2}\/\d{1,2}\/\d{4}\b/gu,
   ]
   let result = answer
   for (const pattern of patterns) {
     result = result.replace(pattern, value => {
-      const parsed = dateKey(value)
-      if (!parsed || !allowed.has(parsed)) {
+      const keys = dateKeys(value, allowed)
+      if (keys.length === 0 || !keys.some(key => allowed.has(key))) {
         fail('answer-unverified', 'The provider answer contains an unsupported date.', 'unsupported-date')
       }
       return ' '.repeat(value.length)
     })
   }
-  return result
+  return removeVerifiedBareOrdinals(result, allowed)
 }
 
-function dateKey(value) {
-  if (/^\d{4}-\d{2}-\d{2}$/u.test(value)) return value
-  const parsed = new Date(value)
-  return Number.isFinite(parsed.getTime()) ? parsed.toISOString().slice(0, 10) : null
+// "on the 28th" is how a teacher says a date that the sentence already placed
+// in a month. A rank -- "the 3rd transaction" -- is a claim about position
+// instead, and stays with the numeric check that requires a citation. The two
+// are told apart by what follows: a rank names the thing it ranks.
+const BARE_ORDINAL_PATTERN = /\bthe\s+(\d{1,2})(?:st|nd|rd|th)\b/giu
+
+const ORDINAL_DATE_FOLLOWERS = Object.freeze(new Set([
+  'and', 'or', 'but', 'so', 'then', 'was', 'were', 'is', 'are', 'in', 'at',
+  'on', 'for', 'with', 'to', 'than', 'when', 'while', 'that', 'it', 'they',
+  'because', 'since', 'after', 'before', 'through', 'until',
+]))
+
+function removeVerifiedBareOrdinals(answer, allowed) {
+  return answer.replace(BARE_ORDINAL_PATTERN, (value, day, offset, source) => {
+    const following = /^\s+(\p{L}+)/u.exec(source.slice(offset + value.length))
+    if (following && !ORDINAL_DATE_FOLLOWERS.has(following[1].toLowerCase())) {
+      return value
+    }
+    if (!ordinalMatchesCitedDay(Number(day), allowed)) {
+      fail('answer-unverified', 'The provider answer contains an unsupported date.', 'unsupported-date')
+    }
+    return ' '.repeat(value.length)
+  })
+}
+
+function ordinalMatchesCitedDay(day, allowed) {
+  return [...allowed].some(key => Number(key.slice(8, 10)) === day)
+}
+
+const MONTH_NAMES = Object.freeze([
+  'january', 'february', 'march', 'april', 'may', 'june',
+  'july', 'august', 'september', 'october', 'november', 'december',
+])
+
+// An optional weekday, a month, a day that may carry an ordinal suffix, and an
+// optional year. Teachers read dates as "August 28" or "Friday, August 28th";
+// requiring the year refused those spellings, and the surviving day number then
+// read as an uncited quantity, which is what the teacher actually saw.
+const SPOKEN_DATE_PATTERN = /\b(?:(?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day,?\s+)?(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b/giu
+
+// Every date a spoken form could mean, built without Date parsing so the result
+// does not depend on the host time zone. A year-less date resolves only against
+// years the cited facts already cover, so widening the spelling cannot widen
+// which dates an answer is allowed to claim.
+function dateKeys(value, allowed) {
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(value)) return [value]
+  const slashed = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/u.exec(value)
+  if (slashed) {
+    const [, month, day, year] = slashed
+    return [formatDateKey(year, Number(month), Number(day))]
+  }
+  const spoken = /(?<month>[A-Za-z]+)\s+(?<day>\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(?<year>\d{4}))?$/u.exec(value.trim())
+  if (!spoken) return []
+  const monthIndex = MONTH_NAMES.findIndex(name => name.startsWith(spoken.groups.month.toLowerCase()))
+  if (monthIndex < 0) return []
+  const day = Number(spoken.groups.day)
+  if (day < 1 || day > 31) return []
+  const years = spoken.groups.year
+    ? [spoken.groups.year]
+    : [...new Set([...allowed].map(key => key.slice(0, 4)))]
+  return years.map(year => formatDateKey(year, monthIndex + 1, day))
+}
+
+function formatDateKey(year, month, day) {
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
 function numericClaimKind(claim, before, after) {
