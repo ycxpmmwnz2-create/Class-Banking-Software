@@ -334,9 +334,13 @@ function parseFinalAnswer(text, { executed, assistantEvidence, usage, toolCallCo
   assertQuotedSpansAreCited(parsed.answer, facts)
   assertAnswerNamesAreGrounded(parsed.answer, assistantEvidence.students, facts)
   assertNumericClaimsAreGrounded(parsed.answer, groundingFacts(facts, cited), assistantEvidence)
-  assertTruncationDisclosed(parsed.answer, cited)
+  // Runs last, and adds rather than refuses. The disclosure is computed from
+  // the cited result, not written by the provider, so it is appended after the
+  // grounding checks: those govern what the provider claimed, and this sentence
+  // is ours.
+  const answer = withTruncationDisclosure(parsed.answer, cited)
   return Object.freeze({
-    answer: parsed.answer,
+    answer,
     evidence: Object.freeze(cited.map(describeEvidenceCall)),
     usage: Object.freeze({ ...usage }),
     toolCallCount,
@@ -862,10 +866,30 @@ function capitalizedWholeTextSpans(answer, value) {
     .map(match => Object.freeze({ start: match.index, end: match.index + match[0].length }))
 }
 
-function assertTruncationDisclosed(answer, cited) {
+// The teacher must be told when they are looking at part of a list. Refusing
+// the whole answer when the provider forgot to say so threw away correct work
+// over a sentence we can write ourselves from the same cited result -- and it
+// did exactly that on a live canary, twice, on a question about a single
+// newest row where the provider omitted the disclosure entirely.
+//
+// Stating it ourselves is also the stronger guarantee: the disclosure no longer
+// depends on the provider choosing to comply. The counts come from the cited
+// result, so the sentence cannot be wrong, and it is added after the grounding
+// checks because those govern the provider's claims, not ours.
+const TRUNCATION_DISCLOSURE_NOUNS = Object.freeze({
+  list_transactions: 'matching transactions',
+  get_balances: 'matching balances',
+  aggregate_transactions: 'grouped results',
+  find_students_without_transactions: 'matching students',
+})
+
+function withTruncationDisclosure(answer, cited) {
+  let disclosed = answer
   for (const call of cited.filter(item => item.result?.truncated === true)) {
     const counts = truncationCounts(call)
-    if (!counts) {
+    if (hasExactTruncationDisclosure(disclosed, counts ?? { returnedCount: -1, totalCount: -1 })) continue
+    const noun = TRUNCATION_DISCLOSURE_NOUNS[call.name]
+    if (!counts || !noun) {
       // No disclosure can satisfy this branch, so it has to say why it fired.
       // The tool name is a fixed vocabulary and the rest are booleans; no
       // classroom value reaches the log.
@@ -880,22 +904,9 @@ function assertTruncationDisclosed(answer, cited) {
         },
       )
     }
-    if (!hasExactTruncationDisclosure(answer, counts)) {
-      fail(
-        'answer-unverified',
-        'The provider answer did not disclose a truncated result.',
-        'truncation-not-disclosed',
-        {
-          returnedCount: counts.returnedCount,
-          totalCount: counts.totalCount,
-          // Which half of the disclosure was missing. Both are derived from the
-          // answer's own shape, never from its content.
-          disclosureNumbersPresent: hasTruncationNumberPair(answer, counts),
-          disclosureWordPresent: TRUNCATION_PARTIAL_WORD.test(answer),
-        },
-      )
-    }
+    disclosed = `Showing ${counts.returnedCount} of ${counts.totalCount} ${noun}. ${disclosed}`
   }
+  return disclosed
 }
 
 function rawTruncationTotal(call) {
@@ -936,11 +947,6 @@ function truncationNumberPairPatterns({ returnedCount, totalCount }) {
     // A bare "of" needs a word nearby that says the list is partial.
     of: new RegExp(`\\b${returned}\\b${gap}\\bof\\b${gap}\\b${total}\\b`, 'iu'),
   }
-}
-
-function hasTruncationNumberPair(answer, counts) {
-  const { outOf, of } = truncationNumberPairPatterns(counts)
-  return sentences(answer).some(sentence => outOf.test(sentence) || of.test(sentence))
 }
 
 function hasExactTruncationDisclosure(answer, counts) {
