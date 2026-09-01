@@ -25,11 +25,16 @@ const RESERVATION_FAILURE_MESSAGES = Object.freeze({
 })
 
 export class InsightToolQuestionServiceError extends Error {
-  constructor(category, message, subcategory = null) {
+  constructor(category, message, subcategory = null, diagnostic = null) {
     super(message)
     this.name = 'InsightToolQuestionServiceError'
     this.category = category
     this.subcategory = subcategory
+    // Carried through the re-wrap on purpose. Dropping it here is what made a
+    // live refusal report its subcategory and nothing else, which is the half
+    // that does not say why the check fired. The payload is allowlisted by
+    // name and shape again at the log boundary.
+    this.diagnostic = diagnostic
   }
 }
 
@@ -127,6 +132,7 @@ export function createInsightToolQuestionService(dependencies) {
           error.category,
           'The classroom assistant could not complete the answer.',
           error.subcategory,
+          error.diagnostic,
         )
       }
       throw new InsightToolQuestionServiceError('provider-unavailable', 'The classroom assistant is unavailable.')

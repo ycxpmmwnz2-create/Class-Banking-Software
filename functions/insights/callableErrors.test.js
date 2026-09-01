@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { callableLogDiagnostic } from './callableErrors.js'
+import { InsightToolQuestionServiceError } from './toolQuestionService.js'
 
 function error(subcategory, diagnostic) {
   return { category: 'answer-unverified', subcategory, diagnostic }
@@ -88,4 +89,20 @@ test('logs nothing for an unknown subcategory or a missing diagnostic', () => {
   assert.equal(callableLogDiagnostic(error('unsupported-number', null)), null)
   assert.equal(callableLogDiagnostic(error('unsupported-number', ['money'])), null)
   assert.equal(callableLogDiagnostic(undefined), null)
+})
+
+// The refusal crosses a re-wrap on its way to the log. Dropping the diagnostic
+// there is what made a live refusal name its subcategory and nothing else.
+test('the service re-wrap carries the diagnostic through to the log', () => {
+  const wrapped = new InsightToolQuestionServiceError(
+    'answer-unverified',
+    'The classroom assistant could not complete the answer.',
+    'truncation-not-disclosed',
+    { toolName: 'list_transactions', returnedCountUsable: true, totalCountUsable: false },
+  )
+  assert.deepEqual(callableLogDiagnostic(wrapped), {
+    toolName: 'list_transactions',
+    returnedCountUsable: true,
+    totalCountUsable: false,
+  })
 })
