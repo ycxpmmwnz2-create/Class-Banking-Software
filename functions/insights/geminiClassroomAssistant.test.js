@@ -535,8 +535,11 @@ test('binds currency and count claims to exact typed result fields', async () =>
   }
 })
 
-test('requires a teacher-visible disclosure when cited tool output is truncated', async () => {
-  for (const [answer, shouldPass] of [
+// The teacher must always be told they are seeing part of a list. When the
+// provider omits that, the disclosure is added from the same cited result
+// rather than the whole answer being discarded.
+test('always shows a truncation disclosure, adding it when the provider omits one', async () => {
+  for (const [answer, alreadyDisclosed] of [
     ['500 students had no matching rent transactions.', false],
     ['There are 500 students without rent transactions, which is more than last week.', false],
     ['Showing 25 of 500 students without matching rent transactions.', true],
@@ -567,32 +570,24 @@ test('requires a teacher-visible disclosure when cited tool output is truncated'
         }
       },
     })
-    if (shouldPass) {
-      const result = await assistant.answer({ assistantEvidence: {
-        ...evidence(),
-        students: Array.from({ length: 500 }, (_, index) => ({
-          ref: `student-${String(index + 1).padStart(3, '0')}`,
-          displayName: `Learner ${String(index + 1).padStart(3, '0')}`,
-          current: true,
-          balance: index,
-          frozen: false,
-        })),
-      } })
+    const result = await assistant.answer({ assistantEvidence: {
+      ...evidence(),
+      students: Array.from({ length: 500 }, (_, index) => ({
+        ref: `student-${String(index + 1).padStart(3, '0')}`,
+        displayName: `Learner ${String(index + 1).padStart(3, '0')}`,
+        current: true,
+        balance: index,
+        frozen: false,
+      })),
+    } })
+    if (alreadyDisclosed) {
+      // The provider said it correctly, so nothing is added or duplicated.
       assert.equal(result.answer, answer)
+      assert.equal(result.answer.match(/Showing/gu).length, 1)
     } else {
-      await assert.rejects(
-        assistant.answer({ assistantEvidence: {
-          ...evidence(),
-          students: Array.from({ length: 500 }, (_, index) => ({
-            ref: `student-${String(index + 1).padStart(3, '0')}`,
-            displayName: `Learner ${String(index + 1).padStart(3, '0')}`,
-            current: true,
-            balance: index,
-            frozen: false,
-          })),
-        } }),
-        error => error instanceof GeminiClassroomAssistantError && error.category === 'answer-unverified',
-      )
+      assert.match(result.answer, /^Showing 25 of 500 matching students\./u)
+      // The provider's own answer survives intact behind the disclosure.
+      assert.ok(result.answer.endsWith(answer), result.answer)
     }
   }
 })
@@ -915,27 +910,30 @@ test('requires both truncation counts in one sentence, in any natural wording', 
     { callId: 'call', path: '/matchedCount' },
     { callId: 'call', path: '/transactions/0/memo' },
   ]
-  await assert.rejects(
-    answerWithTool({
-      assistantEvidence,
-      toolbox,
-      name: 'list_transactions',
-      args: { includeMemos: true },
-      answer: 'The first memo is "Rent payment for the week".',
-      factRefs,
-    }),
-    error => error instanceof GeminiClassroomAssistantError &&
-      error.subcategory === 'truncation-not-disclosed',
-  )
+  // Omitted by the provider: added for the teacher, original answer preserved.
+  const bare = 'The first memo is "Rent payment for the week".'
+  const added = (await answerWithTool({
+    assistantEvidence,
+    toolbox,
+    name: 'list_transactions',
+    args: { includeMemos: true },
+    answer: bare,
+    factRefs,
+  })).answer
+  assert.equal(added, `Showing 50 of 60 matching transactions. ${bare}`)
+
+  // Written correctly by the provider: left exactly as it was, not duplicated.
   const answer = 'Showing 50 of 60 matching transactions. The first memo is "Rent payment for the week".'
-  assert.equal((await answerWithTool({
+  const untouched = (await answerWithTool({
     assistantEvidence,
     toolbox,
     name: 'list_transactions',
     args: { includeMemos: true },
     answer,
     factRefs,
-  })).answer, answer)
+  })).answer
+  assert.equal(untouched, answer)
+  assert.equal(untouched.match(/Showing/gu).length, 1)
 })
 
 // Grok/canary follow-up 2026-09-01. The live canary refused a correct answer
@@ -979,7 +977,7 @@ test('accepts any wording that puts both truncation counts in one sentence', asy
   }
 })
 
-test('still refuses a truncated listing when a count is wrong, absent, or split across sentences', async () => {
+test('adds the disclosure when the provider attempt does not qualify, and still refuses a wrong total', async () => {
   const assistantEvidence = evidence()
   assistantEvidence.transactions = Array.from({ length: 60 }, (_, index) => ({
     ...assistantEvidence.transactions[index % assistantEvidence.transactions.length],
@@ -995,36 +993,45 @@ test('still refuses a truncated listing when a count is wrong, absent, or split 
     { callId: 'call', path: '/transactions/0/memo' },
   ]
   const tail = ' The first memo is "Rent payment for the week".'
-  const refused = [
+
+  // None of these count as a disclosure, so the teacher gets a real one added.
+  const notADisclosure = [
     // No numbers at all -- the teacher cannot tell how much is missing.
     'Some matching transactions are not shown.',
     // Only the returned count. The total is the number that matters most.
     'Showing the first 50 matching transactions.',
-    // A total that is not the real one.
-    'Showing 50 of 61 matching transactions.',
     // Both numbers present but not read together as one disclosure.
     'There are 50 here. Separately, the classroom has 60 matching transactions.',
     // A bare "of" with nothing marking the listing as partial.
     'Transaction 50 of 60 is the newest.',
   ]
-  for (const disclosure of refused) {
-    await assert.rejects(
-      answerWithTool({
-        assistantEvidence,
-        toolbox,
-        name: 'list_transactions',
-        args: { includeMemos: true },
-        answer: `${disclosure}${tail}`,
-        factRefs,
-      }),
-      // A wrong total is caught by numeric grounding before the disclosure
-      // check ever runs, so the property under test is that the answer is
-      // refused, not which of the two gates caught it first.
-      error => error instanceof GeminiClassroomAssistantError &&
-        error.category === 'answer-unverified',
-      `should refuse: ${disclosure}`,
-    )
+  for (const attempt of notADisclosure) {
+    const result = await answerWithTool({
+      assistantEvidence,
+      toolbox,
+      name: 'list_transactions',
+      args: { includeMemos: true },
+      answer: `${attempt}${tail}`,
+      factRefs,
+    })
+    assert.match(result.answer, /^Showing 50 of 60 matching transactions\./u, `should disclose for: ${attempt}`)
   }
+
+  // A total the records do not support is still refused, by numeric grounding
+  // rather than by the disclosure check. Stating it for the teacher would mean
+  // repeating a wrong number back to them.
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence,
+      toolbox,
+      name: 'list_transactions',
+      args: { includeMemos: true },
+      answer: `Showing 50 of 61 matching transactions.${tail}`,
+      factRefs,
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.category === 'answer-unverified',
+  )
 })
 
 test('rejects a MAX_TOKENS turn as provider-output-truncated', async () => {

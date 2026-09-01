@@ -27,13 +27,9 @@ test('logs only allowlisted, value-free diagnostic fields', () => {
   assert.deepEqual(callableLogDiagnostic(error('truncation-not-disclosed', {
     returnedCount: 50,
     totalCount: 60,
-    disclosureNumbersPresent: false,
-    disclosureWordPresent: true,
   })), {
     returnedCount: 50,
     totalCount: 60,
-    disclosureNumbersPresent: false,
-    disclosureWordPresent: true,
   })
 })
 

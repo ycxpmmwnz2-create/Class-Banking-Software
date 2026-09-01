@@ -134,8 +134,6 @@ const CALLABLE_LOG_DIAGNOSTIC_FIELDS = Object.freeze(new Map([
   ['distinctWindowCount', isCount],
   ['returnedCount', isCount],
   ['totalCount', isCount],
-  ['disclosureNumbersPresent', isFlag],
-  ['disclosureWordPresent', isFlag],
   ['toolName', isWordFrom(CALLABLE_LOG_DIAGNOSTIC_TOOL_NAMES)],
   ['returnedCountUsable', isFlag],
   ['totalCountUsable', isFlag],
