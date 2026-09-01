@@ -232,8 +232,6 @@ test('tool assistant blocks concatenated, reordered, and character-obscured rost
     'How much did BelliniQGianMarco earn?',
     'How much did ＧｉａｎＭａｒｃｏＸＢｅｌｌｉｎｉ earn?',
     'How much did GianMarcoBelli\u0301ni earn?',
-    'How much did BelliniX earn?',
-    'How much did XBellini earn?',
   ]) {
     await assert.rejects(
       loader()({
@@ -942,6 +940,184 @@ test('rejects parseable date shapes outside the stored Morgan Bank contract', as
     }),
     error => error instanceof InsightQuestionEvidenceError && error.category === 'evidence-malformed',
   )
+})
+
+// A surname can be a substring of an ordinary product word. Containment plus a
+// length tolerance treated every such word as an obscured name, so routine
+// questions were refused as sensitive. The names below are invented for this
+// test; the residues differ (s, ce, y) because the defect is the mechanism, not
+// one collision.
+test('an ordinary product word containing a surname is not an obscured roster name', async () => {
+  for (const [surname, question] of [
+    ['Tudents', 'How many students earned money?'],
+    ['Day', 'How many days did the class earn money?'],
+    ['Balan', 'What is the average balance?'],
+    ['Categor', 'Which category earned the most?'],
+    ['Ransaction', 'How many transactions were approved?'],
+  ]) {
+    const data = fixture({
+      'classrooms/class-a/students/1': {
+        ...fixture()['classrooms/class-a/students/1'],
+        name: `Mira ${surname}`,
+      },
+    })
+    const result = await loader(data)({
+      teacherUid: 'teacher-a',
+      classroomId: 'class-a',
+      periodDays: 7,
+      timeZone: 'America/Denver',
+      question,
+      assistantMode: true,
+    })
+    assert.deepEqual(result.providerInput.subjectAliases, [])
+  }
+})
+
+// Authorized by Andrew 2026-09-01. A lone name token padded with letters only
+// cannot be told apart from an ordinary English word carrying a surname, so the
+// question path no longer refuses it -- the alternative was refusing ordinary
+// free-form questions. Added letters stay allowed even when a digit is also
+// present, unless removing the digit reconstructs the roster token exactly:
+// "Bellini1X" strips to "bellinix", not the token, so it is allowed too. The
+// memo path keeps the stricter rule, because being wrong there withholds one
+// phrase instead of the whole answer.
+test('a letter- or mixed-padded lone name token is allowed in a question but withheld from a memo', async () => {
+  for (const fused of ['BelliniX', 'XBellini', 'Bellini1X']) {
+    const questionEnvelope = await loader()({
+      teacherUid: 'teacher-a',
+      classroomId: 'class-a',
+      periodDays: 7,
+      timeZone: 'America/Denver',
+      question: `How much did ${fused} earn?`,
+      assistantMode: true,
+    })
+    assert.equal(typeof questionEnvelope.assistantMemoResolver, 'function')
+    assert.equal(questionEnvelope.assistantEvidence.question, `How much did ${fused} earn?`)
+
+    const memoEnvelope = await loader(fixture({
+      'classrooms/class-a/transactions/101': {
+        ...fixture()['classrooms/class-a/transactions/101'],
+        memo: `Paid to ${fused} for chores`,
+      },
+    }))({
+      teacherUid: 'teacher-a',
+      classroomId: 'class-a',
+      periodDays: 7,
+      timeZone: 'America/Denver',
+      question: 'What happened in the technology transactions?',
+      assistantMode: true,
+    })
+    assert.equal(memoEnvelope.assistantMemoResolver('transaction-00001'), null)
+  }
+})
+
+// Ordinary wording pairs digits with words that merely contain a short surname.
+// Treating any digit as evidence refused these outright. Identities invented.
+test('ordinary wording carrying digits and a short surname is not a disguised name', async () => {
+  for (const [identity, question] of [
+    ['Mira Op', 'Which students have top3 balances?'],
+    ['Mira Day', 'Show transactions from the last 30days.'],
+    ['Mira Op', 'Show the top3 and top5 earners.'],
+  ]) {
+    const data = fixture({
+      'classrooms/class-a/students/1': {
+        ...fixture()['classrooms/class-a/students/1'],
+        name: identity,
+      },
+    })
+    const result = await loader(data)({
+      teacherUid: 'teacher-a',
+      classroomId: 'class-a',
+      periodDays: 7,
+      timeZone: 'America/Denver',
+      question,
+      assistantMode: true,
+    })
+    assert.deepEqual(result.providerInput.subjectAliases, [])
+  }
+})
+
+// A digit counts as disguise only where removing the digits reconstructs the
+// roster token exactly. An earlier rule required the uninterrupted token first,
+// so a digit placed INSIDE the name -- Bell1ini -- defeated the check before the
+// digit test ran, which is the case this covers. A full-width lone token is
+// absent deliberately: NFKC folds it onto the plain spelling, so there is no
+// string left to treat differently.
+test('a digit-disguised or mark-disguised lone name token is refused in a question', async () => {
+  for (const fused of ['Bellini1', '1Bellini', 'Bell1ini', 'Bellini123456', 'Belli\u0301ni']) {
+    await assert.rejects(
+      loader()({
+        teacherUid: 'teacher-a',
+        classroomId: 'class-a',
+        periodDays: 7,
+        timeZone: 'America/Denver',
+        question: `How much did ${fused} earn?`,
+        assistantMode: true,
+      }),
+      error => error instanceof InsightQuestionEvidenceError && error.category === 'question-sensitive',
+    )
+  }
+})
+
+// Finding 1 regression. An earlier vocabulary exemption returned before the
+// two-token check, so an ordinary word that tiles two roster name tokens as a
+// subsequence was allowed through and sent to the provider unchanged. Identities
+// here are invented; each ordinary word carries both tokens.
+test('an ordinary word carrying two roster name tokens is still refused', async () => {
+  for (const [identity, question] of [
+    ['Stu Dent', 'How many students earned money?'],
+    ['Al Ance', 'What is the average balance?'],
+    ['Cat Egory', 'Which category earned the most?'],
+    ['Stu Dent', 'How many students had studentsx activity?'],
+  ]) {
+    const data = fixture({
+      'classrooms/class-a/students/1': {
+        ...fixture()['classrooms/class-a/students/1'],
+        name: identity,
+      },
+    })
+    await assert.rejects(
+      loader(data)({
+        teacherUid: 'teacher-a',
+        classroomId: 'class-a',
+        periodDays: 7,
+        timeZone: 'America/Denver',
+        question,
+        assistantMode: true,
+      }),
+      error => error instanceof InsightQuestionEvidenceError && error.category === 'question-sensitive',
+    )
+  }
+})
+
+test('two fused name tokens are refused even inside an ordinary word', async () => {
+  // Roster-anchored evidence is unaffected by the surname colliding with
+  // ordinary wording, because two distinct tokens must both be present.
+  for (const [surname, question] of [
+    ['Bellini', 'How much did Mirabellinix earn?'],
+    ['Bellini', 'How much did xMiraBellini earn?'],
+    ['Bellini', 'How much did Mira123456Bellini earn?'],
+    ['Day', 'How much did Miradayx earn?'],
+    ['Balan', 'How much did Mirabalanq earn?'],
+  ]) {
+    const data = fixture({
+      'classrooms/class-a/students/1': {
+        ...fixture()['classrooms/class-a/students/1'],
+        name: `Mira ${surname}`,
+      },
+    })
+    await assert.rejects(
+      loader(data)({
+        teacherUid: 'teacher-a',
+        classroomId: 'class-a',
+        periodDays: 7,
+        timeZone: 'America/Denver',
+        question,
+        assistantMode: true,
+      }),
+      error => error instanceof InsightQuestionEvidenceError && error.category === 'question-sensitive',
+    )
+  }
 })
 
 test('separator-obscured roster names fail before provider input can be constructed', async () => {

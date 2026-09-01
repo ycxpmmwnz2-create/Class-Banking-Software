@@ -269,7 +269,9 @@ export function createFirestoreQuestionEvidenceLoader({
         )
         assistantMemoCache.set(
           transactionRef,
-          containsObscuredMultiTokenRosterName(memo.text, studentIdentities) ? null : memo,
+          containsObscuredMultiTokenRosterName(memo.text, studentIdentities, { paddedSingleTokenCounts: true })
+            ? null
+            : memo,
         )
       }
       return assistantMemoCache.get(transactionRef)
@@ -798,16 +800,24 @@ function containsSeparatorObscuredName(value, name) {
   return false
 }
 
-function containsObscuredMultiTokenRosterName(value, identities) {
-  return identities.some(identity => containsObscuredMultiTokenName(value, identity.name))
+// Refusing a question and withholding a memo cost very different things, so they
+// carry different strictness. A withheld memo loses one phrase and the answer
+// still stands, which makes the padded-token rule worth its false positives
+// there. A refused question loses the whole answer, and an ordinary English word
+// carrying a roster surname trips that rule constantly, so the question path
+// requires roster-anchored evidence instead.
+function containsObscuredMultiTokenRosterName(value, identities, { paddedSingleTokenCounts = false } = {}) {
+  return identities.some(identity => (
+    containsObscuredMultiTokenName(value, identity.name, { paddedSingleTokenCounts })
+  ))
 }
 
-function containsObscuredMultiTokenName(value, name) {
+function containsObscuredMultiTokenName(value, name, { paddedSingleTokenCounts = false } = {}) {
   const nameTokens = [...new Set(tokens(name).map(collapseSensitiveText).filter(Boolean))]
   if (nameTokens.length < 2) return false
   const maximumCandidateLength = nameTokens.reduce((total, token) => total + token.length, 0)
   const runs = normalize(value).match(/[\p{L}\p{N}]+/gu) ?? []
-  if (runs.some(run => containsResidualRosterName(run, nameTokens))) return true
+  if (runs.some(run => containsResidualRosterName(run, nameTokens, paddedSingleTokenCounts))) return true
   for (let start = 0; start < runs.length; start += 1) {
     let candidate = ''
     for (let end = start; end < runs.length; end += 1) {
@@ -819,16 +829,55 @@ function containsObscuredMultiTokenName(value, name) {
   return false
 }
 
-function containsResidualRosterName(run, nameTokens) {
+// Obscuring detection rests on the roster, the one closed set available here.
+// Two distinct name tokens fused into a single run is roster-anchored evidence:
+// ordinary English seldom carries two of them as a subsequence.
+//
+// One token plus a small character budget is not evidence, and no tolerance
+// value can make it so. A word containing a surname and a word that is a padded
+// surname have the same shape -- "bellinix" must be refused and "which" for a
+// surname "Hich" must be allowed, and both are one token plus one letter. Length,
+// ratio and residue rules were each tried and cannot separate them; only knowing
+// which string is an English word can, and that is a dictionary. So a single
+// token counts only where the run carries positive evidence of obscuring:
+// characters that normalization removed, or a digit fused into the letters.
+//
+// The cost: added letters remain allowed even when digits are also present,
+// unless removing the digits reconstructs the roster token exactly ("bellini1x"
+// strips to "bellinix", not the token, so it stays allowed; "bell1ini" strips to
+// "bellini" and is refused). Authorized by Andrew 2026-09-01 as the narrower of
+// the two available harms, the alternative being refusal of ordinary free-form
+// questions.
+function containsResidualRosterName(run, nameTokens, paddedSingleTokenCounts) {
   const candidate = collapseSensitiveText(run)
   if (containsTwoNameTokensAsSubsequence(candidate, nameTokens)) return true
+  if (nameTokens.some(token => isObscuredSingleToken(run, candidate, token))) return true
+  return paddedSingleTokenCounts && isPaddedSingleToken(candidate, nameTokens.at(-1))
+}
 
-  const surname = nameTokens.at(-1)
+// Only the memo path reaches this. It cannot tell a padded surname from an
+// ordinary word containing one, and accepts that because the cost of being
+// wrong here is one withheld memo.
+function isPaddedSingleToken(candidate, surname) {
   if (!candidate.includes(surname)) return false
   const allowedObscuringCharacters = surname.length >= 4
     ? MAX_LONG_SURNAME_OBSCURING_CHARACTERS
     : MAX_SHORT_SURNAME_OBSCURING_CHARACTERS
   return candidate.length <= surname.length + allowedObscuringCharacters
+}
+
+// A run that collapses onto a name token was disguised only if normalization is
+// what revealed it; an undisguised name token is the teacher's own wording and
+// is replaced upstream by the assistant sanitizer.
+//
+// Digits count only where removing them reconstructs the token exactly, which is
+// what digit disguising looks like -- inside the name as readily as around it.
+// Requiring the uninterrupted token first missed "bell1ini" entirely, and
+// treating any digit as evidence refused ordinary wording such as "top3" and
+// "30days" that merely carries a short surname.
+function isObscuredSingleToken(run, candidate, token) {
+  if (candidate === token) return normalize(run) !== candidate
+  return candidate.replace(/\p{N}+/gu, '') === token
 }
 
 function containsTwoNameTokensAsSubsequence(candidate, nameTokens) {
