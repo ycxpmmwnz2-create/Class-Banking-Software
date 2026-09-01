@@ -168,7 +168,13 @@ export function createFirestoreQuestionEvidenceLoader({
       return assistantTextCache.get(cacheKey)
     }
     const providerQuestion = assistantMode ? safeAssistantText(question, 500).text : ''
-    if (assistantMode && containsObscuredMultiTokenRosterName(providerQuestion, studentIdentities)) {
+    // Opting out of the padded-token rule, deliberately and only here: the
+    // teacher typed this text and owns the data, and the rule cannot tell a
+    // padded surname from an ordinary word carrying one, so on this path it
+    // refuses ordinary questions. Stored classroom text keeps the strict rule.
+    if (assistantMode && containsObscuredMultiTokenRosterName(providerQuestion, studentIdentities, {
+      paddedSingleTokenCounts: false,
+    })) {
       fail(
         'question-sensitive',
         'Type student names with normal spacing and punctuation before asking.',
@@ -806,13 +812,19 @@ function containsSeparatorObscuredName(value, name) {
 // there. A refused question loses the whole answer, and an ordinary English word
 // carrying a roster surname trips that rule constantly, so the question path
 // requires roster-anchored evidence instead.
-function containsObscuredMultiTokenRosterName(value, identities, { paddedSingleTokenCounts = false } = {}) {
+//
+// The default is the STRICTER rule, and it is deliberate. Opting out is what
+// costs privacy, so opting out is what has to be written down: a future caller
+// on stored classroom text that forgets this option gets the safe behaviour, not
+// the loose one. Both existing call sites state their own strictness anyway, so
+// nothing here depends on the default -- it exists to catch the third caller.
+function containsObscuredMultiTokenRosterName(value, identities, { paddedSingleTokenCounts = true } = {}) {
   return identities.some(identity => (
     containsObscuredMultiTokenName(value, identity.name, { paddedSingleTokenCounts })
   ))
 }
 
-function containsObscuredMultiTokenName(value, name, { paddedSingleTokenCounts = false } = {}) {
+function containsObscuredMultiTokenName(value, name, { paddedSingleTokenCounts = true } = {}) {
   const nameTokens = [...new Set(tokens(name).map(collapseSensitiveText).filter(Boolean))]
   if (nameTokens.length < 2) return false
   const maximumCandidateLength = nameTokens.reduce((total, token) => total + token.length, 0)

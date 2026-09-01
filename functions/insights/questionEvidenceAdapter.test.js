@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { URL } from 'node:url'
 
 import {
   InsightQuestionEvidenceError,
@@ -1436,4 +1438,25 @@ test('shared partial student subjects request a full name while duplicate full n
       error => error instanceof InsightQuestionEvidenceError && error.category === 'question-sensitive',
     )
   }
+})
+
+// Grok review finding 2, 2026-09-01: the strictness option guards child data, so
+// the DEFAULT must be the strict rule and opting out must be written down at the
+// call site. A future caller on stored classroom text that forgets the option
+// has to inherit the safe behaviour. This is a source contract because both
+// current call sites pass the option explicitly, which leaves the default
+// unreachable through the public loader and therefore untestable by behaviour.
+test('the padded-token strictness option defaults to strict and is opted out of explicitly', async () => {
+  const source = await readFile(new URL('./questionEvidenceAdapter.js', import.meta.url), 'utf8')
+
+  const signatures = [...source.matchAll(/paddedSingleTokenCounts = (true|false)/gu)]
+  assert.notEqual(signatures.length, 0, 'expected at least one defaulted signature')
+  for (const [, value] of signatures) {
+    assert.equal(value, 'true', 'paddedSingleTokenCounts must default to the strict rule')
+  }
+
+  // The question path is the only place the looser rule is allowed, and it must
+  // say so rather than inherit it.
+  assert.match(source, /paddedSingleTokenCounts: false,\n\s*\}\)\) \{/u)
+  assert.equal([...source.matchAll(/paddedSingleTokenCounts: false/gu)].length, 1)
 })
