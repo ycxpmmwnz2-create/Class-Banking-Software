@@ -102,32 +102,43 @@ export function callableLogSubcategory(error) {
 // child's balance in a log. Every permitted field is a count, a boolean, or a
 // fixed vocabulary word -- never a value read from classroom data, and never a
 // name. Anything else is dropped rather than truncated or redacted.
-const CALLABLE_LOG_DIAGNOSTIC_FIELDS = Object.freeze(new Set([
-  'claimKind',
-  'numericFactCount',
-  'numericFactKinds',
-  'distinctWindowCount',
-  'returnedCount',
-  'totalCount',
-  'disclosureNumbersPresent',
-  'disclosureWordPresent',
+const CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS = Object.freeze(new Set([
+  'money', 'percent', 'day-count', 'student-count', 'transaction-count', 'count', 'generic',
+]))
+
+const CALLABLE_LOG_DIAGNOSTIC_TOOL_NAMES = Object.freeze(new Set([
+  'aggregate_transactions',
+  'compare_periods',
+  'describe_schema',
+  'find_students_without_transactions',
+  'get_balance_history',
+  'get_balances',
+  'list_transactions',
 ]))
 
 const MAX_LOGGED_DIAGNOSTIC_KINDS = 12
 
-function isLoggableDiagnosticValue(value) {
-  if (typeof value === 'boolean') return true
-  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0
-  if (typeof value === 'string') return CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS.has(value)
-  if (Array.isArray(value)) {
-    return value.length <= MAX_LOGGED_DIAGNOSTIC_KINDS &&
-      value.every(entry => typeof entry === 'string' && CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS.has(entry))
-  }
-  return false
-}
+const isCount = value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+const isFlag = value => typeof value === 'boolean'
+const isWordFrom = allowed => value => typeof value === 'string' && allowed.has(value)
+const isWordListFrom = allowed => value => Array.isArray(value) &&
+  value.length <= MAX_LOGGED_DIAGNOSTIC_KINDS &&
+  value.every(entry => typeof entry === 'string' && allowed.has(entry))
 
-const CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS = Object.freeze(new Set([
-  'money', 'percent', 'day-count', 'student-count', 'transaction-count', 'count', 'generic',
+// Each field is paired with the shape it is allowed to have, so a free-text
+// value smuggled under an allowlisted key is dropped rather than logged.
+const CALLABLE_LOG_DIAGNOSTIC_FIELDS = Object.freeze(new Map([
+  ['claimKind', isWordFrom(CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS)],
+  ['numericFactCount', isCount],
+  ['numericFactKinds', isWordListFrom(CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS)],
+  ['distinctWindowCount', isCount],
+  ['returnedCount', isCount],
+  ['totalCount', isCount],
+  ['disclosureNumbersPresent', isFlag],
+  ['disclosureWordPresent', isFlag],
+  ['toolName', isWordFrom(CALLABLE_LOG_DIAGNOSTIC_TOOL_NAMES)],
+  ['returnedCountUsable', isFlag],
+  ['totalCountUsable', isFlag],
 ]))
 
 export function callableLogDiagnostic(error) {
@@ -136,8 +147,8 @@ export function callableLogDiagnostic(error) {
   if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)) return null
   const logged = {}
   for (const [key, value] of Object.entries(diagnostic)) {
-    if (!CALLABLE_LOG_DIAGNOSTIC_FIELDS.has(key)) continue
-    if (!isLoggableDiagnosticValue(value)) continue
+    const isAllowed = CALLABLE_LOG_DIAGNOSTIC_FIELDS.get(key)
+    if (!isAllowed || !isAllowed(value)) continue
     logged[key] = value
   }
   return Object.keys(logged).length === 0 ? null : Object.freeze(logged)

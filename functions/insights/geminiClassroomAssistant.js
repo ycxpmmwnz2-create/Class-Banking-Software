@@ -866,10 +866,18 @@ function assertTruncationDisclosed(answer, cited) {
   for (const call of cited.filter(item => item.result?.truncated === true)) {
     const counts = truncationCounts(call)
     if (!counts) {
+      // No disclosure can satisfy this branch, so it has to say why it fired.
+      // The tool name is a fixed vocabulary and the rest are booleans; no
+      // classroom value reaches the log.
       fail(
         'answer-unverified',
         'The provider answer did not disclose a truncated result.',
         'truncation-not-disclosed',
+        {
+          toolName: call.name,
+          returnedCountUsable: Number.isSafeInteger(call.result?.returnedCount),
+          totalCountUsable: Number.isSafeInteger(rawTruncationTotal(call)),
+        },
       )
     }
     if (!hasExactTruncationDisclosure(answer, counts)) {
@@ -890,13 +898,17 @@ function assertTruncationDisclosed(answer, cited) {
   }
 }
 
+function rawTruncationTotal(call) {
+  if (call.name === 'find_students_without_transactions') return call.result?.studentsWithoutCount
+  if (call.name === 'list_transactions') return call.result?.matchedCount
+  if (call.name === 'aggregate_transactions') return call.result?.resultCount
+  if (call.name === 'get_balances') return call.result?.matchedCount
+  return undefined
+}
+
 function truncationCounts(call) {
   const returnedCount = call.result?.returnedCount
-  let totalCount
-  if (call.name === 'find_students_without_transactions') totalCount = call.result?.studentsWithoutCount
-  if (call.name === 'list_transactions') totalCount = call.result?.matchedCount
-  if (call.name === 'aggregate_transactions') totalCount = call.result?.resultCount
-  if (call.name === 'get_balances') totalCount = call.result?.matchedCount
+  const totalCount = rawTruncationTotal(call)
   if (
     !Number.isSafeInteger(returnedCount) ||
     !Number.isSafeInteger(totalCount) ||
