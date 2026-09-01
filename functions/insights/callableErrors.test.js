@@ -36,6 +36,22 @@ test('logs only allowlisted, value-free diagnostic fields', () => {
   })
 })
 
+test('logs why an unsatisfiable truncation check fired', () => {
+  assert.deepEqual(callableLogDiagnostic(error('truncation-not-disclosed', {
+    toolName: 'list_transactions',
+    returnedCountUsable: true,
+    totalCountUsable: false,
+  })), {
+    toolName: 'list_transactions',
+    returnedCountUsable: true,
+    totalCountUsable: false,
+  })
+  // A tool name outside the real toolbox is not logged back.
+  assert.equal(callableLogDiagnostic(error('truncation-not-disclosed', {
+    toolName: 'Paid to GianMarco for chores',
+  })), null)
+})
+
 test('drops any diagnostic field that could carry classroom content', () => {
   const logged = callableLogDiagnostic(error('unsupported-number', {
     claimKind: 'money',
