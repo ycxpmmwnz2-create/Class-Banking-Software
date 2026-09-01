@@ -900,7 +900,7 @@ test('rejects an uncited roster name even inside a correctly quoted memo', async
   )
 })
 
-test('requires the exact showing-of disclosure when a memo listing is truncated', async () => {
+test('requires both truncation counts in one sentence, in any natural wording', async () => {
   const assistantEvidence = evidence()
   assistantEvidence.transactions = Array.from({ length: 60 }, (_, index) => ({
     ...assistantEvidence.transactions[index % assistantEvidence.transactions.length],
@@ -936,6 +936,95 @@ test('requires the exact showing-of disclosure when a memo listing is truncated'
     answer,
     factRefs,
   })).answer, answer)
+})
+
+// Grok/canary follow-up 2026-09-01. The live canary refused a correct answer
+// because the disclosure had to read exactly "showing N of M". The protection is
+// that the teacher sees both real numbers together, not that one phrasing was
+// used, so the wording is now free and the numbers are not.
+test('accepts any wording that puts both truncation counts in one sentence', async () => {
+  const assistantEvidence = evidence()
+  assistantEvidence.transactions = Array.from({ length: 60 }, (_, index) => ({
+    ...assistantEvidence.transactions[index % assistantEvidence.transactions.length],
+    ref: `transaction-${String(index + 1).padStart(5, '0')}`,
+    date: `2026-08-${String(21 + (index % 7)).padStart(2, '0')}T15:${String(index % 60).padStart(2, '0')}:00.000Z`,
+  }))
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Rent payment for the week', truncated: false }),
+  })
+  const factRefs = [
+    { callId: 'call', path: '/returnedCount' },
+    { callId: 'call', path: '/matchedCount' },
+    { callId: 'call', path: '/transactions/0/memo' },
+  ]
+  const tail = ' The first memo is "Rent payment for the week".'
+  const accepted = [
+    'Showing 50 of 60 matching transactions.',
+    'Showing the first 50 of 60 matching transactions.',
+    'Only 50 of 60 matching transactions are listed.',
+    'This lists 50 of 60 matching transactions.',
+    '50 out of 60 matching transactions are included.',
+    'I returned 50 of 60 matching transactions.',
+  ]
+  for (const disclosure of accepted) {
+    const answer = `${disclosure}${tail}`
+    assert.equal((await answerWithTool({
+      assistantEvidence,
+      toolbox,
+      name: 'list_transactions',
+      args: { includeMemos: true },
+      answer,
+      factRefs,
+    })).answer, answer, `should accept: ${disclosure}`)
+  }
+})
+
+test('still refuses a truncated listing when a count is wrong, absent, or split across sentences', async () => {
+  const assistantEvidence = evidence()
+  assistantEvidence.transactions = Array.from({ length: 60 }, (_, index) => ({
+    ...assistantEvidence.transactions[index % assistantEvidence.transactions.length],
+    ref: `transaction-${String(index + 1).padStart(5, '0')}`,
+    date: `2026-08-${String(21 + (index % 7)).padStart(2, '0')}T15:${String(index % 60).padStart(2, '0')}:00.000Z`,
+  }))
+  const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
+    memoResolver: () => ({ text: 'Rent payment for the week', truncated: false }),
+  })
+  const factRefs = [
+    { callId: 'call', path: '/returnedCount' },
+    { callId: 'call', path: '/matchedCount' },
+    { callId: 'call', path: '/transactions/0/memo' },
+  ]
+  const tail = ' The first memo is "Rent payment for the week".'
+  const refused = [
+    // No numbers at all -- the teacher cannot tell how much is missing.
+    'Some matching transactions are not shown.',
+    // Only the returned count. The total is the number that matters most.
+    'Showing the first 50 matching transactions.',
+    // A total that is not the real one.
+    'Showing 50 of 61 matching transactions.',
+    // Both numbers present but not read together as one disclosure.
+    'There are 50 here. Separately, the classroom has 60 matching transactions.',
+    // A bare "of" with nothing marking the listing as partial.
+    'Transaction 50 of 60 is the newest.',
+  ]
+  for (const disclosure of refused) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence,
+        toolbox,
+        name: 'list_transactions',
+        args: { includeMemos: true },
+        answer: `${disclosure}${tail}`,
+        factRefs,
+      }),
+      // A wrong total is caught by numeric grounding before the disclosure
+      // check ever runs, so the property under test is that the answer is
+      // refused, not which of the two gates caught it first.
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.category === 'answer-unverified',
+      `should refuse: ${disclosure}`,
+    )
+  }
 })
 
 test('rejects a MAX_TOKENS turn as provider-output-truncated', async () => {

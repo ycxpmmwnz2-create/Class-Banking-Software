@@ -865,11 +865,26 @@ function capitalizedWholeTextSpans(answer, value) {
 function assertTruncationDisclosed(answer, cited) {
   for (const call of cited.filter(item => item.result?.truncated === true)) {
     const counts = truncationCounts(call)
-    if (!counts || !hasExactTruncationDisclosure(answer, counts)) {
+    if (!counts) {
       fail(
         'answer-unverified',
         'The provider answer did not disclose a truncated result.',
         'truncation-not-disclosed',
+      )
+    }
+    if (!hasExactTruncationDisclosure(answer, counts)) {
+      fail(
+        'answer-unverified',
+        'The provider answer did not disclose a truncated result.',
+        'truncation-not-disclosed',
+        {
+          returnedCount: counts.returnedCount,
+          totalCount: counts.totalCount,
+          // Which half of the disclosure was missing. Both are derived from the
+          // answer's own shape, never from its content.
+          disclosureNumbersPresent: hasTruncationNumberPair(answer, counts),
+          disclosureWordPresent: TRUNCATION_PARTIAL_WORD.test(answer),
+        },
       )
     }
   }
@@ -891,13 +906,41 @@ function truncationCounts(call) {
   return { returnedCount, totalCount }
 }
 
-function hasExactTruncationDisclosure(answer, { returnedCount, totalCount }) {
+// The safety property is that the teacher sees both real numbers -- how many
+// rows they are looking at, and how many exist -- close enough together to read
+// as one disclosure. The exact sentence shape was never the protection, and
+// requiring the single phrasing "showing N of M" discarded whole correct answers
+// over wording. Both counts are still mandatory, still exact, and still have to
+// sit in one sentence; only the words around them are free.
+const TRUNCATION_PARTIAL_WORD = /\b(?:showing|shows|showed|shown|display(?:s|ing|ed)?|list(?:s|ing|ed)?|return(?:s|ing|ed)?|includ(?:e|es|ing|ed)|first|only|partial(?:ly)?|top|remaining|more)\b/iu
+
+function truncationNumberPairPatterns({ returnedCount, totalCount }) {
   const returned = integerTextPattern(returnedCount)
   const total = integerTextPattern(totalCount)
-  return new RegExp(
-    `\\bshowing\\s+(?:only\\s+|the\\s+first\\s+)?${returned}\\s+(?:of|out\\s+of)\\s+${total}\\b`,
-    'iu',
-  ).test(answer)
+  const gap = '[^.!?]{0,40}?'
+  return {
+    // "out of" carries the partial meaning on its own.
+    outOf: new RegExp(`\\b${returned}\\b${gap}\\bout\\s+of\\b${gap}\\b${total}\\b`, 'iu'),
+    // A bare "of" needs a word nearby that says the list is partial.
+    of: new RegExp(`\\b${returned}\\b${gap}\\bof\\b${gap}\\b${total}\\b`, 'iu'),
+  }
+}
+
+function hasTruncationNumberPair(answer, counts) {
+  const { outOf, of } = truncationNumberPairPatterns(counts)
+  return sentences(answer).some(sentence => outOf.test(sentence) || of.test(sentence))
+}
+
+function hasExactTruncationDisclosure(answer, counts) {
+  const { outOf, of } = truncationNumberPairPatterns(counts)
+  return sentences(answer).some(sentence => (
+    outOf.test(sentence) ||
+    (of.test(sentence) && TRUNCATION_PARTIAL_WORD.test(sentence))
+  ))
+}
+
+function sentences(answer) {
+  return String(answer).split(/(?<=[.!?])\s+/u)
 }
 
 function integerTextPattern(value) {

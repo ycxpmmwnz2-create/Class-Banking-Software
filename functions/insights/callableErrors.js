@@ -96,3 +96,49 @@ export function callableLogCategory(error) {
 export function callableLogSubcategory(error) {
   return CALLABLE_LOG_SUBCATEGORIES.has(error?.subcategory) ? error.subcategory : null
 }
+
+// Diagnostic fields are allowlisted by name and re-checked by shape on the way
+// out, because a refusal reason is worth nothing if reading it can put a
+// child's balance in a log. Every permitted field is a count, a boolean, or a
+// fixed vocabulary word -- never a value read from classroom data, and never a
+// name. Anything else is dropped rather than truncated or redacted.
+const CALLABLE_LOG_DIAGNOSTIC_FIELDS = Object.freeze(new Set([
+  'claimKind',
+  'numericFactCount',
+  'numericFactKinds',
+  'distinctWindowCount',
+  'returnedCount',
+  'totalCount',
+  'disclosureNumbersPresent',
+  'disclosureWordPresent',
+]))
+
+const MAX_LOGGED_DIAGNOSTIC_KINDS = 12
+
+function isLoggableDiagnosticValue(value) {
+  if (typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0
+  if (typeof value === 'string') return CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS.has(value)
+  if (Array.isArray(value)) {
+    return value.length <= MAX_LOGGED_DIAGNOSTIC_KINDS &&
+      value.every(entry => typeof entry === 'string' && CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS.has(entry))
+  }
+  return false
+}
+
+const CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS = Object.freeze(new Set([
+  'money', 'percent', 'day-count', 'student-count', 'transaction-count', 'count', 'generic',
+]))
+
+export function callableLogDiagnostic(error) {
+  if (!CALLABLE_LOG_SUBCATEGORIES.has(error?.subcategory)) return null
+  const diagnostic = error?.diagnostic
+  if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)) return null
+  const logged = {}
+  for (const [key, value] of Object.entries(diagnostic)) {
+    if (!CALLABLE_LOG_DIAGNOSTIC_FIELDS.has(key)) continue
+    if (!isLoggableDiagnosticValue(value)) continue
+    logged[key] = value
+  }
+  return Object.keys(logged).length === 0 ? null : Object.freeze(logged)
+}
