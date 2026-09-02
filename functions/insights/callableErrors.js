@@ -55,7 +55,8 @@ export const CALLABLE_LOG_SUBCATEGORIES = Object.freeze(new Set([
   'number-words',
   'unsupported-number',
   'unverified-quantifier',
-  'unverified-universal',
+  'unsupported-predicate',
+  'group-claim-without-count',
   'unsupported-date',
   'uncited-roster-name',
   'truncation-not-disclosed',
@@ -113,14 +114,11 @@ const CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS = Object.freeze(new Set([
   'transaction-count', 'result-count', 'count', 'generic', 'population-ambiguous',
 ]))
 
-// What a quantified claim asserted about the students it counted, and the shape
-// of the quantifier. Both are fixed vocabularies chosen here, never a value
-// read out of a classroom result.
+// What a quantified claim asserted about the students it counted. A fixed
+// vocabulary chosen here, never a value read out of a classroom result.
 const CALLABLE_LOG_DIAGNOSTIC_PREDICATE_WORDS = Object.freeze(new Set([
   'transactions', 'no-transactions', 'balances', 'roster', 'unclassified',
 ]))
-
-const CALLABLE_LOG_DIAGNOSTIC_QUANTIFIER_FORMS = Object.freeze(new Set(['universal', 'zero']))
 
 const CALLABLE_LOG_DIAGNOSTIC_TOOL_NAMES = Object.freeze(new Set([
   'aggregate_transactions',
@@ -148,7 +146,6 @@ const CALLABLE_LOG_DIAGNOSTIC_FIELDS = Object.freeze(new Map([
   ['numericFactCount', isCount],
   ['populationTotalFactCount', isCount],
   ['claimPredicate', isWordFrom(CALLABLE_LOG_DIAGNOSTIC_PREDICATE_WORDS)],
-  ['quantifierForm', isWordFrom(CALLABLE_LOG_DIAGNOSTIC_QUANTIFIER_FORMS)],
   ['numericFactKinds', isWordListFrom(CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS)],
   ['distinctWindowCount', isCount],
   ['returnedCount', isCount],
