@@ -107,7 +107,8 @@ export function callableLogSubcategory(error) {
 // fixed vocabulary word -- never a value read from classroom data, and never a
 // name. Anything else is dropped rather than truncated or redacted.
 const CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS = Object.freeze(new Set([
-  'money', 'percent', 'day-count', 'student-count', 'transaction-count', 'count', 'generic',
+  'money', 'percent', 'day-count', 'student-count', 'participant-count',
+  'transaction-count', 'result-count', 'count', 'generic',
 ]))
 
 const CALLABLE_LOG_DIAGNOSTIC_TOOL_NAMES = Object.freeze(new Set([

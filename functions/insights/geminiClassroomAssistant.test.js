@@ -1979,12 +1979,12 @@ test('each tool-loop failure names its own cause and reports only value-free cou
 // distinct names off a returned row list -- a number with nothing to cite, and
 // a wrong one whenever that list was truncated. The count is now returned by
 // the same call the model already makes, so the honest answer is citable.
-test('a student count cited from list_transactions distinctStudentCount is grounded', async () => {
+test('a student count cited from list_transactions distinctCurrentStudentCount is grounded', async () => {
   const result = await answerWithTool({
     name: 'list_transactions',
     args: {},
     answer: '1 student had matching transactions.',
-    factRefs: [{ callId: 'call', path: '/distinctStudentCount' }],
+    factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
   })
   assert.equal(result.answer, '1 student had matching transactions.')
 })
@@ -1995,7 +1995,7 @@ test('a student count the model invented is still refused when no student count 
       name: 'list_transactions',
       args: {},
       answer: '2 students had matching transactions.',
-      factRefs: [{ callId: 'call', path: '/distinctStudentCount' }],
+      factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
     }),
     error => error instanceof GeminiClassroomAssistantError &&
       error.subcategory === 'unsupported-number',
@@ -2009,6 +2009,104 @@ test('the outbound system instruction sends the model to a citable student count
     requireTool: false,
   })
   const instruction = request.config.systemInstruction
-  assert.match(instruction, /list_transactions returns distinctStudentCount/u)
+  assert.match(instruction, /list_transactions distinctCurrentStudentCount/u)
   assert.match(instruction, /never count distinct names yourself from a returned row list/iu)
+  assert.match(instruction, /still matches a filter, so distinctParticipantCount/u)
+})
+
+// A transaction from a student who has left the class still matches a filter,
+// so a count over matched transactions is not a count of the current class. One
+// field carrying both meanings let a participant total be stated as a
+// current-roster total: with one current student and one former student having
+// matching transactions, "all 2 current students had matching transactions"
+// passed grounding while being false. The populations are now separate kinds,
+// so no wording can make one stand in for the other.
+function mixedRosterEvidence() {
+  const data = evidence()
+  data.question = 'Which students were paid for technology today?'
+  data.students = [
+    { ref: 'student-001', displayName: 'Ava R.', current: true, balance: 10, frozen: false },
+    { ref: 'student-002', displayName: 'Ava S.', current: true, balance: 4, frozen: false },
+    { ref: 'student-003', displayName: 'Ava T.', current: false, balance: 0, frozen: false },
+  ]
+  data.transactions = [
+    { ref: 'transaction-00001', studentRef: 'student-001', date: '2026-08-27T15:01:00.000Z', type: 'Add', amount: 5, category: 'Technology', purpose: 'other', status: 'Approved' },
+    { ref: 'transaction-00002', studentRef: 'student-003', date: '2026-08-27T15:02:00.000Z', type: 'Add', amount: 5, category: 'Technology', purpose: 'other', status: 'Approved' },
+  ]
+  return data
+}
+
+test('a participant total cannot be stated as a count of the current class', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer: 'All 2 current students had matching transactions.',
+      factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number' &&
+      error.diagnostic.claimKind === 'student-count',
+  )
+})
+
+test('the same false claim is refused even when the participant total is not the cited fact', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer: 'All 2 current students had matching transactions.',
+      factRefs: [{ callId: 'call', path: '/matchedCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number',
+  )
+})
+
+test('the current-roster count backs the true claim about the same classroom', async () => {
+  const result = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: '1 current student had matching transactions.',
+    factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+  })
+  assert.equal(result.answer, '1 current student had matching transactions.')
+})
+
+test('a participant total stays citable in an answer that says it includes former students', async () => {
+  const result = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: '2 participants had matching transactions, including students who have left the class.',
+    factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+  })
+  assert.match(result.answer, /2 participants/u)
+})
+
+// The aggregate metric had the identical defect before this branch existed, so
+// reclassifying only the list_transactions field would have left it reachable.
+test('the aggregate distinctStudents metric is a participant total, not a roster total', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'aggregate_transactions',
+      args: { groupBy: [], metric: 'distinctStudents' },
+      answer: 'All 2 current students had matching transactions.',
+      factRefs: [{ callId: 'call', path: '/rows/0/value' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number',
+  )
+  const result = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'aggregate_transactions',
+    args: { groupBy: [], metric: 'distinctCurrentStudents' },
+    answer: '1 current student had matching transactions.',
+    factRefs: [{ callId: 'call', path: '/rows/0/value' }],
+  })
+  assert.equal(result.answer, '1 current student had matching transactions.')
 })

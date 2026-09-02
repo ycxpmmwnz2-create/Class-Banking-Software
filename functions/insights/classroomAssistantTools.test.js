@@ -272,9 +272,9 @@ test('rejects unknown students and invalid ranges inside a safe tool error', () 
   )
 })
 
-// The count must describe the whole matched set, not the page that came back.
-// Counting distinct names off a truncated row list is exactly the mistake this
-// field exists to remove, so a truncated result is the case that matters.
+// The counts must describe the whole matched set, not the page that came back.
+// Counting distinct names off a truncated row list is exactly the mistake these
+// fields exist to remove, so a truncated result is the case that matters.
 test('list_transactions counts distinct students across the whole matched set', () => {
   const students = [1, 2, 3].map(index => ({
     ref: `student-00${index}`,
@@ -298,6 +298,48 @@ test('list_transactions counts distinct students across the whole matched set', 
   assert.equal(truncated.returnedCount, 1)
   assert.equal(truncated.matchedCount, 6)
   // One row came back, but three distinct students matched.
-  assert.equal(truncated.distinctStudentCount, 3)
-  assert.equal(toolbox.execute('list_transactions', {}).distinctStudentCount, 3)
+  assert.equal(truncated.distinctCurrentStudentCount, 3)
+  assert.equal(truncated.distinctParticipantCount, 3)
+  assert.equal(toolbox.execute('list_transactions', {}).distinctCurrentStudentCount, 3)
+})
+
+// A transaction from a student who has left the class still matches a filter,
+// so the two counts describe different populations and must not be equal here.
+// Reporting one number for both is what let a participant total be read as a
+// statement about the current class.
+test('the two distinct-student counts separate the current roster from all participants', () => {
+  const data = {
+    ...evidence(),
+    students: [
+      { ref: 'student-001', displayName: 'Ava R.', current: true, balance: 10, frozen: false },
+      { ref: 'student-002', displayName: 'Ava S.', current: true, balance: 4, frozen: false },
+      { ref: 'student-003', displayName: 'Ava T.', current: false, balance: 0, frozen: false },
+    ],
+    transactions: [
+      transaction('transaction-00001', 'student-001', '2026-08-27T15:01:00.000Z', 5),
+      transaction('transaction-00002', 'student-003', '2026-08-27T15:02:00.000Z', 5),
+    ],
+  }
+  const toolbox = createClassroomAssistantToolbox(data)
+  const listed = toolbox.execute('list_transactions', {})
+  assert.equal(listed.matchedCount, 2)
+  assert.equal(listed.distinctParticipantCount, 2)
+  assert.equal(listed.distinctCurrentStudentCount, 1)
+  // The row for the former student is still returned, so the historical answer
+  // remains available -- only the headcount claim is constrained.
+  assert.equal(listed.transactions.length, 2)
+
+  const participants = toolbox.execute('aggregate_transactions', { groupBy: [], metric: 'distinctStudents' })
+  const currentOnly = toolbox.execute('aggregate_transactions', { groupBy: [], metric: 'distinctCurrentStudents' })
+  assert.equal(participants.rows[0].value, 2)
+  assert.equal(currentOnly.rows[0].value, 1)
+
+  const compared = toolbox.execute('compare_periods', {
+    firstStartDate: '2026-08-26',
+    firstEndDate: '2026-08-26',
+    secondStartDate: '2026-08-27',
+    secondEndDate: '2026-08-27',
+    metric: 'distinctCurrentStudents',
+  })
+  assert.deepEqual(compared.periods.map(period => period.value), [0, 1])
 })

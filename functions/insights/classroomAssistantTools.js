@@ -30,6 +30,7 @@ const METRICS = Object.freeze([
   'amountMaximum',
   'amountMedian',
   'distinctStudents',
+  'distinctCurrentStudents',
   'distinctDays',
   'distinctCategories',
 ])
@@ -261,12 +262,15 @@ function listTransactions(args, filtered, studentsByRef, memoResolver) {
       ? {}
       : { selectedPeriodDays: filtered.selectedPeriodDays }),
     matchedCount: ordered.length,
-    // Counted across every matched transaction, not the returned page. Asking
-    // "how many students did X" made the model count distinct names off a
-    // truncated row list, producing a student count with nothing to cite --
-    // and a wrong one whenever the list was truncated. The count is cheaper to
-    // make citable than to argue about.
-    distinctStudentCount: new Set(ordered.map(transaction => transaction.studentRef)).size,
+    // Both counts span every matched transaction, not the returned page.
+    // Counting distinct names off a truncated row list is the mistake these
+    // fields exist to remove. They are two fields rather than one because the
+    // populations differ: a transaction from a student who has left the class
+    // still matches, so one count answers "how many of my students" and the
+    // other answers "how many people, including former students". A single
+    // field let a participant total be stated as a current-roster total.
+    distinctCurrentStudentCount: distinctCurrentStudents(ordered, studentsByRef),
+    distinctParticipantCount: new Set(ordered.map(transaction => transaction.studentRef)).size,
     returnedCount: Math.min(limit, ordered.length),
     truncated: ordered.length > limit,
     transactions: Object.freeze(ordered.slice(0, limit).map(transaction => {
@@ -328,10 +332,10 @@ function aggregateTransactions(args, filtered, studentsByRef) {
   const denominator = metric === 'count'
     ? filtered.transactions.length
     : metric === 'amountTotal'
-      ? metricValue('amountTotal', filtered.transactions)
+      ? metricValue('amountTotal', filtered.transactions, studentsByRef)
       : null
   let rows = [...groups.values()].map(group => {
-    const value = metricValue(metric, group.transactions)
+    const value = metricValue(metric, group.transactions, studentsByRef)
     return Object.freeze({
       group: Object.freeze(Object.fromEntries(groupBy.map((field, index) => [field, group.values[index]]))),
       value,
@@ -449,7 +453,7 @@ function comparePeriods(args, data, transactions, studentsByRef) {
       startDate: filtered.windowStartDate,
       endDate: filtered.windowEndDate,
       windowDays: filtered.windowDays,
-      value: metricValue(metric, filtered.transactions),
+      value: metricValue(metric, filtered.transactions, studentsByRef),
       transactionCount: filtered.transactions.length,
     })
   })
@@ -564,7 +568,7 @@ function groupValue(field, transaction, studentsByRef) {
   fail('invalid-tool-arguments', 'An unsupported group field was requested.')
 }
 
-function metricValue(metric, transactions) {
+function metricValue(metric, transactions, studentsByRef) {
   if (metric === 'count') return transactions.length
   if (metric === 'amountTotal') return roundMoney(transactions.reduce((sum, item) => sum + item.amount, 0))
   if (metric === 'amountAverage') {
@@ -578,10 +582,23 @@ function metricValue(metric, transactions) {
     const middle = Math.floor(values.length / 2)
     return roundMoney(values.length % 2 === 1 ? values[middle] : (values[middle - 1] + values[middle]) / 2)
   }
+  // distinctStudents counts everyone who transacted, former students included.
+  // distinctCurrentStudents counts only those still on the roster. Keeping both
+  // is what lets a historical question stay answerable without letting its
+  // answer pose as a statement about the current class.
   if (metric === 'distinctStudents') return new Set(transactions.map(item => item.studentRef)).size
+  if (metric === 'distinctCurrentStudents') return distinctCurrentStudents(transactions, studentsByRef)
   if (metric === 'distinctDays') return new Set(transactions.map(item => item.calendarDay)).size
   if (metric === 'distinctCategories') return new Set(transactions.map(item => item.category)).size
   fail('invalid-tool-arguments', 'An unsupported metric was requested.')
+}
+
+function distinctCurrentStudents(transactions, studentsByRef) {
+  const refs = new Set()
+  for (const transaction of transactions) {
+    if (studentsByRef.get(transaction.studentRef)?.current === true) refs.add(transaction.studentRef)
+  }
+  return refs.size
 }
 
 function rowSorter(sort = 'highest') {
