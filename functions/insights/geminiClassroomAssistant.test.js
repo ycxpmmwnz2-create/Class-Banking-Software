@@ -8,6 +8,7 @@ import {
   createGeminiClassroomAssistant,
 } from './geminiClassroomAssistant.js'
 import { createClassroomAssistantToolbox } from './classroomAssistantTools.js'
+import { callableErrorDetails } from './callableErrors.js'
 
 const USAGE = Object.freeze({
   promptTokenCount: 10,
@@ -2188,4 +2189,191 @@ test('the aggregate distinctStudents metric is a participant total, not a roster
     factRefs: [{ callId: 'call', path: '/rows/0/value' }],
   })
   assert.equal(result.answer, '1 current student had matching transactions.')
+})
+
+// Separating the populations and giving explicit roster wording precedence
+// still left the decision to a fixed 24-character window, so it turned on
+// distance rather than meaning. Here the historical wording sits inside the
+// window and the "currently enrolled" that scopes the claim to the roster sits
+// just outside it, so the claim was read as a participant claim and the
+// participant total supported it. This is the exact sentence that got through.
+const TRUNCATED_ROSTER_WORDING_BYPASS =
+  'Including past students: 2 of the currently enrolled students had matching transactions.'
+
+test('roster wording beyond a character window still scopes the claim to the roster', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer: TRUNCATED_ROSTER_WORDING_BYPASS,
+      factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number' &&
+      error.diagnostic.claimKind === 'population-ambiguous',
+  )
+})
+
+// Distance from the number must not decide the population, in either
+// direction, so the same false claim is put at a range of separations and
+// orderings. Every one must refuse; none may resolve to the participant
+// population and take the participant total.
+test('mixed population wording is refused at any distance from the number', async () => {
+  for (const answer of [
+    'Including past students: 2 of the currently enrolled students had matching transactions.',
+    '2 of the currently enrolled students, including past students, had matching transactions.',
+    'Counting students who have left: 2 of the students still in the class had matching transactions.',
+    '2 currently enrolled students, plus former students, had matching transactions.',
+    'Including archived students, and counting every one of them, 2 current students had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence: mixedRosterEvidence(),
+        name: 'list_transactions',
+        args: {},
+        answer,
+        factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        ['unsupported-number', 'unverified-quantifier'].includes(error.subcategory) &&
+        ['population-ambiguous', 'student-count'].includes(error.diagnostic.claimKind),
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// The widening direction is the one that fails open, so it now takes wording
+// that says the wider population is what was counted. Mentioning former
+// students while excluding them is not that: each sentence below counts the
+// roster, and reading any historical word in range as a widening let the
+// participant total support them.
+test('historical wording that excludes former students does not widen the population', async () => {
+  for (const answer of [
+    '2 students had matching transactions but 1 former student was excluded.',
+    '2 students had matching transactions, and 1 former student was excluded.',
+    'Ignoring former students, 2 students had matching transactions.',
+    'Past students are included elsewhere. 2 of the students still in the class had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence: mixedRosterEvidence(),
+        name: 'list_transactions',
+        args: {},
+        answer,
+        factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-number' &&
+        ['student-count', 'population-ambiguous'].includes(error.diagnostic.claimKind),
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// Reading the clause instead of a character window also stopped an honest
+// answer being refused for disclosing the wider population a few words too far
+// from the number.
+test('an inclusive disclosure in the clause makes the participant total citable', async () => {
+  const result = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: '2 students had matching transactions, including one who left the class.',
+    factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+  })
+  assert.match(result.answer, /2 students/u)
+})
+
+// A quantifier asserts the counted group is the whole population, and the
+// count alone cannot establish that. "All 1 current student had matching
+// transactions" was accepted on a roster of two: the 1 was correctly cited
+// from distinctCurrentStudentCount, and nothing checked the word carrying the
+// false part of the sentence.
+test('a quantifier over a count is refused when no population total is cited', async () => {
+  for (const answer of [
+    'All 1 current student had matching transactions.',
+    'Every 1 current student had matching transactions.',
+    'All of the 1 current student had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence: mixedRosterEvidence(),
+        name: 'list_transactions',
+        args: {},
+        answer,
+        factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.category === 'answer-unverified' &&
+        error.subcategory === 'unverified-quantifier' &&
+        CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES.has(error.subcategory) &&
+        error.diagnostic.claimKind === 'student-count' &&
+        error.diagnostic.populationTotalFactCount === 0,
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// No call returns how many students ever transacted, so a quantified
+// participant claim has no total to check and fails closed until one exists.
+test('a quantified participant claim fails closed for want of a participant total', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer: 'All 2 participants had matching transactions.',
+      factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unverified-quantifier' &&
+      error.diagnostic.claimKind === 'participant-count',
+  )
+})
+
+// The quantifier is verified rather than banned: a call that returns the
+// roster total makes the honest claim citable, which is the direction this
+// project takes every time -- make the number checkable, do not exempt it.
+test('the outbound system instruction sends the model to a roster total for a quantifier', () => {
+  const request = buildGeminiClassroomAssistantRequest({
+    contents: [{ role: 'user', parts: [{ text: 'test' }] }],
+    declarations: [],
+    requireTool: false,
+  })
+  const instruction = request.config.systemInstruction
+  assert.match(instruction, /Saying all, every, or each of a number of students/u)
+  assert.match(instruction, /currentStudentCount/u)
+})
+
+test('a cited roster total licenses the quantifier it actually supports', async () => {
+  const result = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'get_balances',
+    args: {},
+    answer: 'All 2 current students have a balance.',
+    factRefs: [{ callId: 'call', path: '/currentStudentCount' }],
+  })
+  assert.match(result.answer, /All 2 current students/u)
+})
+
+test('the quantifier refusal reaches the client as a category alone', async () => {
+  const error = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: 'All 1 current student had matching transactions.',
+    factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+  }).catch(caught => caught)
+  assert.deepEqual(Object.keys(callableErrorDetails(error)), ['category'])
+  assert.equal(callableErrorDetails(error).category, 'answer-unverified')
+  // Every reported value is a count or a fixed vocabulary word, never a figure
+  // read out of the classroom.
+  for (const [field, value] of Object.entries(error.diagnostic)) {
+    assert.equal(
+      typeof value === 'string' || (Number.isSafeInteger(value) && value >= 0),
+      true,
+      `${field} must be a count or a fixed word`,
+    )
+  }
 })

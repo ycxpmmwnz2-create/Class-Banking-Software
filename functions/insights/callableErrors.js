@@ -54,6 +54,7 @@ export const CALLABLE_LOG_SUBCATEGORIES = Object.freeze(new Set([
   'fact-ref-non-scalar',
   'number-words',
   'unsupported-number',
+  'unverified-quantifier',
   'unsupported-date',
   'uncited-roster-name',
   'truncation-not-disclosed',
@@ -135,6 +136,7 @@ const isWordListFrom = allowed => value => Array.isArray(value) &&
 const CALLABLE_LOG_DIAGNOSTIC_FIELDS = Object.freeze(new Map([
   ['claimKind', isWordFrom(CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS)],
   ['numericFactCount', isCount],
+  ['populationTotalFactCount', isCount],
   ['numericFactKinds', isWordListFrom(CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS)],
   ['distinctWindowCount', isCount],
   ['returnedCount', isCount],
