@@ -123,6 +123,7 @@ export const CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES = Object.freeze(new Se
   'number-words',
   'unsupported-number',
   'unverified-quantifier',
+  'unverified-universal',
   'unsupported-date',
   'uncited-roster-name',
   'truncation-not-disclosed',
@@ -422,6 +423,11 @@ function validateFactRefs(value, evidenceCallIds, executed) {
         executed.get(reference.callId).name,
       ),
       populationTotal: factIsPopulationTotal(reference.path),
+      evidence: factEvidenceKey(
+        reference.path,
+        executed.get(reference.callId).result,
+        executed.get(reference.callId).name,
+      ),
     })
   }))
 }
@@ -467,6 +473,7 @@ function collectScalarFacts(value, pointer, call, facts) {
       window: factWindowKey(call.result, pointer === '' ? '/' : pointer),
       kind: factKind(pointer === '' ? '/' : pointer, call.result, call.name),
       populationTotal: factIsPopulationTotal(pointer === '' ? '/' : pointer),
+      evidence: factEvidenceKey(pointer === '' ? '/' : pointer, call.result, call.name),
     }))
     return
   }
@@ -622,6 +629,7 @@ function assertNumericClaimsAreGrounded(answer, facts, assistantEvidence) {
       normalized: Number(claim.replace(/[$,%]/gu, '')),
       kind: numericClaimKind(claim, before, after, population),
       quantified: QUANTIFIED_COUNT_PATTERN.test(before),
+      predicate: claimPredicate(population.clause),
     })
   })
   const licensed = licensedWindows(claims, facts)
@@ -645,6 +653,49 @@ function assertNumericClaimsAreGrounded(answer, facts, assistantEvidence) {
     }
     assertQuantifierIsGrounded(claim, facts, windowLabels)
   }
+  assertUniversalQuantifiersAreGrounded(answer, facts, windowLabels)
+}
+
+// A quantifier does not need a digit to make a claim about a whole class.
+// "Every current student had matching transactions", "Both current students
+// had matching transactions" and "None of the current students had matching
+// transactions" each say how many students the answer covers, and all three
+// were accepted on a roster only one student of which matched, because claim
+// extraction scans digits and these carry none. A prompt telling the model to
+// use digits is not an enforcement boundary, so they are grounded here on the
+// same terms as a quantified count: a universal asserts the predicate count
+// equals the population total, and a zero asserts the predicate count is none.
+const UNIVERSAL_QUANTIFIER_PATTERN = /\b(?:all|every|each|both|the\s+(?:whole|entire))\s+(?:of\s+)?(?:the\s+)?(?:current(?:ly)?\s+(?:enrolled\s+)?|active\s+|enrolled\s+)?(?:students?|class|roster|participants?)\b/giu
+
+const ZERO_QUANTIFIER_PATTERN = /\b(?:none|not\s+one|neither|no)\s+(?:of\s+)?(?:the\s+)?(?:current(?:ly)?\s+(?:enrolled\s+)?|active\s+|enrolled\s+)?(?:students?|participants?)\b/giu
+
+function assertUniversalQuantifiersAreGrounded(answer, facts, windowLabels) {
+  for (const match of answer.matchAll(UNIVERSAL_QUANTIFIER_PATTERN)) {
+    const predicate = claimPredicate(segmentAround(answer, match.index, CLAUSE_BOUNDARY_PATTERN))
+    const totals = facts.filter(fact => fact.populationTotal === true && typeof fact.value === 'number')
+    const proven = totals.some(total => facts.some(fact => (
+      typeof fact.value === 'number' &&
+      Object.is(fact.value, total.value) &&
+      predicateIsProven(predicate, [fact])
+    )))
+    if (!proven) failUniversalQuantifier('universal', predicate, facts, windowLabels)
+  }
+  for (const match of answer.matchAll(ZERO_QUANTIFIER_PATTERN)) {
+    const predicate = claimPredicate(segmentAround(answer, match.index, CLAUSE_BOUNDARY_PATTERN))
+    const proven = facts.some(fact => (
+      typeof fact.value === 'number' && fact.value === 0 && predicateIsProven(predicate, [fact])
+    ))
+    if (!proven) failUniversalQuantifier('zero', predicate, facts, windowLabels)
+  }
+}
+
+function failUniversalQuantifier(quantifierForm, predicate, facts, windowLabels) {
+  fail('answer-unverified', 'The provider answer stated a quantifier the cited facts do not establish.', 'unverified-universal', {
+    quantifierForm,
+    claimPredicate: predicate,
+    populationTotalFactCount: facts.filter(fact => fact.populationTotal === true).length,
+    distinctWindowCount: new Set([...windowLabels.values()]).size,
+  })
 }
 
 // A quantifier says the counted group is the whole population, which the count
@@ -659,13 +710,84 @@ const POPULATION_CLAIM_KINDS = Object.freeze(new Set(['student-count', 'particip
 
 function assertQuantifierIsGrounded(claim, facts, windowLabels) {
   if (!claim.quantified || !POPULATION_CLAIM_KINDS.has(claim.kind)) return
-  const totals = supportingFacts(claim, facts).filter(fact => fact.populationTotal === true)
-  if (totals.length > 0) return
-  fail('answer-unverified', 'The provider answer quantified a count over an uncited population.', 'unverified-quantifier', {
+  const supporting = supportingFacts(claim, facts)
+  const provesPopulationSize = supporting.some(fact => fact.populationTotal === true)
+  const provesPredicate = predicateIsProven(claim.predicate, supporting)
+  if (provesPopulationSize && provesPredicate) return
+  fail('answer-unverified', 'The provider answer quantified a count the cited facts do not establish.', 'unverified-quantifier', {
     claimKind: claim.kind,
+    claimPredicate: claim.predicate,
     populationTotalFactCount: facts.filter(fact => fact.populationTotal === true).length,
     distinctWindowCount: new Set([...windowLabels.values()]).size,
   })
+}
+
+// A quantified claim asserts two things at once, and a count establishes only
+// one of them. "All 2 current students had matching transactions" was accepted
+// against get_balances currentStudentCount: the value and the student-count
+// kind both matched, so nothing noticed that the fact proves how large the
+// class is while the sentence claims something about transactions. Kinds carry
+// how a number may be phrased, not what it is evidence of, so the predicate is
+// bound to the tool and field that can answer it instead.
+const CLAIM_PREDICATES = Object.freeze([
+  Object.freeze({
+    name: 'no-transactions',
+    pattern: /\b(?:no|without|zero)\s+(?:matching\s+|approved\s+)*(?:transactions?|payments?|credits?)\b|\bnever\s+(?:transacted|paid)\b/iu,
+  }),
+  Object.freeze({
+    name: 'transactions',
+    pattern: /\b(?:transactions?|transacted|payments?|credits?|deposits?|withdrawals?|paid|spent|earned)\b/iu,
+  }),
+  Object.freeze({ name: 'balances', pattern: /\b(?:balances?|money|dollars?)\b/iu }),
+  Object.freeze({ name: 'roster', pattern: /\b(?:enrolled|roster|in\s+the\s+class|on\s+the\s+list|students?)\b/iu }),
+])
+
+// Which tool and field can settle each predicate. find_students_without_transactions
+// answers the negative predicate and is deliberately absent from the positive
+// one: its count is the complement, so reading it as evidence that students did
+// transact would invert the claim.
+const PREDICATE_EVIDENCE = Object.freeze(new Map([
+  ['transactions', Object.freeze(new Set([
+    'list_transactions/distinctCurrentStudentCount',
+    'list_transactions/distinctParticipantCount',
+    'aggregate_transactions/distinctCurrentStudents',
+    'aggregate_transactions/distinctStudents',
+    'compare_periods/distinctCurrentStudents',
+    'compare_periods/distinctStudents',
+  ]))],
+  ['no-transactions', Object.freeze(new Set([
+    'find_students_without_transactions/studentsWithoutCount',
+  ]))],
+  ['balances', Object.freeze(new Set([
+    'get_balances/matchedCount',
+    'get_balances/returnedCount',
+  ]))],
+  ['roster', Object.freeze(new Set([
+    'get_balances/currentStudentCount',
+    'find_students_without_transactions/currentStudentCount',
+    'find_students_without_transactions/consideredStudentCount',
+  ]))],
+]))
+
+function claimPredicate(clause) {
+  return CLAIM_PREDICATES.find(predicate => predicate.pattern.test(clause))?.name ?? 'unclassified'
+}
+
+function predicateIsProven(predicate, facts) {
+  const allowed = PREDICATE_EVIDENCE.get(predicate)
+  if (allowed === undefined) return false
+  return facts.some(fact => allowed.has(fact.evidence))
+}
+
+// The tool and field a number actually came from. An aggregate reports its
+// numbers under one field name for every metric, so the metric is what
+// identifies the evidence there.
+function factEvidenceKey(path, result, callName) {
+  const field = path.split('/').at(-1)?.replace(/~1/gu, '/').replace(/~0/gu, '~') ?? ''
+  if (['value', 'difference'].includes(field) && typeof result.metric === 'string') {
+    return `${callName}/${result.metric}`
+  }
+  return `${callName}/${field}`
 }
 
 // The fields that carry a whole-population total rather than a count of some
@@ -832,11 +954,16 @@ const CURRENT_ROSTER_POPULATION_PATTERN = /\bcurrent(?:ly)?\s+(?:enrolled\s+)?st
 // directly against.
 const PARTICIPANT_NOUN_PATTERN = /^\s+(?:of\s+(?:the\s+)?)?(?:participants?|former\s+students?|past\s+students?|archived\s+students?|withdrawn\s+students?|inactive\s+students?|students?\s+who\s+(?:have\s+|had\s+)?(?:left|withdrawn|been\s+archived))\b/iu
 
-// The second is an explicit inclusive disclosure. "Including" and its kin are
-// the words that actually widen a population; the exclusionary framings that
-// share their vocabulary do not match, so under-splitting a clause can no
-// longer loosen which population a count is read against.
-const PARTICIPANT_DISCLOSURE_PATTERN = /\b(?:including|include|includes|counting|plus)\s+(?:the\s+)?(?:(?:\d+|one|some|any|those|people)\s+)?(?:students?\s+)?(?:who\b|(?:former|past|archived|withdrawn|inactive)\s+students?\b|participants?\b)/iu
+// Any mention of the wider population, used only to make a count ambiguous and
+// never to widen one. An inclusive disclosure used to widen a count on its own,
+// which meant a generic "N students" became an all-participant total whenever
+// historical wording appeared anywhere in the sentence -- and the only thing
+// standing between that and a false answer was a pattern that had to recognise
+// every way a teacher might name the current roster. "2 enrolled students",
+// "2 active students" and "2 students on the roster" all walked past it. Adding
+// synonyms moves that hole rather than closing it, so the direction is
+// reversed: this pattern can only ever refuse.
+const WIDER_POPULATION_MENTION_PATTERN = /\b(?:participants?|former\s+students?|past\s+students?|archived|no\s+longer\s+(?:in|on|enrolled|a\s+student)|left\s+(?:the\s+)?class|withdrawn|inactive\s+students?|including\s+students?\s+who|who\s+(?:have\s+)?left)\b/iu
 
 // The clause a number sits in, and the sentence around it. Population wording
 // used to be read from a fixed 24-character window, which decided the question
@@ -868,6 +995,20 @@ function segmentAround(text, index, boundary) {
 }
 
 function numericClaimKind(claim, before, after, population) {
+  const kind = baseNumericClaimKind(claim, before, after, population)
+  // Only a count that resolved to the current roster can be widened, and only
+  // wording naming the wider population directly on the count does that -- a
+  // participant claim has already said so above. So a roster count in a
+  // sentence that also mentions the wider population resolves to neither, and
+  // the ambiguity cannot reach a money, day, or transaction claim, which is
+  // what deciding population ahead of those nouns used to do.
+  if (kind !== 'student-count') return kind
+  return WIDER_POPULATION_MENTION_PATTERN.test(population.sentence)
+    ? 'population-ambiguous'
+    : 'student-count'
+}
+
+function baseNumericClaimKind(claim, before, after, population) {
   const context = `${before}${claim}${after}`
   if (claim.includes('%') || /^\s*percent\b/iu.test(after)) return 'percent'
   if (claim.includes('$')) return 'money'
@@ -878,24 +1019,12 @@ function numericClaimKind(claim, before, after, population) {
   // participants, which no day-count fact could support.
   if (/^\s+(?:approved\s+)?(?:transactions?|payments?|credits?)\b/iu.test(after)) return 'transaction-count'
   if (/^\s+days?\b/iu.test(after)) return 'day-count'
-  // Which of the two student populations a count claims, decided over the
-  // clause the number sits in and the sentence around it. Current-roster
-  // wording anywhere in the number's own clause is decisive, and the wider
-  // population has to be claimed by the two shapes above rather than inferred
-  // from any historical word in range. A claim whose clause scopes it to the
-  // roster while its sentence also discloses the wider population has not made
-  // one checkable statement, so it resolves to neither and no fact supports it.
-  const clauseScopesToRoster = CURRENT_ROSTER_POPULATION_PATTERN.test(population.clause)
-  const clauseClaimsParticipants = PARTICIPANT_NOUN_PATTERN.test(after) ||
-    PARTICIPANT_DISCLOSURE_PATTERN.test(population.clause)
-  const sentenceClaimsParticipants = clauseClaimsParticipants ||
-    PARTICIPANT_DISCLOSURE_PATTERN.test(population.sentence)
-  const sentenceScopesToRoster = clauseScopesToRoster ||
-    CURRENT_ROSTER_POPULATION_PATTERN.test(population.sentence)
-  if (clauseScopesToRoster && sentenceClaimsParticipants) return 'population-ambiguous'
-  if (clauseClaimsParticipants && sentenceScopesToRoster) return 'population-ambiguous'
-  if (clauseScopesToRoster) return 'student-count'
-  if (clauseClaimsParticipants) return 'participant-count'
+  // A participant noun the number sits against names the wider population
+  // outright, so it is a noun anchor like the two above. Roster wording is read
+  // over the whole clause, because the words that scope a claim to the class as
+  // it stands now do not have to sit against the number.
+  if (PARTICIPANT_NOUN_PATTERN.test(after)) return 'participant-count'
+  if (CURRENT_ROSTER_POPULATION_PATTERN.test(population.clause)) return 'student-count'
   if (/^\s+(?:current\s+)?students?\b/iu.test(after)) return 'student-count'
   if (/^\s+(?:matching\s+)?balances?\b/iu.test(after)) return 'student-count'
   if (/\bshowing\s+(?:only\s+|the\s+first\s+)?\d[\d,]*\s+(?:of|out\s+of)\s+\d[\d,]*\s+(?:matching\s+)?balances?\b/iu.test(context)) return 'student-count'
