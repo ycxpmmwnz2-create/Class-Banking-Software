@@ -58,6 +58,10 @@ export const CALLABLE_LOG_SUBCATEGORIES = Object.freeze(new Set([
   'uncited-roster-name',
   'truncation-not-disclosed',
   'quoted-span-unverified',
+  'tool-turn-content-missing',
+  'tool-call-limit',
+  'tool-call-id-repeated',
+  'tool-turn-limit',
 ]))
 
 export function callableErrorCode(error) {
@@ -137,6 +141,10 @@ const CALLABLE_LOG_DIAGNOSTIC_FIELDS = Object.freeze(new Map([
   ['toolName', isWordFrom(CALLABLE_LOG_DIAGNOSTIC_TOOL_NAMES)],
   ['returnedCountUsable', isFlag],
   ['totalCountUsable', isFlag],
+  ['turnIndex', isCount],
+  ['toolCallCount', isCount],
+  ['requestedCallCount', isCount],
+  ['providerCallIdPresent', isFlag],
 ]))
 
 export function callableLogDiagnostic(error) {

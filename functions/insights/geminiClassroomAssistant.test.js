@@ -1899,3 +1899,116 @@ test('accepts a full memo quotation including its trailing punctuation', async (
     assert.equal(result.answer, scenario.answer)
   }
 })
+
+// Andrew's first real classroom question after the production deploy failed
+// with category 'provider-output-invalid' and no subcategory at all. Four
+// separate tool-loop sites could produce it and none of them said which, so
+// diagnosing it would have cost a deploy round per hypothesis. Each site now
+// names itself and reports value-free counts.
+function answerWithLoop({ turns, assistantEvidence = evidence() }) {
+  let turn = 0
+  const assistant = createGeminiClassroomAssistant({
+    async generateContent() {
+      const response = turns[Math.min(turn, turns.length - 1)]
+      turn += 1
+      return { finishReason: 'STOP', usageMetadata: USAGE, ...response }
+    },
+  })
+  return assistant.answer({ assistantEvidence })
+}
+
+function toolTurn(calls) {
+  return {
+    functionCalls: calls,
+    candidateContent: { role: 'model', parts: calls.map(call => ({ functionCall: call })) },
+  }
+}
+
+test('each tool-loop failure names its own cause and reports only value-free counts', async () => {
+  const call = { id: 'call', name: 'get_balances', args: {} }
+  const scenarios = [
+    {
+      name: 'tool-turn-content-missing',
+      turns: [{ functionCalls: [call], candidateContent: { role: 'user', parts: [] } }],
+      diagnostic: { turnIndex: 0, toolCallCount: 0 },
+    },
+    {
+      name: 'tool-call-limit',
+      turns: [toolTurn(Array.from({ length: 9 }, (item, index) => ({
+        id: `call-${index}`,
+        name: 'get_balances',
+        args: {},
+      })))],
+      diagnostic: { turnIndex: 0, toolCallCount: 0, requestedCallCount: 9 },
+    },
+    {
+      name: 'tool-call-id-repeated',
+      turns: [toolTurn([call, { ...call }])],
+      diagnostic: { turnIndex: 0, toolCallCount: 1, providerCallIdPresent: true },
+    },
+    {
+      name: 'tool-turn-limit',
+      // Never stops calling tools, so the loop runs out of turns.
+      turns: [0, 1, 2, 3].map(index => toolTurn([{ id: `call-${index}`, name: 'get_balances', args: {} }])),
+      diagnostic: { turnIndex: 4, toolCallCount: 4 },
+    },
+  ]
+  for (const scenario of scenarios) {
+    await assert.rejects(
+      answerWithLoop({ turns: scenario.turns }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.category === 'provider-output-invalid' &&
+        error.subcategory === scenario.name &&
+        CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES.has(error.subcategory),
+      `${scenario.name} must name itself`,
+    )
+    const error = await answerWithLoop({ turns: scenario.turns }).catch(caught => caught)
+    assert.deepEqual(error.diagnostic, scenario.diagnostic, `${scenario.name} diagnostic`)
+    // Every reported value is a count or a flag, never classroom content.
+    for (const value of Object.values(error.diagnostic)) {
+      assert.equal(
+        typeof value === 'boolean' || (Number.isSafeInteger(value) && value >= 0),
+        true,
+        `${scenario.name} must report only counts and flags`,
+      )
+    }
+  }
+})
+
+// The model was stating how many students matched a filter after counting
+// distinct names off a returned row list -- a number with nothing to cite, and
+// a wrong one whenever that list was truncated. The count is now returned by
+// the same call the model already makes, so the honest answer is citable.
+test('a student count cited from list_transactions distinctStudentCount is grounded', async () => {
+  const result = await answerWithTool({
+    name: 'list_transactions',
+    args: {},
+    answer: '1 student had matching transactions.',
+    factRefs: [{ callId: 'call', path: '/distinctStudentCount' }],
+  })
+  assert.equal(result.answer, '1 student had matching transactions.')
+})
+
+test('a student count the model invented is still refused when no student count was cited', async () => {
+  await assert.rejects(
+    answerWithTool({
+      name: 'list_transactions',
+      args: {},
+      answer: '2 students had matching transactions.',
+      factRefs: [{ callId: 'call', path: '/distinctStudentCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number',
+  )
+})
+
+test('the outbound system instruction sends the model to a citable student count', () => {
+  const request = buildGeminiClassroomAssistantRequest({
+    contents: [{ role: 'user', parts: [{ text: 'test' }] }],
+    declarations: [],
+    requireTool: false,
+  })
+  const instruction = request.config.systemInstruction
+  assert.match(instruction, /list_transactions returns distinctStudentCount/u)
+  assert.match(instruction, /never count distinct names yourself from a returned row list/iu)
+})

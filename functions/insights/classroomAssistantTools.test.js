@@ -271,3 +271,33 @@ test('rejects unknown students and invalid ranges inside a safe tool error', () 
     ['transaction-00003'],
   )
 })
+
+// The count must describe the whole matched set, not the page that came back.
+// Counting distinct names off a truncated row list is exactly the mistake this
+// field exists to remove, so a truncated result is the case that matters.
+test('list_transactions counts distinct students across the whole matched set', () => {
+  const students = [1, 2, 3].map(index => ({
+    ref: `student-00${index}`,
+    displayName: `Student ${index}`,
+    current: true,
+    balance: 10,
+    frozen: false,
+  }))
+  const toolbox = createClassroomAssistantToolbox({
+    ...evidence(),
+    students,
+    transactions: [1, 2, 3, 4, 5, 6].map(index => transaction(
+      `transaction-0000${index}`,
+      `student-00${(index % 3) + 1}`,
+      `2026-08-27T15:0${index}:00.000Z`,
+      5,
+    )),
+  })
+  const truncated = toolbox.execute('list_transactions', { limit: 1 })
+  assert.equal(truncated.truncated, true)
+  assert.equal(truncated.returnedCount, 1)
+  assert.equal(truncated.matchedCount, 6)
+  // One row came back, but three distinct students matched.
+  assert.equal(truncated.distinctStudentCount, 3)
+  assert.equal(toolbox.execute('list_transactions', {}).distinctStudentCount, 3)
+})

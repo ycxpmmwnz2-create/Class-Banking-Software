@@ -261,6 +261,12 @@ function listTransactions(args, filtered, studentsByRef, memoResolver) {
       ? {}
       : { selectedPeriodDays: filtered.selectedPeriodDays }),
     matchedCount: ordered.length,
+    // Counted across every matched transaction, not the returned page. Asking
+    // "how many students did X" made the model count distinct names off a
+    // truncated row list, producing a student count with nothing to cite --
+    // and a wrong one whenever the list was truncated. The count is cheaper to
+    // make citable than to argue about.
+    distinctStudentCount: new Set(ordered.map(transaction => transaction.studentRef)).size,
     returnedCount: Math.min(limit, ordered.length),
     truncated: ordered.length > limit,
     transactions: Object.freeze(ordered.slice(0, limit).map(transaction => {

@@ -102,3 +102,50 @@ test('the service re-wrap carries the diagnostic through to the log', () => {
     totalCountUsable: false,
   })
 })
+
+// The tool-loop refusals reached production naming neither a subcategory nor a
+// cause. Their diagnostics are counts and flags about the loop itself, so they
+// must survive the allowlist while carrying nothing from the classroom.
+test('logs the tool-loop diagnostic counts and flags', () => {
+  assert.deepEqual(callableLogDiagnostic(error('tool-call-limit', {
+    turnIndex: 0,
+    toolCallCount: 6,
+    requestedCallCount: 9,
+  })), {
+    turnIndex: 0,
+    toolCallCount: 6,
+    requestedCallCount: 9,
+  })
+
+  assert.deepEqual(callableLogDiagnostic(error('tool-call-id-repeated', {
+    turnIndex: 2,
+    toolCallCount: 3,
+    providerCallIdPresent: false,
+  })), {
+    turnIndex: 2,
+    toolCallCount: 3,
+    providerCallIdPresent: false,
+  })
+
+  assert.deepEqual(
+    callableLogDiagnostic(error('tool-turn-limit', { turnIndex: 4, toolCallCount: 4 })),
+    { turnIndex: 4, toolCallCount: 4 },
+  )
+  assert.deepEqual(
+    callableLogDiagnostic(error('tool-turn-content-missing', { turnIndex: 1, toolCallCount: 0 })),
+    { turnIndex: 1, toolCallCount: 0 },
+  )
+})
+
+test('a tool-loop diagnostic carrying classroom content is dropped', () => {
+  // A tool-call ID is provider text, not a count, and never belongs in a log.
+  assert.equal(callableLogDiagnostic(error('tool-call-id-repeated', {
+    turnIndex: 'Paid to GianMarco for chores',
+    toolCallCount: 'call-GianMarco-01',
+    providerCallIdPresent: 'yes',
+  })), null)
+  assert.equal(callableLogDiagnostic(error('tool-turn-limit', {
+    turnIndex: -1,
+    toolCallCount: 2.5,
+  })), null)
+})
