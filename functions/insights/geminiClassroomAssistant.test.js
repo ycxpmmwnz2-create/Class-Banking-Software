@@ -2087,6 +2087,85 @@ test('a participant total stays citable in an answer that says it includes forme
   assert.match(result.answer, /2 participants/u)
 })
 
+// Separating the two populations was not sufficient on its own. Resolving the
+// participant wording first meant historical framing anywhere nearby relabelled
+// the whole claim, so an explicitly current-roster sentence could be supported
+// by a participant total. This is the exact sentence that got through.
+const MIXED_POPULATION_BYPASS =
+  'Including students who left the class, all 2 current students had matching transactions.'
+
+test('mixed population wording cannot license a participant total for a current-roster claim', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer: MIXED_POPULATION_BYPASS,
+      factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number' &&
+      error.diagnostic.claimKind === 'population-ambiguous',
+  )
+})
+
+// Reordering the clauses moves the historical wording out of the claim's
+// context window, so the claim reads as current-roster and is refused for
+// having no current-roster fact at its value. Either path must refuse; neither
+// may resolve to the participant population.
+test('the same false claim is refused however the two populations are ordered', async () => {
+  for (const answer of [
+    'All 2 current students had matching transactions, including students who left the class.',
+    '2 of the current students had matching transactions, including former students.',
+    '2 currently enrolled students had matching transactions, including archived students.',
+    '2 students still in the class had matching transactions; 1 has left the class.',
+  ]) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence: mixedRosterEvidence(),
+        name: 'list_transactions',
+        args: {},
+        answer,
+        factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-number' &&
+        ['population-ambiguous', 'student-count'].includes(error.diagnostic.claimKind),
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// Population wording must only ever choose between the two student
+// populations. Deciding it ahead of the nouns a number sits against turned
+// "over 8 days, including former students" into a participant claim that no
+// day-count fact could support.
+test('population wording does not relabel counts that are not about students', async () => {
+  // "8 days for former students" is a day count, and the participant wording
+  // sits inside the claim's context window. Resolving population first made it
+  // a participant claim that no day-count fact could support.
+  const dayCount = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: '8 days for former students were checked.',
+    factRefs: [{ callId: 'call', path: '/windowDays' }],
+  })
+  assert.match(dayCount.answer, /8 days/u)
+
+  const combined = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: 'Over 8 days, including former students, 2 transactions matched.',
+    factRefs: [
+      { callId: 'call', path: '/windowDays' },
+      { callId: 'call', path: '/matchedCount' },
+    ],
+  })
+  assert.match(combined.answer, /2 transactions/u)
+})
+
 // The aggregate metric had the identical defect before this branch existed, so
 // reclassifying only the list_transactions field would have left it reachable.
 test('the aggregate distinctStudents metric is a participant total, not a roster total', async () => {

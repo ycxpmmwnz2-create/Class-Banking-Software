@@ -679,6 +679,10 @@ function anonymizeWindows(facts) {
 // understate a historical answer. Only the generic and bare-count claims still
 // accept any counted kind, exactly as before.
 function factKindSupportsClaim(factKindValue, claimKind) {
+  // An answer that names both populations for one number has not made a
+  // checkable claim, so no fact of any kind supports it. Stated before the
+  // equality and umbrella cases so a future factKind cannot reopen it.
+  if (claimKind === 'population-ambiguous') return false
   if (claimKind === 'generic' || factKindValue === claimKind) return true
   return claimKind === 'count' && (factKindValue === 'count' || factKindValue.endsWith('-count'))
 }
@@ -773,9 +777,15 @@ function formatDateKey(year, month, day) {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
-// Wording that says the count reaches past the current roster. Matching any of
-// it moves the claim to the participant population; matching none of it leaves
-// the claim on the current roster.
+// Wording that names the current roster explicitly. A claim carrying this is a
+// statement about the class as it stands now, and only a current-roster fact
+// can support it -- no amount of historical framing elsewhere in the sentence
+// changes that, which is the bypass this pattern exists to close.
+const CURRENT_ROSTER_POPULATION_PATTERN = /\bcurrent(?:ly)?\s+(?:enrolled\s+)?students?\b|\bcurrently\s+enrolled\b|\bstudents?\s+(?:still|currently)\s+(?:in|on|enrolled)\b|\bstudents?\s+still\s+(?:in|on)\b/iu
+
+// Wording that says the count reaches past the current roster. On its own it
+// moves the claim to the participant population; together with the pattern
+// above it makes the claim unsupportable rather than resolving to either.
 const PARTICIPANT_POPULATION_PATTERN = /\b(?:participants?|former\s+students?|past\s+students?|archived|no\s+longer\s+(?:in|on|enrolled|a\s+student)|left\s+(?:the\s+)?class|withdrawn|including\s+students?\s+who)\b/iu
 
 function numericClaimKind(claim, before, after) {
@@ -783,14 +793,25 @@ function numericClaimKind(claim, before, after) {
   if (claim.includes('%') || /^\s*percent\b/iu.test(after)) return 'percent'
   if (claim.includes('$')) return 'money'
   if (/^-days?\b/iu.test(after)) return 'day-count'
-  // Checked ahead of every student pattern. An answer that says out loud it is
-  // including someone who has left the class is asking about the participant
-  // population; anything less explicit is read as a claim about the current
-  // class, which is the stricter of the two and the one a teacher assumes.
-  if (PARTICIPANT_POPULATION_PATTERN.test(context)) return 'participant-count'
-  if (/^\s+(?:current\s+)?students?\b/iu.test(after)) return 'student-count'
+  // The nouns a number sits directly against are decided first. Population
+  // wording below must only ever choose between the two student populations --
+  // resolving it earlier turned "2 days for former students" into a claim about
+  // participants, which no day-count fact could support.
   if (/^\s+(?:approved\s+)?(?:transactions?|payments?|credits?)\b/iu.test(after)) return 'transaction-count'
   if (/^\s+days?\b/iu.test(after)) return 'day-count'
+  // Which of the two student populations a count claims. Checking the
+  // participant wording alone was not enough: "including students who left the
+  // class, all 2 current students had matching transactions" carries both, and
+  // relabelling the whole claim as the participant population let a participant
+  // total support an explicitly current-roster sentence. Explicit current-roster
+  // wording now wins outright, and naming both populations fails closed rather
+  // than resolving to either one.
+  const claimsCurrentRoster = CURRENT_ROSTER_POPULATION_PATTERN.test(context)
+  const claimsParticipants = PARTICIPANT_POPULATION_PATTERN.test(context)
+  if (claimsCurrentRoster && claimsParticipants) return 'population-ambiguous'
+  if (claimsCurrentRoster) return 'student-count'
+  if (claimsParticipants) return 'participant-count'
+  if (/^\s+(?:current\s+)?students?\b/iu.test(after)) return 'student-count'
   if (/^\s+(?:matching\s+)?balances?\b/iu.test(after)) return 'student-count'
   if (/\bshowing\s+(?:only\s+|the\s+first\s+)?\d[\d,]*\s+(?:of|out\s+of)\s+\d[\d,]*\s+(?:matching\s+)?balances?\b/iu.test(context)) return 'student-count'
   if (/\b(?:balance|amount|total|average|dollars?|money|paid|earned|spent)\b/iu.test(before) || /^\s+dollars?\b/iu.test(after)) return 'money'

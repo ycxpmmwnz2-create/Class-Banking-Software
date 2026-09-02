@@ -108,7 +108,7 @@ export function callableLogSubcategory(error) {
 // name. Anything else is dropped rather than truncated or redacted.
 const CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS = Object.freeze(new Set([
   'money', 'percent', 'day-count', 'student-count', 'participant-count',
-  'transaction-count', 'result-count', 'count', 'generic',
+  'transaction-count', 'result-count', 'count', 'generic', 'population-ambiguous',
 ]))
 
 const CALLABLE_LOG_DIAGNOSTIC_TOOL_NAMES = Object.freeze(new Set([
