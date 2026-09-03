@@ -2371,7 +2371,11 @@ test('the outbound system instruction sends the model to a roster total for a qu
   assert.match(instruction, /put the number in digits inside that same phrase/u)
   assert.match(instruction, /A number elsewhere in the sentence does not count/u)
   assert.match(instruction, /is the size of the class and shows nothing about transactions/u)
-  assert.match(instruction, /Cite it only inside a "Showing X of Y" disclosure/u)
+  assert.match(instruction, /Cite it only as the first number of a "Showing X of Y" disclosure/u)
+  // The two disclosure numbers are checked against different fields, so the
+  // instruction has to say which is which rather than naming both together.
+  assert.match(instruction, /where X is that result’s returnedCount and Y is its exact total count/u)
+  assert.match(instruction, /The two numbers are not interchangeable/u)
   assert.match(instruction, /Say what each count is a count of in the same clause as its digits/u)
   assert.match(instruction, /Both and neither additionally claim the class is exactly two/u)
 })
@@ -3105,4 +3109,200 @@ test('a quantifier after the noun is bound to the count in front of it', async (
     ],
   })
   assert.equal(result.answer, answer)
+})
+
+// A quantifier reaches its noun across as much of the phrase as the phrase
+// needs. Budgeting three modifier words meant "every one of the 2 current
+// students" needed five and so registered as neither a group claim nor a
+// quantified one, and its count was then checked as an ordinary predicate count
+// with no roster total required. Two of three students had transacted here.
+test('a quantifier reaches its noun however long the phrase between them is', async () => {
+  for (const answer of [
+    'Every one of the 2 current students had matching transactions.',
+    'Each one of the 2 current students had matching transactions.',
+    'Every single one of the 2 current students had matching transactions.',
+    'All of the 2 current students had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 2),
+        calls: [TRANSACTIONS],
+        answer,
+        factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unverified-quantifier',
+      `must refuse: ${answer}`,
+    )
+  }
+  // Citing the roster total does not rescue it either, because the roster is 3.
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 2),
+      calls: [TRANSACTIONS, BALANCES],
+      answer: 'Every one of the 2 current students had matching transactions.',
+      factRefs: [
+        { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+        { callId: 'balances', path: '/currentStudentCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unverified-quantifier',
+  )
+  // And the true form of the same phrasing stays sayable.
+  const answer = 'Every one of the 2 current students had matching transactions.'
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(2, 2),
+    calls: [TRANSACTIONS, BALANCES],
+    answer,
+    factRefs: [
+      { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+      { callId: 'balances', path: '/currentStudentCount' },
+    ],
+  })
+  assert.equal(result.answer, answer)
+})
+
+// A preposition hands the head of the phrase to another noun, so the quantifier
+// is not reaching the students named after it and no count of them is owed.
+test('a quantifier over another noun does not demand a count of students', async () => {
+  const answer = 'All matching transactions for the 1 current student were approved.'
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 1),
+    calls: [TRANSACTIONS],
+    answer,
+    factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+  })
+  assert.equal(result.answer, answer)
+})
+
+// A contraction carries its negation inside the word, where a leading word
+// boundary cannot find it, so "didn't have matching transactions" was read as a
+// claim about who did transact and settled by that count.
+test('a contraction carries its negation into the predicate', async () => {
+  for (const answer of [
+    '1 current student didn’t have matching transactions.',
+    "1 current student didn't have matching transactions.",
+    '1 current student hasn’t had matching transactions.',
+    '1 current student weren’t paid.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 1),
+        calls: [TRANSACTIONS],
+        answer,
+        factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate' &&
+        error.diagnostic.claimPredicate === 'no-transactions',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// A conjunction begins a new assertion whether or not a comma precedes it.
+// Sharing one clause let a negation belonging to the other half reach across:
+// "No balances were negative and 2 current students had matching transactions"
+// was read as a claim about who had none and settled by studentsWithoutCount.
+test('a negation does not reach across a coordinated assertion', async () => {
+  for (const answer of [
+    'No balances were negative and 2 current students had matching transactions.',
+    'No student was frozen while 2 current students had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 1),
+        calls: [WITHOUT_ALL],
+        answer,
+        factRefs: [{ callId: 'without', path: '/studentsWithoutCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate' &&
+        error.diagnostic.claimPredicate === 'transactions',
+      `must refuse: ${answer}`,
+    )
+  }
+  // Both halves of a coordinated sentence still stand when each names its own
+  // predicate and cites the field that answers it.
+  const answer = '1 current student had matching transactions and 2 current students had no matching transactions.'
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 1),
+    calls: [TRANSACTIONS, WITHOUT_ALL],
+    answer,
+    factRefs: [
+      { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+      { callId: 'without', path: '/studentsWithoutCount' },
+    ],
+  })
+  assert.equal(result.answer, answer)
+})
+
+// The two numbers in a disclosure hold different roles. Giving both the same
+// predicate let each take whichever cited fact matched its value, so the
+// reversed "Showing 2 of 1 students" passed on a returnedCount of 1 and a total
+// of 2 -- each number proven by the other's field.
+test('the numbers in a disclosure are bound to the fields that hold them', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'Showing 2 of 1 students without matching transactions.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'listing-page',
+  )
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [{ id: 'balances', name: 'get_balances', args: { limit: 1 } }],
+      answer: 'Showing 3 of 1 matching balances.',
+      factRefs: [
+        { callId: 'balances', path: '/returnedCount' },
+        { callId: 'balances', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'listing-page',
+  )
+  // A page length cannot stand as the total either, even when it is the only
+  // number cited and the two happen to be written the same.
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'Showing 1 of 1 students without matching transactions.',
+      factRefs: [{ callId: 'without', path: '/returnedCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'listing-total',
+  )
+  // Both disclosures in the right order stay sayable, for either tool.
+  const withoutTransactions = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 1),
+    calls: [WITHOUT_ONE_ROW],
+    answer: 'Showing 1 of 2 students without matching transactions.',
+    factRefs: [
+      { callId: 'without', path: '/returnedCount' },
+      { callId: 'without', path: '/studentsWithoutCount' },
+    ],
+  })
+  assert.match(withoutTransactions.answer, /Showing 1 of 2 students/u)
+  const balances = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 1),
+    calls: [{ id: 'balances', name: 'get_balances', args: { limit: 1 } }],
+    answer: 'Showing 1 of 3 matching balances.',
+    factRefs: [
+      { callId: 'balances', path: '/returnedCount' },
+      { callId: 'balances', path: '/matchedCount' },
+    ],
+  })
+  assert.match(balances.answer, /Showing 1 of 3 matching balances/u)
 })

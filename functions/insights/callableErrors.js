@@ -117,7 +117,8 @@ const CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS = Object.freeze(new Set([
 // What a quantified claim asserted about the students it counted. A fixed
 // vocabulary chosen here, never a value read out of a classroom result.
 const CALLABLE_LOG_DIAGNOSTIC_PREDICATE_WORDS = Object.freeze(new Set([
-  'transactions', 'no-transactions', 'balances', 'roster', 'listing', 'unclassified',
+  'transactions', 'no-transactions', 'balances', 'roster',
+  'listing-page', 'listing-total', 'unclassified',
 ]))
 
 const CALLABLE_LOG_DIAGNOSTIC_TOOL_NAMES = Object.freeze(new Set([
