@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { callableLogDiagnostic } from './callableErrors.js'
+import { CLASSROOM_ASSISTANT_CLAIM_PREDICATES } from './geminiClassroomAssistant.js'
 import { InsightToolQuestionServiceError } from './toolQuestionService.js'
 
 function error(subcategory, diagnostic) {
@@ -148,4 +149,30 @@ test('a tool-loop diagnostic carrying classroom content is dropped', () => {
     turnIndex: -1,
     toolCallCount: 2.5,
   })), null)
+})
+
+// Every predicate name a refusal can carry has to be a word this vocabulary
+// knows, or the field is dropped and the refusal reaches the logs with the most
+// useful part of its diagnosis missing. 'listing' was emitted for a whole round
+// without being listed here. The two allowlists are cross-checked the way the
+// subcategory pair is, so neither can gain a member the other does not know.
+test('the predicate vocabulary covers every predicate a refusal can name', () => {
+  assert.equal(CLASSROOM_ASSISTANT_CLAIM_PREDICATES.size > 0, true)
+  for (const predicate of CLASSROOM_ASSISTANT_CLAIM_PREDICATES) {
+    assert.deepEqual(
+      callableLogDiagnostic({ subcategory: 'unsupported-predicate', diagnostic: { claimPredicate: predicate } }),
+      { claimPredicate: predicate },
+      `predicate ${predicate} must survive the log vocabulary`,
+    )
+  }
+  // And nothing the validator cannot produce is accepted here either, so the
+  // vocabulary cannot drift into words that are no longer reachable.
+  for (const word of ['students', 'enrolled', 'former-students']) {
+    assert.equal(CLASSROOM_ASSISTANT_CLAIM_PREDICATES.has(word), false)
+    assert.equal(
+      callableLogDiagnostic({ subcategory: 'unsupported-predicate', diagnostic: { claimPredicate: word } }),
+      null,
+      `${word} is not a predicate the validator names`,
+    )
+  }
 })
