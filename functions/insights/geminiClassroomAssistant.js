@@ -128,6 +128,7 @@ export const CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES = Object.freeze(new Se
   'unsupported-date',
   'uncited-roster-name',
   'truncation-not-disclosed',
+  'disclosure-counts-unbound',
   'quoted-span-unverified',
   // Tool-loop failures, not final-answer validation. They reached production
   // carrying category 'provider-output-invalid' and nothing else, which is the
@@ -157,7 +158,8 @@ const SYSTEM_INSTRUCTION = [
   'Use the provided student display names. They contain only first names, or first name plus last initial when needed. Never expand a last initial or reveal opaque refs in the answer.',
   'Memos are available only through list_transactions with includeMemos true. Request them only when their wording is necessary.',
   'If the available records cannot answer a question, say exactly what is missing instead of guessing.',
-  'If a cited tool result is truncated, begin that disclosure with "Showing X of Y," where X is that result’s returnedCount and Y is its exact total count -- studentsWithoutCount for find_students_without_transactions, matchedCount for get_balances -- and cite both. The two numbers are not interchangeable; each is checked against the field that holds it.',
+  'If a cited tool result is truncated, begin that disclosure with "Showing X of Y," where X is that result’s returnedCount and Y is its exact total count -- studentsWithoutCount for find_students_without_transactions, matchedCount for get_balances or list_transactions, resultCount for aggregate_transactions -- and cite both. The two numbers are not interchangeable; each is checked against the field that holds it.',
+  'A disclosure describes one result, so name what was shown and take both numbers from that same result. A page length from one call paired with a total from another describes nothing, and saying students without matching transactions while the counts came from get_balances states something those counts cannot show.',
   'Use digits rather than number words for factual quantities so each quantity can be checked against its exact cited result field.',
   'Every number in your answer must equal a scalar you cite in factRefs. selectedPeriodDays is the length of the window the teacher selected; cite selectedPeriodDays when restating it, and do not restate a number of days only from the teacher’s question.',
   'windowDays is the inclusive calendar span actually filtered and may be one day larger than selectedPeriodDays; cite windowDays only when describing that applied calendar span.',
@@ -373,6 +375,7 @@ function parseFinalAnswer(text, { executed, assistantEvidence, usage, toolCallCo
   assertQuotedSpansAreCited(parsed.answer, facts)
   assertAnswerNamesAreGrounded(parsed.answer, assistantEvidence.students, facts)
   assertNumericClaimsAreGrounded(parsed.answer, groundingFacts(facts, cited), assistantEvidence)
+  assertDisclosureCountsAreBound(parsed.answer, cited)
   // Runs last, and adds rather than refuses. The disclosure is computed from
   // the cited result, not written by the provider, so it is appended after the
   // grounding checks: those govern what the provider claimed, and this sentence
@@ -618,19 +621,80 @@ function factKind(path, result, callName) {
 // false count reached the teacher. Modifiers are skipped; the function words
 // that begin a partitive are not, because "one of the students" is ordinary
 // wording rather than a spelled-out count.
-const NUMBER_WORD_QUANTITY_PATTERN = /\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\s+(?:(?!(?:of|the|a|an|in|at|on|for|to|from|out|and|or)\b)\p{L}+\s+){0,2}(?:transactions?|students?|days?|times?|records?|matches?|results?|balances?|credits?|payments?|dollars?)\b/iu
+// English joins two words with a hyphen as readily as with a space, and every
+// phrase pattern in this module was written with \s+ between its words, so one
+// hyphen hid the whole phrase from the check that reads it. "Every one of the 2
+// currently-enrolled students had matching transactions" was seen as no group
+// claim at all, and "There are 2 students, including no-longer-enrolled ones"
+// lost the wording that makes a count ambiguous -- both false, both accepted,
+// while the spaced spelling of each was refused. Teaching one pattern about
+// hyphens would leave the same hole in the rest, so the gap between words is
+// defined once and shared. Reading a hyphen as that gap can only make these
+// patterns match more, and each of them either refuses on a match or widens the
+// span it has to find a count inside.
+const WORD_GAP = /[\s-]+/u.source
+// A word standing inside such a phrase, which is whatever runs up to the next
+// gap. Budgeting how many could stand between a quantifier and its noun is the
+// same defect in another form: "the 2 very recently enrolled students all
+// matched" needs three and so lost its quantifier entirely.
+const PHRASE_WORD = `[^\\s-]+${WORD_GAP}`
+
+// A preposition hands the head of the phrase to a different noun, so a
+// determiner does not reach across one to the students named after it: in "all
+// matching transactions for the 1 current student", "all" governs the
+// transactions. "Of" is excluded because the partitive is the one construction
+// where the students stay the head -- "every one of the 2 current students".
+// Prepositions are a closed class, and a missing one only lets the scan
+// over-reach into a refusal, never out of one.
+const NON_PARTITIVE_PREPOSITIONS = /(?:for|in|into|with|within|without|from|by|about|to|at|on|onto|over|under|during|per|across|among|amongst|between|against|through|throughout|besides|beyond|than|versus)/u.source
+
+// A spelled-out quantity and the noun it counts stand in one noun phrase, so
+// the scan between them runs until that noun or until a word that cannot stand
+// inside the phrase. Budgeting the modifiers decided it on length instead, and
+// three was enough to walk past: "Seven very recently enrolled students had
+// matching transactions" was accepted on a roster of three where one student
+// had transacted, because a spelled-out count is also invisible to the digit
+// scan that would otherwise have to support it, so nothing checked the number
+// at all. Determiners, prepositions, verbs, complementizers and pronouns are
+// closed classes, and a word missing from them only lets the scan over-reach
+// into a refusal -- never past a false count.
+const PHRASE_BREAK_WORDS = `(?:${[
+  'of', 'the', 'a', 'an', 'out',
+  'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am',
+  'has', 'have', 'had', 'do', 'does', 'did',
+  'will', 'would', 'can', 'could', 'may', 'might', 'must', 'shall', 'should',
+  'that', 'which', 'who', 'whom', 'whose', 'when', 'where', 'why', 'how',
+  'there', 'here', 'it', 'its', 'they', 'we', 'you', 'he', 'she', 'them', 'their',
+].join('|')}|${NON_PARTITIVE_PREPOSITIONS})`
+
+const NUMBER_WORD_QUANTITY_PATTERN = new RegExp(`\\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)${WORD_GAP}(?:(?!${PHRASE_BREAK_WORDS}[\\s-])${PHRASE_WORD})*?(?:transactions?|students?|days?|times?|records?|matches?|results?|balances?|credits?|payments?|dollars?)\\b`, 'iu')
+
+// The scan is held to one statement so a number word cannot reach a noun in the
+// next one, but a coordinating conjunction does not end a noun phrase -- "well
+// prepared and eager students" is one -- so this boundary is the clause
+// boundary without the conjunctions.
+const QUANTITY_PHRASE_BOUNDARY = /[.!?;:]|--|—/u
 
 function assertNumericClaimsAreGrounded(answer, facts, assistantEvidence) {
-  if (NUMBER_WORD_QUANTITY_PATTERN.test(answer)) {
+  if (segmentSpans(answer, QUANTITY_PHRASE_BOUNDARY).some(span => NUMBER_WORD_QUANTITY_PATTERN.test(span.text))) {
     fail('answer-unverified', 'The provider answer must use digits for factual quantities.', 'number-words')
   }
   const withoutDates = removeVerifiedDates(answer, facts, assistantEvidence)
   const references = collectiveStudentReferences(withoutDates)
   const claims = [...withoutDates.matchAll(/-?\$?\d[\d,]*(?:\.\d+)?%?/gu)].map(match => {
     const claim = match[0]
-    const before = withoutDates.slice(Math.max(0, match.index - 24), match.index)
-    const after = withoutDates.slice(match.index + claim.length, match.index + claim.length + 24)
     const population = claimPopulationScope(withoutDates, match.index)
+    // What a number counts is decided from the assertion it sits in, not from a
+    // fixed 24 characters either side of it. That window was the same defect
+    // Codex found between a quantifier and its noun, one layer down: "2 students
+    // had matching transactions" was refused and "2 very recently enrolled
+    // students had matching transactions" was accepted from a transaction count,
+    // because the extra modifiers pushed "students" out of range and the claim
+    // resolved to no kind at all -- and a claim of no kind is supported by any
+    // number of any kind. A clause holds the whole noun phrase, so nothing that
+    // says what the number counts can fall out of range.
+    const before = population.clause.slice(0, population.clauseOffset)
+    const after = population.clause.slice(population.clauseOffset + claim.length)
     // A number is quantified when it sits inside a phrase that speaks about
     // the students as a group, which is the phrase whose quantifier it states
     // the size of. Reading the quantifier out of the characters just before the
@@ -682,15 +746,6 @@ function assertNumericClaimsAreGrounded(answer, facts, assistantEvidence) {
 // used, and the digit forms are the ones a cited fact can be bound to.
 const STUDENT_GROUP_NOUNS = /(?:students?|participants?|pupils?|learners?|kids?|child|children)/u.source
 
-// A preposition hands the head of the phrase to a different noun, so a
-// determiner does not reach across one to the students named after it: in "all
-// matching transactions for the 1 current student", "all" governs the
-// transactions. "Of" is excluded because the partitive is the one construction
-// where the students stay the head -- "every one of the 2 current students".
-// Prepositions are a closed class, and a missing one only lets the scan
-// over-reach into a refusal, never out of one.
-const NON_PARTITIVE_PREPOSITIONS = /(?:for|in|into|with|within|without|from|by|about|to|at|on|onto|over|under|during|per|across|among|amongst|between|against|through|throughout|besides|beyond|than|versus)/u.source
-
 // Each way of naming the group, with the quantifier word captured so the same
 // match both demands a count and supplies the word whose arity is checked.
 // Splitting the two apart was the defect: the quantifier was read from the
@@ -708,14 +763,18 @@ const COLLECTIVE_STUDENT_REFERENCES = Object.freeze([
   // claim at all. A count is bounded by something meaningful instead -- these
   // patterns run inside one clause, so the phrase cannot reach past the
   // assertion it belongs to, and a determiner that governs some other head noun
-  // over-reaches into a refusal rather than out of one.
-  Object.freeze({ pattern: new RegExp(`\\b(all|every|each|both|none|neither|either|any|no)\\s+(?:(?!${NON_PARTITIVE_PREPOSITIONS}\\s)[\\p{L}\\d][\\p{L}\\d,]*\\s+)*?${STUDENT_GROUP_NOUNS}\\b`, 'giu') }),
+  // over-reaches into a refusal rather than out of one. A word here is anything
+  // up to the next gap, because restricting it to letters and digits let one
+  // hyphen end the scan short of the noun.
+  Object.freeze({ pattern: new RegExp(`\\b(all|every|each|both|none|neither|either|any|no)${WORD_GAP}(?:(?!${NON_PARTITIVE_PREPOSITIONS}[\\s-])${PHRASE_WORD})*?${STUDENT_GROUP_NOUNS}\\b`, 'giu') }),
   // The same determiner sitting after the noun: "the 2 students all matched".
-  Object.freeze({ pattern: new RegExp(`\\b(?:the\\s+)?(?:\\d[\\d,]*\\s+)?(?:\\p{L}+\\s+){0,2}?${STUDENT_GROUP_NOUNS}\\s+(all|each|both)\\b`, 'giu') }),
+  // Its modifiers are unbounded for the same reason, and bounded by the same
+  // thing: the preposition guard and the clause the scan runs inside.
+  Object.freeze({ pattern: new RegExp(`\\b(?:the${WORD_GAP})?(?:\\d[\\d,]*${WORD_GAP})?(?:(?!${NON_PARTITIVE_PREPOSITIONS}[\\s-])${PHRASE_WORD})*?${STUDENT_GROUP_NOUNS}${WORD_GAP}(all|each|both)\\b`, 'giu') }),
   // Pronouns that are universal or empty on their own, and the class named as
   // one thing. Neither can hold a digit, so both always want a count stated.
-  Object.freeze({ pattern: /\b(everyone|everybody|anyone|nobody|no\s+one|none)\b/giu }),
-  Object.freeze({ pattern: /\b(?:whole|entire|full)\s+(?:current\s+)?(?:class|roster)\b|\bclass\s+as\s+a\s+whole\b/giu }),
+  Object.freeze({ pattern: new RegExp(`\\b(everyone|everybody|anyone|nobody|no${WORD_GAP}one|none)\\b`, 'giu') }),
+  Object.freeze({ pattern: new RegExp(`\\b(?:whole|entire|full)${WORD_GAP}(?:current${WORD_GAP})?(?:class|roster)\\b|\\bclass${WORD_GAP}as${WORD_GAP}a${WORD_GAP}whole\\b`, 'giu') }),
 ])
 
 // "Both" and "neither" are not synonyms for "all" and "none": each states that
@@ -762,9 +821,9 @@ function claimCountingReference(claims, reference) {
 function assertGroupClaimsCarryACount(text, references, claims, facts, windowLabels) {
   for (const reference of references) {
     if (claimCountingReference(claims, reference) !== undefined) continue
-    const clause = segmentAround(text, reference.start, CLAUSE_BOUNDARY_PATTERN)
+    const clause = clauseAt(text, reference.start)
     fail('answer-unverified', 'The provider answer described a group of students without a citable count.', 'group-claim-without-count', {
-      claimPredicate: claimPredicate(clause, reference.start - text.lastIndexOf(clause, reference.start)),
+      claimPredicate: claimPredicate(clause.text, reference.start - clause.start),
       populationTotalFactCount: facts.filter(fact => fact.populationTotal === true).length,
       distinctWindowCount: new Set([...windowLabels.values()]).size,
     })
@@ -850,7 +909,7 @@ const CLAIM_PREDICATES = Object.freeze([
   // resolves to no predicate at all, and no fact can settle that.
   Object.freeze({
     name: 'roster',
-    pattern: /\b(?:are|is|were|was|remain|remains|stay|stays)\s+(?:still\s+)?(?:currently\s+)?(?:enrolled|in\s+the\s+(?:class|roster)|on\s+the\s+(?:roster|list))\b|\bthere\s+(?:are|is|were|was)\b/iu,
+    pattern: new RegExp(`\\b(?:are|is|were|was|remain|remains|stay|stays)${WORD_GAP}(?:still${WORD_GAP})?(?:currently${WORD_GAP})?(?:enrolled|in${WORD_GAP}the${WORD_GAP}(?:class|roster)|on${WORD_GAP}the${WORD_GAP}(?:roster|list))\\b|\\bthere${WORD_GAP}(?:are|is|were|was)\\b`, 'iu'),
   }),
 ])
 
@@ -969,6 +1028,69 @@ function claimPredicate(clause, offset) {
   return transactionPredicateIsNegated(clause, nearest.start) ? 'no-transactions' : 'transactions'
 }
 
+// A disclosure is one sentence about one result: the first number is that
+// call's page length, the second is its total, and the words after them name
+// which result was shown. Checking each number on its own -- against a set of
+// fields spanning every tool -- let the pair come apart in two ways. Reversed,
+// each number was proven by the other's field, so "Showing 3 of 1 matching
+// transactions" passed on a page of 1 out of 3 and the teacher was handed two
+// contradictory disclosures. Unbound from its subject, a total could come from
+// a call that says nothing about what the sentence described, so "Showing 2 of
+// 3 students without matching transactions" passed on get_balances counts while
+// only 2 students had none. So the frame is checked as a whole, against a
+// single call, and the subject decides which call may answer it.
+const DISCLOSURE_SUBJECT_TOOL = Object.freeze(new Map([
+  ['no-transactions', 'find_students_without_transactions'],
+  ['balances', 'get_balances'],
+  ['transactions', 'list_transactions'],
+]))
+
+// The page length and total this call would disclose. rawTruncationTotal already
+// names the total field per tool, which is the same pairing the provider is
+// instructed to write, so the check and the instruction cannot drift apart. The
+// truncated flag is deliberately not consulted: a complete result stating
+// "Showing 2 of 2" is saying something true.
+function disclosurePageCounts(call) {
+  const returnedCount = call.result?.returnedCount
+  const totalCount = rawTruncationTotal(call)
+  if (!Number.isSafeInteger(returnedCount) || !Number.isSafeInteger(totalCount)) return null
+  return Object.freeze({ returnedCount, totalCount })
+}
+
+// What the disclosure said was shown, read from the wording that follows it.
+// A subject naming no predicate we recognise binds to no tool, and then only
+// the pair itself is checked -- a grouped-result disclosure has no student
+// predicate to name, and refusing it would refuse a truthful sentence.
+function disclosureSubject(clause, frameEnd) {
+  const nearest = nearestPredicate(clause, frameEnd, true)
+  if (nearest === null) return 'unclassified'
+  if (nearest.name !== 'transactions') return nearest.name
+  return transactionPredicateIsNegated(clause, nearest.start) ? 'no-transactions' : 'transactions'
+}
+
+function assertDisclosureCountsAreBound(answer, cited) {
+  const pages = cited
+    .map(call => Object.freeze({ name: call.name, counts: disclosurePageCounts(call) }))
+    .filter(page => page.counts !== null)
+  for (const clause of clauseSpans(answer)) {
+    for (const frame of clause.text.matchAll(new RegExp(DISCLOSURE_FRAME_PATTERN.source, 'giu'))) {
+      const [page, total] = [...frame[0].matchAll(/\d[\d,]*/gu)]
+        .map(digit => Number(digit[0].replace(/,/gu, '')))
+      const subject = disclosureSubject(clause.text, frame.index + frame[0].length)
+      const tool = DISCLOSURE_SUBJECT_TOOL.get(subject)
+      if (pages.some(candidate => (
+        (tool === undefined || candidate.name === tool) &&
+        candidate.counts.returnedCount === page &&
+        candidate.counts.totalCount === total
+      ))) continue
+      fail('answer-unverified', 'The provider answer disclosed counts no cited result holds.', 'disclosure-counts-unbound', {
+        claimPredicate: subject,
+        ...(tool === undefined ? {} : { toolName: tool }),
+      })
+    }
+  }
+}
+
 function nearestPredicate(clause, offset, following) {
   let nearest = null
   for (const predicate of CLAIM_PREDICATES) {
@@ -998,7 +1120,7 @@ function nearestPredicate(clause, offset, following) {
 // A contraction carries the negation inside a word, so the negator has no word
 // boundary in front of it: \bn't\b never matched "didn't", and both the typed
 // apostrophe and the one a model writes have to be read.
-const TRANSACTION_NEGATOR_PATTERN = /\b(?:no|not|never|none|neither|nor|without|zero|nobody|no\s+one)\b|n['’’]t\b/iu
+const TRANSACTION_NEGATOR_PATTERN = new RegExp(`\\b(?:no|not|never|none|neither|nor|without|zero|nobody|no${WORD_GAP}one)\\b|n['’]t\\b`, 'iu')
 
 function transactionPredicateIsNegated(clause, keywordIndex) {
   const transactions = CLAIM_PREDICATES.find(predicate => predicate.name === 'transactions')
@@ -1180,7 +1302,7 @@ function formatDateKey(year, month, day) {
 // statement about the class as it stands now, and only a current-roster fact
 // can support it -- no amount of historical framing elsewhere in the sentence
 // changes that, which is the bypass this pattern exists to close.
-const CURRENT_ROSTER_POPULATION_PATTERN = /\bcurrent(?:ly)?\s+(?:enrolled\s+)?students?\b|\bcurrently\s+enrolled\b|\bstudents?\s+(?:still|currently)\s+(?:in|on|enrolled)\b|\bstudents?\s+still\s+(?:in|on)\b/iu
+const CURRENT_ROSTER_POPULATION_PATTERN = new RegExp(`\\bcurrent(?:ly)?${WORD_GAP}(?:enrolled${WORD_GAP})?students?\\b|\\bcurrently${WORD_GAP}enrolled\\b|\\bstudents?${WORD_GAP}(?:still|currently)${WORD_GAP}(?:in|on|enrolled)\\b|\\bstudents?${WORD_GAP}still${WORD_GAP}(?:in|on)\\b`, 'iu')
 
 // Widening a count past the current roster takes wording that says the wider
 // population is what was counted, in one of only two shapes. Merely mentioning
@@ -1189,7 +1311,7 @@ const CURRENT_ROSTER_POPULATION_PATTERN = /\bcurrent(?:ly)?\s+(?:enrolled\s+)?st
 // reading any historical word as a widening let that sentence be supported by a
 // participant total. The first shape is a participant noun the number sits
 // directly against.
-const PARTICIPANT_NOUN_PATTERN = /^\s+(?:of\s+(?:the\s+)?)?(?:participants?|former\s+students?|past\s+students?|archived\s+students?|withdrawn\s+students?|inactive\s+students?|students?\s+who\s+(?:have\s+|had\s+)?(?:left|withdrawn|been\s+archived))\b/iu
+const PARTICIPANT_NOUN_PATTERN = new RegExp(`^\\s+(?:of${WORD_GAP}(?:the${WORD_GAP})?)?(?:participants?|former${WORD_GAP}students?|past${WORD_GAP}students?|archived${WORD_GAP}students?|withdrawn${WORD_GAP}students?|inactive${WORD_GAP}students?|students?${WORD_GAP}who${WORD_GAP}(?:have${WORD_GAP}|had${WORD_GAP})?(?:left|withdrawn|been${WORD_GAP}archived))\\b`, 'iu')
 
 // Any mention of the wider population, used only to make a count ambiguous and
 // never to widen one. An inclusive disclosure used to widen a count on its own,
@@ -1200,7 +1322,7 @@ const PARTICIPANT_NOUN_PATTERN = /^\s+(?:of\s+(?:the\s+)?)?(?:participants?|form
 // "2 active students" and "2 students on the roster" all walked past it. Adding
 // synonyms moves that hole rather than closing it, so the direction is
 // reversed: this pattern can only ever refuse.
-const WIDER_POPULATION_MENTION_PATTERN = /\b(?:participants?|former\s+students?|past\s+students?|archived|no\s+longer\s+(?:in|on|enrolled|a\s+student)|left\s+(?:the\s+)?class|withdrawn|inactive\s+students?|including\s+students?\s+who|who\s+(?:have\s+)?left)\b/iu
+const WIDER_POPULATION_MENTION_PATTERN = new RegExp(`\\b(?:participants?|former${WORD_GAP}students?|past${WORD_GAP}students?|archived|no${WORD_GAP}longer${WORD_GAP}(?:in|on|enrolled|a${WORD_GAP}student)|left${WORD_GAP}(?:the${WORD_GAP})?class|withdrawn|inactive${WORD_GAP}students?|including${WORD_GAP}students?${WORD_GAP}who|who${WORD_GAP}(?:have${WORD_GAP})?left)\\b`, 'iu')
 
 // The clause a number sits in, and the sentence around it. Population wording
 // used to be read from a fixed 24-character window, which decided the question
@@ -1224,19 +1346,38 @@ const SENTENCE_BOUNDARY_PATTERN = /[.!?;]/u
 const CLAUSE_BOUNDARY_PATTERN = /[.!?;:]|(?:,\s*)?\b(?:and|but|or|nor|while|whereas|although|though|however)\b|,\s*(?:so|then|yet)\b|--|—/iu
 
 function claimPopulationScope(text, index) {
-  const clause = segmentAround(text, index, CLAUSE_BOUNDARY_PATTERN)
+  const clause = clauseAt(text, index)
   return Object.freeze({
-    clause,
-    clauseOffset: index - text.lastIndexOf(clause, index),
+    clause: clause.text,
+    clauseOffset: index - clause.start,
     sentence: segmentAround(text, index, SENTENCE_BOUNDARY_PATTERN),
   })
+}
+
+// The clause holding a position, with the offset it starts at. Searching the
+// answer for the clause text to recover that offset found the wrong occurrence
+// whenever a clause repeated, and every offset-relative check then read the
+// wrong span; the spans are enumerated once and the position is looked up in
+// them instead.
+function clauseAt(text, index) {
+  const spans = clauseSpans(text)
+  let found = spans[0] ?? { start: 0, text }
+  for (const span of spans) {
+    if (span.start > index) break
+    found = span
+  }
+  return found
 }
 
 // Every clause in the text with the offset it starts at, so a scan that has to
 // stay inside one assertion can be run clause by clause and its matches mapped
 // back to positions in the whole answer.
 function clauseSpans(text) {
-  const global = new RegExp(CLAUSE_BOUNDARY_PATTERN.source, 'giu')
+  return segmentSpans(text, CLAUSE_BOUNDARY_PATTERN)
+}
+
+function segmentSpans(text, boundary) {
+  const global = new RegExp(boundary.source, 'giu')
   const spans = []
   let start = 0
   for (const match of text.matchAll(global)) {
