@@ -3488,6 +3488,64 @@ function oneStudentTransactedTwice() {
   return data
 }
 
+// A bare "and" ends a clause, correctly, wherever the clause boundary needs
+// it to (see CLAUSE_BOUNDARY_PATTERN). But it does not end a noun phrase --
+// "calm and kind students" is one -- and computing what a number counts from
+// the clause slice let that same "and" cut the noun away from the number
+// entirely: "2 calm and kind students had matching transactions" fell to a
+// clause of just "2 calm", resolved to no kind at all, and a transaction
+// count of 2 stood as a count of students who never transacted.
+test('a coordinating "and" between modifiers does not cut the noun from the number', async () => {
+  for (const answer of [
+    '2 calm and kind students had matching transactions.',
+    '2 newly-enrolled and eager students had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: oneStudentTransactedTwice(),
+        calls: [TRANSACTIONS],
+        answer,
+        factRefs: [{ callId: 'transactions', path: '/matchedCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-number' &&
+        error.diagnostic.claimKind === 'student-count',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// The same clause can hold two numbers, and reading a bag of words from the
+// whole clause let the noun for one outvote the noun sitting right next to
+// the other: "3 matching transactions were recorded for 1 student" let
+// "student" -- forty characters on, and stating a different number entirely
+// -- relabel a transaction count of 3 as a student count, refusing a claim
+// every bit as true as the count it names.
+test('a later noun in the same clause does not relabel an earlier number', async () => {
+  const oneStudentThreeTransactions = evidence()
+  oneStudentThreeTransactions.transactions = [1, 2, 3].map(index => ({
+    ref: `transaction-0000${index}`,
+    studentRef: 'student-001',
+    date: `2026-08-27T15:0${index}:00.000Z`,
+    type: 'Add',
+    amount: 5,
+    category: 'Technology',
+    purpose: 'other',
+    status: 'Approved',
+  }))
+  const answer = '3 matching transactions were recorded for 1 student.'
+  const result = await answerWithTools({
+    assistantEvidence: oneStudentThreeTransactions,
+    calls: [TRANSACTIONS],
+    answer,
+    factRefs: [
+      { callId: 'transactions', path: '/matchedCount' },
+      { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+    ],
+  })
+  assert.equal(result.answer, answer)
+})
+
 // A disclosure is one sentence about one result. Checking its two numbers
 // separately let the pair come apart: reversed, each was proven by the other's
 // field, and the teacher was handed two contradictory disclosures in one answer.
@@ -3568,8 +3626,8 @@ test('a disclosure is answered only by the tool that proves its subject', async 
       error.subcategory === 'disclosure-counts-unbound' &&
       error.diagnostic.toolName === 'get_balances',
   )
-  // A subject naming no predicate binds to no tool, so a grouped-result
-  // disclosure is still sayable from the pair that result actually holds.
+  // "Grouped" names aggregate_transactions, so a grouped-result disclosure is
+  // still sayable from the pair that result actually holds.
   const grouped = await answerWithTools({
     assistantEvidence: rosterEvidence(3, 3),
     calls: [{ id: 'grouped', name: 'aggregate_transactions', args: { groupBy: ['student'], metric: 'count', limit: 1 } }],
@@ -3580,4 +3638,94 @@ test('a disclosure is answered only by the tool that proves its subject', async 
     ],
   })
   assert.match(grouped.answer, /Showing 1 of 3 grouped results/u)
+})
+
+// "Grouped" is not an unrestricted subject: it is the exact noun this module
+// writes for aggregate_transactions, in TRUNCATION_DISCLOSURE_NOUNS, and
+// nothing else. Treating any subject this module cannot classify as
+// unrestricted let "Showing 1 of 3 grouped results by category" pass against
+// a plain list_transactions page and total, with no aggregation performed at
+// all -- three matching transactions, one category, no grouping call made.
+test('a grouped-result disclosure must actually come from aggregate_transactions', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 3),
+      calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+      answer: 'Showing 1 of 3 grouped results by category.',
+      factRefs: [
+        { callId: 'transactions', path: '/returnedCount' },
+        { callId: 'transactions', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'disclosure-counts-unbound' &&
+      error.diagnostic.claimPredicate === 'grouped' &&
+      error.diagnostic.toolName === 'aggregate_transactions',
+  )
+})
+
+// A subject this module truly cannot classify -- no recognised predicate and
+// no "grouped" wording either -- still binds to no tool, so a disclosure
+// phrased this plainly stays sayable from whichever cited result holds the
+// pair. Narrowing every unclassified subject to aggregate_transactions would
+// have refused this true sentence instead.
+test('a disclosure subject with no predicate and no "grouped" wording binds to no tool', async () => {
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 1),
+    calls: [WITHOUT_ONE_ROW],
+    answer: 'Showing 1 of 2 students.',
+    factRefs: [
+      { callId: 'without', path: '/returnedCount' },
+      { callId: 'without', path: '/studentsWithoutCount' },
+    ],
+  })
+  assert.match(result.answer, /Showing 1 of 2 students/u)
+})
+
+// Codex found this pair reversed and reworded three ways, none of which the
+// old frame -- a fixed verb immediately before the numbers -- recognised: the
+// verb after the numbers, a present-tense verb the pattern never listed, and
+// "the" before the second number where only the first was allowed one.
+test('a reversed disclosure pair is refused however its verb is worded or placed', async () => {
+  for (const answer of [
+    'Only 3 of 1 matching transactions are shown.',
+    'The list shows 3 out of 1 matching transactions.',
+    'Showing 3 of the 1 matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 3),
+        calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+        answer,
+        factRefs: [
+          { callId: 'transactions', path: '/matchedCount' },
+          { callId: 'transactions', path: '/returnedCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'disclosure-counts-unbound',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// The "N of M" shape alone is an ordinary partitive -- "1 of the 3 current
+// students" -- not a disclosure, because nothing in its clause is a
+// disclosure verb. Widening the shape to allow "the" before the second
+// number (for "Showing 3 of the 1 matching transactions") must not turn this
+// into a page-count claim it was never intended to be: it is refused, if at
+// all, as an ordinary uncited count -- never as a mismatched disclosure pair,
+// which would be the wrong reason and would mean the verb gate stopped
+// gating.
+test('an ordinary "N of M" partitive is never read as a disclosure pair', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [TRANSACTIONS],
+      answer: '1 of the 3 current students had matching transactions.',
+      factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory !== 'disclosure-counts-unbound',
+  )
 })

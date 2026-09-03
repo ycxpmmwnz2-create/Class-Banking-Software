@@ -675,6 +675,42 @@ const NUMBER_WORD_QUANTITY_PATTERN = new RegExp(`\\b(?:zero|one|two|three|four|f
 // boundary without the conjunctions.
 const QUANTITY_PHRASE_BOUNDARY = /[.!?;:]|--|—/u
 
+// A disclosure's page number names the same noun as its total: "Showing 2 of
+// 3 students" is a claim of 2 about students exactly as much as it is a claim
+// of 3 about them, and the noun sits past the total, not past the page count.
+// Without this gap the page number's own forward scan stopped dead at "of" --
+// a break word everywhere else, correctly -- and lost the noun this specific
+// construction always states past a second, unrelated number.
+const DISCLOSURE_PAIR_GAP = `(?:(?:of|out${WORD_GAP}of)${WORD_GAP}(?:the${WORD_GAP})?\\d[\\d,]*${WORD_GAP})?`
+
+// A digit claim's own noun phrase, read forward from right after it: every
+// word up to (and including) whichever one stops the scan, bounded by
+// PHRASE_BREAK_WORDS exactly as the spelled-out scan above bounds one, and
+// held inside the sentence so it can never run past where that number's
+// statement ends. A missing break only pulls in one word too many, which the
+// checks below can still fail to recognise as a kind -- never a false one.
+function phraseBoundedAfter(sentence, offset) {
+  const remainder = sentence.slice(offset)
+  // The anchored checks below expect a leading gap, exactly as they did when
+  // "after" was a clause slice starting right against the claim -- "^\s+
+  // students?" is what reads "2 students", not "2students". The gap itself is
+  // never a break word, so it sits outside the bounded scan rather than
+  // costing it its first iteration.
+  const gap = remainder.match(/^[\s-]*/u)[0]
+  const afterGap = remainder.slice(gap.length)
+  const pairGap = afterGap.match(new RegExp(`^${DISCLOSURE_PAIR_GAP}`, 'iu'))[0]
+  // PHRASE_WORD demands its own trailing gap, which a sentence-final word
+  // never has -- "for 1 student" ends the sentence right there, and without
+  // this the scan could not consume "student" at all. One more word with no
+  // gap required closes that off, the same way the noun after the loop in
+  // NUMBER_WORD_QUANTITY_PATTERN and COLLECTIVE_STUDENT_REFERENCES does.
+  const phrase = afterGap.slice(pairGap.length).match(new RegExp(
+    `^(?:(?!${PHRASE_BREAK_WORDS}[\\s-])${PHRASE_WORD})*(?:(?!${PHRASE_BREAK_WORDS}\\b)[^\\s-]+)?`,
+    'iu',
+  ))[0]
+  return gap + pairGap + phrase
+}
+
 function assertNumericClaimsAreGrounded(answer, facts, assistantEvidence) {
   if (segmentSpans(answer, QUANTITY_PHRASE_BOUNDARY).some(span => NUMBER_WORD_QUANTITY_PATTERN.test(span.text))) {
     fail('answer-unverified', 'The provider answer must use digits for factual quantities.', 'number-words')
@@ -694,7 +730,22 @@ function assertNumericClaimsAreGrounded(answer, facts, assistantEvidence) {
     // number of any kind. A clause holds the whole noun phrase, so nothing that
     // says what the number counts can fall out of range.
     const before = population.clause.slice(0, population.clauseOffset)
-    const after = population.clause.slice(population.clauseOffset + claim.length)
+    // What comes after is bounded by the noun phrase itself, not by the clause
+    // slice -- two failures the same fix closes. The clause boundary treats a
+    // bare "and"/"or" as the edge of an assertion, correctly, for the
+    // mechanisms that need the two sides kept apart (see CLAUSE_BOUNDARY_PATTERN
+    // above), but a coordinating conjunction does not end a noun phrase, so
+    // "2 calm and kind students had matching transactions" lost "students" out
+    // of the clause the number counted in and fell to a kind no fact could be
+    // checked against. And a clause can hold more than one number: "3 matching
+    // transactions were recorded for 1 student" let "student" -- there for the
+    // other number entirely, forty characters on -- outvote "transactions"
+    // sitting right next to the 3, because the clause carried both. Bounding
+    // the scan by PHRASE_BREAK_WORDS the same way the spelled-out scan already
+    // does reaches past a coordinating conjunction, which is not one of those
+    // breaks, while still stopping at the verb that ends this claim's own noun
+    // phrase before it can reach a different number's.
+    const after = phraseBoundedAfter(population.sentence, population.sentenceOffset + claim.length)
     // A number is quantified when it sits inside a phrase that speaks about
     // the students as a group, which is the phrase whose quantifier it states
     // the size of. Reading the quantifier out of the characters just before the
@@ -924,6 +975,7 @@ export const CLASSROOM_ASSISTANT_CLAIM_PREDICATES = Object.freeze(new Set([
   'listing-page',
   'listing-total',
   'unclassified',
+  'grouped',
 ]))
 
 // Which tool and field can settle each predicate, for which population. The
@@ -1002,7 +1054,29 @@ const POPULATION_OF_CLAIM_KIND = Object.freeze(new Map([
 // transactions" was accepted from a returnedCount of 1 while two students
 // actually had none. Both numbers are what a disclosure means and what this
 // module requires the provider to write, so both are what identifies one.
-const DISCLOSURE_FRAME_PATTERN = /\b(?:showing|showed|listing|listed|returned|shown|displaying|displayed)\s+(?:only\s+)?(?:the\s+)?(?:first\s+)?\d[\d,]*\s+(?:of|out\s+of)\s+\d[\d,]*/giu
+//
+// The verb was originally part of this same pattern, immediately before the
+// numbers, in one of a handful of fixed forms. That missed every rewording
+// that keeps the same false pair: "Only 3 of 1 matching transactions are
+// shown" puts the verb after the numbers, "The list shows 3 out of 1 matching
+// transactions" uses a tense ("shows") the list never had, and "Showing 3 of
+// the 1 matching transactions" puts "the" where only the first number was
+// allowed one. A disclosure verb is a closed class regardless of tense or
+// position, so it is now checked separately, anywhere in the same clause --
+// see disclosureFramesIn -- and this pattern is only the "N of M" shape a
+// disclosure states.
+const DISCLOSURE_VERB_PATTERN = /\b(?:shows?|showing|showed|shown|lists?|listing|listed|returns?|returning|returned|displays?|displaying|displayed)\b/iu
+
+const DISCLOSURE_FRAME_PATTERN = /(?:only\s+)?(?:the\s+)?(?:first\s+)?\d[\d,]*\s+(?:of|out\s+of)\s+(?:the\s+)?\d[\d,]*/giu
+
+// Every disclosure-shaped "N of M" in a clause that also somewhere states a
+// disclosure verb. The shape alone is an ordinary partitive -- "one of the 2
+// current students" -- so gating it on the verb is what keeps this module
+// from treating every fraction-shaped sentence as a page disclosure.
+function disclosureFramesIn(clause) {
+  if (!DISCLOSURE_VERB_PATTERN.test(clause)) return []
+  return [...clause.matchAll(new RegExp(DISCLOSURE_FRAME_PATTERN.source, 'giu'))]
+}
 
 function claimPredicate(clause, offset) {
   // The two numbers in a disclosure are not interchangeable: the first is how
@@ -1012,7 +1086,7 @@ function claimPredicate(clause, offset) {
   // total of 2 -- the counts reversed, each proven by the other's field. The
   // position in the frame decides which role the number has, and each role has
   // its own evidence.
-  for (const frame of clause.matchAll(new RegExp(DISCLOSURE_FRAME_PATTERN.source, 'giu'))) {
+  for (const frame of disclosureFramesIn(clause)) {
     if (offset < frame.index || offset >= frame.index + frame[0].length) continue
     const digits = [...frame[0].matchAll(/\d[\d,]*/gu)]
     const position = digits.findIndex(digit => frame.index + digit.index === offset)
@@ -1043,6 +1117,7 @@ const DISCLOSURE_SUBJECT_TOOL = Object.freeze(new Map([
   ['no-transactions', 'find_students_without_transactions'],
   ['balances', 'get_balances'],
   ['transactions', 'list_transactions'],
+  ['grouped', 'aggregate_transactions'],
 ]))
 
 // The page length and total this call would disclose. rawTruncationTotal already
@@ -1057,15 +1132,28 @@ function disclosurePageCounts(call) {
   return Object.freeze({ returnedCount, totalCount })
 }
 
+// "Grouped" names aggregate_transactions as plainly as "matching balances"
+// names get_balances -- it is the exact noun this module's own disclosures
+// use for that call, in TRUNCATION_DISCLOSURE_NOUNS below -- so it is
+// checked before a subject falls all the way to 'unclassified'. Leaving it
+// unclassified let it borrow any cited call's pair: "Showing 1 of 3 grouped
+// results by category" passed against a plain list_transactions page and
+// total, with no aggregation performed at all.
+const GROUPED_RESULT_PATTERN = /\bgrouped\b/iu
+
 // What the disclosure said was shown, read from the wording that follows it.
-// A subject naming no predicate we recognise binds to no tool, and then only
-// the pair itself is checked -- a grouped-result disclosure has no student
-// predicate to name, and refusing it would refuse a truthful sentence.
+// A subject naming no predicate we recognise, and no aggregate result
+// either, binds to no tool, and then only the pair itself is checked -- a
+// disclosure can describe its subject as plainly as "students" without
+// naming a call this module's own predicates recognise, and refusing it
+// would refuse a truthful sentence.
 function disclosureSubject(clause, frameEnd) {
   const nearest = nearestPredicate(clause, frameEnd, true)
-  if (nearest === null) return 'unclassified'
-  if (nearest.name !== 'transactions') return nearest.name
-  return transactionPredicateIsNegated(clause, nearest.start) ? 'no-transactions' : 'transactions'
+  if (nearest !== null) {
+    if (nearest.name !== 'transactions') return nearest.name
+    return transactionPredicateIsNegated(clause, nearest.start) ? 'no-transactions' : 'transactions'
+  }
+  return GROUPED_RESULT_PATTERN.test(clause.slice(frameEnd)) ? 'grouped' : 'unclassified'
 }
 
 function assertDisclosureCountsAreBound(answer, cited) {
@@ -1073,7 +1161,7 @@ function assertDisclosureCountsAreBound(answer, cited) {
     .map(call => Object.freeze({ name: call.name, counts: disclosurePageCounts(call) }))
     .filter(page => page.counts !== null)
   for (const clause of clauseSpans(answer)) {
-    for (const frame of clause.text.matchAll(new RegExp(DISCLOSURE_FRAME_PATTERN.source, 'giu'))) {
+    for (const frame of disclosureFramesIn(clause.text)) {
       const [page, total] = [...frame[0].matchAll(/\d[\d,]*/gu)]
         .map(digit => Number(digit[0].replace(/,/gu, '')))
       const subject = disclosureSubject(clause.text, frame.index + frame[0].length)
@@ -1347,11 +1435,31 @@ const CLAUSE_BOUNDARY_PATTERN = /[.!?;:]|(?:,\s*)?\b(?:and|but|or|nor|while|wher
 
 function claimPopulationScope(text, index) {
   const clause = clauseAt(text, index)
+  const sentence = sentenceAt(text, index)
   return Object.freeze({
     clause: clause.text,
     clauseOffset: index - clause.start,
-    sentence: segmentAround(text, index, SENTENCE_BOUNDARY_PATTERN),
+    sentence: sentence.text,
+    sentenceOffset: index - sentence.start,
   })
+}
+
+// The sentence holding a position, with the offset it starts at -- the same
+// span-and-lookup shape as clauseAt, for the same reason: a scan bounded by
+// the sentence rather than the clause needs its own start position to read
+// an offset-relative slice safely.
+function sentenceAt(text, index) {
+  const spans = sentenceSpans(text)
+  let found = spans[0] ?? { start: 0, text }
+  for (const span of spans) {
+    if (span.start > index) break
+    found = span
+  }
+  return found
+}
+
+function sentenceSpans(text) {
+  return segmentSpans(text, SENTENCE_BOUNDARY_PATTERN)
 }
 
 // The clause holding a position, with the offset it starts at. Searching the
@@ -1386,17 +1494,6 @@ function segmentSpans(text, boundary) {
   }
   spans.push({ start, text: text.slice(start) })
   return spans.filter(span => span.text.length > 0)
-}
-
-function segmentAround(text, index, boundary) {
-  const global = new RegExp(boundary.source, `${boundary.flags.replace(/[gy]/gu, '')}g`)
-  let start = 0
-  let end = text.length
-  for (const match of text.matchAll(global)) {
-    if (match.index + match[0].length <= index) start = match.index + match[0].length
-    else if (match.index > index) { end = match.index; break }
-  }
-  return text.slice(start, end)
 }
 
 function numericClaimKind(claim, before, after, population) {
