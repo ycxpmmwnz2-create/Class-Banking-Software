@@ -658,30 +658,74 @@ const NON_PARTITIVE_PREPOSITIONS = /(?:for|in|into|with|within|without|from|by|a
 // at all. Determiners, prepositions, verbs, complementizers and pronouns are
 // closed classes, and a word missing from them only lets the scan over-reach
 // into a refusal -- never past a false count.
-const PHRASE_BREAK_WORDS = `(?:${[
-  'of', 'the', 'a', 'an', 'out',
+// A finite auxiliary or modal opens a predication and a relativizer or pronoun
+// opens a clause, so none of these can stand inside the noun phrase they
+// follow. This is the half of the list below that is about where a noun phrase
+// ends, rather than about how far a quantifier reaches.
+const PREDICATION_ONLY_WORDS = [
   'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am',
   'has', 'have', 'had', 'do', 'does', 'did',
   'will', 'would', 'can', 'could', 'may', 'might', 'must', 'shall', 'should',
   'that', 'which', 'who', 'whom', 'whose', 'when', 'where', 'why', 'how',
-  'there', 'here', 'it', 'its', 'they', 'we', 'you', 'he', 'she', 'them', 'their',
+  'there', 'here', 'it', 'they', 'we', 'you', 'he', 'she', 'them',
+]
+
+// Determiners and the partitive preposition. They end a spelled-out
+// quantifier's reach -- "Seven of the students" states no quantity of seven
+// students -- but they stand inside the noun phrase itself, which is why the
+// two scans below cannot share one list.
+const NOUN_PHRASE_DETERMINERS = ['of', 'the', 'a', 'an', 'out', 'its', 'their']
+
+const PHRASE_BREAK_WORDS = `(?:${[
+  ...NOUN_PHRASE_DETERMINERS,
+  ...PREDICATION_ONLY_WORDS,
 ].join('|')}|${NON_PARTITIVE_PREPOSITIONS})`
 
-const NUMBER_WORD_QUANTITY_PATTERN = new RegExp(`\\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)${WORD_GAP}(?:(?!${PHRASE_BREAK_WORDS}[\\s-])${PHRASE_WORD})*?(?:transactions?|students?|days?|times?|records?|matches?|results?|balances?|credits?|payments?|dollars?)\\b`, 'iu')
+// The same list minus the determiners, for a scan that reads what a number
+// counts rather than how far a quantifier reaches. The direction of the
+// residual error is opposite in the two, which is why one list served both
+// only by accident: a break word missing from the quantifier scan costs a
+// refusal, but a break word too many here costs an *answer*. Stopping at "of"
+// left "2 of the students had matching transactions" with no noun at all, and
+// a claim naming nothing it counts is satisfied by any fact of any kind, so a
+// transaction count of 2 stood as a count of students on a roster where one
+// student had transacted. Crossing a determiner can only carry the scan on to
+// a noun it would otherwise never reach, which narrows what may prove the
+// claim.
+const CLAIM_PHRASE_BREAK_WORDS = `(?:${PREDICATION_ONLY_WORDS.join('|')}|${NON_PARTITIVE_PREPOSITIONS})`
+
+// And the same list minus the prepositions too, for reading how far a
+// disclosure's subject runs. A prepositional phrase is part of the noun phrase
+// it modifies -- "students without matching transactions" names one group --
+// so only a word that cannot continue a noun phrase at all ends this scan.
+const DISCLOSURE_SUBJECT_BREAK_WORDS = `(?:${PREDICATION_ONLY_WORDS.join('|')})`
+
+const COUNTABLE_NOUNS = '(?:transactions?|students?|days?|times?|records?|matches?|results?|balances?|credits?|payments?|dollars?)'
+
+const NUMBER_WORDS = 'zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand'
+
+// "One of the students" is a way of saying *a* student, not a count written
+// out, and refusing it would trade a false-answer bug for a false-refusal one
+// -- which is why the scan above stops at "of". Every other number word
+// crossing a partitive is stating a quantity and nothing else: "Seven of the
+// current students had matching transactions" was accepted on a roster of
+// three where one student had transacted, because a spelled-out count is
+// invisible to the digit scan that would otherwise have to support it, so
+// nothing checked the number at all. "One" is the whole of the idiom and the
+// whole of the exception; a compound that merely ends in it ("twenty one of
+// the students") begins with a word that does not.
+const PARTITIVE_NUMBER_WORDS = NUMBER_WORDS.split('|').filter(word => word !== 'one').join('|')
+
+const NUMBER_WORD_QUANTITY_PATTERN = new RegExp([
+  `\\b(?:${NUMBER_WORDS})${WORD_GAP}(?:(?!${PHRASE_BREAK_WORDS}[\\s-])${PHRASE_WORD})*?${COUNTABLE_NOUNS}\\b`,
+  `\\b(?:${PARTITIVE_NUMBER_WORDS})${WORD_GAP}(?:(?!${CLAIM_PHRASE_BREAK_WORDS}[\\s-])${PHRASE_WORD})*?${COUNTABLE_NOUNS}\\b`,
+].join('|'), 'iu')
 
 // The scan is held to one statement so a number word cannot reach a noun in the
 // next one, but a coordinating conjunction does not end a noun phrase -- "well
 // prepared and eager students" is one -- so this boundary is the clause
 // boundary without the conjunctions.
 const QUANTITY_PHRASE_BOUNDARY = /[.!?;:]|--|—/u
-
-// A disclosure's page number names the same noun as its total: "Showing 2 of
-// 3 students" is a claim of 2 about students exactly as much as it is a claim
-// of 3 about them, and the noun sits past the total, not past the page count.
-// Without this gap the page number's own forward scan stopped dead at "of" --
-// a break word everywhere else, correctly -- and lost the noun this specific
-// construction always states past a second, unrelated number.
-const DISCLOSURE_PAIR_GAP = `(?:(?:of|out${WORD_GAP}of)${WORD_GAP}(?:the${WORD_GAP})?\\d[\\d,]*${WORD_GAP})?`
 
 // A digit claim's own noun phrase, read forward from right after it: every
 // word up to (and including) whichever one stops the scan, bounded by
@@ -697,18 +741,16 @@ function phraseBoundedAfter(sentence, offset) {
   // never a break word, so it sits outside the bounded scan rather than
   // costing it its first iteration.
   const gap = remainder.match(/^[\s-]*/u)[0]
-  const afterGap = remainder.slice(gap.length)
-  const pairGap = afterGap.match(new RegExp(`^${DISCLOSURE_PAIR_GAP}`, 'iu'))[0]
   // PHRASE_WORD demands its own trailing gap, which a sentence-final word
   // never has -- "for 1 student" ends the sentence right there, and without
   // this the scan could not consume "student" at all. One more word with no
   // gap required closes that off, the same way the noun after the loop in
   // NUMBER_WORD_QUANTITY_PATTERN and COLLECTIVE_STUDENT_REFERENCES does.
-  const phrase = afterGap.slice(pairGap.length).match(new RegExp(
-    `^(?:(?!${PHRASE_BREAK_WORDS}[\\s-])${PHRASE_WORD})*(?:(?!${PHRASE_BREAK_WORDS}\\b)[^\\s-]+)?`,
+  const phrase = remainder.slice(gap.length).match(new RegExp(
+    `^(?:(?!${CLAIM_PHRASE_BREAK_WORDS}[\\s-])${PHRASE_WORD})*(?:(?!${CLAIM_PHRASE_BREAK_WORDS}\\b)[^\\s-]+)?`,
     'iu',
   ))[0]
-  return gap + pairGap + phrase
+  return gap + phrase
 }
 
 function assertNumericClaimsAreGrounded(answer, facts, assistantEvidence) {
@@ -1067,7 +1109,83 @@ const POPULATION_OF_CLAIM_KIND = Object.freeze(new Map([
 // disclosure states.
 const DISCLOSURE_VERB_PATTERN = /\b(?:shows?|showing|showed|shown|lists?|listing|listed|returns?|returning|returned|displays?|displaying|displayed)\b/iu
 
-const DISCLOSURE_FRAME_PATTERN = /(?:only\s+)?(?:the\s+)?(?:first\s+)?\d[\d,]*\s+(?:of|out\s+of)\s+(?:the\s+)?\d[\d,]*/giu
+// The two numbers do not have to stand next to each other. "Showing 3
+// matching transactions out of 1" states the same reversed pair as "Showing 3
+// of 1 matching transactions" and was identified as no disclosure at all, so
+// nothing bound it to a result and the module then prefixed its own, truthful
+// disclosure to it -- handing the teacher two contradictory sentences in one
+// answer. What may stand between them is the noun phrase itself, bounded the
+// same way a claim's is, and never another number.
+const DISCLOSURE_FRAME_PATTERN = new RegExp(
+  `(?:only${WORD_GAP})?(?:the${WORD_GAP})?(?:first${WORD_GAP})?\\d[\\d,]*${WORD_GAP}` +
+  `(?:(?!${CLAIM_PHRASE_BREAK_WORDS}[\\s-])(?!\\d)${PHRASE_WORD})*?` +
+  `(?:of|out${WORD_GAP}of)${WORD_GAP}(?:the${WORD_GAP})?\\d[\\d,]*`,
+  'giu',
+)
+
+// A disclosure states what was shown and stops there: its subject is the last
+// thing its clause says. A sentence that goes on to predicate something of
+// that subject is making a claim about the students, not reporting a page --
+// "The records show 1 of 3 current students had no matching transactions" is
+// a false statement about three students, not a truthful disclosure of one
+// row. Read as a disclosure it was exempt from every factual check and a page
+// length of 1 stood as the count of who had none.
+//
+// A predication is opened by a finite auxiliary, a modal, a relativizer or a
+// pronoun, all closed classes, and by nothing else that can also continue a
+// noun phrase -- so a preposition stays inside the subject and "1 of 2
+// students without matching transactions" is still the listing it reads as.
+// The one thing allowed past the subject is the disclosure verb itself, which
+// English puts there in the passive.
+const DISCLOSURE_PASSIVE_PATTERN = new RegExp(`^(?:is|are|was|were|be|been|being)${WORD_GAP}(?:only${WORD_GAP})?(?:being${WORD_GAP})?(?:shown|listed|returned|displayed)\\b`, 'iu')
+
+const NOTHING_FURTHER_PATTERN = /^[\s.,:;!?)'"\u2019\u201d-]*$/u
+
+// A negator inside a subject is part of the noun phrase when a preposition
+// introduces it -- "students without matching transactions", "students with no
+// matching transactions" both name one group -- and is a predication about
+// that subject when anything else does. Only closed classes decide it: the
+// negators this module already recognises, and the prepositions it already
+// lists. Without this the finite verbs English does not draw from a closed
+// class walked straight past the rule above: "The records show 1 of 3 current
+// students made no deposits" read as a page of one row, and a page length
+// stood as the count of who had made none while all three had.
+const SUBJECT_NEGATOR_PATTERN = new RegExp(`\\b(?:no|not|never|none|neither|nor|without|zero|nobody)\\b|n['\u2019]t\\b`, 'giu')
+
+const SUBJECT_NEGATOR_INTRODUCER_PATTERN = new RegExp(`(?:^|[\\s-])${NON_PARTITIVE_PREPOSITIONS}[\\s-]+$`, 'iu')
+
+function subjectNegationIsNominal(subject) {
+  for (const negator of subject.matchAll(SUBJECT_NEGATOR_PATTERN)) {
+    const before = subject.slice(0, negator.index)
+    // A negator opening the subject modifies its head: "no matching balances".
+    if (/^[\s-]*$/u.test(before)) continue
+    // "without" is itself the preposition that introduces the phrase.
+    if (/^without$/iu.test(negator[0])) continue
+    if (SUBJECT_NEGATOR_INTRODUCER_PATTERN.test(before)) continue
+    return false
+  }
+  return true
+}
+
+function disclosureSubjectSpan(clause, frameEnd) {
+  const remainder = clause.slice(frameEnd)
+  const gap = remainder.match(/^[\s-]*/u)[0]
+  const subject = remainder.slice(gap.length).match(new RegExp(
+    `^(?:(?!${DISCLOSURE_SUBJECT_BREAK_WORDS}[\\s-])${PHRASE_WORD})*(?:(?!${DISCLOSURE_SUBJECT_BREAK_WORDS}\\b)[^\\s-]+)?`,
+    'iu',
+  ))[0]
+  return Object.freeze({ subject, beyond: remainder.slice(gap.length + subject.length) })
+}
+
+// Whether this frame reports a listing at all, which is what the page-count
+// exemption below is for. A frame that fails this is read as the ordinary
+// claim it is, and then its numbers have to be proven like any others -- the
+// direction a wrong answer here has to fall.
+function frameStatesAListing(clause, frameEnd) {
+  const { subject, beyond } = disclosureSubjectSpan(clause, frameEnd)
+  if (!subjectNegationIsNominal(subject)) return false
+  return NOTHING_FURTHER_PATTERN.test(beyond) || DISCLOSURE_PASSIVE_PATTERN.test(beyond.trimStart())
+}
 
 // Every disclosure-shaped "N of M" in a clause that also somewhere states a
 // disclosure verb. The shape alone is an ordinary partitive -- "one of the 2
@@ -1088,6 +1206,15 @@ function claimPredicate(clause, offset) {
   // its own evidence.
   for (const frame of disclosureFramesIn(clause)) {
     if (offset < frame.index || offset >= frame.index + frame[0].length) continue
+    // Identifying a disclosure and exempting a number from being checked are
+    // not the same question, and one function answered both until a frame
+    // that merely looked like one carried the exemption. Missing a disclosure
+    // in assertDisclosureCountsAreBound leaves a pair unbound, so that check
+    // reads the shape broadly; granting the exemption here on a sentence that
+    // is not a disclosure lets a page length prove a fact about children, so
+    // this one reads it narrowly. A frame that states no listing falls
+    // through to the ordinary classification below.
+    if (!frameStatesAListing(clause, frame.index + frame[0].length)) break
     const digits = [...frame[0].matchAll(/\d[\d,]*/gu)]
     const position = digits.findIndex(digit => frame.index + digit.index === offset)
     return position === 0 ? 'listing-page' : 'listing-total'
@@ -1139,7 +1266,10 @@ function disclosurePageCounts(call) {
 // unclassified let it borrow any cited call's pair: "Showing 1 of 3 grouped
 // results by category" passed against a plain list_transactions page and
 // total, with no aggregation performed at all.
-const GROUPED_RESULT_PATTERN = /\bgrouped\b/iu
+// Any of the words this module and its tools use for an aggregated result,
+// not the single spelling "grouped": "Showing 1 of 3 category groups"
+// describes exactly the same call and bound to nothing at all.
+const GROUPED_RESULT_PATTERN = new RegExp(`\\bgroup(?:s|ed|ing)?\\b|\\bby${WORD_GAP}categor(?:y|ies)\\b`, 'iu')
 
 // What the disclosure said was shown, read from the wording that follows it.
 // A subject naming no predicate we recognise, and no aggregate result
@@ -1148,12 +1278,18 @@ const GROUPED_RESULT_PATTERN = /\bgrouped\b/iu
 // naming a call this module's own predicates recognise, and refusing it
 // would refuse a truthful sentence.
 function disclosureSubject(clause, frameEnd) {
+  // Aggregation is read first, because it is a property of the whole subject
+  // and proximity is not: "Showing 1 of 3 grouped transaction results by
+  // category" put a transaction word nearer the frame than anything else, so
+  // the subject bound to list_transactions and a plain, ungrouped page and
+  // total answered a disclosure about grouping that never happened.
+  if (GROUPED_RESULT_PATTERN.test(disclosureSubjectSpan(clause, frameEnd).subject)) return 'grouped'
   const nearest = nearestPredicate(clause, frameEnd, true)
   if (nearest !== null) {
     if (nearest.name !== 'transactions') return nearest.name
     return transactionPredicateIsNegated(clause, nearest.start) ? 'no-transactions' : 'transactions'
   }
-  return GROUPED_RESULT_PATTERN.test(clause.slice(frameEnd)) ? 'grouped' : 'unclassified'
+  return 'unclassified'
 }
 
 function assertDisclosureCountsAreBound(answer, cited) {
