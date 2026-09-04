@@ -3936,3 +3936,134 @@ test('a spelled-out count is refused across a partitive too', async () => {
   })
   assert.match(result.answer, /One of the students/u)
 })
+
+// A disclosure states what was shown and stops. Two of this module's own noun
+// words standing side by side are a subject only when a preposition or a
+// negator opens the second -- "students without matching transactions" is
+// one group -- and anything else between them is a verb this module cannot
+// enumerate. Codex found three sentences the subject-negation rule alone
+// still let through as page disclosures: a verb before the very preposition
+// the rule trusted unconditionally, the same verb elsewhere spelled without
+// any negator at all, and a passive verb whose sentence went on past it.
+test('a verb between a disclosure\'s subject and its predicate is not a listing', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'The records show only 1 of 3 current students went without matching transactions.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'no-transactions',
+  )
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'Only 1 of 3 current students are shown to have no matching transactions.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'no-transactions',
+  )
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [{ id: 'balances', name: 'get_balances', args: { limit: 1 } }],
+      answer: 'Only 1 of 3 current students carry positive balances.',
+      factRefs: [
+        { callId: 'balances', path: '/returnedCount' },
+        { callId: 'balances', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'balances',
+  )
+  // The genuine listings these three were built from stay sayable.
+  for (const answer of [
+    'Showing 1 of 3 students without matching transactions.',
+    'Showing 1 of 3 students with no matching transactions.',
+  ]) {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer,
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    })
+    assert.match(result.answer, /Showing 1 of 3 students/u, `must allow: ${answer}`)
+  }
+})
+
+// The disclosure frame allows a noun phrase between its two numbers, and a
+// grouped-result naming can sit inside that phrase rather than after the
+// frame -- "Showing 1 grouped transaction result out of 3" and "Showing 1
+// category group out of 3" both put it there. Reading the aggregation word
+// only from what follows the frame never saw it.
+test('an aggregated-result disclosure names its call from inside the frame too', async () => {
+  for (const answer of [
+    'Showing 1 grouped transaction result out of 3.',
+    'Showing 1 category group out of 3.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 3),
+        calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+        answer,
+        factRefs: [
+          { callId: 'transactions', path: '/returnedCount' },
+          { callId: 'transactions', path: '/matchedCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'disclosure-counts-unbound' &&
+        error.diagnostic.claimPredicate === 'grouped' &&
+        error.diagnostic.toolName === 'aggregate_transactions',
+      `must refuse: ${answer}`,
+    )
+  }
+  // The same wording, from the call that actually grouped, stays sayable.
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 3),
+    calls: [{ id: 'grouped', name: 'aggregate_transactions', args: { groupBy: ['student'], metric: 'count', limit: 1 } }],
+    answer: 'Showing 1 grouped transaction result out of 3.',
+    factRefs: [
+      { callId: 'grouped', path: '/returnedCount' },
+      { callId: 'grouped', path: '/resultCount' },
+    ],
+  })
+  assert.match(result.answer, /Showing 1 grouped transaction result out of 3/u)
+})
+
+// A count's noun does not always sit right against it: "3 of the balances are
+// positive" states a count of balances exactly as much as "3 matching
+// balances" does. Reaching past the partitive to find that noun exposed a
+// claim that used to fall to 'generic' -- exempt from every check -- to the
+// closest wrong anchor, and for "balances" that was the money bucket: a true,
+// cited count of balances was refused as an uncited dollar amount.
+test('a partitive count of balances is a count, not an amount', async () => {
+  const data = evidence()
+  data.students = [
+    { ref: 'student-001', displayName: 'Ava 1', current: true, balance: 15, frozen: false },
+    { ref: 'student-002', displayName: 'Ava 2', current: true, balance: -7, frozen: false },
+    { ref: 'student-003', displayName: 'Ava 3', current: true, balance: 22, frozen: false },
+  ]
+  const result = await answerWithTools({
+    assistantEvidence: data,
+    calls: [{ id: 'balances', name: 'get_balances', args: { condition: 'positive' } }],
+    answer: '2 of the balances are positive.',
+    factRefs: [{ callId: 'balances', path: '/matchedCount' }],
+  })
+  assert.equal(result.answer, '2 of the balances are positive.')
+})

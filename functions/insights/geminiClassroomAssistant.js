@@ -1141,30 +1141,42 @@ const DISCLOSURE_PASSIVE_PATTERN = new RegExp(`^(?:is|are|was|were|be|been|being
 
 const NOTHING_FURTHER_PATTERN = /^[\s.,:;!?)'"\u2019\u201d-]*$/u
 
-// A negator inside a subject is part of the noun phrase when a preposition
-// introduces it -- "students without matching transactions", "students with no
-// matching transactions" both name one group -- and is a predication about
-// that subject when anything else does. Only closed classes decide it: the
-// negators this module already recognises, and the prepositions it already
-// lists. Without this the finite verbs English does not draw from a closed
-// class walked straight past the rule above: "The records show 1 of 3 current
-// students made no deposits" read as a page of one row, and a page length
-// stood as the count of who had made none while all three had.
-const SUBJECT_NEGATOR_PATTERN = new RegExp(`\\b(?:no|not|never|none|neither|nor|without|zero|nobody)\\b|n['\u2019]t\\b`, 'giu')
+// A disclosure subject names one group and, optionally, what it lacks or
+// belongs to through a prepositional phrase -- "students without matching
+// transactions" is one group, not two. Two of this module's own noun words
+// standing side by side, then, are only ever one subject if a preposition
+// opens the second: anything else between them is a verb, and this module
+// cannot enumerate English's lexical verbs the way it enumerates its closed
+// classes. "Only 1 of 3 current students went without matching transactions"
+// put "went" there, which "without" being a preposition itself let straight
+// through under the old rule; "The records show 1 of 3 current students made
+// no deposits" put "made" there, ahead of a bare negator that never
+// introduces a phrase on its own. And a single noun needs no preposition at
+// all to carry a verb after it: "3 of 10 current students carry positive
+// balances" has only one recognised noun, at the very end, so nothing before
+// this fix even looked between two of them.
+const DISCLOSURE_SUBJECT_NOUN_PATTERN = /\b(?:transactions?|students?|balances?|results?|matches?|credits?|payments?|deposits?|withdrawals?|records?)\b/giu
 
-const SUBJECT_NEGATOR_INTRODUCER_PATTERN = new RegExp(`(?:^|[\\s-])${NON_PARTITIVE_PREPOSITIONS}[\\s-]+$`, 'iu')
+// The text between one recognised noun and the next -- or after the last one
+// -- says how the subject continues. It continues as one subject only when a
+// preposition opens that text, because a prepositional phrase always opens on
+// one; a bare word there is that phrase's verb instead. "Without" is already
+// one of NON_PARTITIVE_PREPOSITIONS, so "students without matching
+// transactions" and "students with no matching transactions" both open on a
+// preposition here without needing a rule of their own.
+const CONTINUES_AS_PREPOSITIONAL_PHRASE_PATTERN = new RegExp(`^${NON_PARTITIVE_PREPOSITIONS}\\b`, 'iu')
 
-function subjectNegationIsNominal(subject) {
-  for (const negator of subject.matchAll(SUBJECT_NEGATOR_PATTERN)) {
-    const before = subject.slice(0, negator.index)
-    // A negator opening the subject modifies its head: "no matching balances".
-    if (/^[\s-]*$/u.test(before)) continue
-    // "without" is itself the preposition that introduces the phrase.
-    if (/^without$/iu.test(negator[0])) continue
-    if (SUBJECT_NEGATOR_INTRODUCER_PATTERN.test(before)) continue
+function subjectNamesOnlyItsNounsAndTheirPhrases(subject) {
+  const nouns = [...subject.matchAll(DISCLOSURE_SUBJECT_NOUN_PATTERN)]
+  for (let index = 0; index < nouns.length; index += 1) {
+    const nounEnd = nouns[index].index + nouns[index][0].length
+    const next = nouns[index + 1]
+    const gap = subject.slice(nounEnd, next === undefined ? subject.length : next.index)
+    if (NOTHING_FURTHER_PATTERN.test(gap)) continue
+    if (CONTINUES_AS_PREPOSITIONAL_PHRASE_PATTERN.test(gap.replace(/^[\s-]+/u, ''))) continue
     return false
   }
-  return true
+  return nouns.length > 0
 }
 
 function disclosureSubjectSpan(clause, frameEnd) {
@@ -1183,8 +1195,14 @@ function disclosureSubjectSpan(clause, frameEnd) {
 // direction a wrong answer here has to fall.
 function frameStatesAListing(clause, frameEnd) {
   const { subject, beyond } = disclosureSubjectSpan(clause, frameEnd)
-  if (!subjectNegationIsNominal(subject)) return false
-  return NOTHING_FURTHER_PATTERN.test(beyond) || DISCLOSURE_PASSIVE_PATTERN.test(beyond.trimStart())
+  if (!subjectNamesOnlyItsNounsAndTheirPhrases(subject)) return false
+  if (NOTHING_FURTHER_PATTERN.test(beyond)) return true
+  const trimmed = beyond.trimStart()
+  const passive = DISCLOSURE_PASSIVE_PATTERN.exec(trimmed)
+  // The passive verb is where a disclosure sentence ends, not merely where it
+  // may begin: "are shown to have no matching transactions" matched "are
+  // shown" and never looked at what the sentence went on to assert.
+  return passive !== null && NOTHING_FURTHER_PATTERN.test(trimmed.slice(passive[0].length))
 }
 
 // Every disclosure-shaped "N of M" in a clause that also somewhere states a
@@ -1277,13 +1295,19 @@ const GROUPED_RESULT_PATTERN = new RegExp(`\\bgroup(?:s|ed|ing)?\\b|\\bby${WORD_
 // disclosure can describe its subject as plainly as "students" without
 // naming a call this module's own predicates recognise, and refusing it
 // would refuse a truthful sentence.
-function disclosureSubject(clause, frameEnd) {
+function disclosureSubject(clause, frame) {
+  const frameEnd = frame.index + frame[0].length
   // Aggregation is read first, because it is a property of the whole subject
   // and proximity is not: "Showing 1 of 3 grouped transaction results by
   // category" put a transaction word nearer the frame than anything else, so
   // the subject bound to list_transactions and a plain, ungrouped page and
   // total answered a disclosure about grouping that never happened.
-  if (GROUPED_RESULT_PATTERN.test(disclosureSubjectSpan(clause, frameEnd).subject)) return 'grouped'
+  //
+  // The grouping word does not have to sit after the frame either: the frame
+  // itself allows a noun phrase between its first number and its second, and
+  // "Showing 1 grouped transaction result out of 3" puts "grouped" there. A
+  // subject search that starts only after the frame ends never saw it.
+  if (GROUPED_RESULT_PATTERN.test(frame[0]) || GROUPED_RESULT_PATTERN.test(disclosureSubjectSpan(clause, frameEnd).subject)) return 'grouped'
   const nearest = nearestPredicate(clause, frameEnd, true)
   if (nearest !== null) {
     if (nearest.name !== 'transactions') return nearest.name
@@ -1300,7 +1324,7 @@ function assertDisclosureCountsAreBound(answer, cited) {
     for (const frame of disclosureFramesIn(clause.text)) {
       const [page, total] = [...frame[0].matchAll(/\d[\d,]*/gu)]
         .map(digit => Number(digit[0].replace(/,/gu, '')))
-      const subject = disclosureSubject(clause.text, frame.index + frame[0].length)
+      const subject = disclosureSubject(clause.text, frame)
       const tool = DISCLOSURE_SUBJECT_TOOL.get(subject)
       if (pages.some(candidate => (
         (tool === undefined || candidate.name === tool) &&
@@ -1646,6 +1670,16 @@ function numericClaimKind(claim, before, after, population) {
     : 'student-count'
 }
 
+// A count's noun does not always sit directly against it: "3 of the
+// balances are positive" states a count of balances exactly as much as "3
+// matching balances" does. The claim scan now reaches past that partitive to
+// the noun, so an anchor written for the noun standing right against the
+// number has to allow the partitive it can now see over, or the reach past
+// "of the" only exposed a count that used to fall to 'generic' -- exempt from
+// every check -- to the closest wrong anchor instead, which for "balances"
+// was the money bucket further down.
+const PARTITIVE_OF_PREFIX = '(?:of\\s+(?:the|our|their|its)\\s+)?'
+
 function baseNumericClaimKind(claim, before, after, population) {
   const context = `${before}${claim}${after}`
   if (claim.includes('%') || /^\s*percent\b/iu.test(after)) return 'percent'
@@ -1655,16 +1689,16 @@ function baseNumericClaimKind(claim, before, after, population) {
   // wording below must only ever choose between the two student populations --
   // resolving it earlier turned "2 days for former students" into a claim about
   // participants, which no day-count fact could support.
-  if (/^\s+(?:approved\s+)?(?:transactions?|payments?|credits?)\b/iu.test(after)) return 'transaction-count'
-  if (/^\s+days?\b/iu.test(after)) return 'day-count'
+  if (new RegExp(`^\\s+${PARTITIVE_OF_PREFIX}(?:approved\\s+)?(?:transactions?|payments?|credits?)\\b`, 'iu').test(after)) return 'transaction-count'
+  if (new RegExp(`^\\s+${PARTITIVE_OF_PREFIX}days?\\b`, 'iu').test(after)) return 'day-count'
   // A participant noun the number sits against names the wider population
   // outright, so it is a noun anchor like the two above. Roster wording is read
   // over the whole clause, because the words that scope a claim to the class as
   // it stands now do not have to sit against the number.
   if (PARTICIPANT_NOUN_PATTERN.test(after)) return 'participant-count'
   if (CURRENT_ROSTER_POPULATION_PATTERN.test(population.clause)) return 'student-count'
-  if (/^\s+(?:current\s+)?students?\b/iu.test(after)) return 'student-count'
-  if (/^\s+(?:matching\s+)?balances?\b/iu.test(after)) return 'student-count'
+  if (new RegExp(`^\\s+${PARTITIVE_OF_PREFIX}(?:current\\s+)?students?\\b`, 'iu').test(after)) return 'student-count'
+  if (new RegExp(`^\\s+${PARTITIVE_OF_PREFIX}(?:matching\\s+)?balances?\\b`, 'iu').test(after)) return 'student-count'
   if (/\bshowing\s+(?:only\s+|the\s+first\s+)?\d[\d,]*\s+(?:of|out\s+of)\s+\d[\d,]*\s+(?:matching\s+)?balances?\b/iu.test(context)) return 'student-count'
   if (/\b(?:balance|amount|total|average|dollars?|money|paid|earned|spent)\b/iu.test(before) || /^\s+dollars?\b/iu.test(after)) return 'money'
   if (/\b(?:students?)\b/iu.test(context)) return 'student-count'
