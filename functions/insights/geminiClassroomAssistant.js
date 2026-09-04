@@ -1116,9 +1116,15 @@ const DISCLOSURE_VERB_PATTERN = /\b(?:shows?|showing|showed|shown|lists?|listing
 // disclosure to it -- handing the teacher two contradictory sentences in one
 // answer. What may stand between them is the noun phrase itself, bounded the
 // same way a claim's is, and never another number.
+// The noun phrase between the two numbers is captured, because it is where a
+// disclosure may state its subject: "Showing 1 student out of 3" names it
+// there and nowhere else. Group binding already read the whole frame for its
+// own wording; the listing gate has to read this subject from the same place
+// or it finds none at all -- which refused that truthful disclosure as an
+// unclassified claim.
 const DISCLOSURE_FRAME_PATTERN = new RegExp(
   `(?:only${WORD_GAP})?(?:the${WORD_GAP})?(?:first${WORD_GAP})?\\d[\\d,]*${WORD_GAP}` +
-  `(?:(?!${CLAIM_PHRASE_BREAK_WORDS}[\\s-])(?!\\d)${PHRASE_WORD})*?` +
+  `((?:(?!${CLAIM_PHRASE_BREAK_WORDS}[\\s-])(?!\\d)${PHRASE_WORD})*?)` +
   `(?:of|out${WORD_GAP}of)${WORD_GAP}(?:the${WORD_GAP})?\\d[\\d,]*`,
   'giu',
 )
@@ -1155,28 +1161,56 @@ const NOTHING_FURTHER_PATTERN = /^[\s.,:;!?)'"\u2019\u201d-]*$/u
 // all to carry a verb after it: "3 of 10 current students carry positive
 // balances" has only one recognised noun, at the very end, so nothing before
 // this fix even looked between two of them.
-const DISCLOSURE_SUBJECT_NOUN_PATTERN = /\b(?:transactions?|students?|balances?|results?|matches?|credits?|payments?|deposits?|withdrawals?|records?)\b/giu
+// Every noun of this classroom the module can name, not only the ones its own
+// disclosures use. The list's length is what makes the rule below sound: an
+// unrecognised noun merges two gaps into one, and the merged gap's opening
+// preposition then vouches for everything after it, which is how "students in
+// the class went without matching transactions" kept the exemption -- "class"
+// was not on the list, so "in" spoke for "went" four words later. Adding a
+// noun can only split a gap, and every split gap is checked on its own.
+const DISCLOSURE_SUBJECT_NOUN_PATTERN = /\b(?:transactions?|students?|balances?|results?|matches?|credits?|payments?|deposits?|withdrawals?|records?|categor(?:y|ies)|groups?|class(?:es)?|rosters?|lists?|rows?|pages?|periods?|windows?|days?|labels?|types?|amounts?|totals?|counts?)\b/giu
 
 // The text between one recognised noun and the next -- or after the last one
-// -- says how the subject continues. It continues as one subject only when a
-// preposition opens that text, because a prepositional phrase always opens on
-// one; a bare word there is that phrase's verb instead. "Without" is already
-// one of NON_PARTITIVE_PREPOSITIONS, so "students without matching
-// transactions" and "students with no matching transactions" both open on a
-// preposition here without needing a rule of their own.
+// -- says how the subject continues. It continues as one subject only as a
+// single prepositional phrase: one that opens on a preposition, because every
+// prepositional phrase does, and that holds exactly that one preposition,
+// because its object is the noun which ends this gap. Testing only the
+// opening word let a second phrase ride along inside the first wherever a
+// noun was missing from the list above, and a verb ride along with it.
+// "Without" is already one of NON_PARTITIVE_PREPOSITIONS, so "students
+// without matching transactions" and "students with no matching
+// transactions" both open on a preposition here without a rule of their own.
 const CONTINUES_AS_PREPOSITIONAL_PHRASE_PATTERN = new RegExp(`^${NON_PARTITIVE_PREPOSITIONS}\\b`, 'iu')
+
+const SUBJECT_PREPOSITION_PATTERN = new RegExp(`\\b${NON_PARTITIVE_PREPOSITIONS}\\b`, 'giu')
+
+function gapContinuesTheSubject(gap) {
+  if (NOTHING_FURTHER_PATTERN.test(gap)) return true
+  const prepositions = gap.match(SUBJECT_PREPOSITION_PATTERN)
+  if (prepositions === null || prepositions.length !== 1) return false
+  return CONTINUES_AS_PREPOSITIONAL_PHRASE_PATTERN.test(gap.replace(/^[\s-]+/u, ''))
+}
+
+// What stands between the number and the first noun it counts is the modifier
+// zone, and adjectives are an open class this module does not enumerate, so
+// anything may stand there -- except a preposition. A preposition opens a
+// constituent of its own, which means whatever preceded it modifies nothing
+// and is the sentence's verb: "Showing 1 of 3 went without matching
+// transactions" hides one exactly there, ahead of the only noun its subject
+// has, where no gap between two nouns would ever look.
+function zoneHoldsNoPreposition(zone) {
+  return zone.match(SUBJECT_PREPOSITION_PATTERN) === null
+}
 
 function subjectNamesOnlyItsNounsAndTheirPhrases(subject) {
   const nouns = [...subject.matchAll(DISCLOSURE_SUBJECT_NOUN_PATTERN)]
+  if (!zoneHoldsNoPreposition(subject.slice(0, nouns[0]?.index ?? subject.length))) return false
   for (let index = 0; index < nouns.length; index += 1) {
     const nounEnd = nouns[index].index + nouns[index][0].length
     const next = nouns[index + 1]
-    const gap = subject.slice(nounEnd, next === undefined ? subject.length : next.index)
-    if (NOTHING_FURTHER_PATTERN.test(gap)) continue
-    if (CONTINUES_AS_PREPOSITIONAL_PHRASE_PATTERN.test(gap.replace(/^[\s-]+/u, ''))) continue
-    return false
+    if (!gapContinuesTheSubject(subject.slice(nounEnd, next === undefined ? subject.length : next.index))) return false
   }
-  return nouns.length > 0
+  return true
 }
 
 function disclosureSubjectSpan(clause, frameEnd) {
@@ -1193,8 +1227,13 @@ function disclosureSubjectSpan(clause, frameEnd) {
 // exemption below is for. A frame that fails this is read as the ordinary
 // claim it is, and then its numbers have to be proven like any others -- the
 // direction a wrong answer here has to fall.
-function frameStatesAListing(clause, frameEnd) {
-  const { subject, beyond } = disclosureSubjectSpan(clause, frameEnd)
+function frameStatesAListing(clause, frame) {
+  const { subject, beyond } = disclosureSubjectSpan(clause, frame.index + frame[0].length)
+  // Either side of the second number may hold the subject, and both are held
+  // to the same shape. Neither has to hold one: "Showing 1 of 3" names no
+  // subject at all, and a disclosure that asserts nothing about anybody has
+  // nothing for a page count to prove falsely.
+  if (!subjectNamesOnlyItsNounsAndTheirPhrases(frame[1] ?? '')) return false
   if (!subjectNamesOnlyItsNounsAndTheirPhrases(subject)) return false
   if (NOTHING_FURTHER_PATTERN.test(beyond)) return true
   const trimmed = beyond.trimStart()
@@ -1232,7 +1271,7 @@ function claimPredicate(clause, offset) {
     // is not a disclosure lets a page length prove a fact about children, so
     // this one reads it narrowly. A frame that states no listing falls
     // through to the ordinary classification below.
-    if (!frameStatesAListing(clause, frame.index + frame[0].length)) break
+    if (!frameStatesAListing(clause, frame)) break
     const digits = [...frame[0].matchAll(/\d[\d,]*/gu)]
     const position = digits.findIndex(digit => frame.index + digit.index === offset)
     return position === 0 ? 'listing-page' : 'listing-total'

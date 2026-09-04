@@ -4067,3 +4067,109 @@ test('a partitive count of balances is a count, not an amount', async () => {
   })
   assert.equal(result.answer, '2 of the balances are positive.')
 })
+
+// Testing only a gap's opening word does not establish that the whole gap is
+// a prepositional phrase. An unrecognised noun merged two phrases into one
+// gap, and that gap's opening preposition then vouched for everything after
+// it: "students in the class went without matching transactions" opened on
+// "in" and carried "went" four words later, so a full assertion kept the
+// page-count exemption again. Two rules close it together -- the noun list
+// grew, which splits the gap, and a gap may now hold only the one
+// preposition its own phrase opens on, which refuses the merge wherever a
+// noun is still missing from that list.
+test('a gap between a disclosure\'s nouns holds one phrase, not a whole clause', async () => {
+  for (const answer of [
+    'The records show only 1 of 3 current students in the class went without matching transactions.',
+    // The same shape over a noun the list does not have, which is what the
+    // one-preposition rule is for rather than the list itself.
+    'The records show only 1 of 3 current students in the cafeteria went without matching transactions.',
+    'The records show only 1 of 3 students in the class with overdue rent went without matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 0),
+        calls: [WITHOUT_ONE_ROW],
+        answer,
+        factRefs: [
+          { callId: 'without', path: '/returnedCount' },
+          { callId: 'without', path: '/studentsWithoutCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate' &&
+        error.diagnostic.claimPredicate === 'no-transactions',
+      `must refuse: ${answer}`,
+    )
+  }
+  // A positive predicate hidden the same way, which carries no negator at all.
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [{ id: 'balances', name: 'get_balances', args: { limit: 1 } }],
+      answer: 'The records show only 1 of 3 current students in the class carry positive balances.',
+      factRefs: [
+        { callId: 'balances', path: '/returnedCount' },
+        { callId: 'balances', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'balances',
+  )
+  // One prepositional phrase per gap is what a subject actually states, and a
+  // chain of them is still one subject, so both stay sayable.
+  for (const answer of [
+    'Showing 1 of 3 students in the class without matching transactions.',
+    'Showing 1 of 3 students without matching transactions.',
+  ]) {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer,
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    })
+    assert.match(result.answer, /Showing 1 of 3 students/u, `must allow: ${answer}`)
+  }
+})
+
+// A disclosure may state its subject between its two numbers rather than
+// after them, and the frame's own noun-phrase span already holds it there.
+// Reading the subject only from what follows the frame found none at all and
+// refused a truthful disclosure as an unclassified claim.
+test('a disclosure states its subject on either side of its second number', async () => {
+  for (const answer of [
+    'Showing 1 student out of 3.',
+    'Showing 1 of 3 students.',
+    // No subject on either side asserts nothing about anybody, so there is
+    // nothing here for a page count to prove falsely.
+    'Showing 1 of 3.',
+  ]) {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer,
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    })
+    assert.equal(result.answer, answer, `must allow: ${answer}`)
+  }
+  // A verb inside the frame is still a verb, wherever the subject sits.
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'Showing 1 student out of 3 who went without matching transactions.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate',
+  )
+})
