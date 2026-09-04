@@ -4173,3 +4173,102 @@ test('a disclosure states its subject on either side of its second number', asyn
       error.subcategory === 'unsupported-predicate',
   )
 })
+
+// Whether a disclosure's subject is a noun phrase cannot be decided by ruling
+// verbs out, and three rounds of trying is the evidence. A gap had to open on
+// a preposition; then hold exactly one; and the noun list grew twice to split
+// those gaps. Each rule was an attempt to detect a verb by excluding one, and
+// each let the next wording through: "in the classroom made no deposits" and
+// "in attendance carry positive balances" hold exactly one preposition and
+// open on it, and "withdrew" holds none and names no noun, which the rule
+// written to let "Showing 1 of 3" through then read as a subject too.
+//
+// The test is inverted here: every word in a subject must be one this module
+// positively recognises. An unrecognised word costs a refusal instead of
+// granting an exemption, so these lists no longer have to be complete to be
+// sound -- only correct in what they admit.
+test('a disclosure subject is nominal only in words this module recognises', async () => {
+  // Nonempty text naming no noun is not a subject, however few words it has.
+  for (const answer of [
+    'The records show only 1 current student out of 3 withdrew.',
+    'The records show only 1 student out of 3 deposited.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 0),
+        calls: [WITHOUT_ONE_ROW],
+        answer,
+        factRefs: [
+          { callId: 'without', path: '/returnedCount' },
+          { callId: 'without', path: '/studentsWithoutCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate',
+      `must refuse: ${answer}`,
+    )
+  }
+  // A verb inside a well-formed prepositional phrase, which counting
+  // prepositions could never see.
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'The records show only 1 of 3 current students in the classroom made no deposits.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'no-transactions',
+  )
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [{ id: 'balances', name: 'get_balances', args: { limit: 1 } }],
+      answer: 'The records show only 1 of 3 current students in attendance carry positive balances.',
+      factRefs: [
+        { callId: 'balances', path: '/returnedCount' },
+        { callId: 'balances', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'balances',
+  )
+})
+
+// The inverted rule is much stricter than the three it replaced, so the
+// wordings a truthful disclosure actually uses are pinned here. Every one of
+// these is a real page of one row out of three, and every one has to stay
+// sayable -- including the empty subject, which asserts nothing about anybody.
+test('the wordings a truthful listing uses all stay sayable', async () => {
+  for (const answer of [
+    'Showing 1 of 3 students without matching transactions.',
+    'Showing 1 of 3 students with no matching transactions.',
+    'Showing 1 of 3 current students without matching transactions.',
+    'Showing 1 of 3 students in the class without matching transactions.',
+    'Showing 1 of 3 students on the roster without matching transactions.',
+    'Showing 1 of 3 students without approved transactions.',
+    'Showing 1 of 3 matching students.',
+    'Showing 1 of 3 students.',
+    'Showing 1 student out of 3.',
+    'Showing only 1 of 3 students.',
+    'Showing the first 1 of 3 students.',
+    'Showing 1 of 3.',
+    'Only 1 of 3 students are shown.',
+  ]) {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer,
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    })
+    assert.ok(result.answer.includes(answer), `must allow: ${answer}`)
+  }
+})

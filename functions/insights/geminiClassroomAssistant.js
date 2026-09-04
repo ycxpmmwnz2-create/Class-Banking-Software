@@ -1147,70 +1147,75 @@ const DISCLOSURE_PASSIVE_PATTERN = new RegExp(`^(?:is|are|was|were|be|been|being
 
 const NOTHING_FURTHER_PATTERN = /^[\s.,:;!?)'"\u2019\u201d-]*$/u
 
-// A disclosure subject names one group and, optionally, what it lacks or
-// belongs to through a prepositional phrase -- "students without matching
-// transactions" is one group, not two. Two of this module's own noun words
-// standing side by side, then, are only ever one subject if a preposition
-// opens the second: anything else between them is a verb, and this module
-// cannot enumerate English's lexical verbs the way it enumerates its closed
-// classes. "Only 1 of 3 current students went without matching transactions"
-// put "went" there, which "without" being a preposition itself let straight
-// through under the old rule; "The records show 1 of 3 current students made
-// no deposits" put "made" there, ahead of a bare negator that never
-// introduces a phrase on its own. And a single noun needs no preposition at
-// all to carry a verb after it: "3 of 10 current students carry positive
-// balances" has only one recognised noun, at the very end, so nothing before
-// this fix even looked between two of them.
-// Every noun of this classroom the module can name, not only the ones its own
-// disclosures use. The list's length is what makes the rule below sound: an
-// unrecognised noun merges two gaps into one, and the merged gap's opening
-// preposition then vouches for everything after it, which is how "students in
-// the class went without matching transactions" kept the exemption -- "class"
-// was not on the list, so "in" spoke for "went" four words later. Adding a
-// noun can only split a gap, and every split gap is checked on its own.
-const DISCLOSURE_SUBJECT_NOUN_PATTERN = /\b(?:transactions?|students?|balances?|results?|matches?|credits?|payments?|deposits?|withdrawals?|records?|categor(?:y|ies)|groups?|class(?:es)?|rosters?|lists?|rows?|pages?|periods?|windows?|days?|labels?|types?|amounts?|totals?|counts?)\b/giu
+// Whether a disclosure's subject is a noun phrase cannot be decided by ruling
+// verbs out. Three rules tried: a gap had to open on a preposition, then hold
+// exactly one, and the noun list grew twice to split those gaps. Each was an
+// attempt to detect a verb by excluding one, and English does not draw its
+// verbs from a closed class, so each let the next wording through -- "in the
+// class went without", then "in the classroom made no deposits" and "in
+// attendance carry positive balances", which hold exactly one preposition and
+// open on it. Counting prepositions never established that the whole span was
+// nominal.
+//
+// So the test is inverted, the way every other closed-class rule in this
+// module already works: a subject is nominal only when *every* word in it is
+// one this module positively recognises. An unrecognised word now costs a
+// refusal instead of granting an exemption, which is the direction the
+// residual error has to fall, and it is why the lists below no longer have to
+// be complete to be sound -- only correct in what they admit.
+//
+// The inclusion rule for these lists is therefore one thing: never a word
+// that can stand as a finite verb. Nouns and adjectives may be added freely;
+// "withdrawn" belongs and "withdrew" does not, "grouped" belongs and "carry"
+// does not.
+const DISCLOSURE_SUBJECT_NOUNS = [
+  'transactions?', 'students?', 'balances?', 'results?', 'matches?', 'records?',
+  'credits?', 'payments?', 'deposits?', 'withdrawals?', 'amounts?', 'totals?',
+  'counts?', 'dollars?', 'categor(?:y|ies)', 'groups?', 'class(?:es)?',
+  'rosters?', 'lists?', 'rows?', 'pages?', 'periods?', 'windows?', 'days?',
+  'labels?', 'types?', 'entries', 'items?', 'rent', 'purposes?', 'status(?:es)?',
+]
 
-// The text between one recognised noun and the next -- or after the last one
-// -- says how the subject continues. It continues as one subject only as a
-// single prepositional phrase: one that opens on a preposition, because every
-// prepositional phrase does, and that holds exactly that one preposition,
-// because its object is the noun which ends this gap. Testing only the
-// opening word let a second phrase ride along inside the first wherever a
-// noun was missing from the list above, and a verb ride along with it.
-// "Without" is already one of NON_PARTITIVE_PREPOSITIONS, so "students
-// without matching transactions" and "students with no matching
-// transactions" both open on a preposition here without a rule of their own.
-const CONTINUES_AS_PREPOSITIONAL_PHRASE_PATTERN = new RegExp(`^${NON_PARTITIVE_PREPOSITIONS}\\b`, 'iu')
+// Determiners, quantifiers and negators -- closed classes, and none of them a
+// verb. "No" and "not" stand here rather than in a rule of their own, which is
+// what the negation special-casing of two rounds ago was reaching for.
+const DISCLOSURE_SUBJECT_DETERMINERS = [
+  'the', 'a', 'an', 'this', 'that', 'these', 'those',
+  'its', 'their', 'our', 'your', 'my', 'his', 'her',
+  'no', 'not', 'none', 'any', 'some', 'all', 'each', 'every', 'both',
+  'either', 'neither', 'other', 'others', 'same', 'such',
+  'more', 'fewer', 'less', 'most', 'only', 'just',
+]
 
-const SUBJECT_PREPOSITION_PATTERN = new RegExp(`\\b${NON_PARTITIVE_PREPOSITIONS}\\b`, 'giu')
+// The adjectives and participles this module's own tools and disclosures use.
+// Every one is a modifier that cannot head a predicate here.
+const DISCLOSURE_SUBJECT_MODIFIERS = [
+  'matching', 'grouped', 'current', 'currently', 'approved', 'pending',
+  'positive', 'negative', 'nonpositive', 'zero', 'remaining', 'distinct',
+  'unique', 'active', 'inactive', 'former', 'past', 'archived', 'withdrawn',
+  'enrolled', 'frozen', 'first', 'last', 'recent', 'new', 'old', 'overdue',
+  'unpaid', 'daily', 'weekly', 'monthly', 'individual', 'separate',
+]
 
-function gapContinuesTheSubject(gap) {
-  if (NOTHING_FURTHER_PATTERN.test(gap)) return true
-  const prepositions = gap.match(SUBJECT_PREPOSITION_PATTERN)
-  if (prepositions === null || prepositions.length !== 1) return false
-  return CONTINUES_AS_PREPOSITIONAL_PHRASE_PATTERN.test(gap.replace(/^[\s-]+/u, ''))
-}
+const DISCLOSURE_SUBJECT_WORD_PATTERN = new RegExp(`^(?:${[
+  ...DISCLOSURE_SUBJECT_NOUNS,
+  ...DISCLOSURE_SUBJECT_DETERMINERS,
+  ...DISCLOSURE_SUBJECT_MODIFIERS,
+  NON_PARTITIVE_PREPOSITIONS,
+  'of',
+  '-?\\$?\\d[\\d,]*(?:\\.\\d+)?%?',
+].join('|')})$`, 'iu')
 
-// What stands between the number and the first noun it counts is the modifier
-// zone, and adjectives are an open class this module does not enumerate, so
-// anything may stand there -- except a preposition. A preposition opens a
-// constituent of its own, which means whatever preceded it modifies nothing
-// and is the sentence's verb: "Showing 1 of 3 went without matching
-// transactions" hides one exactly there, ahead of the only noun its subject
-// has, where no gap between two nouns would ever look.
-function zoneHoldsNoPreposition(zone) {
-  return zone.match(SUBJECT_PREPOSITION_PATTERN) === null
-}
+// Punctuation a word may carry without ceasing to be that word. Stripped
+// rather than matched, so a sentence-final noun reads the same as any other.
+const SUBJECT_WORD_EDGE_PATTERN = /^[("'‘“]+|[).,:;!?"'’”]+$/gu
 
-function subjectNamesOnlyItsNounsAndTheirPhrases(subject) {
-  const nouns = [...subject.matchAll(DISCLOSURE_SUBJECT_NOUN_PATTERN)]
-  if (!zoneHoldsNoPreposition(subject.slice(0, nouns[0]?.index ?? subject.length))) return false
-  for (let index = 0; index < nouns.length; index += 1) {
-    const nounEnd = nouns[index].index + nouns[index][0].length
-    const next = nouns[index + 1]
-    if (!gapContinuesTheSubject(subject.slice(nounEnd, next === undefined ? subject.length : next.index))) return false
-  }
-  return true
+function subjectIsNominal(subject) {
+  return subject
+    .split(/[\s-]+/u)
+    .map(word => word.replace(SUBJECT_WORD_EDGE_PATTERN, ''))
+    .filter(word => word.length > 0)
+    .every(word => DISCLOSURE_SUBJECT_WORD_PATTERN.test(word))
 }
 
 function disclosureSubjectSpan(clause, frameEnd) {
@@ -1233,8 +1238,8 @@ function frameStatesAListing(clause, frame) {
   // to the same shape. Neither has to hold one: "Showing 1 of 3" names no
   // subject at all, and a disclosure that asserts nothing about anybody has
   // nothing for a page count to prove falsely.
-  if (!subjectNamesOnlyItsNounsAndTheirPhrases(frame[1] ?? '')) return false
-  if (!subjectNamesOnlyItsNounsAndTheirPhrases(subject)) return false
+  if (!subjectIsNominal(frame[1] ?? '')) return false
+  if (!subjectIsNominal(subject)) return false
   if (NOTHING_FURTHER_PATTERN.test(beyond)) return true
   const trimmed = beyond.trimStart()
   const passive = DISCLOSURE_PASSIVE_PATTERN.exec(trimmed)
