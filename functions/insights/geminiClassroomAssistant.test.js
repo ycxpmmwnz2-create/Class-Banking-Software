@@ -4338,3 +4338,133 @@ test('a homograph in a verb\'s position does not make a disclosure subject', asy
   })
   assert.match(deposits.answer, /Showing 1 of 3 matching deposits/u)
 })
+
+// Each case was accepted on 4e886f4 with only page/total citations. Incorrect
+// subject-verb agreement must not turn a student assertion into a disclosure.
+// Keep separate tests so the failing-before run exercises all ten sentences.
+for (const answer of [
+  'The records show only 1 of 3 current student match lists.',
+  'The records show only 1 of 3 current student record lists.',
+  'The records show only 1 of 3 current student count results.',
+  'The records show only 1 of 3 current student list records.',
+  'Only 1 of 3 current student match lists are shown.',
+  'Showing 1 student match list out of 3.',
+  'Showing 1 student match out of 3.',
+  'Showing 1 student record out of 3.',
+  'Showing 1 student count out of 3.',
+  'The records show only 1 of 3 current student separate lists.',
+]) {
+  test(`agreement errors cannot grant a page-count exemption: ${answer}`, async () => {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 0),
+        calls: [WITHOUT_ONE_ROW],
+        answer,
+        factRefs: [
+          { callId: 'without', path: '/returnedCount' },
+          { callId: 'without', path: '/studentsWithoutCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.category === 'answer-unverified' &&
+        error.subcategory === 'unsupported-predicate',
+      `must refuse: ${answer}`,
+    )
+  })
+}
+
+test('a disclosure cannot extend a completed noun with another assertion', async () => {
+  // Nearby variants exercise both number placements, passive wording, and
+  // assertions inside prepositional phrases. The rent compound must not
+  // license a larger arbitrary compound on either side of it.
+  for (const subject of [
+    'current student approved records',
+    'current student separate lists',
+    'current student deposit records',
+    'students in the class match lists',
+    'students with current student record lists',
+    'students without matching student rent transactions',
+    'students without matching rent transaction records',
+    'students without matching rent separate transactions',
+  ]) {
+    for (const answer of [
+      `The records show only 1 of 3 ${subject}.`,
+      `Only 1 of 3 ${subject} are shown.`,
+      `Showing 1 ${subject} out of 3.`,
+    ]) {
+      await assert.rejects(
+        answerWithTools({
+          assistantEvidence: rosterEvidence(3, 0),
+          calls: [WITHOUT_ONE_ROW],
+          answer,
+          factRefs: [
+            { callId: 'without', path: '/returnedCount' },
+            { callId: 'without', path: '/studentsWithoutCount' },
+          ],
+        }),
+        error => error instanceof GeminiClassroomAssistantError &&
+          error.category === 'answer-unverified' &&
+          error.subcategory === 'unsupported-predicate',
+        `must refuse: ${answer}`,
+      )
+    }
+  }
+})
+
+// Compatibility safety net: these already passed before this correction.
+// Homographs are still valid heads, with the same cited tool/count binding.
+test('disclosure homographs remain usable as complete nouns', async () => {
+  for (const [singular, plural, call, totalPath] of [
+    ['match', 'matches', WITHOUT_ONE_ROW, '/studentsWithoutCount'],
+    ['record', 'records', WITHOUT_ONE_ROW, '/studentsWithoutCount'],
+    ['list', 'lists', WITHOUT_ONE_ROW, '/studentsWithoutCount'],
+    ['count', 'counts', WITHOUT_ONE_ROW, '/studentsWithoutCount'],
+    ['deposit', 'deposits', { ...TRANSACTIONS, args: { limit: 1 } }, '/matchedCount'],
+    ['balance', 'balances', { ...BALANCES, args: { limit: 1 } }, '/matchedCount'],
+  ]) {
+    for (const answer of [
+      `Showing 1 matching ${singular} out of 3.`,
+      `Showing 1 of 3 matching ${plural}.`,
+    ]) {
+      const result = await answerWithTools({
+        assistantEvidence: rosterEvidence(3, call === WITHOUT_ONE_ROW ? 0 : 3),
+        calls: [call],
+        answer,
+        factRefs: [
+          { callId: call.id, path: '/returnedCount' },
+          { callId: call.id, path: totalPath },
+        ],
+      })
+      assert.equal(result.answer, answer, `must allow: ${answer}`)
+    }
+  }
+})
+
+// Compatibility safety net: an explicitly supported compound is a whole
+// term, and stays valid on either side of the second number.
+test('supported disclosure compounds retain their cited counts', async () => {
+  const assistantEvidence = rosterEvidence(3, 3)
+  assistantEvidence.transactions.forEach((transaction, index) => {
+    transaction.category = ['Technology', 'Rent', 'Supplies'][index]
+  })
+  for (const [singular, plural] of [
+    ['grouped transaction result', 'grouped transaction results'],
+    ['category group', 'category groups'],
+  ]) {
+    for (const answer of [
+      `Showing 1 ${singular} out of 3.`,
+      `Showing 1 of 3 ${plural}.`,
+    ]) {
+      const result = await answerWithTools({
+        assistantEvidence,
+        calls: [{ id: 'grouped', name: 'aggregate_transactions', args: { groupBy: ['category'], metric: 'count', limit: 1 } }],
+        answer,
+        factRefs: [
+          { callId: 'grouped', path: '/returnedCount' },
+          { callId: 'grouped', path: '/resultCount' },
+        ],
+      })
+      assert.equal(result.answer, answer, `must allow: ${answer}`)
+    }
+  }
+})

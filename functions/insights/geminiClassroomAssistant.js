@@ -1147,45 +1147,27 @@ const DISCLOSURE_PASSIVE_PATTERN = new RegExp(`^(?:is|are|was|were|be|been|being
 
 const NOTHING_FURTHER_PATTERN = /^[\s.,:;!?)'"\u2019\u201d-]*$/u
 
-// Whether a disclosure's subject is a noun phrase is a question about word
-// order, not about vocabulary. Four rules learned that the hard way: distance,
-// then a gap opening on a preposition, then a gap holding exactly one, then an
-// unordered allowlist of every word a subject may contain. The allowlist was
-// the right material and the wrong shape -- English decides word class by
-// position, so "records" is a noun in "the records" and a finite verb in
-// "students records no transactions", and an unordered check cannot tell those
-// apart. "Never admit a word that can stand as a finite verb" was not a
-// premise the list could keep: matches, records, lists, counts, deposits and
-// balances are all nouns this module needs and all finite verbs too.
-//
-// So the allowlist stays and gains the order it was missing. A subject is one
-// noun phrase followed by any number of prepositional phrases, and each of
-// those is itself a run of words ending in the noun it heads:
+// Recognise a restricted disclosure language, not general English grammar:
 //
 //   subject := nothing | run (preposition run)*
-//   run     := determiner? attributive* noun
+//   run     := determiner? (modifier | number)* head
+//   head    := noun | supported-compound
 //
-// Two positional rules carry the whole check. A determiner may stand only
-// where a run begins -- at the subject's start or straight after a preposition
-// -- because a determiner opens a noun phrase, and one opening anywhere else
-// means the previous phrase had already ended, which without a preposition
-// means a predication happened. And only a run's final noun may be plural,
-// because English builds compounds from singular attributives: "student
-// records" and "transaction results", never "students records". A plural noun
-// in an attributive slot is a subject that has just been predicated of.
-//
-// Between them those two rules refuse every homograph wording without
-// removing one homograph from the lists: "students matches no transactions"
-// puts a plural noun in an attributive slot *and* a determiner mid-phrase,
-// and "students match transactions" puts one there without needing the
-// determiner at all.
+// A head ENDS its run. Arbitrary nouns cannot serve as attributives: with
+// malformed agreement, "student match lists" is indistinguishable from a
+// compound, and even "student record" may be an unfinished assertion. Nor may
+// modifiers follow a head: "student separate lists" uses an allowed adjective
+// as a verb. Both must lose the exemption regardless of singular/plural form.
+// Supported compounds are complete terms, never recursively composable pieces.
+// Homographs remain usable as heads ("matching records"), and modifiers remain
+// usable before heads. This deliberately refuses other legitimate compounds;
+// it does not prove the semantics of every modifier or prepositional phrase.
 const DISCLOSURE_SINGULAR_NOUNS = new Set([
   'transaction', 'student', 'balance', 'result', 'match', 'record', 'credit',
   'payment', 'deposit', 'withdrawal', 'amount', 'total', 'count', 'dollar',
   'category', 'group', 'class', 'roster', 'list', 'row', 'page', 'period',
   'window', 'day', 'label', 'type', 'item', 'purpose', 'status', 'entry',
-  // A mass noun heads a phrase and modifies one: "students without rent
-  // transactions" is the wording this module's own comments already use.
+  // A mass noun can head a phrase; its compound is separately admitted below.
   'rent',
 ])
 
@@ -1195,6 +1177,15 @@ const DISCLOSURE_PLURAL_NOUNS = new Set([
   'counts', 'dollars', 'categories', 'groups', 'classes', 'rosters', 'lists',
   'rows', 'pages', 'periods', 'windows', 'days', 'labels', 'types', 'items',
   'purposes', 'statuses', 'entries',
+])
+
+// Only the compound terms needed by the existing disclosure contract. In
+// particular, accepting rent transactions must not permit student rent
+// transactions, student records, or another arbitrary noun sequence.
+const DISCLOSURE_COMPOUND_NOUNS = new Set([
+  'rent transaction', 'rent transactions',
+  'transaction result', 'transaction results',
+  'category group', 'category groups',
 ])
 
 // Determiners, quantifiers and negators. Their position is what matters now,
@@ -1231,23 +1222,18 @@ const SUBJECT_WORD_EDGE_PATTERN = /^[("\u2018\u201c']+|[).,:;!?"\u2019\u201d']+$
 const isDisclosureNoun = word =>
   DISCLOSURE_SINGULAR_NOUNS.has(word) || DISCLOSURE_PLURAL_NOUNS.has(word)
 
-const isRunWord = word =>
-  isDisclosureNoun(word) || DISCLOSURE_MODIFIERS.has(word) || SUBJECT_NUMBER_PATTERN.test(word)
-
 // One run, from `start`. Returns where it ends, or -1 when the words there do
-// not form one. Determiners are deliberately absent from isRunWord, so a
-// determiner inside a run ends it and the caller then demands the preposition
-// that a new phrase would have to open on.
+// not form one. Consume only prefix modifiers before the head. Anything after
+// that complete head must be a preposition opening a new run, or the end of
+// the subject; do not search ahead for a later noun to rescue an invalid run.
 function disclosureRunEnd(words, start) {
   let index = start
   if (index < words.length && DISCLOSURE_DETERMINERS.has(words[index])) index += 1
-  const first = index
-  while (index < words.length && isRunWord(words[index])) index += 1
-  if (index === first) return -1
-  const run = words.slice(first, index)
-  if (!isDisclosureNoun(run[run.length - 1])) return -1
-  if (run.slice(0, -1).some(word => DISCLOSURE_PLURAL_NOUNS.has(word))) return -1
-  return index
+  while (index < words.length && (
+    DISCLOSURE_MODIFIERS.has(words[index]) || SUBJECT_NUMBER_PATTERN.test(words[index])
+  )) index += 1
+  if (DISCLOSURE_COMPOUND_NOUNS.has(words.slice(index, index + 2).join(' '))) return index + 2
+  return isDisclosureNoun(words[index]) ? index + 1 : -1
 }
 
 function subjectIsNominal(subject) {
