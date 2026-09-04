@@ -4272,3 +4272,69 @@ test('the wordings a truthful listing uses all stay sayable', async () => {
     assert.ok(result.answer.includes(answer), `must allow: ${answer}`)
   }
 })
+
+// "Never admit a word that can stand as a finite verb" was not a premise the
+// allowlist could keep: matches, records, lists, counts, deposits and balances
+// are all nouns this module needs, and all finite verbs too. English decides
+// word class by position, so an unordered check cannot tell "the records" from
+// "students records no transactions", and Codex found the whole homograph
+// family walking through the exemption on that.
+//
+// The lists keep every one of those words. What changed is that they are read
+// in order now, as one noun phrase followed by prepositional phrases, and two
+// positional rules refuse these without removing a single homograph: a
+// determiner may stand only where a phrase begins, and only a phrase's final
+// noun may be plural, because English builds compounds from singular
+// attributives -- "student records", never "students records".
+test('a homograph in a verb\'s position does not make a disclosure subject', async () => {
+  for (const answer of [
+    // A determiner mid-phrase gives it away, and so does the plural
+    // attributive; these wordings break both rules at once.
+    'The records show only 1 of 3 current students matches no transactions.',
+    'The records show only 1 of 3 current students records no transactions.',
+    'The records show only 1 of 3 current students lists no transactions.',
+    'The records show only 1 of 3 current students counts no transactions.',
+    // With no determiner at all, the plural attributive is the only tell left.
+    'The records show only 1 of 3 current students match transactions.',
+    'The records show only 1 of 3 students matches transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 0),
+        calls: [WITHOUT_ONE_ROW],
+        answer,
+        factRefs: [
+          { callId: 'without', path: '/returnedCount' },
+          { callId: 'without', path: '/studentsWithoutCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate',
+      `must refuse: ${answer}`,
+    )
+  }
+  // The same words heading their own phrases are still subjects, which is why
+  // none of them could simply be deleted from the lists. Each is cited from
+  // the call its own subject binds to: "records" names no predicate this
+  // module recognises, while "deposits" names a transaction one.
+  const records = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 0),
+    calls: [WITHOUT_ONE_ROW],
+    answer: 'Showing 1 of 3 matching records.',
+    factRefs: [
+      { callId: 'without', path: '/returnedCount' },
+      { callId: 'without', path: '/studentsWithoutCount' },
+    ],
+  })
+  assert.match(records.answer, /Showing 1 of 3 matching records/u)
+  const deposits = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 3),
+    calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+    answer: 'Showing 1 of 3 matching deposits.',
+    factRefs: [
+      { callId: 'transactions', path: '/returnedCount' },
+      { callId: 'transactions', path: '/matchedCount' },
+    ],
+  })
+  assert.match(deposits.answer, /Showing 1 of 3 matching deposits/u)
+})

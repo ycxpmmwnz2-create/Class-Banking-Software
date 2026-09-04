@@ -1147,75 +1147,123 @@ const DISCLOSURE_PASSIVE_PATTERN = new RegExp(`^(?:is|are|was|were|be|been|being
 
 const NOTHING_FURTHER_PATTERN = /^[\s.,:;!?)'"\u2019\u201d-]*$/u
 
-// Whether a disclosure's subject is a noun phrase cannot be decided by ruling
-// verbs out. Three rules tried: a gap had to open on a preposition, then hold
-// exactly one, and the noun list grew twice to split those gaps. Each was an
-// attempt to detect a verb by excluding one, and English does not draw its
-// verbs from a closed class, so each let the next wording through -- "in the
-// class went without", then "in the classroom made no deposits" and "in
-// attendance carry positive balances", which hold exactly one preposition and
-// open on it. Counting prepositions never established that the whole span was
-// nominal.
+// Whether a disclosure's subject is a noun phrase is a question about word
+// order, not about vocabulary. Four rules learned that the hard way: distance,
+// then a gap opening on a preposition, then a gap holding exactly one, then an
+// unordered allowlist of every word a subject may contain. The allowlist was
+// the right material and the wrong shape -- English decides word class by
+// position, so "records" is a noun in "the records" and a finite verb in
+// "students records no transactions", and an unordered check cannot tell those
+// apart. "Never admit a word that can stand as a finite verb" was not a
+// premise the list could keep: matches, records, lists, counts, deposits and
+// balances are all nouns this module needs and all finite verbs too.
 //
-// So the test is inverted, the way every other closed-class rule in this
-// module already works: a subject is nominal only when *every* word in it is
-// one this module positively recognises. An unrecognised word now costs a
-// refusal instead of granting an exemption, which is the direction the
-// residual error has to fall, and it is why the lists below no longer have to
-// be complete to be sound -- only correct in what they admit.
+// So the allowlist stays and gains the order it was missing. A subject is one
+// noun phrase followed by any number of prepositional phrases, and each of
+// those is itself a run of words ending in the noun it heads:
 //
-// The inclusion rule for these lists is therefore one thing: never a word
-// that can stand as a finite verb. Nouns and adjectives may be added freely;
-// "withdrawn" belongs and "withdrew" does not, "grouped" belongs and "carry"
-// does not.
-const DISCLOSURE_SUBJECT_NOUNS = [
-  'transactions?', 'students?', 'balances?', 'results?', 'matches?', 'records?',
-  'credits?', 'payments?', 'deposits?', 'withdrawals?', 'amounts?', 'totals?',
-  'counts?', 'dollars?', 'categor(?:y|ies)', 'groups?', 'class(?:es)?',
-  'rosters?', 'lists?', 'rows?', 'pages?', 'periods?', 'windows?', 'days?',
-  'labels?', 'types?', 'entries', 'items?', 'rent', 'purposes?', 'status(?:es)?',
-]
+//   subject := nothing | run (preposition run)*
+//   run     := determiner? attributive* noun
+//
+// Two positional rules carry the whole check. A determiner may stand only
+// where a run begins -- at the subject's start or straight after a preposition
+// -- because a determiner opens a noun phrase, and one opening anywhere else
+// means the previous phrase had already ended, which without a preposition
+// means a predication happened. And only a run's final noun may be plural,
+// because English builds compounds from singular attributives: "student
+// records" and "transaction results", never "students records". A plural noun
+// in an attributive slot is a subject that has just been predicated of.
+//
+// Between them those two rules refuse every homograph wording without
+// removing one homograph from the lists: "students matches no transactions"
+// puts a plural noun in an attributive slot *and* a determiner mid-phrase,
+// and "students match transactions" puts one there without needing the
+// determiner at all.
+const DISCLOSURE_SINGULAR_NOUNS = new Set([
+  'transaction', 'student', 'balance', 'result', 'match', 'record', 'credit',
+  'payment', 'deposit', 'withdrawal', 'amount', 'total', 'count', 'dollar',
+  'category', 'group', 'class', 'roster', 'list', 'row', 'page', 'period',
+  'window', 'day', 'label', 'type', 'item', 'purpose', 'status', 'entry',
+  // A mass noun heads a phrase and modifies one: "students without rent
+  // transactions" is the wording this module's own comments already use.
+  'rent',
+])
 
-// Determiners, quantifiers and negators -- closed classes, and none of them a
-// verb. "No" and "not" stand here rather than in a rule of their own, which is
-// what the negation special-casing of two rounds ago was reaching for.
-const DISCLOSURE_SUBJECT_DETERMINERS = [
+const DISCLOSURE_PLURAL_NOUNS = new Set([
+  'transactions', 'students', 'balances', 'results', 'matches', 'records',
+  'credits', 'payments', 'deposits', 'withdrawals', 'amounts', 'totals',
+  'counts', 'dollars', 'categories', 'groups', 'classes', 'rosters', 'lists',
+  'rows', 'pages', 'periods', 'windows', 'days', 'labels', 'types', 'items',
+  'purposes', 'statuses', 'entries',
+])
+
+// Determiners, quantifiers and negators. Their position is what matters now,
+// not their presence, which is what the negation special-casing of earlier
+// rounds was reaching for without being able to say.
+const DISCLOSURE_DETERMINERS = new Set([
   'the', 'a', 'an', 'this', 'that', 'these', 'those',
   'its', 'their', 'our', 'your', 'my', 'his', 'her',
   'no', 'not', 'none', 'any', 'some', 'all', 'each', 'every', 'both',
   'either', 'neither', 'other', 'others', 'same', 'such',
   'more', 'fewer', 'less', 'most', 'only', 'just',
-]
+])
 
 // The adjectives and participles this module's own tools and disclosures use.
-// Every one is a modifier that cannot head a predicate here.
-const DISCLOSURE_SUBJECT_MODIFIERS = [
+const DISCLOSURE_MODIFIERS = new Set([
   'matching', 'grouped', 'current', 'currently', 'approved', 'pending',
   'positive', 'negative', 'nonpositive', 'zero', 'remaining', 'distinct',
   'unique', 'active', 'inactive', 'former', 'past', 'archived', 'withdrawn',
   'enrolled', 'frozen', 'first', 'last', 'recent', 'new', 'old', 'overdue',
   'unpaid', 'daily', 'weekly', 'monthly', 'individual', 'separate',
-]
+])
 
-const DISCLOSURE_SUBJECT_WORD_PATTERN = new RegExp(`^(?:${[
-  ...DISCLOSURE_SUBJECT_NOUNS,
-  ...DISCLOSURE_SUBJECT_DETERMINERS,
-  ...DISCLOSURE_SUBJECT_MODIFIERS,
-  NON_PARTITIVE_PREPOSITIONS,
+const DISCLOSURE_PREPOSITIONS = new Set([
+  ...NON_PARTITIVE_PREPOSITIONS.replace(/^\(\?:|\)$/gu, '').split('|'),
   'of',
-  '-?\\$?\\d[\\d,]*(?:\\.\\d+)?%?',
-].join('|')})$`, 'iu')
+])
 
-// Punctuation a word may carry without ceasing to be that word. Stripped
-// rather than matched, so a sentence-final noun reads the same as any other.
-const SUBJECT_WORD_EDGE_PATTERN = /^[("'‘“]+|[).,:;!?"'’”]+$/gu
+const SUBJECT_NUMBER_PATTERN = /^-?\$?\d[\d,]*(?:\.\d+)?%?$/u
+
+// Punctuation a word may carry without ceasing to be that word, stripped so a
+// sentence-final noun reads the same as any other.
+const SUBJECT_WORD_EDGE_PATTERN = /^[("\u2018\u201c']+|[).,:;!?"\u2019\u201d']+$/gu
+
+const isDisclosureNoun = word =>
+  DISCLOSURE_SINGULAR_NOUNS.has(word) || DISCLOSURE_PLURAL_NOUNS.has(word)
+
+const isRunWord = word =>
+  isDisclosureNoun(word) || DISCLOSURE_MODIFIERS.has(word) || SUBJECT_NUMBER_PATTERN.test(word)
+
+// One run, from `start`. Returns where it ends, or -1 when the words there do
+// not form one. Determiners are deliberately absent from isRunWord, so a
+// determiner inside a run ends it and the caller then demands the preposition
+// that a new phrase would have to open on.
+function disclosureRunEnd(words, start) {
+  let index = start
+  if (index < words.length && DISCLOSURE_DETERMINERS.has(words[index])) index += 1
+  const first = index
+  while (index < words.length && isRunWord(words[index])) index += 1
+  if (index === first) return -1
+  const run = words.slice(first, index)
+  if (!isDisclosureNoun(run[run.length - 1])) return -1
+  if (run.slice(0, -1).some(word => DISCLOSURE_PLURAL_NOUNS.has(word))) return -1
+  return index
+}
 
 function subjectIsNominal(subject) {
-  return subject
+  const words = subject
     .split(/[\s-]+/u)
-    .map(word => word.replace(SUBJECT_WORD_EDGE_PATTERN, ''))
+    .map(word => word.replace(SUBJECT_WORD_EDGE_PATTERN, '').toLocaleLowerCase('en-US'))
     .filter(word => word.length > 0)
-    .every(word => DISCLOSURE_SUBJECT_WORD_PATTERN.test(word))
+  if (words.length === 0) return true
+  let index = disclosureRunEnd(words, 0)
+  if (index < 0) return false
+  while (index < words.length) {
+    if (!DISCLOSURE_PREPOSITIONS.has(words[index])) return false
+    index = disclosureRunEnd(words, index + 1)
+    if (index < 0) return false
+  }
+  return true
 }
 
 function disclosureSubjectSpan(clause, frameEnd) {
