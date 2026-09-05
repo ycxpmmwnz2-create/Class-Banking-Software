@@ -10,10 +10,11 @@ advice is excluded. All existing bank data and unrelated work must be preserved.
 - Starting commit: `27825fbbcb613c4844b16cf5b1ec9101073782ca`.
 - Main verified through GitHub: `2aabc8e8c879d22b5edb5abccf8ea02a71f0e463`.
 - Codex implements this experiment; Muse Spark Code reviews read-only.
-- Current state: all 19 fictional questions passed in one full real-provider
-  run of the current candidate after Muse round 9 approved typed diagnostics.
-  Muse passed the staging plan with conditions; the earlier intermittent failure remains
-  unexplained. No commit, push, merge, or deployment has occurred.
+- Current state: implementation commit `c449b3505b3be55af6bfc955318d797f3cd2585e`
+  is pushed; draft PR #25 is open. Staging-only deployment and three real
+  signed-in fictional questions passed. Production remains unchanged and the
+  PR is not merged. Live same-request replay remains unverified.
+
 
 ## Resulting behavior
 
@@ -361,6 +362,53 @@ staging fixture, existing-gate disposition, concrete budget allowance and live
 postdeploy readback. The existing staging test classroom is signed in and its
 fake-data banner was verified; no AI request or data write was made by that check.
 No production action or source-failure closure is implied by this plan verdict.
+
+## Actual staging deployment and live results
+
+Implementation commit: `c449b3505b3be55af6bfc955318d797f3cd2585e`.
+Draft PR: https://github.com/ycxpmmwnz2-create/Class-Banking-Software/pull/25.
+Only `analyzeTeacherInsightsV3` in `morgan-bank-staging` was deployed. Node 22
+revision `analyzeteacherinsightsv3-00029-wed` is ACTIVE at 100% traffic;
+update time 2026-09-05T02:48:43.227618469Z. All seven preexisting parameters
+and the staging GEMINI_API_KEY version-1 binding were verified unchanged.
+No Hosting, rules, other Functions, production resource or bank record changed.
+
+Before deploying, the old revision `analyzeteacherinsightsv3-00026-xeq` and its
+image digest were captured. Routing explicitly to that already-serving revision
+succeeded; readback confirmed 100%, then the original LATEST routing was restored.
+This rehearses traffic recovery to retained code/settings. It does not prove
+full Cloud Functions deployment-metadata restoration; any emergency traffic
+rollback must be reported with that distinction and reconciled afterward.
+
+The existing signed-in fictional staging classroom was used without seeding,
+resetting, exporting or importing records. In the selected 90-day period:
+
+- Class balances PASS: total $21, average $7, three accounts at $4/$10/$7.
+- Approved rent PASS: one $1 subtract/rent payment on 2026-08-08, matching the
+  visible fictional transaction history.
+- Unsupported memo search PASS: capabilities response explicitly says memo-text
+  search is unavailable in the selected period; no approximation is returned.
+
+The first two requests were consecutive and cloud verification records on the
+new revision show both auth and App Check VALID. Three questions were submitted
+once each; no retry-to-pass was used. Dashboard readback retains $21, 3 students,
+10 pending credits, 0 frozen accounts and 20 total transactions. This is bounded
+UI observation, not a database-wide audit or arbitrary-language correctness proof.
+
+New staging AI charges total USD 0.032888. Added to the prior USD 0.910427,
+this experiment accounts for **USD 0.943315 of USD 2**. The pre-test staging
+ledger held USD 2.428768 from September 2, before this experiment; it is not new
+experiment spend. Automatic approval initially conflated that historical counter
+with this budget and blocked a submit before execution. Dated accounting evidence
+resolved the rejection; the same approved action then ran with the ceiling intact.
+
+The earlier intermittent envelope failure did not recur but remains unexplained.
+Actual same-request replay is NOT verified: the normal UI generates a fresh ID
+for each question, and repeating the wording would not test replay. Existing
+local live-composition tests assert exact replay and no additional provider call;
+they remain local evidence. A focused handoff will resolve the smallest safe live
+replay check. No tokens are extracted, no auth/App Check safeguard is bypassed,
+and the production release is not cleared by these staging results alone.
 
 ## Release boundary
 
