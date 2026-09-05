@@ -7,7 +7,7 @@ import {
   quoteGeminiWorstCaseCost,
 } from './geminiCostPolicy.js'
 import { createGeminiProviderAdapter } from './geminiProviderAdapter.js'
-import { createGeminiClassroomAssistant } from './geminiClassroomAssistant.js'
+import { createStructuredClassroomAssistant } from './geminiClassroomAssistant.js'
 import { createGeminiQuestionAdapter } from './geminiQuestionAdapter.js'
 import {
   priceGeminiQuestionActualUsage,
@@ -74,8 +74,11 @@ export function createVersion3GeminiLiveHandler({
       resolveActiveTeacherTenant: ({ auth }) => resolveActiveTeacherTenant({ firestore, auth }),
       loadQuestionEvidence,
       quoteWorstCaseCost: quoteGeminiToolAssistantWorstCaseCost,
-      assistant: createGeminiClassroomAssistant({
-        generateContent: createGeminiGenerateContent({ apiKey, GoogleGenAIClass }),
+      assistant: createStructuredClassroomAssistant({
+        // An ambiguous failed request may still be billed. Keep one transport
+        // attempt per reserved model turn; the service retains the reservation
+        // on failure instead of invisibly retrying and undercounting usage.
+        generateContent: createGeminiGenerateContent({ apiKey, GoogleGenAIClass, maxAttempts: 1 }),
       }),
       priceActualUsage: priceGeminiToolAssistantActualUsage,
       usageLedger,

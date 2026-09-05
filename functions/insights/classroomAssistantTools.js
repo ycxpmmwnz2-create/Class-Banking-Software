@@ -37,7 +37,7 @@ const METRICS = Object.freeze([
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
 export const CLASSROOM_ASSISTANT_TOOL_DECLARATIONS = Object.freeze([
-  declaration('list_transactions', 'List matching read-only classroom transactions. Use includeMemos only when memo wording is necessary to answer the question.', transactionFilterSchema({
+  declaration('list_transactions', 'List read-only classroom transactions selected by the declared filters. Use includeMemos only when memo wording is necessary; it quotes redacted excerpts on those rows, but cannot search or filter by memo text. For memo-text search in any date range, use describe_schema instead.', transactionFilterSchema({
     includeMemos: { type: 'boolean' },
     limit: { type: 'integer', minimum: 1, maximum: 100 },
     sort: { type: 'string', enum: ['newest', 'oldest'] },
@@ -64,11 +64,12 @@ export const CLASSROOM_ASSISTANT_TOOL_DECLARATIONS = Object.freeze([
     properties: {
       studentRefs: studentRefsSchema(),
       condition: { type: 'string', enum: ['any', 'negative', 'zero', 'positive', 'nonpositive'] },
+      frozen: { type: 'string', enum: ['any', 'frozen', 'unfrozen'] },
       sort: { type: 'string', enum: ['lowest', 'highest', 'name'] },
       limit: { type: 'integer', minimum: 1, maximum: 500 },
     },
   }),
-  declaration('get_balance_history', 'Calculate end-of-day balances for one or more students from the supplied current balance and approved transaction history.', {
+  declaration('get_balance_history', 'Calculate daily balances from the current snapshot and approved history. Omitted dates cover all calendar dates touched by the selected period. limitDays caps the latest returned dates per student; it does not define the requested window. At most 90 dates are returned.', {
     type: 'object',
     additionalProperties: false,
     required: ['studentRefs'],
@@ -111,7 +112,9 @@ export function createClassroomAssistantToolbox(evidence, { memoResolver } = {})
   if (memoResolver !== undefined && typeof memoResolver !== 'function') {
     fail('invalid-evidence', 'The classroom memo resolver is malformed.')
   }
-  const data = validateEvidence(evidence)
+  // One request-local copy keeps later caller mutations from changing the
+  // population underneath already executed results or display labels.
+  const data = globalThis.structuredClone(validateEvidence(evidence))
   const studentsByRef = new Map(data.students.map(student => [student.ref, student]))
   const dateKeyFormatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: data.timeZone,
@@ -149,6 +152,7 @@ export function createClassroomAssistantToolbox(evidence, { memoResolver } = {})
       end: data.asOfDate,
     }),
     selectedPeriodDays: data.periodDays,
+    selectedPeriodStart: data.periodStart,
     configuredRentAmount: data.configuredRentAmount,
     students: Object.freeze(data.students.map(student => Object.freeze({
       ref: student.ref,
@@ -370,25 +374,31 @@ function getBalances(args, students) {
     ? currentStudents
     : currentStudents.filter(student => refs.includes(student.ref))
   const condition = enumeration(args.condition ?? 'any', ['any', 'negative', 'zero', 'positive', 'nonpositive'])
+  const frozen = enumeration(args.frozen ?? 'any', ['any', 'frozen', 'unfrozen'])
   const limit = integer(args.limit, 1, 500, 100)
-  const filtered = selected.filter(student => balanceMatches(student.balance, condition))
+  const filtered = selected.filter(student => balanceMatches(student.balance, condition) &&
+    (frozen === 'any' || student.frozen === (frozen === 'frozen')))
   const sort = enumeration(args.sort ?? 'name', ['lowest', 'highest', 'name'])
   filtered.sort((left, right) => {
+    if (sort !== 'name' && (left.balance === null || right.balance === null)) {
+      if (left.balance !== right.balance) return left.balance === null ? 1 : -1
+    }
     if (sort === 'lowest') return left.balance - right.balance || left.displayName.localeCompare(right.displayName)
     if (sort === 'highest') return right.balance - left.balance || left.displayName.localeCompare(right.displayName)
     return left.displayName.localeCompare(right.displayName, 'en-US')
   })
+  const complete = filtered.every(student => student.balance !== null)
   return Object.freeze({
     ok: true,
     matchedCount: filtered.length,
     currentStudentCount: currentStudents.length,
     matchedPercent: currentStudents.length > 0 ? roundPercent(filtered.length / currentStudents.length * 100) : 0,
-    totalBalance: roundMoney(filtered.reduce((sum, student) => sum + (student.balance ?? 0), 0)),
-    averageBalance: filtered.length > 0
-      ? roundMoney(filtered.reduce((sum, student) => sum + (student.balance ?? 0), 0) / filtered.length)
+    totalBalance: complete ? roundMoney(filtered.reduce((sum, student) => sum + student.balance, 0)) : null,
+    averageBalance: complete && filtered.length > 0
+      ? roundMoney(filtered.reduce((sum, student) => sum + student.balance, 0) / filtered.length)
       : null,
-    lowestBalance: filtered.length > 0 ? Math.min(...filtered.map(student => student.balance ?? 0)) : null,
-    highestBalance: filtered.length > 0 ? Math.max(...filtered.map(student => student.balance ?? 0)) : null,
+    lowestBalance: complete && filtered.length > 0 ? Math.min(...filtered.map(student => student.balance)) : null,
+    highestBalance: complete && filtered.length > 0 ? Math.max(...filtered.map(student => student.balance)) : null,
     returnedCount: Math.min(limit, filtered.length),
     truncated: filtered.length > limit,
     students: Object.freeze(filtered.slice(0, limit).map(student => Object.freeze({
@@ -403,11 +413,12 @@ function getBalances(args, students) {
 function getBalanceHistory(args, data, transactions, studentsByRef) {
   const refs = studentRefs(args.studentRefs, data.students, 1)
   const endDate = validatedDate(args.endDate ?? data.asOfDate, 'endDate')
-  const limitDays = integer(args.limitDays, 1, 90, data.periodDays)
-  const defaultStart = shiftDate(endDate, -(limitDays - 1))
-  const startDate = validatedDate(args.startDate ?? defaultStart, 'startDate')
-  assertDateRange(startDate, endDate)
+  const startDate = validatedDate(args.startDate ?? localDateKey(data.periodStart, data.timeZone), 'startDate')
+  // A rolling 90-day window can touch 91 calendar dates. Preserve that
+  // requested span while keeping the existing 90-row cap and disclosure.
+  assertDateRange(startDate, endDate, 91)
   assertAvailableDateRange(startDate, endDate, data)
+  const limitDays = integer(args.limitDays, 1, 90, Math.min(daysBetweenInclusive(startDate, endDate), 90))
   const dates = dateKeys(startDate, endDate).slice(-limitDays)
   const rows = []
   for (const ref of refs) {
@@ -437,7 +448,7 @@ function getBalanceHistory(args, data, transactions, studentsByRef) {
       }))
     }
   }
-  return Object.freeze({ ok: true, startDate, endDate, rows: Object.freeze(rows) })
+  return Object.freeze({ ok: true, startDate, endDate, limitDays, rows: Object.freeze(rows) })
 }
 
 function comparePeriods(args, data, transactions, studentsByRef) {
@@ -521,7 +532,7 @@ function describeSchema(context) {
     selectedPeriodDays: context.selectedPeriodDays,
     studentFields: Object.freeze(['studentRef', 'first name or first name plus last initial', 'currentBalance', 'frozen']),
     transactionFields: Object.freeze(['transactionRef', 'studentRef', 'timestamp', 'type', 'amount', 'category', 'status', 'purpose']),
-    memoPolicy: 'Memos are returned only when includeMemos is true. Contact details are removed and each memo is capped at 500 characters with a truncation marker.',
+    memoPolicy: 'Memos are returned only when includeMemos is true. Contact details are removed and each memo is capped at 500 characters with a truncation marker. Searching or filtering by memo text is unavailable, including within the selected period.',
     unavailable: Object.freeze(['credentials', 'PINs', 'emails', 'phone numbers', 'links', 'Firebase IDs', 'teacher IDs', 'classroom IDs', 'other classrooms', 'write operations']),
   })
 }
@@ -680,7 +691,9 @@ function validateEvidence(value) {
 }
 
 function validatedDate(value, field) {
-  if (typeof value !== 'string' || !DATE_PATTERN.test(value) || !Number.isFinite(Date.parse(`${value}T00:00:00Z`))) {
+  const timestamp = Date.parse(`${value}T00:00:00Z`)
+  if (typeof value !== 'string' || !DATE_PATTERN.test(value) || !Number.isFinite(timestamp) ||
+    new Date(timestamp).toISOString().slice(0, 10) !== value) {
     fail('invalid-tool-arguments', `${field} must be a calendar date.`)
   }
   return value

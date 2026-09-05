@@ -5,10 +5,12 @@ import {
   CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
   CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
   CLASSROOM_ASSISTANT_MAX_TURNS,
+  CLASSROOM_ASSISTANT_MAX_OUTPUT_TOKENS_PER_TURN,
 } from './classroomAssistantUsageContract.js'
 import { CLASSROOM_ASSISTANT_MAX_TOOL_BYTES } from './geminiClassroomAssistant.js'
 import { GEMINI_RATE_CARD } from './geminiCostPolicy.js'
 import { GEMINI_RATE_CARD_ID } from './geminiProviderAdapter.js'
+import { STRUCTURED_CLASSROOM_SYSTEM_INSTRUCTION } from './structuredClassroomPrompt.js'
 
 const TOKENS_PER_MILLION = 1_000_000
 const INPUT_TOKEN_SAFETY_MARGIN = 4_096
@@ -34,10 +36,14 @@ export function quoteGeminiToolAssistantWorstCaseCost({ assistantEvidence, toolb
     question: assistantEvidence.question,
     classroomContext: toolbox.context,
     declarations: toolbox.declarations,
+    systemInstruction: STRUCTURED_CLASSROOM_SYSTEM_INSTRUCTION,
   }), 'utf8')
   const inputTokens =
     initialBytes * CLASSROOM_ASSISTANT_MAX_TURNS +
     CLASSROOM_ASSISTANT_MAX_TOOL_BYTES * (CLASSROOM_ASSISTANT_MAX_TURNS - 1) +
+    // Prior model turns are sent again as conversation history. This is in
+    // addition to the tool output byte cap and the repeated system prompt.
+    CLASSROOM_ASSISTANT_MAX_OUTPUT_TOKENS_PER_TURN * CLASSROOM_ASSISTANT_MAX_TURNS * (CLASSROOM_ASSISTANT_MAX_TURNS - 1) / 2 +
     INPUT_TOKEN_SAFETY_MARGIN
   return Object.freeze({
     rateCardId: GEMINI_RATE_CARD_ID,

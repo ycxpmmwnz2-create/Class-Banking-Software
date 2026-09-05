@@ -1,3 +1,5 @@
+import { STRUCTURED_ANSWER_FAILURE_CODES } from './structuredClassroomAnswers.js'
+
 const CLIENT_SAFE_CATEGORIES = Object.freeze(new Set([
   'allowance-exhausted',
   'rate-limit-exhausted',
@@ -144,6 +146,7 @@ const isWordListFrom = allowed => value => Array.isArray(value) &&
 // Each field is paired with the shape it is allowed to have, so a free-text
 // value smuggled under an allowlisted key is dropped rather than logged.
 const CALLABLE_LOG_DIAGNOSTIC_FIELDS = Object.freeze(new Map([
+  ['structuredAnswerCode', isWordFrom(new Set(STRUCTURED_ANSWER_FAILURE_CODES))],
   ['claimKind', isWordFrom(CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS)],
   ['numericFactCount', isCount],
   ['populationTotalFactCount', isCount],

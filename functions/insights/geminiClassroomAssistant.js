@@ -7,6 +7,8 @@ import {
 } from './classroomAssistantUsageContract.js'
 import { GEMINI_MODEL_ID, parseGeminiUsageMetadata } from './geminiProviderAdapter.js'
 import { GeminiTransportError } from './geminiTransport.js'
+import { createStructuredAnswerRegistry, STRUCTURED_ANSWER_CONTRACT, StructuredClassroomAnswerError } from './structuredClassroomAnswers.js'
+import { STRUCTURED_CLASSROOM_SYSTEM_INSTRUCTION } from './structuredClassroomPrompt.js'
 
 export const CLASSROOM_ASSISTANT_MAX_TOOL_CALLS = 8
 export const CLASSROOM_ASSISTANT_MAX_TOOL_BYTES = 32 * 1024
@@ -181,13 +183,19 @@ export class GeminiClassroomAssistantError extends Error {
   }
 }
 
-export function createGeminiClassroomAssistant({ generateContent, now = Date.now } = {}) {
+export function createStructuredClassroomAssistant(options = {}) {
+  return createGeminiClassroomAssistant({ ...options, answerContract: STRUCTURED_ANSWER_CONTRACT })
+}
+
+export function createGeminiClassroomAssistant({ generateContent, now = Date.now, answerContract = 'legacy-prose' } = {}) {
   if (typeof generateContent !== 'function') throw new TypeError('generateContent must be a function.')
   if (typeof now !== 'function') throw new TypeError('now must be a function.')
+  if (!['legacy-prose', STRUCTURED_ANSWER_CONTRACT].includes(answerContract)) throw new TypeError('Unknown answer contract.')
   return Object.freeze({
     async answer({ assistantEvidence, toolbox: suppliedToolbox } = {}) {
       const deadline = now() + CLASSROOM_ASSISTANT_MAX_DURATION_MS
       const toolbox = resolveToolbox(assistantEvidence, suppliedToolbox)
+      const registry = answerContract === STRUCTURED_ANSWER_CONTRACT ? createStructuredAnswerRegistry(toolbox) : null
       const contents = [Object.freeze({
         role: 'user',
         parts: Object.freeze([Object.freeze({
@@ -213,6 +221,7 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
             declarations: toolbox.declarations,
             requireTool: turn === 0,
             timeoutMs: remainingDurationMs,
+            systemInstruction: registry ? STRUCTURED_CLASSROOM_SYSTEM_INSTRUCTION : SYSTEM_INSTRUCTION,
           }))
         } catch (error) {
           if (error instanceof GeminiTransportError) {
@@ -228,6 +237,27 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
         assertFinishReason(response)
         const calls = Array.isArray(response?.functionCalls) ? response.functionCalls : []
         if (calls.length === 0) {
+          if (registry) {
+            let selection
+            const text = response?.text
+            if (typeof text !== 'string') {
+              fail('answer-unverified', 'The provider selected an invalid classroom result.', 'answer-shape',
+                Object.freeze({ structuredAnswerCode: 'non-string' }))
+            }
+            try {
+              const fenced = /^```json\s+([\s\S]+?)\s*```$/u.exec(text.trim())
+              selection = JSON.parse(fenced ? fenced[1] : text)
+              const rendered = registry.render(selection)
+              return Object.freeze({ ...rendered, answerContract: STRUCTURED_ANSWER_CONTRACT,
+                usage: Object.freeze({ ...usage }), toolCallCount })
+            } catch (error) {
+              if (error instanceof SyntaxError || error instanceof StructuredClassroomAnswerError) {
+                fail('answer-unverified', 'The provider selected an invalid classroom result.', 'answer-shape',
+                  error instanceof SyntaxError ? Object.freeze({ structuredAnswerCode: 'invalid-json' }) : error.diagnostic)
+              }
+              throw error
+            }
+          }
           return parseFinalAnswer(response?.text, {
             executed,
             assistantEvidence,
@@ -261,8 +291,10 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
             })
           }
           const name = typeof call?.name === 'string' ? call.name : ''
-          const result = toolbox.execute(name, call?.args ?? {})
-          const resultBytes = Buffer.byteLength(JSON.stringify(result), 'utf8')
+          const registered = registry ? registry.execute(name, call?.args ?? {}) : null
+          const result = registered ? registered.output : toolbox.execute(name, call?.args ?? {})
+          const toolResponse = registered ?? Object.freeze({ evidenceCallId: callId, output: result })
+          const resultBytes = Buffer.byteLength(JSON.stringify(toolResponse), 'utf8')
           totalToolBytes += resultBytes
           if (totalToolBytes > CLASSROOM_ASSISTANT_MAX_TOOL_BYTES) {
             fail('tool-output-too-large', 'The classroom tool results exceeded the answer limit.')
@@ -273,7 +305,7 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
             functionResponse: Object.freeze({
               ...(providerCallId ? { id: providerCallId } : {}),
               name,
-              response: Object.freeze({ evidenceCallId: callId, output: result }),
+              response: toolResponse,
             }),
           }))
         }
@@ -313,7 +345,7 @@ export function buildGeminiClassroomAssistantRequest({
   return buildRequest({ contents, declarations, requireTool, timeoutMs })
 }
 
-function buildRequest({ contents, declarations, requireTool, timeoutMs }) {
+function buildRequest({ contents, declarations, requireTool, timeoutMs, systemInstruction = SYSTEM_INSTRUCTION }) {
   if (!Array.isArray(contents) || contents.length < 1 || !Array.isArray(declarations)) {
     fail('invalid-assistant-input', 'The classroom assistant request is malformed.')
   }
@@ -324,7 +356,7 @@ function buildRequest({ contents, declarations, requireTool, timeoutMs }) {
     model: GEMINI_MODEL_ID,
     contents: Object.freeze([...contents]),
     config: Object.freeze({
-      systemInstruction: SYSTEM_INSTRUCTION,
+      systemInstruction,
       tools: Object.freeze([Object.freeze({ functionDeclarations: declarations })]),
       toolConfig: Object.freeze({
         functionCallingConfig: Object.freeze({
