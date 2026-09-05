@@ -4440,9 +4440,10 @@ test('disclosure homographs remain usable as complete nouns', async () => {
   }
 })
 
-// Compatibility safety net: an explicitly supported compound is a whole
-// term, and stays valid on either side of the second number.
-test('supported disclosure compounds retain their cited counts', async () => {
+// Compatibility safety net: aggregate counts remain valid on either side of
+// the second number. These are not population counts and do not exercise the
+// page-count exemption, so their acceptance does not justify compound entries.
+test('aggregate disclosure wordings retain their cited counts', async () => {
   const assistantEvidence = rosterEvidence(3, 3)
   assistantEvidence.transactions.forEach((transaction, index) => {
     transaction.category = ['Technology', 'Rent', 'Supplies'][index]
@@ -4468,3 +4469,25 @@ test('supported disclosure compounds retain their cited counts', async () => {
     }
   }
 })
+
+// Each acceptance fails with unsupported-predicate when its corresponding
+// transaction-result compound entry is removed from 74dbdc2. Unlike the
+// aggregate safety net above, these count students: returnedCount can support
+// the 1 only when the complete sentence qualifies for the page-count exemption.
+for (const answer of [
+  'Showing 1 of 3 students without a matching transaction result.',
+  'Showing 1 of 3 students without matching transaction results.',
+]) {
+  test(`transaction-result disclosures need the population page-count exemption: ${answer}`, async () => {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer,
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    })
+    assert.equal(result.answer, answer)
+  })
+}

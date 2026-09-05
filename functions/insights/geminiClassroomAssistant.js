@@ -1179,13 +1179,14 @@ const DISCLOSURE_PLURAL_NOUNS = new Set([
   'purposes', 'statuses', 'entries',
 ])
 
-// Only the compound terms needed by the existing disclosure contract. In
-// particular, accepting rent transactions must not permit student rent
+// Only compounds with a demonstrated need for the population page-count
+// exemption: "students without rent transactions" and "students without a
+// matching transaction result". Aggregate category-group counts do not need
+// this exemption. Accepting these complete terms must not permit student rent
 // transactions, student records, or another arbitrary noun sequence.
 const DISCLOSURE_COMPOUND_NOUNS = new Set([
   'rent transaction', 'rent transactions',
   'transaction result', 'transaction results',
-  'category group', 'category groups',
 ])
 
 // Determiners, quantifiers and negators. Their position is what matters now,
