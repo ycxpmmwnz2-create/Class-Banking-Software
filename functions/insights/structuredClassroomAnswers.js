@@ -10,6 +10,7 @@ export const STRUCTURED_ANSWER_VIEWS = Object.freeze({
   get_balance_history: 'balance-history',
   compare_periods: 'period-comparison',
   describe_schema: 'capabilities',
+  compare_student_earnings: 'student-earnings',
 })
 
 // Fixed internal vocabulary only: never put answer text, keys, IDs, or values
@@ -55,6 +56,9 @@ export function createStructuredAnswerRegistry(toolbox) {
       results.set(resultId, record)
       return Object.freeze({ resultId, view, output: result })
     },
+    isEarningsSelection(selection) {
+      return selection?.sections?.length === 1 && results.get(selection.sections[0].resultId)?.name === 'compare_student_earnings'
+    },
     render(selection) {
       if (!isPlainObject(selection)) fail('envelope-type')
       if (!exactKeys(selection, ['schemaVersion', 'sections'])) fail('envelope-keys')
@@ -83,7 +87,7 @@ export function createStructuredAnswerRegistry(toolbox) {
 
 function normalizeArguments(name, args, result, context) {
   const studentRefs = [...new Set(args.studentRefs ?? [])]
-  if (name === 'describe_schema') return Object.freeze({})
+  if (name === 'describe_schema' || name === 'compare_student_earnings') return Object.freeze({})
   if (name === 'get_balances') return freezeCopy({
     studentRefs, condition: args.condition ?? 'any', frozen: args.frozen ?? 'any',
     sort: args.sort ?? 'name', limit: args.limit ?? 100,
@@ -111,6 +115,7 @@ function normalizeArguments(name, args, result, context) {
 }
 
 function renderResult(record) {
+  if (record.name === 'compare_student_earnings') return renderEarnings(record)
   if (record.name === 'get_balances') return renderBalances(record)
   if (record.name === 'find_students_without_transactions') return renderAbsence(record)
   if (record.name === 'list_transactions') return renderTransactions(record)
@@ -118,6 +123,24 @@ function renderResult(record) {
   if (record.name === 'compare_periods') return renderComparison(record)
   if (record.name === 'get_balance_history') return renderHistory(record)
   return renderCapabilities(record)
+}
+
+function renderEarnings({ result, context }) {
+  const names = refs => refs.map(ref => studentName(ref, context)).join(', ')
+  let summary
+  if (!result.complete) summary = 'I cannot determine who received the most or least money added because the retained history does not cover the full requested period.'
+  else if (!result.currentStudentCount) summary = 'There are no current students to compare.'
+  else if (result.allTied) summary = `Everyone is tied at ${money(result.highestAmount)} in approved money added per student.`
+  else summary = `Most money added: ${names(result.highestRefs)} — ${money(result.highestAmount)} each. Least: ${names(result.lowestRefs)} — ${money(result.lowestAmount)} each.`
+  return rendered([
+    summary,
+    `${result.windowStartDate} through ${result.windowEndDate} (${context.timeZone}).`,
+    `Current classroom roster: ${result.currentStudentCount} students, including students with no approved money added.`,
+    'Approved money added (USD), for any purpose. Subtractions are not deducted from these totals.',
+    ...(result.rollingStart ? [`Exact rolling period begins at ${result.rollingStart}.`] : []),
+    ...(result.throughSnapshot ? [`The last date is covered only through the snapshot on ${context.classroomDate}.`] : []),
+    ...(!result.complete ? [`Retained history begins at ${context.retainedFrom}; full-period totals and rankings are unavailable.`] : []),
+  ], 'Current-roster earnings comparison', context)
 }
 
 function renderTransactions({ args, result, context }) {

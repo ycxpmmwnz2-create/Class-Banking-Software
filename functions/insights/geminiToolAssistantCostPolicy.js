@@ -1,3 +1,4 @@
+import { NARRATION_WORST_CASE_COST } from './conversationNarrator.js'
 import { Buffer } from 'node:buffer'
 
 import { createClassroomAssistantToolbox } from './classroomAssistantTools.js'
@@ -21,6 +22,11 @@ export class GeminiToolAssistantCostPolicyError extends Error {
     this.name = 'GeminiToolAssistantCostPolicyError'
     this.category = category
   }
+}
+
+export function quoteConversationalWorstCaseCost(input) {
+  const base = quoteGeminiToolAssistantWorstCaseCost(input)
+  return Object.freeze({ ...base, worstCaseCostMicroUsd: base.worstCaseCostMicroUsd + NARRATION_WORST_CASE_COST })
 }
 
 export function quoteGeminiToolAssistantWorstCaseCost({ assistantEvidence, toolbox: suppliedToolbox } = {}) {
