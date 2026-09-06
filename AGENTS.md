@@ -4,6 +4,16 @@ Morgan Bank is a React/Vite application backed by Firebase Authentication,
 Firestore, and Cloud Functions. Current architecture work introduces
 multi-teacher tenant isolation and carefully staged data migration.
 
+## Cloud project targeting
+
+- The only production Google Cloud/Firebase project for this repository is `morgan-bank`.
+- Before any command that can read or mutate cloud state, verify the intended project.
+- For `gcloud`, always pass `--project=morgan-bank` on cloud commands rather than relying only on the user's global gcloud configuration.
+- For Firebase production commands, explicitly target `--project=morgan-bank`; do not rely on the repository's default `.firebaserc`, which intentionally points at a non-production safety target.
+- Never change the user's global gcloud project merely to work in this repository.
+- Emulator/local commands must preserve the repository's existing emulator and demo-project isolation.
+- Deployment, migration, IAM, database mutation, destructive cloud operations, and other production state changes still require Andrew's explicit authorization under `AI_COLLABORATION_WORKFLOW.md`.
+
 Before reviewing a change, read the documents relevant to its scope:
 
 - `AI_COLLABORATION_WORKFLOW.md` — required Codex implementation, Claude
