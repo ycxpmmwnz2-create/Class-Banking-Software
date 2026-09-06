@@ -417,3 +417,74 @@ the explicitly named target. Read existing configuration before deployment
 and preserve unrelated functions and data. Do not export or copy real student
 data for tests. Use synthetic evidence for provider checks. Rollback changes
 code/configuration, never classroom transactions or balances.
+
+## Deployed same-request replay completed (September 5, 2026)
+
+Muse round 12 passed the bounded replay harness. Its first Hosting publication
+stopped after creating an unpublished clone and before any release or AI request.
+Read-only inspection verified the original live version and unpublished clone
+had exactly the same eight file hashes and serving configuration. The precise
+caught error was not retained; operation-name parsing remains only a plausible
+cause. The failed attempt remains preserved.
+
+Andrew switched Muse back to interactive terminal chat so he can answer approval
+prompts. The first launcher rejected an exec-only flag before starting a review;
+the corrected launcher keeps Muse `muse-spark-1.3`, read-only controls, approvals
+and sandboxing enabled. Round 13 completed in interactive session
+`01a0719d-3d45-76a2-b658-ceb9b9d39d97` with **PASS FOR ONE BOUNDED STAGING RECOVERY
+AND REPLAY**. Codex recovered the saved verdict directly; no review was restarted.
+
+The focused recovery adopted only the fixed unpublished clone after rechecking
+its creation timestamp, CREATED status, complete baseline file hashes/config,
+and unchanged live baseline. It published only the two temporary test-page files.
+No bank implementation changed. The deployed callable remains c449b350 / Node 22
+revision `analyzeteacherinsightsv3-00029-wed`.
+
+The signed-in fictional staging classroom was rechecked before and after:
+3 students, balances $4/$10/$7, total $21, average $7, 10 pending credits,
+0 frozen accounts, 20 transactions. The page submitted one fixed request ID/body
+and replayed that identical request once, within the five-minute window.
+
+- First response: expected balances; generatedAt `2026-09-05T12:53:57.853Z`;
+  actual application charge 10,860 microUSD.
+- Replay: complete validated response canonically identical, including timestamp,
+  evidence and usage; aggregate charge unchanged; completed reservation fields
+  AND Firestore updateTime unchanged. Replay charge: 0 microUSD.
+- Both calls: auth VALID and App Check VALID on revision 00029-wed, at
+  `2026-09-05T12:53:57.457512Z` and `2026-09-05T12:54:23.743418Z`.
+- Budget: cumulative experiment accounting **USD 0.954175 of USD 2**, retaining
+  the earlier uncertain-cost reserve and dated historical-ledger reconciliation.
+- Cleanup: exact original Hosting version `ef8839d51ded42ee`, all eight hashes
+  and full serving configuration restored. Reloading the temporary URL renders
+  the original bank app, not the replay page. Temporary test tab closed.
+
+Evidence is retained outside the bank checkout under
+`/private/tmp/morgan-bank-muse-reviews/staging-replay-recovery/REPLAY_RESULT.json`,
+its three ledger snapshots, verification logs, published/removed metadata, and
+round 13's original interactive export plus report. This proves the bounded
+application replay behavior; it is not provider-internal invoice telemetry or
+proof of arbitrary-language correctness. The old intermittent envelope failure
+remains unexplained.
+
+Production remains unchanged and PR #25 remains unmerged. A read-only production
+metadata snapshot found ACTIVE Node 22 revision `analyzeteacherinsightsv3-00018-yof`,
+both existing provider gates enabled, production tier and the existing production
+GEMINI_API_KEY version-1 binding. No secret value or student record was read.
+Exact production artifacts, rollback verification and final release review remain
+before deployment under Andrew's existing approval.
+
+## Final production review prepared (September 6, 2026)
+
+See AI_INSIGHTS_STRUCTURED_PRODUCTION_PLAN.md. Main still equals 2aabc8e8 and
+PR25 remains open/draft and mergeable, with no GitHub check results returned.
+The exact c449b350 production browser artifact is built and hashed, and the
+three existing browser-artifact contract tests pass. Public Firebase/App Check
+configuration matches production metadata. Both existing backend gates are on.
+
+Rollback inspection found retained serving revision 00018-yof Ready, and its
+source generation available, but the old registry image is no longer found.
+The proposed rollback uses that retained Cloud Run revision; recreating it from
+the missing registry image is not claimed. Production routing was not changed.
+Muse's final review must assess this explicitly documented recovery boundary.
+No production deployment, merge, provider question or bank-data mutation occurred
+while preparing the packet. Andrew's existing release authorization remains valid.
