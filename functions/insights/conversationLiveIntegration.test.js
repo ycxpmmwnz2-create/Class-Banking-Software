@@ -44,6 +44,7 @@ function setup({ mode = 'valid', tool = 'compare_student_earnings', failSave = f
           const call = { id: 'call-1', name: tool, args: tool === 'compare_student_earnings' ? { window: 'last-week' } : {} }
           return { usageMetadata: USAGE, functionCalls: [call], candidates: [{ finishReason: 'STOP', content: { role: 'model', parts: [{ functionCall: call }] } }] }
         }
+        if (mode === 'format-required' && request.config.responseMimeType !== 'application/json') return response('Invalid final JSON response.')
         return response(JSON.stringify({ schemaVersion: 1, sections: [{ resultId: result.resultId, view: result.view }] }))
       } }
     }
@@ -166,5 +167,14 @@ for (const mode of ['timeout', 'missing-usage', 'bad-json']) test(`balance narra
   if (unknown) assert.equal(record.actualCostMicroUsd, record.worstCaseCostMicroUsd)
   assert.equal(s.calls.length, 3)
   assert.ok(s.writes.every(path => /^insightUsage/u.test(path)))
+  await assertReplay(s, result)
+})
+
+test('live SDK receives constrained selection format and saves/replays a broader answer', async () => {
+  const s = setup({ tool: 'get_balances', mode: 'format-required' }), result = await s.handler(s.request)
+  assert.match(result.answer, /Total balance:/u)
+  assert.equal(s.calls[1].config.responseMimeType, 'application/json')
+  assert.equal(s.calls[1].config.toolConfig.functionCallingConfig.mode, 'VALIDATED')
+  assert.equal(s.calls.length, 3)
   await assertReplay(s, result)
 })
