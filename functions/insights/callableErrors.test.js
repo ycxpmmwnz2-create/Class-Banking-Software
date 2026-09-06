@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { callableLogDiagnostic } from './callableErrors.js'
+import { CLASSROOM_ASSISTANT_CLAIM_PREDICATES } from './geminiClassroomAssistant.js'
 import { InsightToolQuestionServiceError } from './toolQuestionService.js'
 
 function error(subcategory, diagnostic) {
@@ -101,4 +102,77 @@ test('the service re-wrap carries the diagnostic through to the log', () => {
     returnedCountUsable: true,
     totalCountUsable: false,
   })
+})
+
+// The tool-loop refusals reached production naming neither a subcategory nor a
+// cause. Their diagnostics are counts and flags about the loop itself, so they
+// must survive the allowlist while carrying nothing from the classroom.
+test('logs the tool-loop diagnostic counts and flags', () => {
+  assert.deepEqual(callableLogDiagnostic(error('tool-call-limit', {
+    turnIndex: 0,
+    toolCallCount: 6,
+    requestedCallCount: 9,
+  })), {
+    turnIndex: 0,
+    toolCallCount: 6,
+    requestedCallCount: 9,
+  })
+
+  assert.deepEqual(callableLogDiagnostic(error('tool-call-id-repeated', {
+    turnIndex: 2,
+    toolCallCount: 3,
+    providerCallIdPresent: false,
+  })), {
+    turnIndex: 2,
+    toolCallCount: 3,
+    providerCallIdPresent: false,
+  })
+
+  assert.deepEqual(
+    callableLogDiagnostic(error('tool-turn-limit', { turnIndex: 4, toolCallCount: 4 })),
+    { turnIndex: 4, toolCallCount: 4 },
+  )
+  assert.deepEqual(
+    callableLogDiagnostic(error('tool-turn-content-missing', { turnIndex: 1, toolCallCount: 0 })),
+    { turnIndex: 1, toolCallCount: 0 },
+  )
+})
+
+test('a tool-loop diagnostic carrying classroom content is dropped', () => {
+  // A tool-call ID is provider text, not a count, and never belongs in a log.
+  assert.equal(callableLogDiagnostic(error('tool-call-id-repeated', {
+    turnIndex: 'Paid to GianMarco for chores',
+    toolCallCount: 'call-GianMarco-01',
+    providerCallIdPresent: 'yes',
+  })), null)
+  assert.equal(callableLogDiagnostic(error('tool-turn-limit', {
+    turnIndex: -1,
+    toolCallCount: 2.5,
+  })), null)
+})
+
+// Every predicate name a refusal can carry has to be a word this vocabulary
+// knows, or the field is dropped and the refusal reaches the logs with the most
+// useful part of its diagnosis missing. 'listing' was emitted for a whole round
+// without being listed here. The two allowlists are cross-checked the way the
+// subcategory pair is, so neither can gain a member the other does not know.
+test('the predicate vocabulary covers every predicate a refusal can name', () => {
+  assert.equal(CLASSROOM_ASSISTANT_CLAIM_PREDICATES.size > 0, true)
+  for (const predicate of CLASSROOM_ASSISTANT_CLAIM_PREDICATES) {
+    assert.deepEqual(
+      callableLogDiagnostic({ subcategory: 'unsupported-predicate', diagnostic: { claimPredicate: predicate } }),
+      { claimPredicate: predicate },
+      `predicate ${predicate} must survive the log vocabulary`,
+    )
+  }
+  // And nothing the validator cannot produce is accepted here either, so the
+  // vocabulary cannot drift into words that are no longer reachable.
+  for (const word of ['students', 'enrolled', 'former-students']) {
+    assert.equal(CLASSROOM_ASSISTANT_CLAIM_PREDICATES.has(word), false)
+    assert.equal(
+      callableLogDiagnostic({ subcategory: 'unsupported-predicate', diagnostic: { claimPredicate: word } }),
+      null,
+      `${word} is not a predicate the validator names`,
+    )
+  }
 })

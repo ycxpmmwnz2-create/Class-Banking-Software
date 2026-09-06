@@ -90,8 +90,8 @@ test("source contract: Q&A is explicit, paragraph-shaped, period-bound, and neve
   assert.match(indexHtml, /\.insights-answer-copy\s*\{[\s\S]*?white-space: pre-line;/);
   assert.match(indexHtml, /<details class="insights-answer-details">[\s\S]*?<summary>See details<\/summary>/);
   assert.doesNotMatch(indexHtml, /class="insight-observation"/);
-  assert.match(indexHtml, /Who did not pay rent today, or how can I encourage saving\?/);
-  assert.match(indexHtml, /Morgan Bank features, or classroom-economy ideas/);
+  assert.match(indexHtml, /Who did not pay rent today, or how much did students spend on Technology\?/);
+  assert.match(indexHtml, /balances, rent payments, transactions, and classroom patterns/);
   assert.doesNotMatch(indexHtml, /Get a focused look at your classroom data|Ready when you are/);
   assert.match(indexHtml, /kind: "question",\s*periodDays,\s*timeZone,\s*question,/);
   assert.match(providerClientSource, /QUESTION_REQUEST_FIELDS = Object\.freeze\(\[\s*"requestId",\s*"kind",\s*"periodDays",\s*"timeZone",\s*"question",/);

@@ -8,6 +8,7 @@ import {
   createGeminiClassroomAssistant,
 } from './geminiClassroomAssistant.js'
 import { createClassroomAssistantToolbox } from './classroomAssistantTools.js'
+import { callableErrorDetails } from './callableErrors.js'
 
 const USAGE = Object.freeze({
   promptTokenCount: 10,
@@ -1743,7 +1744,10 @@ test('accepts counts drawn from separate calls that filtered the same window', a
   const toolbox = createClassroomAssistantToolbox(assistantEvidence, {
     memoResolver: () => ({ text: 'Rent payment', truncated: false }),
   })
-  const answer = 'In the last 30 days there were 3 transactions and 1 student had none.'
+  // "1 student had none" leaves the thing the student had none of in the other
+  // half of the sentence, and the count that made it pass was the count of who
+  // *did* transact -- both were 1 here. Each count now names its own predicate.
+  const answer = 'In the last 30 days there were 3 transactions and 1 student had no matching transactions.'
   const result = await answerWithTools({
     assistantEvidence,
     toolbox,
@@ -1899,3 +1903,2591 @@ test('accepts a full memo quotation including its trailing punctuation', async (
     assert.equal(result.answer, scenario.answer)
   }
 })
+
+// Andrew's first real classroom question after the production deploy failed
+// with category 'provider-output-invalid' and no subcategory at all. Four
+// separate tool-loop sites could produce it and none of them said which, so
+// diagnosing it would have cost a deploy round per hypothesis. Each site now
+// names itself and reports value-free counts.
+function answerWithLoop({ turns, assistantEvidence = evidence() }) {
+  let turn = 0
+  const assistant = createGeminiClassroomAssistant({
+    async generateContent() {
+      const response = turns[Math.min(turn, turns.length - 1)]
+      turn += 1
+      return { finishReason: 'STOP', usageMetadata: USAGE, ...response }
+    },
+  })
+  return assistant.answer({ assistantEvidence })
+}
+
+function toolTurn(calls) {
+  return {
+    functionCalls: calls,
+    candidateContent: { role: 'model', parts: calls.map(call => ({ functionCall: call })) },
+  }
+}
+
+test('each tool-loop failure names its own cause and reports only value-free counts', async () => {
+  const call = { id: 'call', name: 'get_balances', args: {} }
+  const scenarios = [
+    {
+      name: 'tool-turn-content-missing',
+      turns: [{ functionCalls: [call], candidateContent: { role: 'user', parts: [] } }],
+      diagnostic: { turnIndex: 0, toolCallCount: 0 },
+    },
+    {
+      name: 'tool-call-limit',
+      turns: [toolTurn(Array.from({ length: 9 }, (item, index) => ({
+        id: `call-${index}`,
+        name: 'get_balances',
+        args: {},
+      })))],
+      diagnostic: { turnIndex: 0, toolCallCount: 0, requestedCallCount: 9 },
+    },
+    {
+      name: 'tool-call-id-repeated',
+      turns: [toolTurn([call, { ...call }])],
+      diagnostic: { turnIndex: 0, toolCallCount: 1, providerCallIdPresent: true },
+    },
+    {
+      name: 'tool-turn-limit',
+      // Never stops calling tools, so the loop runs out of turns.
+      turns: [0, 1, 2, 3].map(index => toolTurn([{ id: `call-${index}`, name: 'get_balances', args: {} }])),
+      diagnostic: { turnIndex: 4, toolCallCount: 4 },
+    },
+  ]
+  for (const scenario of scenarios) {
+    await assert.rejects(
+      answerWithLoop({ turns: scenario.turns }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.category === 'provider-output-invalid' &&
+        error.subcategory === scenario.name &&
+        CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES.has(error.subcategory),
+      `${scenario.name} must name itself`,
+    )
+    const error = await answerWithLoop({ turns: scenario.turns }).catch(caught => caught)
+    assert.deepEqual(error.diagnostic, scenario.diagnostic, `${scenario.name} diagnostic`)
+    // Every reported value is a count or a flag, never classroom content.
+    for (const value of Object.values(error.diagnostic)) {
+      assert.equal(
+        typeof value === 'boolean' || (Number.isSafeInteger(value) && value >= 0),
+        true,
+        `${scenario.name} must report only counts and flags`,
+      )
+    }
+  }
+})
+
+// The model was stating how many students matched a filter after counting
+// distinct names off a returned row list -- a number with nothing to cite, and
+// a wrong one whenever that list was truncated. The count is now returned by
+// the same call the model already makes, so the honest answer is citable.
+test('a student count cited from list_transactions distinctCurrentStudentCount is grounded', async () => {
+  const result = await answerWithTool({
+    name: 'list_transactions',
+    args: {},
+    answer: '1 student had matching transactions.',
+    factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+  })
+  assert.equal(result.answer, '1 student had matching transactions.')
+})
+
+test('a student count the model invented is still refused when no student count was cited', async () => {
+  await assert.rejects(
+    answerWithTool({
+      name: 'list_transactions',
+      args: {},
+      answer: '2 students had matching transactions.',
+      factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number',
+  )
+})
+
+test('the outbound system instruction sends the model to a citable student count', () => {
+  const request = buildGeminiClassroomAssistantRequest({
+    contents: [{ role: 'user', parts: [{ text: 'test' }] }],
+    declarations: [],
+    requireTool: false,
+  })
+  const instruction = request.config.systemInstruction
+  assert.match(instruction, /list_transactions distinctCurrentStudentCount/u)
+  assert.match(instruction, /never count distinct names yourself from a returned row list/iu)
+  assert.match(instruction, /still matches a filter, so distinctParticipantCount/u)
+})
+
+// A transaction from a student who has left the class still matches a filter,
+// so a count over matched transactions is not a count of the current class. One
+// field carrying both meanings let a participant total be stated as a
+// current-roster total: with one current student and one former student having
+// matching transactions, "all 2 current students had matching transactions"
+// passed grounding while being false. The populations are now separate kinds,
+// so no wording can make one stand in for the other.
+function mixedRosterEvidence() {
+  const data = evidence()
+  data.question = 'Which students were paid for technology today?'
+  data.students = [
+    { ref: 'student-001', displayName: 'Ava R.', current: true, balance: 10, frozen: false },
+    { ref: 'student-002', displayName: 'Ava S.', current: true, balance: 4, frozen: false },
+    { ref: 'student-003', displayName: 'Ava T.', current: false, balance: 0, frozen: false },
+  ]
+  data.transactions = [
+    { ref: 'transaction-00001', studentRef: 'student-001', date: '2026-08-27T15:01:00.000Z', type: 'Add', amount: 5, category: 'Technology', purpose: 'other', status: 'Approved' },
+    { ref: 'transaction-00002', studentRef: 'student-003', date: '2026-08-27T15:02:00.000Z', type: 'Add', amount: 5, category: 'Technology', purpose: 'other', status: 'Approved' },
+  ]
+  return data
+}
+
+test('a participant total cannot be stated as a count of the current class', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer: 'All 2 current students had matching transactions.',
+      factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number' &&
+      error.diagnostic.claimKind === 'student-count',
+  )
+})
+
+test('the same false claim is refused even when the participant total is not the cited fact', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer: 'All 2 current students had matching transactions.',
+      factRefs: [{ callId: 'call', path: '/matchedCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number',
+  )
+})
+
+test('the current-roster count backs the true claim about the same classroom', async () => {
+  const result = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: '1 current student had matching transactions.',
+    factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+  })
+  assert.equal(result.answer, '1 current student had matching transactions.')
+})
+
+test('a participant total stays citable in an answer that says it includes former students', async () => {
+  const result = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: '2 participants had matching transactions, including students who have left the class.',
+    factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+  })
+  assert.match(result.answer, /2 participants/u)
+})
+
+// Separating the two populations was not sufficient on its own. Resolving the
+// participant wording first meant historical framing anywhere nearby relabelled
+// the whole claim, so an explicitly current-roster sentence could be supported
+// by a participant total. This is the exact sentence that got through.
+const MIXED_POPULATION_BYPASS =
+  'Including students who left the class, all 2 current students had matching transactions.'
+
+test('mixed population wording cannot license a participant total for a current-roster claim', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer: MIXED_POPULATION_BYPASS,
+      factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number' &&
+      error.diagnostic.claimKind === 'population-ambiguous',
+  )
+})
+
+// Reordering the clauses moves the historical wording out of the claim's
+// context window, so the claim reads as current-roster and is refused for
+// having no current-roster fact at its value. Either path must refuse; neither
+// may resolve to the participant population.
+test('the same false claim is refused however the two populations are ordered', async () => {
+  for (const answer of [
+    'All 2 current students had matching transactions, including students who left the class.',
+    '2 of the current students had matching transactions, including former students.',
+    '2 currently enrolled students had matching transactions, including archived students.',
+    '2 students still in the class had matching transactions; 1 has left the class.',
+  ]) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence: mixedRosterEvidence(),
+        name: 'list_transactions',
+        args: {},
+        answer,
+        factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-number' &&
+        ['population-ambiguous', 'student-count'].includes(error.diagnostic.claimKind),
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// Population wording must only ever choose between the two student
+// populations. Deciding it ahead of the nouns a number sits against turned
+// "over 8 days, including former students" into a participant claim that no
+// day-count fact could support.
+test('population wording does not relabel counts that are not about students', async () => {
+  // "8 days for former students" is a day count, and the participant wording
+  // sits inside the claim's context window. Resolving population first made it
+  // a participant claim that no day-count fact could support.
+  const dayCount = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: '8 days for former students were checked.',
+    factRefs: [{ callId: 'call', path: '/windowDays' }],
+  })
+  assert.match(dayCount.answer, /8 days/u)
+
+  const combined = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: 'Over 8 days, including former students, 2 transactions matched.',
+    factRefs: [
+      { callId: 'call', path: '/windowDays' },
+      { callId: 'call', path: '/matchedCount' },
+    ],
+  })
+  assert.match(combined.answer, /2 transactions/u)
+})
+
+// The aggregate metric had the identical defect before this branch existed, so
+// reclassifying only the list_transactions field would have left it reachable.
+test('the aggregate distinctStudents metric is a participant total, not a roster total', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'aggregate_transactions',
+      args: { groupBy: [], metric: 'distinctStudents' },
+      answer: 'All 2 current students had matching transactions.',
+      factRefs: [{ callId: 'call', path: '/rows/0/value' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number',
+  )
+  const result = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'aggregate_transactions',
+    args: { groupBy: [], metric: 'distinctCurrentStudents' },
+    answer: '1 current student had matching transactions.',
+    factRefs: [{ callId: 'call', path: '/rows/0/value' }],
+  })
+  assert.equal(result.answer, '1 current student had matching transactions.')
+})
+
+// Separating the populations and giving explicit roster wording precedence
+// still left the decision to a fixed 24-character window, so it turned on
+// distance rather than meaning. Here the historical wording sits inside the
+// window and the "currently enrolled" that scopes the claim to the roster sits
+// just outside it, so the claim was read as a participant claim and the
+// participant total supported it. This is the exact sentence that got through.
+const TRUNCATED_ROSTER_WORDING_BYPASS =
+  'Including past students: 2 of the currently enrolled students had matching transactions.'
+
+test('roster wording beyond a character window still scopes the claim to the roster', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer: TRUNCATED_ROSTER_WORDING_BYPASS,
+      factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number' &&
+      error.diagnostic.claimKind === 'population-ambiguous',
+  )
+})
+
+// Distance from the number must not decide the population, in either
+// direction, so the same false claim is put at a range of separations and
+// orderings. Every one must refuse; none may resolve to the participant
+// population and take the participant total.
+test('mixed population wording is refused at any distance from the number', async () => {
+  for (const answer of [
+    'Including past students: 2 of the currently enrolled students had matching transactions.',
+    '2 of the currently enrolled students, including past students, had matching transactions.',
+    'Counting students who have left: 2 of the students still in the class had matching transactions.',
+    '2 currently enrolled students, plus former students, had matching transactions.',
+    'Including archived students, and counting every one of them, 2 current students had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence: mixedRosterEvidence(),
+        name: 'list_transactions',
+        args: {},
+        answer,
+        factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        ['unsupported-number', 'unverified-quantifier'].includes(error.subcategory) &&
+        ['population-ambiguous', 'student-count'].includes(error.diagnostic.claimKind),
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// The widening direction is the one that fails open, so it now takes wording
+// that says the wider population is what was counted. Mentioning former
+// students while excluding them is not that: each sentence below counts the
+// roster, and reading any historical word in range as a widening let the
+// participant total support them.
+test('historical wording that excludes former students does not widen the population', async () => {
+  for (const answer of [
+    '2 students had matching transactions but 1 former student was excluded.',
+    '2 students had matching transactions, and 1 former student was excluded.',
+    'Ignoring former students, 2 students had matching transactions.',
+    'Past students are included elsewhere. 2 of the students still in the class had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence: mixedRosterEvidence(),
+        name: 'list_transactions',
+        args: {},
+        answer,
+        factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-number' &&
+        ['student-count', 'population-ambiguous'].includes(error.diagnostic.claimKind),
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// This expectation is deliberately reversed from the previous commit, which
+// let an inclusive disclosure anywhere in the clause widen the population. That
+// only held while a pattern recognised every way a teacher might name the
+// current roster, and it did not: "2 enrolled students" and "2 active students"
+// walked past it and took the participant total. A generic count that does not
+// name its own population no longer widens, so this sentence now fails closed,
+// and the answer that says the same true thing names the population on the
+// count instead.
+test('a generic student count is not widened by a disclosure elsewhere', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer: '2 students had matching transactions, including one who left the class.',
+      factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-number' &&
+      error.diagnostic.claimKind === 'population-ambiguous',
+  )
+  const result = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: '2 participants had matching transactions, including one who left the class.',
+    factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+  })
+  assert.match(result.answer, /2 participants/u)
+})
+
+// A quantifier asserts the counted group is the whole population, and the
+// count alone cannot establish that. "All 1 current student had matching
+// transactions" was accepted on a roster of two: the 1 was correctly cited
+// from distinctCurrentStudentCount, and nothing checked the word carrying the
+// false part of the sentence.
+test('a quantifier over a count is refused when no population total is cited', async () => {
+  for (const answer of [
+    'All 1 current student had matching transactions.',
+    'Every 1 current student had matching transactions.',
+    'All of the 1 current student had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence: mixedRosterEvidence(),
+        name: 'list_transactions',
+        args: {},
+        answer,
+        factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.category === 'answer-unverified' &&
+        error.subcategory === 'unverified-quantifier' &&
+        CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES.has(error.subcategory) &&
+        error.diagnostic.claimKind === 'student-count' &&
+        error.diagnostic.populationTotalFactCount === 0,
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// No call returns how many students ever transacted, so a quantified
+// participant claim has no total to check and fails closed until one exists.
+test('a quantified participant claim fails closed for want of a participant total', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer: 'All 2 participants had matching transactions.',
+      factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unverified-quantifier' &&
+      error.diagnostic.claimKind === 'participant-count',
+  )
+})
+
+// The quantifier is verified rather than banned: a call that returns the
+// roster total makes the honest claim citable, which is the direction this
+// project takes every time -- make the number checkable, do not exempt it.
+test('the outbound system instruction sends the model to a roster total for a quantifier', () => {
+  const request = buildGeminiClassroomAssistantRequest({
+    contents: [{ role: 'user', parts: [{ text: 'test' }] }],
+    declarations: [],
+    requireTool: false,
+  })
+  const instruction = request.config.systemInstruction
+  assert.match(instruction, /Saying all, every, or each of a number of students/u)
+  assert.match(instruction, /currentStudentCount/u)
+  // Every rule the validator enforces is stated, so the model writes a
+  // groundable sentence rather than discovering the rule as a refusal: the
+  // digit belongs inside the quantified phrase, a page count is not a count of
+  // students, and each count names its subject in its own clause.
+  assert.match(instruction, /put the number in digits inside that same phrase/u)
+  assert.match(instruction, /A number elsewhere in the sentence does not count/u)
+  assert.match(instruction, /is the size of the class and shows nothing about transactions/u)
+  assert.match(instruction, /Cite it only as the first number of a "Showing X of Y" disclosure/u)
+  // The two disclosure numbers are checked against different fields, so the
+  // instruction has to say which is which rather than naming both together.
+  assert.match(instruction, /where X is that result’s returnedCount and Y is its exact total count/u)
+  assert.match(instruction, /The two numbers are not interchangeable/u)
+  // Both numbers now have to come from one result, and the subject has to be
+  // one that result can speak to, so the instruction says so rather than
+  // leaving the model to find it as a refusal.
+  assert.match(instruction, /A disclosure describes one result/u)
+  assert.match(instruction, /take both numbers from that same result/u)
+  assert.match(instruction, /Say what each count is a count of in the same clause as its digits/u)
+  assert.match(instruction, /Both and neither additionally claim the class is exactly two/u)
+})
+
+test('a cited roster total licenses the quantifier it actually supports', async () => {
+  const result = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'get_balances',
+    args: {},
+    answer: 'All 2 current students have a balance.',
+    factRefs: [{ callId: 'call', path: '/currentStudentCount' }],
+  })
+  assert.match(result.answer, /All 2 current students/u)
+})
+
+test('the quantifier refusal reaches the client as a category alone', async () => {
+  const error = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: 'All 1 current student had matching transactions.',
+    factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+  }).catch(caught => caught)
+  assert.deepEqual(Object.keys(callableErrorDetails(error)), ['category'])
+  assert.equal(callableErrorDetails(error).category, 'answer-unverified')
+  // Every reported value is a count or a fixed vocabulary word, never a figure
+  // read out of the classroom.
+  for (const [field, value] of Object.entries(error.diagnostic)) {
+    assert.equal(
+      typeof value === 'string' || (Number.isSafeInteger(value) && value >= 0),
+      true,
+      `${field} must be a count or a fixed word`,
+    )
+  }
+})
+
+// Naming the current roster is not a closed vocabulary, and the previous fix
+// depended on it being one: an inclusive disclosure widened the count, so
+// anything the roster pattern failed to recognise became an all-participant
+// total. These three ordinary phrasings all walked past it and were accepted
+// against the participant total while only one current student had matched.
+// Widening now takes wording on the count itself, so no synonym list stands
+// between these sentences and a refusal.
+const ROSTER_SYNONYM_BYPASSES = Object.freeze([
+  'Including former students, 2 enrolled students had matching transactions.',
+  'Including former students, 2 active students had matching transactions.',
+  'Including former students, 2 students on the roster had matching transactions.',
+])
+
+test('a roster phrasing the pattern does not know still cannot take a participant total', async () => {
+  for (const answer of ROSTER_SYNONYM_BYPASSES) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence: mixedRosterEvidence(),
+        name: 'list_transactions',
+        args: {},
+        answer,
+        factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-number' &&
+        error.diagnostic.claimKind === 'population-ambiguous',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// A quantifier without a digit still claims a whole class. Claim extraction
+// scans digits, so these three said something false about the roster and were
+// never checked at all. The prompt asking for digits is not an enforcement
+// boundary.
+const DIGITLESS_QUANTIFIER_BYPASSES = Object.freeze([
+  'Every current student had matching transactions.',
+  'Both current students had matching transactions.',
+  'None of the current students had matching transactions.',
+])
+
+// The previous commit tried to ground these by recognising the quantifier and
+// checking it. That only held for the wordings it knew: "everyone in the
+// current class" was not one of them, and "both" was read as an unrestricted
+// universal, so both walked past. Recognising more wordings would have been the
+// same bet again, so the requirement is inverted -- a clause that speaks about
+// students as a group states its count in digits or it is refused. The
+// expectation here is therefore stricter than it was, not merely renamed.
+test('a group claim carrying no digit is refused outright', async () => {
+  for (const answer of [
+    ...DIGITLESS_QUANTIFIER_BYPASSES,
+    'Everyone in the current class matched the filter.',
+    'The whole class had matching transactions.',
+    'Each student had a matching transaction.',
+    'No students had matching transactions.',
+  ]) {
+    const error = await answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer,
+      factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+    }).catch(caught => caught)
+    assert.equal(error instanceof GeminiClassroomAssistantError, true, `must refuse: ${answer}`)
+    assert.equal(error.category, 'answer-unverified', answer)
+    assert.equal(error.subcategory, 'group-claim-without-count', answer)
+    assert.equal(CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES.has(error.subcategory), true)
+    assert.deepEqual(Object.keys(callableErrorDetails(error)), ['category'], answer)
+    for (const [field, value] of Object.entries(error.diagnostic)) {
+      assert.equal(
+        typeof value === 'string' || (Number.isSafeInteger(value) && value >= 0),
+        true,
+        `${field} must be a count or a fixed word`,
+      )
+    }
+  }
+})
+
+// "Both" says the population is two. It was accepted on a roster of three, all
+// three of whom matched, because it was treated as any other universal.
+test('both is refused unless the population it quantifies is two', async () => {
+  // All three current students matched here, so the count, the roster total
+  // and the predicate fact all agree at 3. The only thing wrong with the
+  // sentence is the word "both", which is what this isolates.
+  const threeStudents = mixedRosterEvidence()
+  threeStudents.students = [
+    ...threeStudents.students,
+    { ref: 'student-004', displayName: 'Ava U.', current: true, balance: 7, frozen: false },
+  ]
+  threeStudents.transactions = [
+    ...threeStudents.transactions,
+    { ref: 'transaction-00003', studentRef: 'student-002', date: '2026-08-27T15:03:00.000Z', type: 'Add', amount: 5, category: 'Technology', purpose: 'other', status: 'Approved' },
+    { ref: 'transaction-00004', studentRef: 'student-004', date: '2026-08-27T15:04:00.000Z', type: 'Add', amount: 5, category: 'Technology', purpose: 'other', status: 'Approved' },
+  ]
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: threeStudents,
+      calls: [
+        { id: 'balances', name: 'get_balances', args: {} },
+        { id: 'transactions', name: 'list_transactions', args: {} },
+      ],
+      answer: 'Both 3 current students had matching transactions.',
+      factRefs: [
+        { callId: 'balances', path: '/currentStudentCount' },
+        { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unverified-quantifier',
+  )
+})
+
+// A predicate the contract does not recognise is settled by nothing. Matching
+// the bare noun "students" as a roster predicate made the roster total prove
+// what the roster did, which is the one thing a population noun cannot show.
+test('an unrecognised predicate cannot be settled by a population noun', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'get_balances',
+      args: {},
+      answer: 'All 2 current students matched the filter.',
+      factRefs: [{ callId: 'call', path: '/currentStudentCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unverified-quantifier' &&
+      error.diagnostic.claimPredicate === 'unclassified',
+  )
+})
+
+// There is no total for the participant population, so a claim quantified over
+// it cannot be proven at all. Comparing a total and a predicate fact on value
+// alone let a roster total of two stand in as the size of that population.
+test('a participant universal cannot borrow the roster total', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: mixedRosterEvidence(),
+      calls: [
+        { id: 'balances', name: 'get_balances', args: {} },
+        { id: 'transactions', name: 'list_transactions', args: {} },
+      ],
+      answer: 'All participants had matching transactions.',
+      factRefs: [
+        { callId: 'balances', path: '/currentStudentCount' },
+        { callId: 'transactions', path: '/distinctParticipantCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      ['group-claim-without-count', 'unverified-quantifier'].includes(error.subcategory),
+  )
+  // The same claim stated with its count is refused on the population binding
+  // rather than on the missing digit, so neither path can reach the total.
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: mixedRosterEvidence(),
+      calls: [
+        { id: 'balances', name: 'get_balances', args: {} },
+        { id: 'transactions', name: 'list_transactions', args: {} },
+      ],
+      answer: 'All 2 participants had matching transactions.',
+      factRefs: [
+        { callId: 'balances', path: '/currentStudentCount' },
+        { callId: 'transactions', path: '/distinctParticipantCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unverified-quantifier' &&
+      error.diagnostic.claimKind === 'participant-count',
+  )
+})
+
+// Two current students, both of whom transacted, plus one archived
+// participant. The quantified claim is true here, which is what separates
+// grounding a quantifier from banning one.
+function fullyMatchedRosterEvidence() {
+  const data = mixedRosterEvidence()
+  data.transactions = [
+    ...data.transactions,
+    { ref: 'transaction-00003', studentRef: 'student-002', date: '2026-08-27T15:03:00.000Z', type: 'Add', amount: 5, category: 'Technology', purpose: 'other', status: 'Approved' },
+  ]
+  return data
+}
+
+// The roster total proves how large the class is. It does not prove anything
+// about transactions, and a student count of the same value from a balance
+// call does not either. "All 2 current students had matching transactions" was
+// accepted on the strength of get_balances currentStudentCount alone, with
+// only one current student having transacted.
+test('a roster total cannot prove a claim about transactions', async () => {
+  for (const factRefs of [
+    [{ callId: 'balances', path: '/currentStudentCount' }],
+    [
+      { callId: 'balances', path: '/currentStudentCount' },
+      { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+    ],
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: mixedRosterEvidence(),
+        calls: [
+          { id: 'balances', name: 'get_balances', args: {} },
+          { id: 'transactions', name: 'list_transactions', args: {} },
+        ],
+        answer: 'All 2 current students had matching transactions.',
+        factRefs,
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unverified-quantifier' &&
+        error.diagnostic.claimPredicate === 'transactions',
+      `must refuse with factRefs ${JSON.stringify(factRefs)}`,
+    )
+  }
+})
+
+// The digit form remains sayable when it is true, which is what separates
+// constraining the output from refusing the claim. The digitless form of the
+// same true sentence is now refused, because nothing binds its quantifier to a
+// count -- the model states the number instead.
+test('the same quantified claim is accepted when the transaction count really is the roster total', async () => {
+  for (const answer of [
+    'All 2 current students had matching transactions.',
+  ]) {
+    const result = await answerWithTools({
+      assistantEvidence: fullyMatchedRosterEvidence(),
+      calls: [
+        { id: 'balances', name: 'get_balances', args: {} },
+        { id: 'transactions', name: 'list_transactions', args: {} },
+      ],
+      answer,
+      factRefs: [
+        { callId: 'balances', path: '/currentStudentCount' },
+        { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+      ],
+    })
+    assert.equal(result.answer, answer)
+  }
+})
+
+// The predicate decides which tool can answer it. A balance claim is settled
+// by the balance call, and find_students_without_transactions is deliberately
+// not evidence for the positive transaction predicate, because its count is
+// the complement and would invert the claim.
+test('each predicate is settled only by a tool that answers it', async () => {
+  const balances = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'get_balances',
+    args: {},
+    answer: 'All 2 current students have a balance.',
+    factRefs: [{ callId: 'call', path: '/currentStudentCount' }],
+  })
+  assert.match(balances.answer, /All 2 current students/u)
+
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'find_students_without_transactions',
+      args: {},
+      answer: 'All 2 current students had matching transactions.',
+      factRefs: [{ callId: 'call', path: '/currentStudentCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unverified-quantifier' &&
+      error.diagnostic.claimPredicate === 'transactions',
+  )
+})
+
+// Output bounds and the answer envelope are unchanged by the quantifier work:
+// a refusal still carries a category the client can read and nothing else, and
+// the checks above run on the provider's own text, before this module appends
+// its truncation disclosure.
+test('the quantifier checks leave the answer envelope and its bounds alone', async () => {
+  const result = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: '1 current student had matching transactions.',
+    factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+  })
+  assert.deepEqual(Object.keys(result).sort(), ['answer', 'evidence', 'toolCallCount', 'usage'])
+  assert.equal(result.answer.length <= 1_200, true)
+  assert.equal(Array.isArray(result.evidence), true)
+})
+
+// "Both current students had matching transactions." on a roster of three, all
+// three of whom matched. The sentence is false about the class size, and it
+// carries no digit, so nothing bound it to a fact.
+test('both without a digit is refused even when every student did match', async () => {
+  const threeAllMatched = mixedRosterEvidence()
+  threeAllMatched.students = [
+    ...threeAllMatched.students,
+    { ref: 'student-004', displayName: 'Ava U.', current: true, balance: 7, frozen: false },
+  ]
+  threeAllMatched.transactions = [
+    ...threeAllMatched.transactions,
+    { ref: 'transaction-00003', studentRef: 'student-002', date: '2026-08-27T15:03:00.000Z', type: 'Add', amount: 5, category: 'Technology', purpose: 'other', status: 'Approved' },
+    { ref: 'transaction-00004', studentRef: 'student-004', date: '2026-08-27T15:04:00.000Z', type: 'Add', amount: 5, category: 'Technology', purpose: 'other', status: 'Approved' },
+  ]
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: threeAllMatched,
+      calls: [
+        { id: 'balances', name: 'get_balances', args: {} },
+        { id: 'transactions', name: 'list_transactions', args: {} },
+      ],
+      answer: 'Both current students had matching transactions.',
+      factRefs: [
+        { callId: 'balances', path: '/currentStudentCount' },
+        { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'group-claim-without-count',
+  )
+})
+
+// The quantifier was never what let a roster total prove a transaction claim,
+// so the same false sentence stripped of its quantifier passed the same way.
+// Every count of a student population is now bound to a tool that answers what
+// the claim says those students did.
+test('a population count is bound to its predicate with or without a quantifier', async () => {
+  for (const answer of [
+    '2 current students had matching transactions.',
+    '2 current students matched the filter.',
+  ]) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence: mixedRosterEvidence(),
+        name: 'get_balances',
+        args: {},
+        answer,
+        factRefs: [{ callId: 'call', path: '/currentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate' &&
+        CLASSROOM_ASSISTANT_VALIDATION_SUBCATEGORIES.has(error.subcategory),
+      `must refuse: ${answer}`,
+    )
+  }
+  // The same shape of claim stays sayable from the tool that answers it, and a
+  // claim about the class size still comes from the roster total.
+  const transacted = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: '1 current student had matching transactions.',
+    factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+  })
+  assert.match(transacted.answer, /1 current student/u)
+  const rosterSize = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'get_balances',
+    args: {},
+    answer: 'There are 2 current students.',
+    factRefs: [{ callId: 'call', path: '/currentStudentCount' }],
+  })
+  assert.match(rosterSize.answer, /2 current students/u)
+})
+
+// A count of who transacted is the complement of a count of who did not, so
+// neither may be cited for the other even when the value happens to be right.
+test('a count of who transacted cannot state how many did not', async () => {
+  await assert.rejects(
+    answerWithTool({
+      assistantEvidence: mixedRosterEvidence(),
+      name: 'list_transactions',
+      args: {},
+      answer: '1 current student had no matching transactions.',
+      factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'no-transactions',
+  )
+})
+
+// Requiring "a digit in the clause" was not the same as requiring the count.
+// An unrelated number satisfied it, so "All students matched, over 8 days"
+// carried a day count and the group claim went unchecked. The number has to be
+// a count of the students themselves.
+test('an unrelated number does not stand in for a missing student count', async () => {
+  for (const [answer, path] of [
+    ['All students matched, over 8 days.', '/windowDays'],
+    ['Every current student transacted across 2 transactions.', '/matchedCount'],
+    ['All students were paid 5 dollars.', '/transactions/0/amount'],
+  ]) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence: mixedRosterEvidence(),
+        name: 'list_transactions',
+        args: {},
+        answer,
+        factRefs: [{ callId: 'call', path }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'group-claim-without-count',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// The determiner does not have to sit in front of the noun, the noun does not
+// have to be "student", and the class can be named as one thing. Each of these
+// was found by probing rather than by the suite, so each is kept.
+test('a group claim is caught however the group is named', async () => {
+  for (const answer of [
+    'The students all had matching transactions.',
+    'The class as a whole had matching transactions.',
+    'Nobody had matching transactions.',
+    'Any of the students could have matching transactions.',
+    'Every kid had matching transactions.',
+    'All participants had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTool({
+        assistantEvidence: mixedRosterEvidence(),
+        name: 'list_transactions',
+        args: {},
+        answer,
+        factRefs: [{ callId: 'call', path: '/distinctCurrentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'group-claim-without-count',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// A group named without a determiner asserts nothing countable about it, so
+// this rule must not reach a claim that merely mentions students in passing.
+test('a group named in passing does not require a count of its own', async () => {
+  const days = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: '8 days for former students were checked.',
+    factRefs: [{ callId: 'call', path: '/windowDays' }],
+  })
+  assert.match(days.answer, /8 days/u)
+  const participants = await answerWithTool({
+    assistantEvidence: mixedRosterEvidence(),
+    name: 'list_transactions',
+    args: {},
+    answer: '2 participants had matching transactions, including one who left the class.',
+    factRefs: [{ callId: 'call', path: '/distinctParticipantCount' }],
+  })
+  assert.match(participants.answer, /2 participants/u)
+})
+
+// A roster of `currentCount` current students, the first `transactedCount` of
+// whom have a matching transaction. Stating the two numbers separately is what
+// makes each of the sentences below true or false on purpose.
+function rosterEvidence(currentCount, transactedCount) {
+  const data = evidence()
+  data.question = 'How did the class do?'
+  data.students = Array.from({ length: currentCount }, (_, index) => ({
+    ref: `student-${String(index + 1).padStart(3, '0')}`,
+    displayName: `Ava ${index + 1}`,
+    current: true,
+    balance: index + 1,
+    frozen: false,
+  }))
+  data.transactions = Array.from({ length: transactedCount }, (_, index) => ({
+    ref: `transaction-0000${index + 1}`,
+    studentRef: `student-${String(index + 1).padStart(3, '0')}`,
+    date: '2026-08-27T15:01:00.000Z',
+    type: 'Add',
+    amount: 5,
+    category: 'Technology',
+    purpose: 'other',
+    status: 'Approved',
+  }))
+  return data
+}
+
+const WITHOUT_ONE_ROW = Object.freeze({ id: 'without', name: 'find_students_without_transactions', args: { limit: 1 } })
+const WITHOUT_ALL = Object.freeze({ id: 'without', name: 'find_students_without_transactions', args: {} })
+const BALANCES = Object.freeze({ id: 'balances', name: 'get_balances', args: {} })
+const TRANSACTIONS = Object.freeze({ id: 'transactions', name: 'list_transactions', args: {} })
+
+// The count that answers a group claim has to be the size of that group. It was
+// enough for a population count to appear somewhere in the clause, so the
+// second half of "All students had matching transactions and 2 current students
+// are enrolled" lent its enrolment count to the first half, and the universal
+// went unchecked on a roster of two where one student had transacted.
+test('a count in a neighbouring assertion cannot answer a group claim', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(2, 1),
+      calls: [BALANCES],
+      answer: 'All students had matching transactions and 2 current students are enrolled.',
+      factRefs: [{ callId: 'balances', path: '/currentStudentCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'group-claim-without-count',
+  )
+  // The same borrowing one sentence away, and with a pronoun in place of the
+  // determiner, which has nowhere to put a count at all.
+  for (const answer of [
+    'All students had matching transactions. There are 2 current students.',
+    'Everyone had matching transactions and 2 current students are enrolled.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(2, 1),
+        calls: [BALANCES],
+        answer,
+        factRefs: [{ callId: 'balances', path: '/currentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'group-claim-without-count',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// The quantifier was read from the characters immediately before the digit, so
+// any modifier between the two hid it: "All current 1 student" claimed a class
+// of one on a roster of two and was checked as a bare count.
+test('a modifier between the quantifier and its digit does not hide the quantifier', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(2, 1),
+      calls: [TRANSACTIONS],
+      answer: 'All current 1 student had matching transactions.',
+      factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unverified-quantifier',
+  )
+})
+
+// A page length says how many rows came back. On a truncated call that is
+// smaller than the number of students the sentence is about, so it cannot
+// settle a predicate: with two students lacking transactions and a limit of
+// one, "1 current student had no matching transactions" was accepted from
+// returnedCount. The same held for a truncated get_balances.
+test('a truncated page length cannot stand as a predicate count', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'Showing 1 of 2 matching students. 1 current student had no matching transactions.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'no-transactions',
+  )
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [{ id: 'balances', name: 'get_balances', args: { limit: 1 } }],
+      answer: '1 current student has a matching balance.',
+      factRefs: [{ callId: 'balances', path: '/returnedCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'balances',
+  )
+})
+
+// The disclosure itself is still sayable, because there the page length is
+// exactly what the sentence claims.
+test('a truncation disclosure still states its own page length', async () => {
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 1),
+    calls: [WITHOUT_ONE_ROW],
+    answer: 'Showing 1 of 2 students without matching transactions.',
+    factRefs: [
+      { callId: 'without', path: '/returnedCount' },
+      { callId: 'without', path: '/studentsWithoutCount' },
+    ],
+  })
+  assert.match(result.answer, /Showing 1 of 2 students/u)
+})
+
+// Naming the page count without the total it came out of is not a disclosure,
+// and treating the disclosure word alone as one let it relabel an ordinary
+// predicate claim: "Showing 1 current student had no matching transactions"
+// passed on a returnedCount of 1 while two students actually had none.
+test('a disclosure word cannot relabel a predicate count as a page count', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'Showing 1 current student had no matching transactions.',
+      factRefs: [{ callId: 'without', path: '/returnedCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'no-transactions',
+  )
+})
+
+// English does not keep the negator next to the word it negates. Allowing two
+// words between them read "did not have any matching transactions" as a claim
+// about who did transact, so a count of one student who transacted was accepted
+// as the count of the two who had not.
+test('a negated transaction claim is negative however far the negator sits', async () => {
+  for (const answer of [
+    '1 current student did not have any matching transactions.',
+    '1 current student never had any matching transactions.',
+    '1 current student has not yet had a single matching transaction.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 1),
+        calls: [TRANSACTIONS],
+        answer,
+        factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate' &&
+        error.diagnostic.claimPredicate === 'no-transactions',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// The negation can also be carried by the quantifier itself, which the old
+// pattern never saw. That refused a truthful, fully cited sentence: no current
+// student had transacted, and the roster total and the count of who had not
+// were both cited.
+test('a negative quantifier makes its claim negative rather than unprovable', async () => {
+  const answer = 'None of the 2 current students had matching transactions.'
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(2, 0),
+    calls: [WITHOUT_ALL, BALANCES],
+    answer,
+    factRefs: [
+      { callId: 'without', path: '/studentsWithoutCount' },
+      { callId: 'balances', path: '/currentStudentCount' },
+    ],
+  })
+  assert.equal(result.answer, answer)
+  // The same claim in the other direction, and the same claim when it is false.
+  const positive = 'All 2 current students had no matching transactions.'
+  const stated = await answerWithTools({
+    assistantEvidence: rosterEvidence(2, 0),
+    calls: [WITHOUT_ALL, BALANCES],
+    answer: positive,
+    factRefs: [
+      { callId: 'without', path: '/studentsWithoutCount' },
+      { callId: 'balances', path: '/currentStudentCount' },
+    ],
+  })
+  assert.equal(stated.answer, positive)
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [WITHOUT_ALL, BALANCES],
+      answer: 'None of the 3 current students had matching transactions.',
+      factRefs: [
+        { callId: 'without', path: '/studentsWithoutCount' },
+        { callId: 'balances', path: '/currentStudentCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unverified-quantifier',
+  )
+})
+
+// "Neither" states the population is two just as "both" does, and each has to
+// agree with the count it governs.
+test('neither is refused unless the population it quantifies is two', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ALL, BALANCES],
+      answer: 'Neither of the 3 current students had matching transactions.',
+      factRefs: [
+        { callId: 'without', path: '/studentsWithoutCount' },
+        { callId: 'balances', path: '/currentStudentCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unverified-quantifier',
+  )
+})
+
+// The quantifier can also follow the noun, and the count it governs then sits
+// in front of it. That phrasing is true here and stays sayable.
+test('a quantifier after the noun is bound to the count in front of it', async () => {
+  const answer = 'The 2 current students both had matching transactions.'
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(2, 2),
+    calls: [TRANSACTIONS, BALANCES],
+    answer,
+    factRefs: [
+      { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+      { callId: 'balances', path: '/currentStudentCount' },
+    ],
+  })
+  assert.equal(result.answer, answer)
+})
+
+// A quantifier reaches its noun across as much of the phrase as the phrase
+// needs. Budgeting three modifier words meant "every one of the 2 current
+// students" needed five and so registered as neither a group claim nor a
+// quantified one, and its count was then checked as an ordinary predicate count
+// with no roster total required. Two of three students had transacted here.
+test('a quantifier reaches its noun however long the phrase between them is', async () => {
+  for (const answer of [
+    'Every one of the 2 current students had matching transactions.',
+    'Each one of the 2 current students had matching transactions.',
+    'Every single one of the 2 current students had matching transactions.',
+    'All of the 2 current students had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 2),
+        calls: [TRANSACTIONS],
+        answer,
+        factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unverified-quantifier',
+      `must refuse: ${answer}`,
+    )
+  }
+  // Citing the roster total does not rescue it either, because the roster is 3.
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 2),
+      calls: [TRANSACTIONS, BALANCES],
+      answer: 'Every one of the 2 current students had matching transactions.',
+      factRefs: [
+        { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+        { callId: 'balances', path: '/currentStudentCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unverified-quantifier',
+  )
+  // And the true form of the same phrasing stays sayable.
+  const answer = 'Every one of the 2 current students had matching transactions.'
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(2, 2),
+    calls: [TRANSACTIONS, BALANCES],
+    answer,
+    factRefs: [
+      { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+      { callId: 'balances', path: '/currentStudentCount' },
+    ],
+  })
+  assert.equal(result.answer, answer)
+})
+
+// A preposition hands the head of the phrase to another noun, so the quantifier
+// is not reaching the students named after it and no count of them is owed.
+test('a quantifier over another noun does not demand a count of students', async () => {
+  const answer = 'All matching transactions for the 1 current student were approved.'
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 1),
+    calls: [TRANSACTIONS],
+    answer,
+    factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+  })
+  assert.equal(result.answer, answer)
+})
+
+// A contraction carries its negation inside the word, where a leading word
+// boundary cannot find it, so "didn't have matching transactions" was read as a
+// claim about who did transact and settled by that count.
+test('a contraction carries its negation into the predicate', async () => {
+  for (const answer of [
+    '1 current student didn’t have matching transactions.',
+    "1 current student didn't have matching transactions.",
+    '1 current student hasn’t had matching transactions.',
+    '1 current student weren’t paid.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 1),
+        calls: [TRANSACTIONS],
+        answer,
+        factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate' &&
+        error.diagnostic.claimPredicate === 'no-transactions',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// A conjunction begins a new assertion whether or not a comma precedes it.
+// Sharing one clause let a negation belonging to the other half reach across:
+// "No balances were negative and 2 current students had matching transactions"
+// was read as a claim about who had none and settled by studentsWithoutCount.
+test('a negation does not reach across a coordinated assertion', async () => {
+  for (const answer of [
+    'No balances were negative and 2 current students had matching transactions.',
+    'No student was frozen while 2 current students had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 1),
+        calls: [WITHOUT_ALL],
+        answer,
+        factRefs: [{ callId: 'without', path: '/studentsWithoutCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate' &&
+        error.diagnostic.claimPredicate === 'transactions',
+      `must refuse: ${answer}`,
+    )
+  }
+  // Both halves of a coordinated sentence still stand when each names its own
+  // predicate and cites the field that answers it.
+  const answer = '1 current student had matching transactions and 2 current students had no matching transactions.'
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 1),
+    calls: [TRANSACTIONS, WITHOUT_ALL],
+    answer,
+    factRefs: [
+      { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+      { callId: 'without', path: '/studentsWithoutCount' },
+    ],
+  })
+  assert.equal(result.answer, answer)
+})
+
+// The two numbers in a disclosure hold different roles. Giving both the same
+// predicate let each take whichever cited fact matched its value, so the
+// reversed "Showing 2 of 1 students" passed on a returnedCount of 1 and a total
+// of 2 -- each number proven by the other's field.
+test('the numbers in a disclosure are bound to the fields that hold them', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'Showing 2 of 1 students without matching transactions.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'listing-page',
+  )
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [{ id: 'balances', name: 'get_balances', args: { limit: 1 } }],
+      answer: 'Showing 3 of 1 matching balances.',
+      factRefs: [
+        { callId: 'balances', path: '/returnedCount' },
+        { callId: 'balances', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'listing-page',
+  )
+  // A page length cannot stand as the total either, even when it is the only
+  // number cited and the two happen to be written the same.
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'Showing 1 of 1 students without matching transactions.',
+      factRefs: [{ callId: 'without', path: '/returnedCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'listing-total',
+  )
+  // Both disclosures in the right order stay sayable, for either tool.
+  const withoutTransactions = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 1),
+    calls: [WITHOUT_ONE_ROW],
+    answer: 'Showing 1 of 2 students without matching transactions.',
+    factRefs: [
+      { callId: 'without', path: '/returnedCount' },
+      { callId: 'without', path: '/studentsWithoutCount' },
+    ],
+  })
+  assert.match(withoutTransactions.answer, /Showing 1 of 2 students/u)
+  const balances = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 1),
+    calls: [{ id: 'balances', name: 'get_balances', args: { limit: 1 } }],
+    answer: 'Showing 1 of 3 matching balances.',
+    factRefs: [
+      { callId: 'balances', path: '/returnedCount' },
+      { callId: 'balances', path: '/matchedCount' },
+    ],
+  })
+  assert.match(balances.answer, /Showing 1 of 3 matching balances/u)
+})
+
+// English joins two words with a hyphen as readily as with a space, and every
+// phrase pattern in the validator was written expecting whitespace, so one
+// hyphen hid the phrase from the check that reads it. The two spellings of a
+// sentence have to be answered the same way.
+test('a hyphen between two words does not hide the phrase they form', async () => {
+  for (const answer of [
+    'Every one of the 2 currently-enrolled students had matching transactions.',
+    'All 2 currently-enrolled students had matching transactions.',
+    'The 2 currently-enrolled students all had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 2),
+        calls: [TRANSACTIONS],
+        answer,
+        factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unverified-quantifier',
+      `must refuse: ${answer}`,
+    )
+  }
+  // The same wording is still sayable when the roster really is that size.
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(2, 2),
+    calls: [TRANSACTIONS, BALANCES],
+    answer: 'Every one of the 2 currently-enrolled students had matching transactions.',
+    factRefs: [
+      { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+      { callId: 'balances', path: '/currentStudentCount' },
+    ],
+  })
+  assert.match(result.answer, /Every one of the 2 currently-enrolled students/u)
+})
+
+// The same hyphen in the wording that widens a count past the current roster:
+// the spaced spellings were refused as ambiguous while the hyphenated ones
+// passed on a roster total, which is a count of a different population than the
+// sentence described.
+test('a hyphen does not hide the wording that widens a population', async () => {
+  for (const answer of [
+    'There are 2 students, including students who have left.',
+    'There are 2 students, including no-longer-enrolled ones.',
+    'There are 2 students, counting former students too.',
+    'There are 2 students, counting former-students too.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: mixedRosterEvidence(),
+        calls: [BALANCES],
+        answer,
+        factRefs: [{ callId: 'balances', path: '/currentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-number' &&
+        error.diagnostic.claimKind === 'population-ambiguous',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// How many modifiers stand between a quantifier and its noun is not something a
+// budget can decide. Three of them lost the quantifier its count, and the same
+// three hid a spelled-out quantity from the check that requires digits -- and a
+// spelled-out count is invisible to the digit scan too, so nothing checked it.
+test('a quantifier reaches its noun however many words stand between them', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 2),
+      calls: [TRANSACTIONS],
+      answer: 'The 2 very recently enrolled students all had matching transactions.',
+      factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unverified-quantifier',
+  )
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(2, 2),
+    calls: [TRANSACTIONS, BALANCES],
+    answer: 'The 2 very recently enrolled students all had matching transactions.',
+    factRefs: [
+      { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+      { callId: 'balances', path: '/currentStudentCount' },
+    ],
+  })
+  assert.match(result.answer, /The 2 very recently enrolled students all/u)
+})
+
+test('a spelled-out count cannot outrun the digits rule by adding modifiers', async () => {
+  for (const answer of [
+    'Seven enrolled students had matching transactions.',
+    'Seven very recently enrolled students had matching transactions.',
+    'Seven still-currently-enrolled students had matching transactions.',
+    'Seven exceptionally well prepared and eager students had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 1),
+        calls: [TRANSACTIONS],
+        answer,
+        factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'number-words',
+      `must refuse: ${answer}`,
+    )
+  }
+  // A number word doing ordinary work is not a quantity, and the scan must not
+  // read across the words that end a noun phrase to reach a noun it never
+  // modified.
+  for (const answer of [
+    'The one clear pattern is that 1 current student had matching transactions.',
+    'That is one thing to watch. 1 current student had matching transactions.',
+  ]) {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [TRANSACTIONS],
+      answer,
+      factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+    })
+    assert.match(result.answer, /1 current student had matching transactions/u, `must allow: ${answer}`)
+  }
+})
+
+// What a number counts was read from a fixed 24 characters either side of it,
+// which decided the question on distance: the same claim was refused with the
+// noun near the digit and accepted with three modifiers in between, because it
+// then resolved to no kind at all -- and a claim of no kind is supported by any
+// number of any kind, so a transaction count stood as a count of students.
+test('what a number counts is read from its clause, not from a fixed distance', async () => {
+  for (const answer of [
+    '2 students had matching transactions.',
+    '2 very recently enrolled students had matching transactions.',
+    '2 exceptionally well prepared students had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: oneStudentTransactedTwice(),
+        calls: [TRANSACTIONS],
+        answer,
+        factRefs: [{ callId: 'transactions', path: '/matchedCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-number' &&
+        error.diagnostic.claimKind === 'student-count',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// A roster of 3 in which one student made 2 transactions, so a transaction
+// count of 2 and a student count of 2 are only ever the same number by
+// coincidence -- which is what a claim of no kind used to trade on.
+function oneStudentTransactedTwice() {
+  const data = evidence()
+  data.question = 'How did the class do?'
+  data.students = [1, 2, 3].map(index => ({
+    ref: `student-${String(index).padStart(3, '0')}`,
+    displayName: `Ava ${index}`,
+    current: true,
+    balance: index,
+    frozen: false,
+  }))
+  data.transactions = [1, 2].map(index => ({
+    ref: `transaction-0000${index}`,
+    studentRef: 'student-001',
+    date: `2026-08-27T15:0${index}:00.000Z`,
+    type: 'Add',
+    amount: 5,
+    category: 'Technology',
+    purpose: 'other',
+    status: 'Approved',
+  }))
+  return data
+}
+
+// A bare "and" ends a clause, correctly, wherever the clause boundary needs
+// it to (see CLAUSE_BOUNDARY_PATTERN). But it does not end a noun phrase --
+// "calm and kind students" is one -- and computing what a number counts from
+// the clause slice let that same "and" cut the noun away from the number
+// entirely: "2 calm and kind students had matching transactions" fell to a
+// clause of just "2 calm", resolved to no kind at all, and a transaction
+// count of 2 stood as a count of students who never transacted.
+test('a coordinating "and" between modifiers does not cut the noun from the number', async () => {
+  for (const answer of [
+    '2 calm and kind students had matching transactions.',
+    '2 newly-enrolled and eager students had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: oneStudentTransactedTwice(),
+        calls: [TRANSACTIONS],
+        answer,
+        factRefs: [{ callId: 'transactions', path: '/matchedCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-number' &&
+        error.diagnostic.claimKind === 'student-count',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// The same clause can hold two numbers, and reading a bag of words from the
+// whole clause let the noun for one outvote the noun sitting right next to
+// the other: "3 matching transactions were recorded for 1 student" let
+// "student" -- forty characters on, and stating a different number entirely
+// -- relabel a transaction count of 3 as a student count, refusing a claim
+// every bit as true as the count it names.
+test('a later noun in the same clause does not relabel an earlier number', async () => {
+  const oneStudentThreeTransactions = evidence()
+  oneStudentThreeTransactions.transactions = [1, 2, 3].map(index => ({
+    ref: `transaction-0000${index}`,
+    studentRef: 'student-001',
+    date: `2026-08-27T15:0${index}:00.000Z`,
+    type: 'Add',
+    amount: 5,
+    category: 'Technology',
+    purpose: 'other',
+    status: 'Approved',
+  }))
+  const answer = '3 matching transactions were recorded for 1 student.'
+  const result = await answerWithTools({
+    assistantEvidence: oneStudentThreeTransactions,
+    calls: [TRANSACTIONS],
+    answer,
+    factRefs: [
+      { callId: 'transactions', path: '/matchedCount' },
+      { callId: 'transactions', path: '/distinctCurrentStudentCount' },
+    ],
+  })
+  assert.equal(result.answer, answer)
+})
+
+// A disclosure is one sentence about one result. Checking its two numbers
+// separately let the pair come apart: reversed, each was proven by the other's
+// field, and the teacher was handed two contradictory disclosures in one answer.
+test('the two numbers in a disclosure come from one result in the order it holds them', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 3),
+      calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+      answer: 'Showing 3 of 1 matching transactions.',
+      factRefs: [
+        { callId: 'transactions', path: '/matchedCount' },
+        { callId: 'transactions', path: '/returnedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'disclosure-counts-unbound' &&
+      error.diagnostic.claimPredicate === 'transactions' &&
+      error.diagnostic.toolName === 'list_transactions',
+  )
+  // A page length from one call and a total from another describe no result.
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [WITHOUT_ONE_ROW, BALANCES],
+      answer: 'Showing 1 of 3 students without matching transactions.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'balances', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'disclosure-counts-unbound',
+  )
+  // Written in the order the result holds them, the same disclosure stands.
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 3),
+    calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+    answer: 'Showing 1 of 3 matching transactions.',
+    factRefs: [
+      { callId: 'transactions', path: '/returnedCount' },
+      { callId: 'transactions', path: '/matchedCount' },
+    ],
+  })
+  assert.match(result.answer, /Showing 1 of 3 matching transactions/u)
+})
+
+// The subject of a disclosure says which result was shown, and a total from a
+// call that cannot speak to that subject proves nothing about it: a get_balances
+// pair carried "students without matching transactions" while a different
+// number of students actually had none.
+test('a disclosure is answered only by the tool that proves its subject', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [{ id: 'balances', name: 'get_balances', args: { limit: 2 } }],
+      answer: 'Showing 2 of 3 students without matching transactions.',
+      factRefs: [
+        { callId: 'balances', path: '/returnedCount' },
+        { callId: 'balances', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'disclosure-counts-unbound' &&
+      error.diagnostic.claimPredicate === 'no-transactions' &&
+      error.diagnostic.toolName === 'find_students_without_transactions',
+  )
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'Showing 1 of 2 matching balances.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'disclosure-counts-unbound' &&
+      error.diagnostic.toolName === 'get_balances',
+  )
+  // "Grouped" names aggregate_transactions, so a grouped-result disclosure is
+  // still sayable from the pair that result actually holds.
+  const grouped = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 3),
+    calls: [{ id: 'grouped', name: 'aggregate_transactions', args: { groupBy: ['student'], metric: 'count', limit: 1 } }],
+    answer: 'Showing 1 of 3 grouped results.',
+    factRefs: [
+      { callId: 'grouped', path: '/returnedCount' },
+      { callId: 'grouped', path: '/resultCount' },
+    ],
+  })
+  assert.match(grouped.answer, /Showing 1 of 3 grouped results/u)
+})
+
+// "Grouped" is not an unrestricted subject: it is the exact noun this module
+// writes for aggregate_transactions, in TRUNCATION_DISCLOSURE_NOUNS, and
+// nothing else. Treating any subject this module cannot classify as
+// unrestricted let "Showing 1 of 3 grouped results by category" pass against
+// a plain list_transactions page and total, with no aggregation performed at
+// all -- three matching transactions, one category, no grouping call made.
+test('a grouped-result disclosure must actually come from aggregate_transactions', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 3),
+      calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+      answer: 'Showing 1 of 3 grouped results by category.',
+      factRefs: [
+        { callId: 'transactions', path: '/returnedCount' },
+        { callId: 'transactions', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'disclosure-counts-unbound' &&
+      error.diagnostic.claimPredicate === 'grouped' &&
+      error.diagnostic.toolName === 'aggregate_transactions',
+  )
+})
+
+// A subject this module truly cannot classify -- no recognised predicate and
+// no "grouped" wording either -- still binds to no tool, so a disclosure
+// phrased this plainly stays sayable from whichever cited result holds the
+// pair. Narrowing every unclassified subject to aggregate_transactions would
+// have refused this true sentence instead.
+test('a disclosure subject with no predicate and no "grouped" wording binds to no tool', async () => {
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 1),
+    calls: [WITHOUT_ONE_ROW],
+    answer: 'Showing 1 of 2 students.',
+    factRefs: [
+      { callId: 'without', path: '/returnedCount' },
+      { callId: 'without', path: '/studentsWithoutCount' },
+    ],
+  })
+  assert.match(result.answer, /Showing 1 of 2 students/u)
+})
+
+// Codex found this pair reversed and reworded three ways, none of which the
+// old frame -- a fixed verb immediately before the numbers -- recognised: the
+// verb after the numbers, a present-tense verb the pattern never listed, and
+// "the" before the second number where only the first was allowed one.
+test('a reversed disclosure pair is refused however its verb is worded or placed', async () => {
+  for (const answer of [
+    'Only 3 of 1 matching transactions are shown.',
+    'The list shows 3 out of 1 matching transactions.',
+    'Showing 3 of the 1 matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 3),
+        calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+        answer,
+        factRefs: [
+          { callId: 'transactions', path: '/matchedCount' },
+          { callId: 'transactions', path: '/returnedCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'disclosure-counts-unbound',
+      `must refuse: ${answer}`,
+    )
+  }
+})
+
+// The "N of M" shape alone is an ordinary partitive -- "1 of the 3 current
+// students" -- not a disclosure, because nothing in its clause is a
+// disclosure verb. Widening the shape to allow "the" before the second
+// number (for "Showing 3 of the 1 matching transactions") must not turn this
+// into a page-count claim it was never intended to be: it is refused, if at
+// all, as an ordinary uncited count -- never as a mismatched disclosure pair,
+// which would be the wrong reason and would mean the verb gate stopped
+// gating.
+test('an ordinary "N of M" partitive is never read as a disclosure pair', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [TRANSACTIONS],
+      answer: '1 of the 3 current students had matching transactions.',
+      factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory !== 'disclosure-counts-unbound',
+  )
+})
+
+// One word list decided both how far a spelled-out quantifier reaches and what
+// a digit counts, and the two fail in opposite directions. A break word
+// missing from the first costs a refusal; a break word too many in the second
+// costs an answer. "Of" and "the" belong to the first and not the second, so
+// "2 of the students had matching transactions" stopped at "of", kept no noun
+// at all, and became a claim of no kind -- which any fact of any kind
+// satisfies, so a transaction count of 2 stood as a count of students on a
+// roster where one student had transacted twice.
+test('a partitive determiner does not strip a number of the noun it counts', async () => {
+  for (const answer of [
+    '2 of the students had matching transactions.',
+    '2 of our students had matching transactions.',
+    '2 of their students had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: oneStudentTransactedTwice(),
+        calls: [TRANSACTIONS],
+        answer,
+        factRefs: [{ callId: 'transactions', path: '/matchedCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-number' &&
+        error.diagnostic.claimKind === 'student-count',
+      `must refuse: ${answer}`,
+    )
+  }
+  // And the same wording stays sayable when the count is the one the cited
+  // field actually holds, which is what crossing the determiner is for.
+  for (const answer of [
+    '1 of the students had matching transactions.',
+    '1 of our students had matching transactions.',
+  ]) {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [TRANSACTIONS],
+      answer,
+      factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+    })
+    assert.equal(result.answer, answer, `must allow: ${answer}`)
+  }
+})
+
+// A disclosure reports what was shown and stops. A sentence that goes on to
+// predicate something of that subject is a claim about the students, and
+// reading it as a page disclosure exempted it from every factual check: "The
+// records show 1 of 3 current students had no matching transactions" passed on
+// a page length of 1 while all three students had none. Identifying a
+// disclosure and exempting a number from being checked are separate questions
+// -- the first is read broadly so no pair goes unbound, the second narrowly so
+// no page length proves a fact.
+test('a sentence that predicates something of its subject is not a page disclosure', async () => {
+  for (const answer of [
+    // A finite auxiliary opens the predication.
+    'The records show 1 of 3 current students had no matching transactions.',
+    // And so does a lexical verb, which no closed class can list -- the
+    // negation it carries is what gives it away, because a nominal negator is
+    // introduced by a preposition and this one is not.
+    'The records show 1 of 3 current students made no deposits.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 0),
+        calls: [WITHOUT_ONE_ROW],
+        answer,
+        factRefs: [
+          { callId: 'without', path: '/returnedCount' },
+          { callId: 'without', path: '/studentsWithoutCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate' &&
+        error.diagnostic.claimPredicate === 'no-transactions',
+      `must refuse: ${answer}`,
+    )
+  }
+  // A prepositional phrase is part of the subject, not a predication about it,
+  // so the disclosure this module's own tools describe stays sayable in both
+  // of the ways English writes that negation.
+  for (const answer of [
+    'Showing 1 of 3 students without matching transactions.',
+    'Showing 1 of 3 students with no matching transactions.',
+  ]) {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer,
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    })
+    assert.match(result.answer, /Showing 1 of 3 students/u, `must allow: ${answer}`)
+  }
+})
+
+// The two numbers of a disclosure do not have to stand next to each other.
+// Requiring them to let "Showing 3 matching transactions out of 1" past the
+// binding check as no disclosure at all, and this module then prefixed its own
+// truthful disclosure to it -- handing the teacher two contradictory sentences
+// in one answer.
+test('a reversed disclosure is bound however far its two numbers stand apart', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 3),
+      calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+      answer: 'Showing 3 matching transactions out of 1.',
+      factRefs: [
+        { callId: 'transactions', path: '/matchedCount' },
+        { callId: 'transactions', path: '/returnedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'disclosure-counts-unbound',
+  )
+  // Written in the order the result holds them, the same spacing is fine.
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 3),
+    calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+    answer: 'Showing 1 matching transaction out of 3.',
+    factRefs: [
+      { callId: 'transactions', path: '/returnedCount' },
+      { callId: 'transactions', path: '/matchedCount' },
+    ],
+  })
+  assert.match(result.answer, /Showing 1 matching transaction out of 3/u)
+})
+
+// Aggregation is a property of the whole subject, and proximity is not.
+// Deciding the subject by the nearest predicate let a transaction word sitting
+// closer to the frame win, so a disclosure about grouping bound to
+// list_transactions and was answered by a plain, ungrouped page and total --
+// no aggregation call made at all. Naming the aggregate in any of the words
+// this module's own tools use has to reach the same call.
+test('an aggregated-result disclosure names its call however it is worded', async () => {
+  for (const answer of [
+    'Showing 1 of 3 grouped transaction results by category.',
+    'Showing 1 of 3 category groups.',
+    'Showing 1 of 3 grouped results by category.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 3),
+        calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+        answer,
+        factRefs: [
+          { callId: 'transactions', path: '/returnedCount' },
+          { callId: 'transactions', path: '/matchedCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'disclosure-counts-unbound' &&
+        error.diagnostic.claimPredicate === 'grouped' &&
+        error.diagnostic.toolName === 'aggregate_transactions',
+      `must refuse: ${answer}`,
+    )
+  }
+  // A category named as an ordinary filter is not an aggregation, and the
+  // listing that mentions one still binds to the call that produced it.
+  const listed = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 3),
+    calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+    answer: 'Showing 1 of 3 matching transactions in the Technology category.',
+    factRefs: [
+      { callId: 'transactions', path: '/returnedCount' },
+      { callId: 'transactions', path: '/matchedCount' },
+    ],
+  })
+  assert.match(listed.answer, /Showing 1 of 3 matching transactions/u)
+})
+
+// A spelled-out count is invisible to the digit scan, so nothing checks it at
+// all -- which is why this module refuses one outright and tells the model to
+// use digits. A partitive hid every such count from that refusal: "Seven of
+// the current students had matching transactions" was accepted on a roster of
+// three where one student had transacted, while the same sentence without "of
+// the" was refused. Only "one of the" is the idiom the refusal has to spare.
+test('a spelled-out count is refused across a partitive too', async () => {
+  for (const answer of [
+    'Seven of the current students had matching transactions.',
+    'Two of the current students had matching transactions.',
+    'Seven of our students had matching transactions.',
+    'Twenty one of the students had matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 1),
+        calls: [TRANSACTIONS],
+        answer,
+        factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'number-words',
+      `must refuse: ${answer}`,
+    )
+  }
+  // "One of the students" names a student rather than counting them, and the
+  // digits rule has never governed it.
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 1),
+    calls: [TRANSACTIONS],
+    answer: 'One of the students had matching transactions.',
+    factRefs: [{ callId: 'transactions', path: '/distinctCurrentStudentCount' }],
+  })
+  assert.match(result.answer, /One of the students/u)
+})
+
+// A disclosure states what was shown and stops. Two of this module's own noun
+// words standing side by side are a subject only when a preposition or a
+// negator opens the second -- "students without matching transactions" is
+// one group -- and anything else between them is a verb this module cannot
+// enumerate. Codex found three sentences the subject-negation rule alone
+// still let through as page disclosures: a verb before the very preposition
+// the rule trusted unconditionally, the same verb elsewhere spelled without
+// any negator at all, and a passive verb whose sentence went on past it.
+test('a verb between a disclosure\'s subject and its predicate is not a listing', async () => {
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'The records show only 1 of 3 current students went without matching transactions.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'no-transactions',
+  )
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'Only 1 of 3 current students are shown to have no matching transactions.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'no-transactions',
+  )
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [{ id: 'balances', name: 'get_balances', args: { limit: 1 } }],
+      answer: 'Only 1 of 3 current students carry positive balances.',
+      factRefs: [
+        { callId: 'balances', path: '/returnedCount' },
+        { callId: 'balances', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'balances',
+  )
+  // The genuine listings these three were built from stay sayable.
+  for (const answer of [
+    'Showing 1 of 3 students without matching transactions.',
+    'Showing 1 of 3 students with no matching transactions.',
+  ]) {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer,
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    })
+    assert.match(result.answer, /Showing 1 of 3 students/u, `must allow: ${answer}`)
+  }
+})
+
+// The disclosure frame allows a noun phrase between its two numbers, and a
+// grouped-result naming can sit inside that phrase rather than after the
+// frame -- "Showing 1 grouped transaction result out of 3" and "Showing 1
+// category group out of 3" both put it there. Reading the aggregation word
+// only from what follows the frame never saw it.
+test('an aggregated-result disclosure names its call from inside the frame too', async () => {
+  for (const answer of [
+    'Showing 1 grouped transaction result out of 3.',
+    'Showing 1 category group out of 3.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 3),
+        calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+        answer,
+        factRefs: [
+          { callId: 'transactions', path: '/returnedCount' },
+          { callId: 'transactions', path: '/matchedCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'disclosure-counts-unbound' &&
+        error.diagnostic.claimPredicate === 'grouped' &&
+        error.diagnostic.toolName === 'aggregate_transactions',
+      `must refuse: ${answer}`,
+    )
+  }
+  // The same wording, from the call that actually grouped, stays sayable.
+  const result = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 3),
+    calls: [{ id: 'grouped', name: 'aggregate_transactions', args: { groupBy: ['student'], metric: 'count', limit: 1 } }],
+    answer: 'Showing 1 grouped transaction result out of 3.',
+    factRefs: [
+      { callId: 'grouped', path: '/returnedCount' },
+      { callId: 'grouped', path: '/resultCount' },
+    ],
+  })
+  assert.match(result.answer, /Showing 1 grouped transaction result out of 3/u)
+})
+
+// A count's noun does not always sit right against it: "3 of the balances are
+// positive" states a count of balances exactly as much as "3 matching
+// balances" does. Reaching past the partitive to find that noun exposed a
+// claim that used to fall to 'generic' -- exempt from every check -- to the
+// closest wrong anchor, and for "balances" that was the money bucket: a true,
+// cited count of balances was refused as an uncited dollar amount.
+test('a partitive count of balances is a count, not an amount', async () => {
+  const data = evidence()
+  data.students = [
+    { ref: 'student-001', displayName: 'Ava 1', current: true, balance: 15, frozen: false },
+    { ref: 'student-002', displayName: 'Ava 2', current: true, balance: -7, frozen: false },
+    { ref: 'student-003', displayName: 'Ava 3', current: true, balance: 22, frozen: false },
+  ]
+  const result = await answerWithTools({
+    assistantEvidence: data,
+    calls: [{ id: 'balances', name: 'get_balances', args: { condition: 'positive' } }],
+    answer: '2 of the balances are positive.',
+    factRefs: [{ callId: 'balances', path: '/matchedCount' }],
+  })
+  assert.equal(result.answer, '2 of the balances are positive.')
+})
+
+// Testing only a gap's opening word does not establish that the whole gap is
+// a prepositional phrase. An unrecognised noun merged two phrases into one
+// gap, and that gap's opening preposition then vouched for everything after
+// it: "students in the class went without matching transactions" opened on
+// "in" and carried "went" four words later, so a full assertion kept the
+// page-count exemption again. Two rules close it together -- the noun list
+// grew, which splits the gap, and a gap may now hold only the one
+// preposition its own phrase opens on, which refuses the merge wherever a
+// noun is still missing from that list.
+test('a gap between a disclosure\'s nouns holds one phrase, not a whole clause', async () => {
+  for (const answer of [
+    'The records show only 1 of 3 current students in the class went without matching transactions.',
+    // The same shape over a noun the list does not have, which is what the
+    // one-preposition rule is for rather than the list itself.
+    'The records show only 1 of 3 current students in the cafeteria went without matching transactions.',
+    'The records show only 1 of 3 students in the class with overdue rent went without matching transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 0),
+        calls: [WITHOUT_ONE_ROW],
+        answer,
+        factRefs: [
+          { callId: 'without', path: '/returnedCount' },
+          { callId: 'without', path: '/studentsWithoutCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate' &&
+        error.diagnostic.claimPredicate === 'no-transactions',
+      `must refuse: ${answer}`,
+    )
+  }
+  // A positive predicate hidden the same way, which carries no negator at all.
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [{ id: 'balances', name: 'get_balances', args: { limit: 1 } }],
+      answer: 'The records show only 1 of 3 current students in the class carry positive balances.',
+      factRefs: [
+        { callId: 'balances', path: '/returnedCount' },
+        { callId: 'balances', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'balances',
+  )
+  // One prepositional phrase per gap is what a subject actually states, and a
+  // chain of them is still one subject, so both stay sayable.
+  for (const answer of [
+    'Showing 1 of 3 students in the class without matching transactions.',
+    'Showing 1 of 3 students without matching transactions.',
+  ]) {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer,
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    })
+    assert.match(result.answer, /Showing 1 of 3 students/u, `must allow: ${answer}`)
+  }
+})
+
+// A disclosure may state its subject between its two numbers rather than
+// after them, and the frame's own noun-phrase span already holds it there.
+// Reading the subject only from what follows the frame found none at all and
+// refused a truthful disclosure as an unclassified claim.
+test('a disclosure states its subject on either side of its second number', async () => {
+  for (const answer of [
+    'Showing 1 student out of 3.',
+    'Showing 1 of 3 students.',
+    // No subject on either side asserts nothing about anybody, so there is
+    // nothing here for a page count to prove falsely.
+    'Showing 1 of 3.',
+  ]) {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer,
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    })
+    assert.equal(result.answer, answer, `must allow: ${answer}`)
+  }
+  // A verb inside the frame is still a verb, wherever the subject sits.
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'Showing 1 student out of 3 who went without matching transactions.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate',
+  )
+})
+
+// Whether a disclosure's subject is a noun phrase cannot be decided by ruling
+// verbs out, and three rounds of trying is the evidence. A gap had to open on
+// a preposition; then hold exactly one; and the noun list grew twice to split
+// those gaps. Each rule was an attempt to detect a verb by excluding one, and
+// each let the next wording through: "in the classroom made no deposits" and
+// "in attendance carry positive balances" hold exactly one preposition and
+// open on it, and "withdrew" holds none and names no noun, which the rule
+// written to let "Showing 1 of 3" through then read as a subject too.
+//
+// The test is inverted here: every word in a subject must be one this module
+// positively recognises. An unrecognised word costs a refusal instead of
+// granting an exemption, so these lists no longer have to be complete to be
+// sound -- only correct in what they admit.
+test('a disclosure subject is nominal only in words this module recognises', async () => {
+  // Nonempty text naming no noun is not a subject, however few words it has.
+  for (const answer of [
+    'The records show only 1 current student out of 3 withdrew.',
+    'The records show only 1 student out of 3 deposited.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 0),
+        calls: [WITHOUT_ONE_ROW],
+        answer,
+        factRefs: [
+          { callId: 'without', path: '/returnedCount' },
+          { callId: 'without', path: '/studentsWithoutCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate',
+      `must refuse: ${answer}`,
+    )
+  }
+  // A verb inside a well-formed prepositional phrase, which counting
+  // prepositions could never see.
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer: 'The records show only 1 of 3 current students in the classroom made no deposits.',
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'no-transactions',
+  )
+  await assert.rejects(
+    answerWithTools({
+      assistantEvidence: rosterEvidence(3, 1),
+      calls: [{ id: 'balances', name: 'get_balances', args: { limit: 1 } }],
+      answer: 'The records show only 1 of 3 current students in attendance carry positive balances.',
+      factRefs: [
+        { callId: 'balances', path: '/returnedCount' },
+        { callId: 'balances', path: '/matchedCount' },
+      ],
+    }),
+    error => error instanceof GeminiClassroomAssistantError &&
+      error.subcategory === 'unsupported-predicate' &&
+      error.diagnostic.claimPredicate === 'balances',
+  )
+})
+
+// The inverted rule is much stricter than the three it replaced, so the
+// wordings a truthful disclosure actually uses are pinned here. Every one of
+// these is a real page of one row out of three, and every one has to stay
+// sayable -- including the empty subject, which asserts nothing about anybody.
+test('the wordings a truthful listing uses all stay sayable', async () => {
+  for (const answer of [
+    'Showing 1 of 3 students without matching transactions.',
+    'Showing 1 of 3 students with no matching transactions.',
+    'Showing 1 of 3 current students without matching transactions.',
+    'Showing 1 of 3 students in the class without matching transactions.',
+    'Showing 1 of 3 students on the roster without matching transactions.',
+    'Showing 1 of 3 students without approved transactions.',
+    'Showing 1 of 3 matching students.',
+    'Showing 1 of 3 students.',
+    'Showing 1 student out of 3.',
+    'Showing only 1 of 3 students.',
+    'Showing the first 1 of 3 students.',
+    'Showing 1 of 3.',
+    'Only 1 of 3 students are shown.',
+  ]) {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer,
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    })
+    assert.ok(result.answer.includes(answer), `must allow: ${answer}`)
+  }
+})
+
+// "Never admit a word that can stand as a finite verb" was not a premise the
+// allowlist could keep: matches, records, lists, counts, deposits and balances
+// are all nouns this module needs, and all finite verbs too. English decides
+// word class by position, so an unordered check cannot tell "the records" from
+// "students records no transactions", and Codex found the whole homograph
+// family walking through the exemption on that.
+//
+// The lists keep every one of those words. What changed is that they are read
+// in order now, as one noun phrase followed by prepositional phrases, and two
+// positional rules refuse these without removing a single homograph: a
+// determiner may stand only where a phrase begins, and only a phrase's final
+// noun may be plural, because English builds compounds from singular
+// attributives -- "student records", never "students records".
+test('a homograph in a verb\'s position does not make a disclosure subject', async () => {
+  for (const answer of [
+    // A determiner mid-phrase gives it away, and so does the plural
+    // attributive; these wordings break both rules at once.
+    'The records show only 1 of 3 current students matches no transactions.',
+    'The records show only 1 of 3 current students records no transactions.',
+    'The records show only 1 of 3 current students lists no transactions.',
+    'The records show only 1 of 3 current students counts no transactions.',
+    // With no determiner at all, the plural attributive is the only tell left.
+    'The records show only 1 of 3 current students match transactions.',
+    'The records show only 1 of 3 students matches transactions.',
+  ]) {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 0),
+        calls: [WITHOUT_ONE_ROW],
+        answer,
+        factRefs: [
+          { callId: 'without', path: '/returnedCount' },
+          { callId: 'without', path: '/studentsWithoutCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.subcategory === 'unsupported-predicate',
+      `must refuse: ${answer}`,
+    )
+  }
+  // The same words heading their own phrases are still subjects, which is why
+  // none of them could simply be deleted from the lists. Each is cited from
+  // the call its own subject binds to: "records" names no predicate this
+  // module recognises, while "deposits" names a transaction one.
+  const records = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 0),
+    calls: [WITHOUT_ONE_ROW],
+    answer: 'Showing 1 of 3 matching records.',
+    factRefs: [
+      { callId: 'without', path: '/returnedCount' },
+      { callId: 'without', path: '/studentsWithoutCount' },
+    ],
+  })
+  assert.match(records.answer, /Showing 1 of 3 matching records/u)
+  const deposits = await answerWithTools({
+    assistantEvidence: rosterEvidence(3, 3),
+    calls: [{ id: 'transactions', name: 'list_transactions', args: { limit: 1 } }],
+    answer: 'Showing 1 of 3 matching deposits.',
+    factRefs: [
+      { callId: 'transactions', path: '/returnedCount' },
+      { callId: 'transactions', path: '/matchedCount' },
+    ],
+  })
+  assert.match(deposits.answer, /Showing 1 of 3 matching deposits/u)
+})
+
+// Each case was accepted on 4e886f4 with only page/total citations. Incorrect
+// subject-verb agreement must not turn a student assertion into a disclosure.
+// Keep separate tests so the failing-before run exercises all ten sentences.
+for (const answer of [
+  'The records show only 1 of 3 current student match lists.',
+  'The records show only 1 of 3 current student record lists.',
+  'The records show only 1 of 3 current student count results.',
+  'The records show only 1 of 3 current student list records.',
+  'Only 1 of 3 current student match lists are shown.',
+  'Showing 1 student match list out of 3.',
+  'Showing 1 student match out of 3.',
+  'Showing 1 student record out of 3.',
+  'Showing 1 student count out of 3.',
+  'The records show only 1 of 3 current student separate lists.',
+]) {
+  test(`agreement errors cannot grant a page-count exemption: ${answer}`, async () => {
+    await assert.rejects(
+      answerWithTools({
+        assistantEvidence: rosterEvidence(3, 0),
+        calls: [WITHOUT_ONE_ROW],
+        answer,
+        factRefs: [
+          { callId: 'without', path: '/returnedCount' },
+          { callId: 'without', path: '/studentsWithoutCount' },
+        ],
+      }),
+      error => error instanceof GeminiClassroomAssistantError &&
+        error.category === 'answer-unverified' &&
+        error.subcategory === 'unsupported-predicate',
+      `must refuse: ${answer}`,
+    )
+  })
+}
+
+test('a disclosure cannot extend a completed noun with another assertion', async () => {
+  // Nearby variants exercise both number placements, passive wording, and
+  // assertions inside prepositional phrases. The rent compound must not
+  // license a larger arbitrary compound on either side of it.
+  for (const subject of [
+    'current student approved records',
+    'current student separate lists',
+    'current student deposit records',
+    'students in the class match lists',
+    'students with current student record lists',
+    'students without matching student rent transactions',
+    'students without matching rent transaction records',
+    'students without matching rent separate transactions',
+  ]) {
+    for (const answer of [
+      `The records show only 1 of 3 ${subject}.`,
+      `Only 1 of 3 ${subject} are shown.`,
+      `Showing 1 ${subject} out of 3.`,
+    ]) {
+      await assert.rejects(
+        answerWithTools({
+          assistantEvidence: rosterEvidence(3, 0),
+          calls: [WITHOUT_ONE_ROW],
+          answer,
+          factRefs: [
+            { callId: 'without', path: '/returnedCount' },
+            { callId: 'without', path: '/studentsWithoutCount' },
+          ],
+        }),
+        error => error instanceof GeminiClassroomAssistantError &&
+          error.category === 'answer-unverified' &&
+          error.subcategory === 'unsupported-predicate',
+        `must refuse: ${answer}`,
+      )
+    }
+  }
+})
+
+// Compatibility safety net: these already passed before this correction.
+// Homographs are still valid heads, with the same cited tool/count binding.
+test('disclosure homographs remain usable as complete nouns', async () => {
+  for (const [singular, plural, call, totalPath] of [
+    ['match', 'matches', WITHOUT_ONE_ROW, '/studentsWithoutCount'],
+    ['record', 'records', WITHOUT_ONE_ROW, '/studentsWithoutCount'],
+    ['list', 'lists', WITHOUT_ONE_ROW, '/studentsWithoutCount'],
+    ['count', 'counts', WITHOUT_ONE_ROW, '/studentsWithoutCount'],
+    ['deposit', 'deposits', { ...TRANSACTIONS, args: { limit: 1 } }, '/matchedCount'],
+    ['balance', 'balances', { ...BALANCES, args: { limit: 1 } }, '/matchedCount'],
+  ]) {
+    for (const answer of [
+      `Showing 1 matching ${singular} out of 3.`,
+      `Showing 1 of 3 matching ${plural}.`,
+    ]) {
+      const result = await answerWithTools({
+        assistantEvidence: rosterEvidence(3, call === WITHOUT_ONE_ROW ? 0 : 3),
+        calls: [call],
+        answer,
+        factRefs: [
+          { callId: call.id, path: '/returnedCount' },
+          { callId: call.id, path: totalPath },
+        ],
+      })
+      assert.equal(result.answer, answer, `must allow: ${answer}`)
+    }
+  }
+})
+
+// Compatibility safety net: aggregate counts remain valid on either side of
+// the second number. These are not population counts and do not exercise the
+// page-count exemption, so their acceptance does not justify compound entries.
+test('aggregate disclosure wordings retain their cited counts', async () => {
+  const assistantEvidence = rosterEvidence(3, 3)
+  assistantEvidence.transactions.forEach((transaction, index) => {
+    transaction.category = ['Technology', 'Rent', 'Supplies'][index]
+  })
+  for (const [singular, plural] of [
+    ['grouped transaction result', 'grouped transaction results'],
+    ['category group', 'category groups'],
+  ]) {
+    for (const answer of [
+      `Showing 1 ${singular} out of 3.`,
+      `Showing 1 of 3 ${plural}.`,
+    ]) {
+      const result = await answerWithTools({
+        assistantEvidence,
+        calls: [{ id: 'grouped', name: 'aggregate_transactions', args: { groupBy: ['category'], metric: 'count', limit: 1 } }],
+        answer,
+        factRefs: [
+          { callId: 'grouped', path: '/returnedCount' },
+          { callId: 'grouped', path: '/resultCount' },
+        ],
+      })
+      assert.equal(result.answer, answer, `must allow: ${answer}`)
+    }
+  }
+})
+
+// Each acceptance fails with unsupported-predicate when its corresponding
+// transaction-result compound entry is removed from 74dbdc2. Unlike the
+// aggregate safety net above, these count students: returnedCount can support
+// the 1 only when the complete sentence qualifies for the page-count exemption.
+for (const answer of [
+  'Showing 1 of 3 students without a matching transaction result.',
+  'Showing 1 of 3 students without matching transaction results.',
+]) {
+  test(`transaction-result disclosures need the population page-count exemption: ${answer}`, async () => {
+    const result = await answerWithTools({
+      assistantEvidence: rosterEvidence(3, 0),
+      calls: [WITHOUT_ONE_ROW],
+      answer,
+      factRefs: [
+        { callId: 'without', path: '/returnedCount' },
+        { callId: 'without', path: '/studentsWithoutCount' },
+      ],
+    })
+    assert.equal(result.answer, answer)
+  })
+}

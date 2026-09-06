@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { createClassroomAssistantToolbox } from "../../../functions/insights/classroomAssistantTools.js";
+import { createStructuredAnswerRegistry } from "../../../functions/insights/structuredClassroomAnswers.js";
 
 import {
   PROJECT_ID,
@@ -55,6 +57,41 @@ async function signIn(page, tenant) {
 }
 
 const RESTROOM_QUESTION = "Who has used the restroom the most today?";
+
+test("renders a real structured result as escaped text with visible scope and line breaks", async ({ page }, testInfo) => {
+  const registry = createStructuredAnswerRegistry(createClassroomAssistantToolbox({
+    question: "Show matching transactions.", generatedAt: "2026-08-27T18:00:00.000Z",
+    asOfDate: "2026-08-27", timeZone: "America/Denver", periodDays: 7,
+    periodStart: "2026-08-20T18:00:00.000Z", historyStart: "2026-05-29T18:00:00.000Z", configuredRentAmount: 10,
+    students: [{ ref: "student-001", displayName: "Avery", current: true, balance: 10, frozen: false }], categories: [],
+    transactions: [{ ref: "transaction-00001", studentRef: "student-001", date: "2026-08-27T15:00:00.000Z",
+      type: "Subtract", amount: 5, category: '<img src=x onerror="window.structuredXss=true">', purpose: "other", status: "Approved" }],
+  }));
+  const call = registry.execute("list_transactions", { status: "Approved", transactionType: "Subtract" });
+  const rendered = registry.render({ schemaVersion: 1, sections: [{ resultId: call.resultId, view: call.view }] });
+  await openApp(page);
+  await signIn(page, TENANT_A);
+  await page.evaluate(() => window.setInsightsPeriod(7));
+  // UI-only transport fixture. The separate Node integration test exercises
+  // the real live handler/tenant/ledger path; this checks its text contract.
+  await page.route("**/analyzeTeacherInsightsV3", route => route.fulfill({
+    status: 200,
+    headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, x-firebase-appcheck", "Access-Control-Allow-Methods": "POST, OPTIONS" },
+    json: { result: { schemaVersion: 2, source: "ai-grounded", periodDays: 7,
+      generatedAt: "2026-08-27T18:00:00.000Z", ...rendered,
+      usage: { inputTokens: 20, outputTokens: 10, thinkingTokens: 0, costMicroUsd: 10 } } },
+  }));
+  await page.locator("#providerQuestionInput").fill("Show matching transactions.");
+  await page.getByTestId("provider-question-submit").click();
+  const result = page.getByTestId("provider-question-result");
+  const answer = result.locator(".insights-answer-copy");
+  await expect(answer).toHaveText(rendered.answer);
+  await expect(answer).toHaveCSS("white-space", "pre-line");
+  await expect(answer).toContainText("Filters: Approved; subtracts");
+  await expect(answer.locator("img")).toHaveCount(0);
+  expect(await page.evaluate(() => window.structuredXss)).toBeUndefined();
+  await result.screenshot({ path: testInfo.outputPath("structured-answer.png") });
+});
 const QUICK_CHOICES = Object.freeze([
   Object.freeze(["Lowest balances", "Who currently has the lowest balance?"]),
   Object.freeze(["Spending patterns", "What category are students spending the most money in?"]),

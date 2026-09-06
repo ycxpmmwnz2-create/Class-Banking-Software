@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import {
   GEMINI_MONTHLY_ALLOWANCE_MICRO_USD,
   insightModeProfile,
@@ -16,8 +17,9 @@ import {
   validateTeacherQuestionResponse,
 } from './questionContracts.js'
 import { InsightQuestionEvidenceError } from './questionEvidenceAdapter.js'
+import { STRUCTURED_ANSWER_CONTRACT } from './structuredClassroomAnswers.js'
 
-const TOOL_ASSISTANT_RESULT_SCHEMA_VERSION = 1
+const TOOL_ASSISTANT_RESULT_SCHEMA_VERSION = 2
 const RESERVATION_FAILURE_MESSAGES = Object.freeze({
   'allowance-exhausted': 'The monthly AI allowance is exhausted.',
   'rate-limit-exhausted': 'The rolling hourly request limit is exhausted.',
@@ -76,20 +78,25 @@ export function createInsightToolQuestionService(dependencies) {
       'cost-policy-unavailable',
       'The trusted classroom assistant cost policy is unavailable.',
     ))
+    const signature = createHash('sha256').update(JSON.stringify({
+      answerContract: STRUCTURED_ANSWER_CONTRACT,
+      tenant, question: request.question, periodDays: request.periodDays, timeZone: request.timeZone,
+      evidenceSignature: envelope.evidenceSignature,
+    })).digest('hex')
     const reservation = await reserveUsage(() => deps.usageLedger.reserve({
       teacherUid: tenant.teacherUid,
       classroomId: tenant.classroomId,
       requestId: request.requestId,
       monthKey: utcMonthKey(now),
       mode: 'quick',
-      evidenceSignature: envelope.evidenceSignature,
+      evidenceSignature: signature,
       hourlyRequestLimit: profile.hourlyRequestLimit,
       monthlyAllowanceMicroUsd: GEMINI_MONTHLY_ALLOWANCE_MICRO_USD,
       rateCardId: quote.rateCardId,
       worstCaseCostMicroUsd: quote.worstCaseCostMicroUsd,
     }))
     if (reservation?.kind === 'completed') {
-      return teacherResponse(validateCompletedResult(reservation.result, request, envelope), request.periodDays)
+      return teacherResponse(validateCompletedResult(reservation.result, request, signature), request.periodDays)
     }
     const accepted = validateReservation(reservation, quote.worstCaseCostMicroUsd)
     try {
@@ -104,9 +111,10 @@ export function createInsightToolQuestionService(dependencies) {
       const billedUsage = Object.freeze({ ...result.usage, costMicroUsd: actualCostMicroUsd })
       const completed = Object.freeze({
         schemaVersion: TOOL_ASSISTANT_RESULT_SCHEMA_VERSION,
+        answerContract: STRUCTURED_ANSWER_CONTRACT,
         source: 'provider-tool-assistant',
         periodDays: request.periodDays,
-        evidenceSignature: envelope.evidenceSignature,
+        evidenceSignature: signature,
         generatedAt: now.toISOString(),
         answer: result.answer,
         evidence: result.evidence,
@@ -143,7 +151,8 @@ export function createInsightToolQuestionService(dependencies) {
 function validateAssistantResult(value) {
   if (
     !isPlainObject(value) ||
-    !hasExactKeys(value, ['answer', 'evidence', 'usage', 'toolCallCount']) ||
+    !hasExactKeys(value, ['answerContract', 'answer', 'evidence', 'usage', 'toolCallCount']) ||
+    value.answerContract !== STRUCTURED_ANSWER_CONTRACT ||
     typeof value.answer !== 'string' ||
     !Array.isArray(value.evidence) ||
     value.evidence.length < 1 ||
@@ -153,14 +162,15 @@ function validateAssistantResult(value) {
   return value
 }
 
-function validateCompletedResult(value, request, envelope) {
+function validateCompletedResult(value, request, signature) {
   if (
     !isPlainObject(value) ||
-    !hasExactKeys(value, ['schemaVersion', 'source', 'periodDays', 'evidenceSignature', 'generatedAt', 'answer', 'evidence', 'usage']) ||
+    !hasExactKeys(value, ['schemaVersion', 'answerContract', 'source', 'periodDays', 'evidenceSignature', 'generatedAt', 'answer', 'evidence', 'usage']) ||
     value.schemaVersion !== TOOL_ASSISTANT_RESULT_SCHEMA_VERSION ||
+    value.answerContract !== STRUCTURED_ANSWER_CONTRACT ||
     value.source !== 'provider-tool-assistant' ||
     value.periodDays !== request.periodDays ||
-    value.evidenceSignature !== envelope.evidenceSignature
+    value.evidenceSignature !== signature
   ) throw new InsightToolQuestionServiceError('invalid-replay', 'Stored question does not match current evidence.')
   return value
 }

@@ -1,3 +1,5 @@
+import { STRUCTURED_ANSWER_FAILURE_CODES } from './structuredClassroomAnswers.js'
+
 const CLIENT_SAFE_CATEGORIES = Object.freeze(new Set([
   'allowance-exhausted',
   'rate-limit-exhausted',
@@ -54,10 +56,18 @@ export const CALLABLE_LOG_SUBCATEGORIES = Object.freeze(new Set([
   'fact-ref-non-scalar',
   'number-words',
   'unsupported-number',
+  'unverified-quantifier',
+  'unsupported-predicate',
+  'group-claim-without-count',
   'unsupported-date',
   'uncited-roster-name',
   'truncation-not-disclosed',
+  'disclosure-counts-unbound',
   'quoted-span-unverified',
+  'tool-turn-content-missing',
+  'tool-call-limit',
+  'tool-call-id-repeated',
+  'tool-turn-limit',
 ]))
 
 export function callableErrorCode(error) {
@@ -103,7 +113,15 @@ export function callableLogSubcategory(error) {
 // fixed vocabulary word -- never a value read from classroom data, and never a
 // name. Anything else is dropped rather than truncated or redacted.
 const CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS = Object.freeze(new Set([
-  'money', 'percent', 'day-count', 'student-count', 'transaction-count', 'count', 'generic',
+  'money', 'percent', 'day-count', 'student-count', 'participant-count',
+  'transaction-count', 'result-count', 'count', 'generic', 'population-ambiguous',
+]))
+
+// What a quantified claim asserted about the students it counted. A fixed
+// vocabulary chosen here, never a value read out of a classroom result.
+const CALLABLE_LOG_DIAGNOSTIC_PREDICATE_WORDS = Object.freeze(new Set([
+  'transactions', 'no-transactions', 'balances', 'roster',
+  'listing-page', 'listing-total', 'unclassified', 'grouped',
 ]))
 
 const CALLABLE_LOG_DIAGNOSTIC_TOOL_NAMES = Object.freeze(new Set([
@@ -128,8 +146,11 @@ const isWordListFrom = allowed => value => Array.isArray(value) &&
 // Each field is paired with the shape it is allowed to have, so a free-text
 // value smuggled under an allowlisted key is dropped rather than logged.
 const CALLABLE_LOG_DIAGNOSTIC_FIELDS = Object.freeze(new Map([
+  ['structuredAnswerCode', isWordFrom(new Set(STRUCTURED_ANSWER_FAILURE_CODES))],
   ['claimKind', isWordFrom(CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS)],
   ['numericFactCount', isCount],
+  ['populationTotalFactCount', isCount],
+  ['claimPredicate', isWordFrom(CALLABLE_LOG_DIAGNOSTIC_PREDICATE_WORDS)],
   ['numericFactKinds', isWordListFrom(CALLABLE_LOG_DIAGNOSTIC_KIND_WORDS)],
   ['distinctWindowCount', isCount],
   ['returnedCount', isCount],
@@ -137,6 +158,10 @@ const CALLABLE_LOG_DIAGNOSTIC_FIELDS = Object.freeze(new Map([
   ['toolName', isWordFrom(CALLABLE_LOG_DIAGNOSTIC_TOOL_NAMES)],
   ['returnedCountUsable', isFlag],
   ['totalCountUsable', isFlag],
+  ['turnIndex', isCount],
+  ['toolCallCount', isCount],
+  ['requestedCallCount', isCount],
+  ['providerCallIdPresent', isFlag],
 ]))
 
 export function callableLogDiagnostic(error) {

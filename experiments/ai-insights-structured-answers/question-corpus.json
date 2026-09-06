@@ -1,0 +1,153 @@
+{
+  "purpose": "Expected interpretation contracts, frozen before provider integration. Fake-provider render tests do not establish real-model interpretation success.",
+  "cases": [
+    {
+      "questions": [
+        "Who has a negative balance?",
+        "Which students are overdrawn?"
+      ],
+      "slice": "initial",
+      "tool": "get_balances",
+      "args": {
+        "condition": "negative"
+      }
+    },
+    {
+      "questions": [
+        "Who has a frozen account?",
+        "Show frozen accounts."
+      ],
+      "slice": "initial",
+      "tool": "get_balances",
+      "args": {
+        "frozen": "frozen"
+      }
+    },
+    {
+      "questions": [
+        "Who has the most money?",
+        "Show the highest balances."
+      ],
+      "slice": "initial",
+      "tool": "get_balances",
+      "args": {
+        "sort": "highest"
+      },
+      "require": "Never assert a unique winner if ties exist or the page cannot establish uniqueness."
+    },
+    {
+      "questions": [
+        "Who hasn't paid rent this period?",
+        "Which students still have no approved rent payment?"
+      ],
+      "slice": "initial",
+      "tool": "find_students_without_transactions",
+      "args": {
+        "status": "Approved",
+        "transactionType": "Subtract",
+        "purpose": "rent"
+      }
+    },
+    {
+      "questions": [
+        "Who has no pending transactions?",
+        "Which current students have no approved transactions?"
+      ],
+      "slice": "initial",
+      "tool": "find_students_without_transactions",
+      "require": "Status must match each question; no status substitution."
+    },
+    {
+      "questions": [
+        "Who paid rent twice this period?",
+        "Which students have two or more approved rent payments?"
+      ],
+      "slice": "extended",
+      "tool": "aggregate_transactions",
+      "args": {
+        "status": "Approved",
+        "transactionType": "Subtract",
+        "purpose": "rent",
+        "groupBy": [
+          "student"
+        ],
+        "metric": "count",
+        "minimumResult": 2
+      }
+    },
+    {
+      "questions": [
+        "How much was spent on Technology?",
+        "What is the approved Technology spending total?"
+      ],
+      "slice": "extended",
+      "tool": "aggregate_transactions",
+      "args": {
+        "status": "Approved",
+        "transactionType": "Subtract",
+        "categoryContains": "Technology",
+        "groupBy": [],
+        "metric": "amountTotal"
+      },
+      "require": "Disclose substring matching; do not imply exact-category equality."
+    },
+    {
+      "questions": [
+        "Compare Technology spending August 1-7 and August 8-14, 2026."
+      ],
+      "slice": "extended",
+      "tool": "compare_periods",
+      "args": {
+        "status": "Approved",
+        "transactionType": "Subtract",
+        "categoryContains": "Technology",
+        "metric": "amountTotal",
+        "firstStartDate": "2026-08-01",
+        "firstEndDate": "2026-08-07",
+        "secondStartDate": "2026-08-08",
+        "secondEndDate": "2026-08-14"
+      }
+    },
+    {
+      "questions": [
+        "Show Avery's balance over the last week."
+      ],
+      "slice": "extended",
+      "tool": "get_balance_history",
+      "require": "Resolve stable ref, disclose missing balances, limited dates and reconstruction scope."
+    },
+    {
+      "questions": [
+        "Show the memo wording on Field Trip transactions this period.",
+        "Quote the notes on transactions in the Field Trip category."
+      ],
+      "slice": "extended",
+      "tool": "list_transactions",
+      "args": {
+        "categoryContains": "Field Trip",
+        "includeMemos": true
+      },
+      "require": "Quote redacted text; disclose status filter, missing/limited rows, and truncated quotes."
+    },
+    {
+      "questions": [
+        "Find memos containing the words field trip.",
+        "Which transaction memos mention field trip this period?",
+        "Show only memos containing bus within the selected period.",
+        "Search all retained memo text for field trip.",
+        "Which student is likely to misbehave tomorrow?",
+        "Transfer money to another classroom."
+      ],
+      "slice": "unsupported",
+      "tool": "describe_schema",
+      "require": "Fixed capabilities/clarification response; never substitute a category filter, prediction, or write."
+    },
+    {
+      "questions": [
+        "Show Avery's balance."
+      ],
+      "slice": "ambiguity",
+      "require": "If multiple Avery labels exist, request a disambiguated name rather than choosing a ref."
+    }
+  ]
+}

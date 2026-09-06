@@ -4834,7 +4834,7 @@ link.click();
             <section class="card insights-question-card" data-testid="provider-question-card">
               <span class="insights-eyebrow">Ask Morgan Bank</span>
               <h2 style="margin: 6px 0 8px;">Ask Morgan Bank a question</h2>
-              <p class="small-note">Ask naturally about your classroom records, Morgan Bank features, or classroom-economy ideas. Record-based answers are calculated from this classroom’s data.</p>
+              <p class="small-note">Ask naturally about balances, rent payments, transactions, and classroom patterns. Answers are calculated from this classroom’s records.</p>
               <div class="insights-quick-questions no-print" aria-label="Quick insight questions">
                 ${PROVIDER_QUICK_QUESTIONS.map((item, index) => `
                   <button
@@ -4851,7 +4851,7 @@ link.click();
                 maxlength="500"
                 oninput="setProviderQuestionDraft(this.value)"
                 onkeydown="handleProviderQuestionKeyDown(event)"
-                placeholder="Example: Who did not pay rent today, or how can I encourage saving?">${escapeHtml(providerQuestionDraft)}</textarea>
+                placeholder="Example: Who did not pay rent today, or how much did students spend on Technology?">${escapeHtml(providerQuestionDraft)}</textarea>
               <div class="insights-question-actions no-print">
                 <button
                   type="button"

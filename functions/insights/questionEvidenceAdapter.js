@@ -155,6 +155,7 @@ export function createFirestoreQuestionEvidenceLoader({
 
     const categoryAliasByKey = new Map(categoryCatalog.map(category => [category.key, category.alias]))
     const providerStudents = assistantMode ? buildProviderStudents(participants, raw.students) : []
+    if (assistantMode) assertAssistantNameUnambiguous(question, studentIdentities, providerStudents)
     const providerStudentById = new Map(providerStudents.map(student => [student.id, student]))
     const sanitizeForAssistant = assistantMode
       ? createAssistantTextSanitizer(studentIdentities, providerStudentById)
@@ -341,6 +342,43 @@ function buildProviderStudents(participants, currentStudents) {
       frozen: current?.frozen ?? null,
     })
   })
+}
+
+// Only a name-reference guard, not an English intent parser. Preserve qualified
+// display labels/full names before checking shared bare names in student-role
+// phrases. Do this before sanitization could replace a duplicate full name
+// with the first matching student's display label.
+function assertAssistantNameUnambiguous(question, identities, providerStudents) {
+  let remaining = normalize(question)
+  const fullNames = new Map()
+  for (const identity of identities) {
+    const name = normalize(identity.name)
+    const owners = fullNames.get(name) ?? new Set()
+    owners.add(identity.id)
+    fullNames.set(name, owners)
+  }
+  for (const [name, owners] of fullNames) {
+    if (owners.size > 1 && tokens(name).length > 1 && containsPhrase(remaining, name)) {
+      fail('question-ambiguous', 'More than one student has that name. Use the distinct display name shown in Insights.')
+    }
+  }
+  const qualified = [
+    ...[...fullNames].filter(([name, owners]) => owners.size === 1 && tokens(name).length > 1).map(([name]) => name),
+    ...providerStudents.filter(student => student.displayName.includes(' ')).map(student => normalize(student.displayName)),
+  ].sort((left, right) => right.length - left.length)
+  for (const name of qualified) {
+    remaining = remaining.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(name)}(?=$|[^\\p{L}\\p{N}])`, 'gu'), '$1 resolvedstudent ')
+  }
+  const firstNameOwners = new Map()
+  for (const student of providerStudents) {
+    const first = tokens(student.displayName)[0]
+    firstNameOwners.set(first, (firstNameOwners.get(first) ?? 0) + 1)
+  }
+  for (const [first, count] of firstNameOwners) {
+    if (count > 1 && isStrongStudentTokenReference(remaining, first)) {
+      fail('question-ambiguous', 'More than one student has that first name. Use the distinct display name shown in Insights.')
+    }
+  }
 }
 
 function providerNameParts(value) {
