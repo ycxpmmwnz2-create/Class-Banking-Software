@@ -56,8 +56,11 @@ export function createStructuredAnswerRegistry(toolbox) {
       results.set(resultId, record)
       return Object.freeze({ resultId, view, output: result })
     },
-    isEarningsSelection(selection) {
-      return selection?.sections?.length === 1 && results.get(selection.sections[0].resultId)?.name === 'compare_student_earnings'
+    hasFactualSelection(selection) {
+      return selection.sections.some(section => {
+        const record = results.get(section.resultId)
+        return record && record.name !== 'describe_schema'
+      })
     },
     render(selection) {
       if (!isPlainObject(selection)) fail('envelope-type')
@@ -276,7 +279,7 @@ function renderAbsence({ args, result, context }) {
     transactionScope(args, context),
     dateScope(args, context),
     page(result, result.studentsWithoutCount, 'students', sort),
-    ...result.students.map(row => studentBalanceRow(row, context)),
+    ...result.students.map(row => studentBalanceRow(row, context, 'no matching transactions under the filters above; current balance: ')),
   ]
   return rendered(lines, 'Students without matching transactions', context)
 }
@@ -306,9 +309,9 @@ function dateScope(args, context) {
     : `${window}; calendar-date filter within retained history (records begin at ${context.retainedFrom}).`
 }
 
-function studentBalanceRow(row, context) {
+function studentBalanceRow(row, context, description = '') {
   const frozen = row.frozen === null ? 'status unavailable' : row.frozen ? 'frozen' : 'unfrozen'
-  return `• ${studentName(row.studentRef, context)} — ${money(row.currentBalance)}; ${frozen}.`
+  return `• ${studentName(row.studentRef, context)} — ${description}${money(row.currentBalance)}; ${frozen}.`
 }
 
 function studentName(ref, context) {

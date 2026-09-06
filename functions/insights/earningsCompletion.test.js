@@ -39,7 +39,7 @@ test('an unsuccessful earnings tool call is never automatically selected', async
 test('a mixed tool batch still requires a valid final selection and does not discard another operation', async () => {
   let planner = 0
   const assistant = createConversationalClassroomAssistant({ generateContent: async request => {
-    assert.ok(request.config.tools)
+    if (!request.config.tools) return textResponse({ answer: 'The coverage limit and balances are shown below.' })
     planner++
     if (planner === 1) return toolResponse([{ id: 'earnings', name: 'compare_student_earnings', args: { window: 'last-week' } }, { id: 'balances', name: 'get_balances', args: {} }])
     const results = request.contents.at(-1).parts.map(p => p.functionResponse.response)
@@ -47,7 +47,7 @@ test('a mixed tool batch still requires a valid final selection and does not dis
   } })
   const result = await assistant.answer({ assistantEvidence: evidence })
   assert.equal(planner, 2)
-  assert.equal(result.presentation, null)
+  assert.equal(result.presentation.aiSummary, 'The coverage limit and balances are shown below.')
   assert.match(result.answer, /cannot determine/u)
   assert.match(result.answer, /Total balance: \$97.00/u)
 })
@@ -55,7 +55,7 @@ test('a mixed tool batch still requires a valid final selection and does not dis
 test('successful operations from prior turns are preserved for a multi-part question', async () => {
   let planner = 0
   const assistant = createConversationalClassroomAssistant({ generateContent: async request => {
-    assert.ok(request.config.tools)
+    if (!request.config.tools) return textResponse({ answer: 'The coverage limit and balances are shown below.' })
     planner++
     if (planner < 3) return toolResponse([{ id: `call-${planner}`, name: planner === 1 ? 'get_balances' : 'compare_student_earnings', args: planner === 1 ? {} : { window: 'last-week' } }])
     const results = request.contents.flatMap(c => c.parts).map(p => p.functionResponse?.response).filter(Boolean)
@@ -63,7 +63,7 @@ test('successful operations from prior turns are preserved for a multi-part ques
   } })
   const result = await assistant.answer({ assistantEvidence: { ...evidence, question: 'Show balances and who earned most last week.' } })
   assert.equal(planner, 3)
-  assert.equal(result.presentation, null)
+  assert.equal(result.presentation.aiSummary, 'The coverage limit and balances are shown below.')
   assert.match(result.answer, /Total balance: \$97.00/u)
   assert.match(result.answer, /cannot determine/u)
 })

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { narrateEarnings, NARRATION_MAX_INPUT_TOKENS } from './conversationNarrator.js'
+import { narrateClassroomAnswer, NARRATION_MAX_INPUT_TOKENS } from './conversationNarrator.js'
 import { validateConversationPresentation } from './conversationContract.js'
 
 const input = { answer: 'Most: Fable — $30. Least: Quill — $0.\nApproved additions, current roster.', question: 'Who earned the most?', timeoutMs: 10000 }
@@ -8,7 +8,7 @@ const response = { finishReason: 'STOP', text: '{"answer":"Fable had the most ap
 test('narrator never starts when its prompt or remaining deadline cannot fit', async () => {
   let calls = 0
   for (const override of [{ timeoutMs: 999 }, { answer: 'x'.repeat(NARRATION_MAX_INPUT_TOKENS) }]) {
-    const result = await narrateEarnings({ ...input, ...override, generateContent: async () => { calls++; return response } })
+    const result = await narrateClassroomAnswer({ ...input, ...override, generateContent: async () => { calls++; return response } })
     assert.equal(result.aiSummary, null)
     assert.equal(result.uncertain, false)
   }
@@ -16,7 +16,7 @@ test('narrator never starts when its prompt or remaining deadline cannot fit', a
 })
 test('unknown or out-of-quote usage does not invent usage counts or release the reservation', async () => {
   for (const usageMetadata of [undefined, { promptTokenCount: 12001, candidatesTokenCount: 1, totalTokenCount: 12002 }, { promptTokenCount: 1, candidatesTokenCount: 1025, totalTokenCount: 1026 }]) {
-    const result = await narrateEarnings({ ...input, generateContent: async () => ({ ...response, usageMetadata }) })
+    const result = await narrateClassroomAnswer({ ...input, generateContent: async () => ({ ...response, usageMetadata }) })
     assert.equal(result.uncertain, true)
     assert.equal(result.aiSummary, null)
     assert.deepEqual(result.usage, { inputTokens: 0, outputTokens: 0, thinkingTokens: 0 })

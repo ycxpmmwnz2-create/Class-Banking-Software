@@ -115,10 +115,12 @@ test('concurrent duplicate requests do not duplicate planner or narration work',
   assert.equal(s.calls.length, 2)
   await assertReplay(s, results.find(r => r.status === 'fulfilled').value)
 })
-test('unrelated selected results retain the original answer without earnings narration', async () => {
+test('balance answers receive a separate summary and replay without another charge', async () => {
   const s = setup({ tool: 'get_balances' }), result = await s.handler(s.request)
-  assert.equal(result.presentation, undefined)
-  assert.equal(s.calls.length, 2)
+  assert.equal(typeof result.presentation.aiSummary, 'string')
+  assert.match(result.answer, /Total balance:/u)
+  assert.equal(s.calls.length, 3)
+  await assertReplay(s, result)
 })
 test('fluent false prose is explicitly unverified and never overwrites the calculated answer', async () => {
   const s = setup({ mode: 'false-prose' }), result = await s.handler(s.request)
@@ -152,4 +154,17 @@ test('a completed response with a different stored answer contract is refused wi
   record.result.answerContract = 'structured-v1'
   await assert.rejects(s.handler(s.request), error => error.category === 'invalid-replay')
   assert.equal(s.calls.length, 2)
+})
+
+for (const mode of ['timeout', 'missing-usage', 'bad-json']) test(`balance narration ${mode} preserves one settlement and exact replay`, async () => {
+  const s = setup({ mode, tool: 'get_balances' }), result = await s.handler(s.request)
+  assert.equal(result.presentation.aiSummary, null)
+  assert.match(result.answer, /Total balance:/u)
+  const unknown = mode !== 'bad-json'
+  assert.equal(result.presentation.billingBasis, unknown ? 'reserved-unknown' : 'observed')
+  const record = [...s.store].find(([path]) => path.startsWith('insightUsageReservations/'))[1]
+  if (unknown) assert.equal(record.actualCostMicroUsd, record.worstCaseCostMicroUsd)
+  assert.equal(s.calls.length, 3)
+  assert.ok(s.writes.every(path => /^insightUsage/u.test(path)))
+  await assertReplay(s, result)
 })
