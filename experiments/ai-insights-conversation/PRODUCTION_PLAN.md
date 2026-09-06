@@ -1,0 +1,9 @@
+# Conversational answers: production candidate
+
+Andrew approved preparing the accepted isolated preview for the live app on September 6. Work stays in the isolated conversational branch; bank records, credentials, Firebase rules, migrations and deployed configuration are outside this change. Earlier Muse PASS covers only round16, not this candidate.
+
+Acceptance:
+- A dedicated current-roster earnings comparison computes Approved Add totals by stable student reference, includes zero earners and complete ties across the full supported roster. Last week means the previous Monday through Sunday in the classroom timezone; explicit dates and the existing exact rolling period are also supported. Retention gaps yield an explicit limitation rather than false full-period extrema.
+- Gemini interprets the question through existing tools. Code owns calculations and displayed supporting facts. The implementation follows the accepted preview with a separately labelled AI summary and visible calculated facts; arbitrary prose cannot be automatically certified by syntax checks. This first candidate narrates the dedicated earnings comparison only; other question types retain their existing structured answers.
+- Any narration must use the original request reservation and saved response, with one bounded attempt, conservative accounting for unknown usage, and exact replay without new provider calls or a second hourly slot. Existing structured answers remain a fallback.
+- Tests must cover full roster, duplicate display names, zero earners, ties, calendar/rolling boundaries and DST, partial history, selection binding, safe browser text rendering, narration failure and budget behavior, actual live composition with injected SDK, tenant separation and replay. Fictional live-provider staging evidence and independent Muse review are required before release.

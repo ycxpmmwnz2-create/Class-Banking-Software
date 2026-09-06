@@ -1,3 +1,5 @@
+import { CONVERSATIONAL_ANSWER_CONTRACT } from './conversationContract.js'
+import { narrateEarnings } from './conversationNarrator.js'
 import { Buffer } from 'node:buffer'
 
 import { createClassroomAssistantToolbox } from './classroomAssistantTools.js'
@@ -183,6 +185,10 @@ export class GeminiClassroomAssistantError extends Error {
   }
 }
 
+export function createConversationalClassroomAssistant(options = {}) {
+  return createGeminiClassroomAssistant({ ...options, answerContract: CONVERSATIONAL_ANSWER_CONTRACT })
+}
+
 export function createStructuredClassroomAssistant(options = {}) {
   return createGeminiClassroomAssistant({ ...options, answerContract: STRUCTURED_ANSWER_CONTRACT })
 }
@@ -190,12 +196,13 @@ export function createStructuredClassroomAssistant(options = {}) {
 export function createGeminiClassroomAssistant({ generateContent, now = Date.now, answerContract = 'legacy-prose' } = {}) {
   if (typeof generateContent !== 'function') throw new TypeError('generateContent must be a function.')
   if (typeof now !== 'function') throw new TypeError('now must be a function.')
-  if (!['legacy-prose', STRUCTURED_ANSWER_CONTRACT].includes(answerContract)) throw new TypeError('Unknown answer contract.')
+  if (!['legacy-prose', STRUCTURED_ANSWER_CONTRACT, CONVERSATIONAL_ANSWER_CONTRACT].includes(answerContract)) throw new TypeError('Unknown answer contract.')
   return Object.freeze({
-    async answer({ assistantEvidence, toolbox: suppliedToolbox } = {}) {
+    async answer({ assistantEvidence, toolbox: suppliedToolbox, narrationAllowed = true } = {}) {
       const deadline = now() + CLASSROOM_ASSISTANT_MAX_DURATION_MS
       const toolbox = resolveToolbox(assistantEvidence, suppliedToolbox)
-      const registry = answerContract === STRUCTURED_ANSWER_CONTRACT ? createStructuredAnswerRegistry(toolbox) : null
+      const conversational = answerContract === CONVERSATIONAL_ANSWER_CONTRACT
+      const registry = answerContract !== 'legacy-prose' ? createStructuredAnswerRegistry(toolbox) : null
       const contents = [Object.freeze({
         role: 'user',
         parts: Object.freeze([Object.freeze({
@@ -210,6 +217,32 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
       let totalToolBytes = 0
       let toolCallCount = 0
       const usage = { inputTokens: 0, outputTokens: 0, thinkingTokens: 0 }
+
+      async function completeSelection(selection, turn) {
+        try {
+          const rendered = registry.render(selection)
+          let presentation = null, usageUncertain = false
+          if (conversational && registry.isEarningsSelection(selection) && Buffer.byteLength(rendered.answer, 'utf8') <= 24000) {
+            const [calculatedSummary, ...details] = rendered.answer.split('\n')
+            const narration = narrationAllowed && turn < CLASSROOM_ASSISTANT_MAX_TURNS - 1
+              ? await narrateEarnings({ answer: rendered.answer, question: assistantEvidence.question,
+                generateContent, timeoutMs: Math.floor(deadline - now()) })
+              : { aiSummary: null, usage: { inputTokens: 0, outputTokens: 0, thinkingTokens: 0 }, uncertain: false }
+            for (const key of Object.keys(usage)) usage[key] += narration.usage[key]
+            usageUncertain = narration.uncertain
+            presentation = Object.freeze({ aiSummary: narration.aiSummary, calculatedSummary,
+              calculationDetails: details.join('\n'), billingBasis: usageUncertain ? 'reserved-unknown' : 'observed' })
+          }
+          return Object.freeze({ ...rendered, answerContract,
+            usage: Object.freeze({ ...usage }), toolCallCount,
+            ...(conversational ? { presentation, usageUncertain } : {}) })
+        } catch (error) {
+          if (error instanceof StructuredClassroomAnswerError) {
+            fail('answer-unverified', 'The provider selected an invalid classroom result.', 'answer-shape', error.diagnostic)
+          }
+          throw error
+        }
+      }
 
       for (let turn = 0; turn < CLASSROOM_ASSISTANT_MAX_TURNS; turn += 1) {
         const remainingDurationMs = Math.floor(deadline - now())
@@ -247,9 +280,7 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
             try {
               const fenced = /^```json\s+([\s\S]+?)\s*```$/u.exec(text.trim())
               selection = JSON.parse(fenced ? fenced[1] : text)
-              const rendered = registry.render(selection)
-              return Object.freeze({ ...rendered, answerContract: STRUCTURED_ANSWER_CONTRACT,
-                usage: Object.freeze({ ...usage }), toolCallCount })
+              return await completeSelection(selection, turn)
             } catch (error) {
               if (error instanceof SyntaxError || error instanceof StructuredClassroomAnswerError) {
                 fail('answer-unverified', 'The provider selected an invalid classroom result.', 'answer-shape',
@@ -301,6 +332,15 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
           }
           toolCallCount += 1
           executed.set(callId, Object.freeze({ name, args: call?.args ?? {}, result }))
+          // This dedicated operation is already a complete answer (including
+          // coverage warnings). A second model selection adds no calculation
+          // and can fail its envelope. Finish only a single successful call;
+          // mixed batches, prior successful factual operations and all other
+          // tools retain normal final selection.
+          if (conversational && calls.length === 1 && name === 'compare_student_earnings' && result.ok === true &&
+            [...executed].every(([id, prior]) => id === callId || prior.name === 'describe_schema' || prior.result.ok !== true)) {
+            return await completeSelection({ schemaVersion: 1, sections: [{ resultId: registered.resultId, view: registered.view }] }, turn)
+          }
           responseParts.push(Object.freeze({
             functionResponse: Object.freeze({
               ...(providerCallId ? { id: providerCallId } : {}),

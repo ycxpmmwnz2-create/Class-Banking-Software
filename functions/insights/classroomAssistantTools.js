@@ -6,6 +6,7 @@ const TOOL_NAMES = Object.freeze([
   'get_balance_history',
   'compare_periods',
   'describe_schema',
+  'compare_student_earnings',
 ])
 
 const TRANSACTION_TYPES = Object.freeze(['Add', 'Subtract', 'any'])
@@ -90,6 +91,13 @@ export const CLASSROOM_ASSISTANT_TOOL_DECLARATIONS = Object.freeze([
     'startDate',
     'endDate',
   ])),
+  declaration('compare_student_earnings', 'Compare total Approved Add amounts across the entire CURRENT roster, including students with zero additions and all ties for most and least. Money added is not net balance or a measure of effort. last-week means the previous Monday through Sunday in the classroom timezone. Use explicit only for specified calendar dates; selected-period preserves the exact rolling window. No category, subgroup, or other status filters are supported.', {
+    type: 'object', additionalProperties: false, required: ['window'],
+    properties: {
+      window: { type: 'string', enum: ['last-week', 'selected-period', 'explicit'] },
+      startDate: dateSchema(), endDate: dateSchema(),
+    },
+  }),
   declaration('describe_schema', 'Describe the exact read-only classroom fields and date limits available to the assistant.', {
     type: 'object',
     additionalProperties: false,
@@ -183,6 +191,7 @@ export function createClassroomAssistantToolbox(evidence, { memoResolver } = {})
         if ((schema.required ?? []).some(field => !Object.hasOwn(args, field))) {
           return toolError('Tool arguments are missing a required field.')
         }
+        if (name === 'compare_student_earnings') return compareStudentEarnings(args, data, transactions)
         if (name === 'describe_schema') return describeSchema(context)
         if (name === 'get_balances') return getBalances(args, data.students)
         if (name === 'get_balance_history') {
@@ -203,6 +212,73 @@ export function createClassroomAssistantToolbox(evidence, { memoResolver } = {})
         throw error
       }
     },
+  })
+}
+
+// This operation joins on stable refs, not display labels or paginated tools.
+// It always includes the complete current roster; the provider cannot select
+// a subset and then describe it as the whole classroom.
+function compareStudentEarnings(args, data, transactions) {
+  const window = enumeration(args.window, ['last-week', 'selected-period', 'explicit'])
+  if (window !== 'explicit' && (args.startDate !== undefined || args.endDate !== undefined)) {
+    fail('invalid-tool-arguments', 'Only an explicit window accepts dates.')
+  }
+  let startDate, endDate
+  if (window === 'last-week') {
+    const weekday = new Date(`${data.asOfDate}T12:00:00Z`).getUTCDay()
+    endDate = shiftDate(data.asOfDate, -((weekday + 6) % 7) - 1)
+    startDate = shiftDate(endDate, -6)
+  } else if (window === 'explicit') {
+    startDate = validatedDate(args.startDate, 'startDate')
+    endDate = validatedDate(args.endDate, 'endDate')
+  } else {
+    startDate = localDateKey(data.periodStart, data.timeZone)
+    endDate = data.asOfDate
+  }
+  assertDateRange(startDate, endDate, window === 'selected-period' ? 91 : 90)
+  if (endDate > data.asOfDate) fail('invalid-tool-arguments', 'Future dates are unavailable.')
+  const retainedDate = localDateKey(data.historyStart, data.timeZone)
+  // When retention starts on the first requested date, only exact local
+  // midnight is complete. Calendar-day comparisons do not assume 24h days.
+  const clock = new Intl.DateTimeFormat('en-GB', { timeZone: data.timeZone,
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+  const atMidnight = clock.format(new Date(data.historyStart)) === '00:00:00' &&
+    new Date(data.historyStart).getUTCMilliseconds() === 0
+  const complete = window === 'selected-period'
+    ? Date.parse(data.historyStart) <= Date.parse(data.periodStart)
+    : retainedDate < startDate || (retainedDate === startDate && atMidnight)
+  const current = data.students.filter(student => student.current)
+  const totals = new Map(current.map(student => [student.ref, 0]))
+  let matchedTransactionCount = 0
+  for (const row of transactions) {
+    if (!totals.has(row.studentRef) || row.status !== 'Approved' || row.type !== 'Add' ||
+      row.calendarDay < startDate || row.calendarDay > endDate ||
+      Date.parse(row.date) > Date.parse(data.generatedAt) ||
+      (window === 'selected-period' && Date.parse(row.date) < Date.parse(data.periodStart))) continue
+    // Money is compared in cents so 0.1 + 0.2 ties 0.3 exactly.
+    if (row.amount < 0 || !Number.isSafeInteger(Math.round(row.amount * 100))) {
+      fail('invalid-evidence', 'An earnings amount is invalid.')
+    }
+    const cents = totals.get(row.studentRef) + Math.round(row.amount * 100)
+    if (!Number.isSafeInteger(cents)) fail('invalid-evidence', 'Earnings totals exceed safe precision.')
+    totals.set(row.studentRef, cents)
+    matchedTransactionCount += 1
+  }
+  const values = [...totals.values()]
+  const highest = complete && values.length ? Math.max(...values) : null
+  const lowest = complete && values.length ? Math.min(...values) : null
+  const allTied = highest !== null && highest === lowest
+  return Object.freeze({
+    ok: true, window, windowStartDate: startDate, windowEndDate: endDate,
+    rollingStart: window === 'selected-period' ? data.periodStart : null,
+    throughSnapshot: endDate === data.asOfDate, complete,
+    currentStudentCount: current.length, matchedTransactionCount,
+    highestAmount: highest === null ? null : highest / 100,
+    lowestAmount: lowest === null ? null : lowest / 100,
+    allTied,
+    highestRefs: Object.freeze(highest === null ? [] : [...totals].filter(([, v]) => v === highest).map(([ref]) => ref)),
+    // When everybody ties, reuse highestRefs rather than doubling the payload.
+    lowestRefs: Object.freeze(lowest === null || allTied ? [] : [...totals].filter(([, v]) => v === lowest).map(([ref]) => ref)),
   })
 }
 

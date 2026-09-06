@@ -1459,6 +1459,7 @@
     <strong>AGM LUTHCORP</strong>
   </footer>
   <script type="module">
+import { renderQuestionAnswer } from "./src/insights/renderQuestionAnswer.js";
 import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured, firebaseDeploymentTier, providerAppCheckReadyPromise } from "./src/firebase/firebase.js";
 import { browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider, inMemoryPersistence, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, runTransaction, setDoc } from "firebase/firestore/lite";
@@ -4883,7 +4884,7 @@ link.click();
               <section class="card" aria-live="polite" data-testid="provider-question-result">
                 <span class="insights-eyebrow">Your question</span>
                 <div class="insights-question-asked">${escapeHtml(providerQuestionSubmitted)}</div>
-                <p class="insights-answer-copy">${escapeHtml(providerQuestionResult.answer)}</p>
+                ${renderQuestionAnswer(providerQuestionResult)}
                 <details class="insights-answer-details">
                   <summary>See details</summary>
                   <div class="insights-question-evidence">

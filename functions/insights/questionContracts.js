@@ -1,3 +1,4 @@
+import { validateConversationPresentation } from './conversationContract.js'
 import {
   CLASSROOM_ASSISTANT_MAX_BILLED_OUTPUT_TOKENS,
   CLASSROOM_ASSISTANT_MAX_BILLED_THINKING_TOKENS,
@@ -196,7 +197,7 @@ export function validateCompletedQuestion(value, expected) {
 export function validateTeacherQuestionResponse(value) {
   requireExactObject(
     value,
-    ['schemaVersion', 'source', 'periodDays', 'generatedAt', 'answer', 'evidence', 'usage'],
+    ['schemaVersion', 'source', 'periodDays', 'generatedAt', 'answer', 'evidence', 'usage', ...(Object.hasOwn(value ?? {}, 'presentation') ? ['presentation'] : [])],
     'question response',
   )
   if (
@@ -227,6 +228,7 @@ export function validateTeacherQuestionResponse(value) {
       boundedText(item, 1, 320, 'evidence', 'invalid-response')
     ))),
     usage: validateBilledUsage(value.usage, 'invalid-response'),
+    ...(Object.hasOwn(value, 'presentation') ? { presentation: validateConversationPresentation(value.presentation, answer) } : {}),
   })
 }
 

@@ -86,7 +86,8 @@ test("source contract: Q&A is explicit, paragraph-shaped, period-bound, and neve
     indexHtml,
     /providerQuestionResult = result;\s*if \(providerQuestionDraft === request\.question\) providerQuestionDraft = "";/,
   );
-  assert.match(indexHtml, /<p class="insights-answer-copy">\$\{escapeHtml\(providerQuestionResult\.answer\)\}<\/p>/);
+  assert.match(indexHtml, /\$\{renderQuestionAnswer\(providerQuestionResult\)\}/);
+  assert.match(indexHtml, /import \{ renderQuestionAnswer \} from "\.\/src\/insights\/renderQuestionAnswer\.js"/);
   assert.match(indexHtml, /\.insights-answer-copy\s*\{[\s\S]*?white-space: pre-line;/);
   assert.match(indexHtml, /<details class="insights-answer-details">[\s\S]*?<summary>See details<\/summary>/);
   assert.doesNotMatch(indexHtml, /class="insight-observation"/);

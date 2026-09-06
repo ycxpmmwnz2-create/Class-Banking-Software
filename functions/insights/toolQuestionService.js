@@ -1,3 +1,4 @@
+import { CONVERSATIONAL_ANSWER_CONTRACT, validateConversationPresentation } from './conversationContract.js'
 import { createHash } from 'node:crypto'
 import {
   GEMINI_MONTHLY_ALLOWANCE_MICRO_USD,
@@ -42,6 +43,9 @@ export class InsightToolQuestionServiceError extends Error {
 
 export function createInsightToolQuestionService(dependencies) {
   const deps = validateDependencies(dependencies)
+  const answerContract = deps.answerContract ?? STRUCTURED_ANSWER_CONTRACT
+  if (![STRUCTURED_ANSWER_CONTRACT, CONVERSATIONAL_ANSWER_CONTRACT].includes(answerContract)) throw new TypeError('Unknown answer contract.')
+  const conversational = answerContract === CONVERSATIONAL_ANSWER_CONTRACT
   return async function askTeacherQuestion({ auth, data } = {}) {
     const request = validateInsightQuestionRequest(data)
     const profile = insightModeProfile('quick')
@@ -73,17 +77,18 @@ export function createInsightToolQuestionService(dependencies) {
       if (error instanceof InsightToolQuestionServiceError) throw error
       throw new InsightToolQuestionServiceError('evidence-unavailable', 'Question evidence could not be loaded.')
     }
-    const quote = validateWorstCaseQuote(await guardedCall(
+    let quote = validateWorstCaseQuote(await guardedCall(
       () => deps.quoteWorstCaseCost({ assistantEvidence: envelope.assistantEvidence, toolbox }),
       'cost-policy-unavailable',
       'The trusted classroom assistant cost policy is unavailable.',
     ))
     const signature = createHash('sha256').update(JSON.stringify({
-      answerContract: STRUCTURED_ANSWER_CONTRACT,
+      answerContract,
       tenant, question: request.question, periodDays: request.periodDays, timeZone: request.timeZone,
       evidenceSignature: envelope.evidenceSignature,
     })).digest('hex')
-    const reservation = await reserveUsage(() => deps.usageLedger.reserve({
+    let narrationAllowed = true
+    const reserve = () => reserveUsage(() => deps.usageLedger.reserve({
       teacherUid: tenant.teacherUid,
       classroomId: tenant.classroomId,
       requestId: request.requestId,
@@ -95,23 +100,35 @@ export function createInsightToolQuestionService(dependencies) {
       rateCardId: quote.rateCardId,
       worstCaseCostMicroUsd: quote.worstCaseCostMicroUsd,
     }))
+    let reservation
+    try { reservation = await reserve() } catch (error) {
+      // A rejected reservation does not consume an hourly slot or make a
+      // provider call. Try the base quote if narration will not fit or an
+      // existing request may be bound to that lower quote. The ledger still
+      // requires an exact match on every signature/tenant/request field.
+      if (!conversational || !(error.category === 'allowance-exhausted' || error.subcategory === 'request-conflict') || typeof deps.quoteBaseWorstCaseCost !== 'function') throw error
+      quote = validateWorstCaseQuote(await deps.quoteBaseWorstCaseCost({ assistantEvidence: envelope.assistantEvidence, toolbox }))
+      narrationAllowed = false
+      reservation = await reserve()
+    }
     if (reservation?.kind === 'completed') {
-      return teacherResponse(validateCompletedResult(reservation.result, request, signature), request.periodDays)
+      return teacherResponse(validateCompletedResult(reservation.result, request, signature, answerContract), request.periodDays)
     }
     const accepted = validateReservation(reservation, quote.worstCaseCostMicroUsd)
     try {
       const result = validateAssistantResult(await deps.assistant.answer({
         assistantEvidence: envelope.assistantEvidence,
         toolbox,
-      }))
-      const actualCostMicroUsd = validateActualCost(await deps.priceActualUsage({
+        narrationAllowed,
+      }), answerContract)
+      const actualCostMicroUsd = result.usageUncertain ? quote.worstCaseCostMicroUsd : validateActualCost(await deps.priceActualUsage({
         rateCardId: quote.rateCardId,
         usage: result.usage,
       }), quote.worstCaseCostMicroUsd)
       const billedUsage = Object.freeze({ ...result.usage, costMicroUsd: actualCostMicroUsd })
       const completed = Object.freeze({
-        schemaVersion: TOOL_ASSISTANT_RESULT_SCHEMA_VERSION,
-        answerContract: STRUCTURED_ANSWER_CONTRACT,
+        schemaVersion: conversational ? 3 : TOOL_ASSISTANT_RESULT_SCHEMA_VERSION,
+        answerContract,
         source: 'provider-tool-assistant',
         periodDays: request.periodDays,
         evidenceSignature: signature,
@@ -119,6 +136,7 @@ export function createInsightToolQuestionService(dependencies) {
         answer: result.answer,
         evidence: result.evidence,
         usage: billedUsage,
+        ...(conversational ? { presentation: result.presentation } : {}),
       })
       const response = teacherResponse(completed, request.periodDays)
       await deps.usageLedger.commit({
@@ -148,26 +166,32 @@ export function createInsightToolQuestionService(dependencies) {
   }
 }
 
-function validateAssistantResult(value) {
+function validateAssistantResult(value, answerContract) {
+  const conversational = answerContract === CONVERSATIONAL_ANSWER_CONTRACT
   if (
     !isPlainObject(value) ||
-    !hasExactKeys(value, ['answerContract', 'answer', 'evidence', 'usage', 'toolCallCount']) ||
-    value.answerContract !== STRUCTURED_ANSWER_CONTRACT ||
+    !hasExactKeys(value, ['answerContract', 'answer', 'evidence', 'usage', 'toolCallCount', ...(conversational ? ['presentation', 'usageUncertain'] : [])]) ||
+    value.answerContract !== answerContract ||
     typeof value.answer !== 'string' ||
     !Array.isArray(value.evidence) ||
     value.evidence.length < 1 ||
     value.evidence.length > 8 ||
     !isPlainObject(value.usage)
   ) throw new InsightToolQuestionServiceError('provider-output-invalid', 'The classroom assistant result is malformed.')
+  if (conversational) {
+    validateConversationPresentation(value.presentation, value.answer)
+    if (typeof value.usageUncertain !== 'boolean' || value.usageUncertain !== (value.presentation?.billingBasis === 'reserved-unknown')) throw new InsightToolQuestionServiceError('provider-output-invalid', 'Conversation accounting is malformed.')
+  }
   return value
 }
 
-function validateCompletedResult(value, request, signature) {
+function validateCompletedResult(value, request, signature, answerContract) {
+  const conversational = answerContract === CONVERSATIONAL_ANSWER_CONTRACT
   if (
     !isPlainObject(value) ||
-    !hasExactKeys(value, ['schemaVersion', 'answerContract', 'source', 'periodDays', 'evidenceSignature', 'generatedAt', 'answer', 'evidence', 'usage']) ||
-    value.schemaVersion !== TOOL_ASSISTANT_RESULT_SCHEMA_VERSION ||
-    value.answerContract !== STRUCTURED_ANSWER_CONTRACT ||
+    !hasExactKeys(value, ['schemaVersion', 'answerContract', 'source', 'periodDays', 'evidenceSignature', 'generatedAt', 'answer', 'evidence', 'usage', ...(conversational ? ['presentation'] : [])]) ||
+    value.schemaVersion !== (conversational ? 3 : TOOL_ASSISTANT_RESULT_SCHEMA_VERSION) ||
+    value.answerContract !== answerContract ||
     value.source !== 'provider-tool-assistant' ||
     value.periodDays !== request.periodDays ||
     value.evidenceSignature !== signature
@@ -185,6 +209,7 @@ function teacherResponse(result, periodDays) {
       answer: result.answer,
       evidence: result.evidence,
       usage: result.usage,
+      ...(result.answerContract === CONVERSATIONAL_ANSWER_CONTRACT && result.presentation !== null ? { presentation: result.presentation } : {}),
     })
   } catch (error) {
     if (error instanceof InsightQuestionContractError) {
@@ -255,7 +280,7 @@ async function reserveUsage(operation) {
     if (error instanceof FirestoreUsageLedgerError && Object.hasOwn(RESERVATION_FAILURE_MESSAGES, error.category)) {
       throw new InsightToolQuestionServiceError(error.category, RESERVATION_FAILURE_MESSAGES[error.category])
     }
-    throw new InsightToolQuestionServiceError('budget-unavailable', 'A usage reservation could not be obtained.')
+    throw new InsightToolQuestionServiceError('budget-unavailable', 'A usage reservation could not be obtained.', error instanceof FirestoreUsageLedgerError && error.category === 'request-conflict' ? 'request-conflict' : null)
   }
 }
 

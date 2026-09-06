@@ -43,7 +43,7 @@ function transaction(ref, studentRef, date, amount) {
   }
 }
 
-test('publishes exactly seven read-only classroom tools including the complement primitive', () => {
+test('publishes the read-only classroom tools including full-roster earnings', () => {
   assert.deepEqual(CLASSROOM_ASSISTANT_TOOL_DECLARATIONS.map(item => item.name), [
     'list_transactions',
     'aggregate_transactions',
@@ -51,6 +51,7 @@ test('publishes exactly seven read-only classroom tools including the complement
     'get_balances',
     'get_balance_history',
     'compare_periods',
+    'compare_student_earnings',
     'describe_schema',
   ])
 })

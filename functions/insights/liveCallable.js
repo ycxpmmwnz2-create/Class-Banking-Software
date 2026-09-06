@@ -1,3 +1,4 @@
+import { CONVERSATIONAL_ANSWER_CONTRACT } from './conversationContract.js'
 import { createInsightAnalysisService } from './analysisService.js'
 import { buildClassInsightsReport } from './classInsights.js'
 import { buildFactPacketFromEvidence } from './factPacketBuilder.js'
@@ -7,7 +8,7 @@ import {
   quoteGeminiWorstCaseCost,
 } from './geminiCostPolicy.js'
 import { createGeminiProviderAdapter } from './geminiProviderAdapter.js'
-import { createStructuredClassroomAssistant } from './geminiClassroomAssistant.js'
+import { createConversationalClassroomAssistant } from './geminiClassroomAssistant.js'
 import { createGeminiQuestionAdapter } from './geminiQuestionAdapter.js'
 import {
   priceGeminiQuestionActualUsage,
@@ -16,6 +17,7 @@ import {
 import {
   priceGeminiToolAssistantActualUsage,
   quoteGeminiToolAssistantWorstCaseCost,
+  quoteConversationalWorstCaseCost,
 } from './geminiToolAssistantCostPolicy.js'
 import {
   createGeminiGenerateContent,
@@ -73,8 +75,10 @@ export function createVersion3GeminiLiveHandler({
       now,
       resolveActiveTeacherTenant: ({ auth }) => resolveActiveTeacherTenant({ firestore, auth }),
       loadQuestionEvidence,
-      quoteWorstCaseCost: quoteGeminiToolAssistantWorstCaseCost,
-      assistant: createStructuredClassroomAssistant({
+      answerContract: CONVERSATIONAL_ANSWER_CONTRACT,
+      quoteWorstCaseCost: quoteConversationalWorstCaseCost,
+      quoteBaseWorstCaseCost: quoteGeminiToolAssistantWorstCaseCost,
+      assistant: createConversationalClassroomAssistant({
         // An ambiguous failed request may still be billed. Keep one transport
         // attempt per reserved model turn; the service retains the reservation
         // on failure instead of invisibly retrying and undercounting usage.

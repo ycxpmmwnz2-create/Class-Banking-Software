@@ -1,3 +1,4 @@
+import { validateConversationPresentation } from "../../functions/insights/conversationContract.js";
 /**
  * Browser boundary for the emulator-only provider-assisted Insights slice.
  *
@@ -237,7 +238,7 @@ function canonicalRequestTimeZone(value, label) {
 }
 
 export function validateProviderQuestionResponse(value, expected = {}) {
-  requireExactObject(value, QUESTION_RESPONSE_FIELDS, "question response");
+  requireExactObject(value, [...QUESTION_RESPONSE_FIELDS, ...(Object.hasOwn(value ?? {}, "presentation") ? ["presentation"] : [])], "question response");
   if (
     value.schemaVersion !== 2
     || value.source !== "ai-grounded"
@@ -262,6 +263,7 @@ export function validateProviderQuestionResponse(value, expected = {}) {
     periodDays: value.periodDays,
     generatedAt: value.generatedAt,
     answer,
+    ...(Object.hasOwn(value, "presentation") ? { presentation: validateConversationPresentation(value.presentation, answer) } : {}),
     evidence: Object.freeze(value.evidence.map(item => boundedText(item, 1, 320, "evidence"))),
     usage: Object.freeze({
       inputTokens: nonNegativeInteger(value.usage.inputTokens, "inputTokens"),
