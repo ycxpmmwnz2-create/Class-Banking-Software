@@ -62,6 +62,10 @@ function liveSetup(finalMode = 'valid') {
       this.models = { generateContent: async request => {
         providerRequests.push(request)
         const usageMetadata = { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 }
+        if (!request.config.tools) {
+          const text = JSON.stringify({ answer: JSON.parse(request.contents[0].parts[0].text).calculatedAnswer.split('\n')[0] })
+          return { usageMetadata, text, candidates: [{ finishReason: 'STOP', content: { role: 'model', parts: [{ text }] } }] }
+        }
         const result = request.contents.at(-1).parts[0].functionResponse?.response
         if (!result) {
           const call = { id: 'call-1', name: 'get_balances', args: {} }
@@ -84,6 +88,7 @@ test('real live composition isolates two tenants, disambiguates duplicate names 
   const a = await setup.handler({ auth: { uid: 'teacher-a' }, data: REQUEST })
   assert.match(a.answer, /"Avery M\." — \$1.00/u)
   assert.match(a.answer, /"Avery M\. \(2\)" — \$2.00/u)
+  assert.equal(typeof a.presentation.aiSummary, 'string')
   assert.match(a.answer, /Total balance: \$3.00/u)
   assert.doesNotMatch(JSON.stringify(setup.providerRequests), /Avery Morgan|teacher-a|class-a|Blake Smith/u)
   const priorRequests = setup.providerRequests.length
@@ -93,10 +98,10 @@ test('real live composition isolates two tenants, disambiguates duplicate names 
   assert.doesNotMatch(b.answer, /Avery/u)
   assert.equal(setup.reads.slice(priorReads).some(path => path.startsWith('classrooms/class-a')), false)
   assert.doesNotMatch(JSON.stringify(setup.providerRequests.slice(priorRequests).map(request => request.contents)), /Avery|teacher-b|class-b/u)
-  assert.equal(setup.providerRequests.length, 4)
+  assert.equal(setup.providerRequests.length, 6)
   const replay = await setup.handler({ auth: { uid: 'teacher-a' }, data: REQUEST })
   assert.deepEqual(replay, a)
-  assert.equal(setup.providerRequests.length, 4)
+  assert.equal(setup.providerRequests.length, 6)
   assert.ok(setup.writes.length > 0)
   assert.ok(setup.writes.every(path => /^insightUsage(?:Ledgers|RateLimits|Reservations)\//u.test(path)))
   for (const [path, value] of Object.entries(setup.initial)) assert.deepEqual(setup.store.get(path), value)

@@ -149,6 +149,7 @@ export function createClassroomAssistantToolbox(evidence, { memoResolver } = {})
   const context = Object.freeze({
     assistantVersion: 1,
     classroomDate: data.asOfDate,
+    previousCalendarWeek: Object.freeze(previousCalendarWeek(data.asOfDate)),
     timeZone: data.timeZone,
     availableDateRange: Object.freeze({
       start: localDateKey(data.historyStart, dateKeyFormatter),
@@ -215,6 +216,14 @@ export function createClassroomAssistantToolbox(evidence, { memoResolver } = {})
   })
 }
 
+function previousCalendarWeek(classroomDate) {
+  // classroomDate is already the classroom-local calendar date. UTC here
+  // performs calendar arithmetic without converting it through another zone.
+  const weekday = new Date(`${classroomDate}T12:00:00Z`).getUTCDay()
+  const endDate = shiftDate(classroomDate, -((weekday + 6) % 7) - 1)
+  return { startDate: shiftDate(endDate, -6), endDate }
+}
+
 // This operation joins on stable refs, not display labels or paginated tools.
 // It always includes the complete current roster; the provider cannot select
 // a subset and then describe it as the whole classroom.
@@ -225,9 +234,9 @@ function compareStudentEarnings(args, data, transactions) {
   }
   let startDate, endDate
   if (window === 'last-week') {
-    const weekday = new Date(`${data.asOfDate}T12:00:00Z`).getUTCDay()
-    endDate = shiftDate(data.asOfDate, -((weekday + 6) % 7) - 1)
-    startDate = shiftDate(endDate, -6)
+    const previous = previousCalendarWeek(data.asOfDate)
+    startDate = previous.startDate
+    endDate = previous.endDate
   } else if (window === 'explicit') {
     startDate = validatedDate(args.startDate, 'startDate')
     endDate = validatedDate(args.endDate, 'endDate')

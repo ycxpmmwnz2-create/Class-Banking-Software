@@ -1,5 +1,5 @@
-import { CONVERSATIONAL_ANSWER_CONTRACT } from './conversationContract.js'
-import { narrateEarnings } from './conversationNarrator.js'
+import { CONVERSATIONAL_ANSWER_CONTRACT, validateConversationPresentation } from './conversationContract.js'
+import { narrateClassroomAnswer } from './conversationNarrator.js'
 import { Buffer } from 'node:buffer'
 
 import { createClassroomAssistantToolbox } from './classroomAssistantTools.js'
@@ -222,16 +222,27 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
         try {
           const rendered = registry.render(selection)
           let presentation = null, usageUncertain = false
-          if (conversational && registry.isEarningsSelection(selection) && Buffer.byteLength(rendered.answer, 'utf8') <= 24000) {
+          if (conversational && registry.hasFactualSelection(selection) && Buffer.byteLength(rendered.answer, 'utf8') <= 24000) {
             const [calculatedSummary, ...details] = rendered.answer.split('\n')
-            const narration = narrationAllowed && turn < CLASSROOM_ASSISTANT_MAX_TURNS - 1
-              ? await narrateEarnings({ answer: rendered.answer, question: assistantEvidence.question,
-                generateContent, timeoutMs: Math.floor(deadline - now()) })
-              : { aiSummary: null, usage: { inputTokens: 0, outputTokens: 0, thinkingTokens: 0 }, uncertain: false }
-            for (const key of Object.keys(usage)) usage[key] += narration.usage[key]
-            usageUncertain = narration.uncertain
-            presentation = Object.freeze({ aiSummary: narration.aiSummary, calculatedSummary,
-              calculationDetails: details.join('\n'), billingBasis: usageUncertain ? 'reserved-unknown' : 'observed' })
+            // Broad lists and multiple sections can exceed the presentation's
+            // detail bound. Preserve the complete original answer in that case;
+            // never call the narrator and then fail or trim a calculated fact.
+            try {
+              presentation = validateConversationPresentation({ aiSummary: null, calculatedSummary,
+                calculationDetails: details.join('\n'), billingBasis: 'observed' }, rendered.answer)
+            } catch {
+              // The original structured response remains the size-safe fallback.
+            }
+            if (presentation) {
+              const narration = narrationAllowed && turn < CLASSROOM_ASSISTANT_MAX_TURNS - 1
+                ? await narrateClassroomAnswer({ answer: rendered.answer, question: assistantEvidence.question,
+                  generateContent, timeoutMs: Math.floor(deadline - now()) })
+                : { aiSummary: null, usage: { inputTokens: 0, outputTokens: 0, thinkingTokens: 0 }, uncertain: false }
+              for (const key of Object.keys(usage)) usage[key] += narration.usage[key]
+              usageUncertain = narration.uncertain
+              presentation = Object.freeze({ ...presentation, aiSummary: narration.aiSummary,
+                billingBasis: usageUncertain ? 'reserved-unknown' : 'observed' })
+            }
           }
           return Object.freeze({ ...rendered, answerContract,
             usage: Object.freeze({ ...usage }), toolCallCount,
