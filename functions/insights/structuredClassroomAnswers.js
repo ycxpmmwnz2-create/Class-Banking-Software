@@ -13,6 +13,28 @@ export const STRUCTURED_ANSWER_VIEWS = Object.freeze({
   compare_student_earnings: 'student-earnings',
 })
 
+// Provider-side formatting only. The request-local registry still validates
+// result ownership, view binding, duplicate selections and rendered values.
+export const STRUCTURED_SELECTION_FORMAT = freezeCopy({
+  responseMimeType: 'application/json',
+  responseJsonSchema: {
+    type: 'object', additionalProperties: false, required: ['schemaVersion', 'sections'],
+    properties: {
+      schemaVersion: { type: 'integer', enum: [1] },
+      sections: {
+        type: 'array', minItems: 1, maxItems: 8,
+        items: {
+          type: 'object', additionalProperties: false, required: ['resultId', 'view'],
+          properties: {
+            resultId: { type: 'string' },
+            view: { type: 'string', enum: Object.values(STRUCTURED_ANSWER_VIEWS) },
+          },
+        },
+      },
+    },
+  },
+})
+
 // Fixed internal vocabulary only: never put answer text, keys, IDs, or values
 // from a rejected response into a diagnostic.
 export const STRUCTURED_ANSWER_FAILURE_CODES = Object.freeze([

@@ -168,6 +168,25 @@ export function createFirestoreQuestionEvidenceLoader({
       }
       return assistantTextCache.get(cacheKey)
     }
+    // Student submissions store their displayed category in reason. Match the
+    // classroom history's category || reason precedence without changing records
+    // or treating memo text as a searchable category.
+    const assistantCategoryCache = new Map()
+    const assistantCategoryLabels = assistantMode ? availableTransactions.map(transaction => {
+      const label = transaction.category || transaction.reason
+      if (!assistantCategoryCache.has(label)) {
+        const text = safeAssistantText(label, 120).text
+        assistantCategoryCache.set(label,
+          containsObscuredMultiTokenRosterName(text, studentIdentities, { paddedSingleTokenCounts: true })
+            ? 'Private category' : text)
+      }
+      return assistantCategoryCache.get(label)
+    }) : null
+    // These labels have already passed the assistant's bounded text sanitizer.
+    const assistantCategoryCatalog = assistantMode
+      ? buildCategoryCatalog(availableTransactions.map((transaction, index) => ({
+        category: assistantCategoryLabels[index], type: transaction.type,
+      })), []) : null
     const providerQuestion = assistantMode ? safeAssistantText(question, 500).text : ''
     // Opting out of the padded-token rule, deliberately and only here: the
     // teacher typed this text and owns the data, and the rule cannot tell a
@@ -248,7 +267,7 @@ export function createFirestoreQuestionEvidenceLoader({
         balance: student.balance,
         frozen: student.frozen,
       }))),
-      categories: Object.freeze(categoryCatalog.map(category => Object.freeze({
+      categories: Object.freeze(assistantCategoryCatalog.map(category => Object.freeze({
         label: safeAssistantText(category.label, 120).text,
         transactionTypes: category.transactionTypes,
       }))),
@@ -261,7 +280,7 @@ export function createFirestoreQuestionEvidenceLoader({
           date: transaction.date,
           type: transaction.type,
           amount: transaction.amount,
-          category: safeAssistantText(transaction.category, 120).text,
+          category: assistantCategoryLabels[index],
           purpose: transactionPurpose(transaction),
           status: transaction.status,
         })

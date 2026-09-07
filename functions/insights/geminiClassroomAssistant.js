@@ -9,7 +9,7 @@ import {
 } from './classroomAssistantUsageContract.js'
 import { GEMINI_MODEL_ID, parseGeminiUsageMetadata } from './geminiProviderAdapter.js'
 import { GeminiTransportError } from './geminiTransport.js'
-import { createStructuredAnswerRegistry, STRUCTURED_ANSWER_CONTRACT, StructuredClassroomAnswerError } from './structuredClassroomAnswers.js'
+import { createStructuredAnswerRegistry, STRUCTURED_ANSWER_CONTRACT, StructuredClassroomAnswerError, STRUCTURED_SELECTION_FORMAT } from './structuredClassroomAnswers.js'
 import { STRUCTURED_CLASSROOM_SYSTEM_INSTRUCTION } from './structuredClassroomPrompt.js'
 
 export const CLASSROOM_ASSISTANT_MAX_TOOL_CALLS = 8
@@ -264,6 +264,7 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
             contents,
             declarations: toolbox.declarations,
             requireTool: turn === 0,
+            selectionFormat: conversational && turn > 0,
             timeoutMs: remainingDurationMs,
             systemInstruction: registry ? STRUCTURED_CLASSROOM_SYSTEM_INSTRUCTION : SYSTEM_INSTRUCTION,
           }))
@@ -396,7 +397,7 @@ export function buildGeminiClassroomAssistantRequest({
   return buildRequest({ contents, declarations, requireTool, timeoutMs })
 }
 
-function buildRequest({ contents, declarations, requireTool, timeoutMs, systemInstruction = SYSTEM_INSTRUCTION }) {
+function buildRequest({ contents, declarations, requireTool, timeoutMs, selectionFormat = false, systemInstruction = SYSTEM_INSTRUCTION }) {
   if (!Array.isArray(contents) || contents.length < 1 || !Array.isArray(declarations)) {
     fail('invalid-assistant-input', 'The classroom assistant request is malformed.')
   }
@@ -408,10 +409,11 @@ function buildRequest({ contents, declarations, requireTool, timeoutMs, systemIn
     contents: Object.freeze([...contents]),
     config: Object.freeze({
       systemInstruction,
+      ...(selectionFormat ? STRUCTURED_SELECTION_FORMAT : {}),
       tools: Object.freeze([Object.freeze({ functionDeclarations: declarations })]),
       toolConfig: Object.freeze({
         functionCallingConfig: Object.freeze({
-          mode: requireTool ? 'ANY' : 'AUTO',
+          mode: requireTool ? 'ANY' : selectionFormat ? 'VALIDATED' : 'AUTO',
           allowedFunctionNames: requireTool ? declarations.map(item => item.name) : undefined,
         }),
       }),
