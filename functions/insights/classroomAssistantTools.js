@@ -430,6 +430,11 @@ function aggregateTransactions(args, filtered, studentsByRef) {
       value,
       transactionCount: group.transactions.length,
       sharePercent: denominator && denominator > 0 ? roundPercent(value / denominator * 100) : null,
+      // Supplemental dates never replace the full count. Bound each row's
+      // sample so grouped, long-window answers retain the existing byte limits.
+      ...(metric === 'distinctDays' ? {
+        matchingDates: Object.freeze([...new Set(group.transactions.map(row => row.calendarDay))].sort().slice(0, 7)),
+      } : {}),
     })
   })
   if (minimumResult !== null) rows = rows.filter(row => row.value >= minimumResult)

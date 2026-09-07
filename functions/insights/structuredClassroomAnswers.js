@@ -216,6 +216,16 @@ function renderAggregate({ args, result, context }) {
       return `${enumText(key, GROUP_LABELS)} ${key === 'amount' ? money(value) : label(value)}`
     })
     lines.push(`• ${groups.join('; ') || 'All matching records'} — ${metricValue(result.metric, row.value, row.transactionCount)} (${row.transactionCount} transactions).`)
+    if (result.metric === 'distinctDays' && row.matchingDates.length) {
+      // These are classroom calendar keys, not UTC transaction timestamps.
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'UTC', weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+      })
+      const dates = row.matchingDates.map(date => formatter.format(new Date(`${date}T12:00:00.000Z`)))
+      const scope = row.matchingDates.length < row.value
+        ? `First ${row.matchingDates.length} of ${row.value} matching dates` : 'Matching dates'
+      lines.push(`${scope}: ${dates.join('; ')}.`)
+    }
   }
   return rendered(lines, metric, context)
 }

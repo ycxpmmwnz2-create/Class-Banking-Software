@@ -4885,14 +4885,6 @@ link.click();
                 <span class="insights-eyebrow">Your question</span>
                 <div class="insights-question-asked">${escapeHtml(providerQuestionSubmitted)}</div>
                 ${renderQuestionAnswer(providerQuestionResult)}
-                <details class="insights-answer-details">
-                  <summary>See details</summary>
-                  <div class="insights-question-evidence">
-                    ${providerQuestionResult.evidence.map(item => `
-                      <div class="insight-evidence">${escapeHtml(item)}</div>
-                    `).join("")}
-                  </div>
-                </details>
                 <div class="insights-report-meta" style="margin-top: 12px;">
                   Answered ${escapeHtml(formattedInsightsGeneratedAt(providerQuestionResult.generatedAt))}
                 </div>
