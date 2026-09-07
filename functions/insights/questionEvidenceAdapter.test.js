@@ -1460,3 +1460,52 @@ test('the padded-token strictness option defaults to strict and is opted out of 
   assert.match(source, /paddedSingleTokenCounts: false,\n\s*\}\)\) \{/u)
   assert.equal([...source.matchAll(/paddedSingleTokenCounts: false/gu)].length, 1)
 })
+
+test('assistant counts category-field and student reason-field earnings on all matching classroom dates', async () => {
+  const base = fixture()['classrooms/class-a/transactions/101']
+  const records = fixture({
+    'classrooms/class-a/transactions/101': { ...base, date: '8/5/2026, 1:18:37 PM', category: 'Homework', reason: 'Homework' },
+    'classrooms/class-a/transactions/102': { ...base, id: 102, date: '2026-08-08T23:56:15.517Z', category: '', reason: 'Homework', source: 'Student' },
+    'classrooms/class-a/transactions/103': { ...base, id: 103, date: '2026-08-09T20:49:38.131Z', category: '', reason: 'Homework', source: 'Student' },
+    'classrooms/class-a/transactions/104': { ...base, id: 104, date: '2026-08-09T21:00:34.401Z', category: '', reason: 'Homework', source: 'Student', status: 'Pending' },
+    'classrooms/class-a/transactions/105': { ...base, id: 105, date: '2026-08-10T16:00:00.000Z', category: '', reason: 'Homework', source: 'Student' },
+  })
+  const original = JSON.stringify(records)
+  const envelope = await loader(records)({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 90, timeZone: 'America/Denver', question: 'How many days did GianMarco earn money for Homework from August 3 through August 9, 2026?', assistantMode: true })
+  const { createClassroomAssistantToolbox } = await import('./classroomAssistantTools.js')
+  const { createStructuredAnswerRegistry } = await import('./structuredClassroomAnswers.js')
+  const toolbox = createClassroomAssistantToolbox(envelope.assistantEvidence)
+  const args = { studentRefs: ['student-001'], startDate: '2026-08-03', endDate: '2026-08-09', transactionType: 'Add', status: 'Approved', categoryContains: 'homework', metric: 'distinctDays', groupBy: [] }
+  const result = toolbox.execute('aggregate_transactions', args)
+  assert.equal(result.matchedTransactionCount, 3)
+  assert.equal(result.rows[0].value, 3)
+  const registry = createStructuredAnswerRegistry(toolbox), selected = registry.execute('aggregate_transactions', args)
+  assert.match(registry.render({ schemaVersion: 1, sections: [{ resultId: selected.resultId, view: selected.view }] }).answer, /Distinct classroom dates: 3\./u)
+  assert.deepEqual(envelope.assistantEvidence.categories, [{ label: 'Homework', transactionTypes: ['Add'] }])
+  assert.equal(JSON.stringify(records), original, 'Projection must not mutate stored records')
+})
+
+for (const label of ['Technology', 'Class Store Purchase', 'Garden helper']) test(`assistant uses blank-category display reason for ${label} without a fixed category list`, async () => {
+  const base = fixture()['classrooms/class-a/transactions/101']
+  const result = await loader(fixture({ 'classrooms/class-a/transactions/101': { ...base, category: '', reason: label, memo: 'Memo must not become a category', source: 'Student' } }))({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: 'America/Denver', question: 'Show category totals.', assistantMode: true })
+  assert.equal(result.assistantEvidence.transactions[0].category, label)
+  assert.equal(result.assistantEvidence.categories[0].label, label)
+  assert.doesNotMatch(JSON.stringify(result.assistantEvidence), /Memo must not/u)
+})
+
+test('assistant keeps an explicit category authoritative over a different reason', async () => {
+  const base = fixture()['classrooms/class-a/transactions/101']
+  const result = await loader(fixture({ 'classrooms/class-a/transactions/101': { ...base, category: 'Technology', reason: 'Homework' } }))({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: 'America/Denver', question: 'Show category totals.', assistantMode: true })
+  assert.equal(result.assistantEvidence.transactions[0].category, 'Technology')
+  assert.deepEqual(result.assistantEvidence.categories, [{ label: 'Technology', transactionTypes: ['Add'] }])
+})
+
+test('fallback display reasons retain contact and surname redaction and never expose padded names', async () => {
+  const base = fixture()['classrooms/class-a/transactions/101']
+  for (const reason of ['Help GianMarco Bellini contact parent@example.com 801-555-1212', 'Help G i a n M a r c o B e l l i n i']) {
+    const result = await loader(fixture({ 'classrooms/class-a/transactions/101': { ...base, category: '', reason, source: 'Student' } }))({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: 'America/Denver', question: 'Show category totals.', assistantMode: true })
+    const serialized = JSON.stringify(result.assistantEvidence)
+    assert.doesNotMatch(serialized, /Bellini|B e l l i n i|parent@example\.com|555-1212/u)
+    assert.notEqual(result.assistantEvidence.transactions[0].category, '')
+  }
+})
