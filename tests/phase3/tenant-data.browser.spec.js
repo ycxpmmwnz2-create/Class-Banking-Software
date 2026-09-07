@@ -99,6 +99,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await page.getByRole('tab', { name: 'Custom Transaction' }).click()
 
     await expect(page.locator('#transactionReason option')).toHaveText([
+      'Choose a category',
       'Class Job',
       'Earned Class Cash in Specials',
       'Going Above and Beyond',
@@ -111,6 +112,7 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
 
     await page.evaluate(() => window.setCustomTransactionMode('Subtract'))
     await expect(page.locator('#transactionReason option')).toHaveText([
+      'Choose a category',
       'Rent',
       "Teacher's Choice",
     ])
