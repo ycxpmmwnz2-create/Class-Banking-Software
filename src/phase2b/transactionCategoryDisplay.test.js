@@ -51,7 +51,12 @@ test("the transaction menus use the alphabetical display helpers", () => {
   assert.match(source, /function studentCategoryOptions[\s\S]*?sortTransactionCategories\(categories\)/);
   assert.match(
     source,
-    /categoryOptions\(effectiveAddMoneyCategories\(data\.settings\.addMoneyCategories\), "Homework"\)/
+    /const customTransactionCategories = customTransactionDraft\.type === "Add"\s*\? effectiveAddMoneyCategories\(data\.settings\.addMoneyCategories\)\s*: data\.settings\.subtractMoneyCategories;/
+  );
+  assert.match(source, /categoryOptions\(customTransactionCategories, customTransactionDraft\.reason\)/);
+  assert.match(
+    source,
+    /categorySelect\.innerHTML = '<option value="">Choose a category<\/option>' \+ categoryOptions\(categories, ""\);/
   );
   assert.match(
     source,

@@ -1830,6 +1830,41 @@ let teacherTransactionFilter = "all";
 let teacherStudentListExpanded = false;
 let teacherTransactionsExpanded = false;
 let dashboardMoneyTool = "quick";
+// Memory-only form state. Rendering must not change the recipient or operation
+// a teacher chose. The global session reset clears both drafts.
+let quickCashStudentId = "";
+let customTransactionDraft = createCustomTransactionDraft();
+
+function createCustomTransactionDraft() {
+  return { type: "Add", amount: "1", reason: "Homework", memo: "", studentIds: [] };
+}
+
+function resetCustomTransactionDraft() {
+  transactionTarget = "selected";
+  customTransactionDraft = createCustomTransactionDraft();
+}
+
+function setQuickCashStudent(value) {
+  if (!requireTeacher()) return;
+  quickCashStudentId = String(value);
+}
+
+function updateCustomTransactionDraft() {
+  if (!requireTeacher()) return;
+  const typeInput = document.getElementById("transactionType");
+  if (!typeInput) return;
+  customTransactionDraft = {
+    type: typeInput.value,
+    amount: document.getElementById("transactionAmount").value,
+    reason: document.getElementById("transactionReason").value,
+    memo: document.getElementById("teacherChoiceMemo").value,
+    // Whole Class hides the checkboxes; keep the chosen subset for a return
+    // to Selected Students instead of replacing it with an empty selection.
+    studentIds: transactionTarget === "selected"
+      ? Array.from(document.querySelectorAll(".student-check:checked"), input => Number(input.value))
+      : customTransactionDraft.studentIds
+  };
+}
 
 function setDashboardSectionExpanded(section, expanded) {
   if (!requireTeacher()) return;
@@ -1858,6 +1893,7 @@ function openDashboardTransactions() {
 
 function setTransactionTarget(value) {
   if (!requireTeacher()) return;
+  updateCustomTransactionDraft();
   transactionTarget = value;
   render();
 }
@@ -2869,6 +2905,7 @@ function toggleStudentDropdown() {
         return;
       }
 
+      quickCashStudentId = String(student.id);
       changeStudentBalance(student.id, type, amount);
 
       const transaction = {
@@ -2911,6 +2948,7 @@ function toggleStudentDropdown() {
 
     function saveTeacherTransaction() {
       if (!requireTeacher()) return;
+      updateCustomTransactionDraft();
       const transactionTarget = document.getElementById("transactionTarget").value;
       const type = document.getElementById("transactionType").value;
       const amount = Number(document.getElementById("transactionAmount").value);
@@ -2920,6 +2958,11 @@ function toggleStudentDropdown() {
 
       if (!amount || amount <= 0) {
         showMessage("Enter an amount greater than 0.");
+        return;
+      }
+
+      if (!reason) {
+        showMessage("Choose a category before submitting.");
         return;
       }
 
@@ -2954,6 +2997,9 @@ const targetStudents = transactionTarget === "whole"
 
       data.transactions = newTransactions.concat(data.transactions);
       saveData();
+      // Keep unfinished drafts through redraws, but require a fresh recipient
+      // selection once this submission has been dispatched.
+      resetCustomTransactionDraft();
       message = "Teacher transaction saved and approved.";
       render();
     }
@@ -3706,8 +3752,10 @@ link.click();
             fallbackLoginHistory: data.loginHistory || [],
             fallbackSettings: data.settings
           }));
-        saveData();
-        showMessage("Backup imported.");
+          quickCashStudentId = "";
+          resetCustomTransactionDraft();
+          saveData();
+          showMessage("Backup imported.");
         } catch {
           alert("Could not import that file.");
         }
@@ -3749,7 +3797,7 @@ link.click();
         ? effectiveAddMoneyCategories(data.settings.addMoneyCategories)
         : data.settings.subtractMoneyCategories;
 
-      categorySelect.innerHTML = categoryOptions(categories, "");
+      categorySelect.innerHTML = '<option value="">Choose a category</option>' + categoryOptions(categories, "");
       submitButton.textContent = type === "Add" ? "Add Money" : "Subtract Money";
 
       toggleTeacherChoiceMemo();
@@ -3761,6 +3809,7 @@ link.click();
       const memoWrap = document.getElementById("teacherChoiceMemoWrap");
       if (!categorySelect || !memoWrap) return;
 
+      updateCustomTransactionDraft();
       memoWrap.classList.toggle("visible", categorySelect.value === "Teacher's Choice");
     }
     function studentCategoryOptions(type) {
@@ -4479,8 +4528,22 @@ link.click();
       const transactionsToday = data.transactions.filter(transaction =>
         new Date(transaction.date).toDateString() === today
       ).length;
+      // Forget departed recipients before a legacy allocator can reuse an ID.
+      // V2 IDs are monotonic, but both builds share this view state.
+      const currentStudentIds = new Set(data.students.map(student => student.id));
+      if (!currentStudentIds.has(Number(quickCashStudentId))) quickCashStudentId = "";
+      customTransactionDraft.studentIds = customTransactionDraft.studentIds.filter(id => currentStudentIds.has(id));
+      const customTransactionCategories = customTransactionDraft.type === "Add"
+        ? effectiveAddMoneyCategories(data.settings.addMoneyCategories)
+        : data.settings.subtractMoneyCategories;
+      if (!customTransactionCategories.includes(customTransactionDraft.reason)) {
+        // A removed category must not silently become a different category
+        // carrying the old memo. Require the teacher to make a new choice.
+        customTransactionDraft.reason = "";
+        customTransactionDraft.memo = "";
+      }
       const studentOptions = sortStudentsByName(data.students).map(student =>
-        `<option value="${student.id}">${escapeHtml(student.name)}</option>`
+        `<option value="${student.id}" ${String(student.id) === quickCashStudentId ? "selected" : ""}>${escapeHtml(student.name)}</option>`
       ).join("");
 
       let html = `
@@ -4685,7 +4748,10 @@ link.click();
                     <div class="empty">Add students on the Roster page first.</div>
                   ` : `
                     <label for="quickStudent">Student</label>
-                    <select id="quickStudent">${studentOptions}</select>
+                    <select id="quickStudent" onchange="setQuickCashStudent(this.value)">
+                      <option value="">Choose a student</option>
+                      ${studentOptions}
+                    </select>
                     <div class="dashboard-quick-cash-actions">
                       <button class="quick-btn" onclick="quickCash('Add', 1)">+$1</button>
                       <button class="quick-btn" onclick="quickCash('Add', 5)">+$5</button>
@@ -4703,12 +4769,12 @@ link.click();
                     <div class="empty">Add students on the Roster page first.</div>
                   ` : `
                     <div class="transaction-form">
-                      <input id="transactionType" type="hidden" value="Add" />
+                      <input id="transactionType" type="hidden" value="${escapeHtml(customTransactionDraft.type)}" />
 
                       <label>Transaction type</label>
                       <div class="segmented-control">
-                        <button id="addModeButton" class="segment-button active" onclick="setCustomTransactionMode('Add')">Add Money</button>
-                        <button id="subtractModeButton" class="segment-button" onclick="setCustomTransactionMode('Subtract')">Subtract Money</button>
+                        <button id="addModeButton" class="segment-button ${customTransactionDraft.type === "Add" ? "active" : ""}" onclick="setCustomTransactionMode('Add')">Add Money</button>
+                        <button id="subtractModeButton" class="segment-button ${customTransactionDraft.type === "Subtract" ? "active" : ""}" onclick="setCustomTransactionMode('Subtract')">Subtract Money</button>
                       </div>
 
                       <label for="transactionTarget">Who gets this transaction?</label>
@@ -4734,6 +4800,8 @@ link.click();
                                   type="checkbox"
                                   class="student-check"
                                   value="${student.id}"
+                                  ${customTransactionDraft.studentIds.includes(student.id) ? "checked" : ""}
+                                  onchange="updateCustomTransactionDraft()"
                                   style="width: 18px; height: 18px; margin: 0;" />
                                 <span>${escapeHtml(student.name)}</span>
                               </label>
@@ -4743,17 +4811,20 @@ link.click();
                       ` : ""}
 
                       <label for="transactionAmount">Amount</label>
-                      <input id="transactionAmount" type="number" min="1" value="1" />
+                      <input id="transactionAmount" type="number" min="1" value="${escapeHtml(customTransactionDraft.amount)}" oninput="updateCustomTransactionDraft()" />
 
                       <label for="transactionReason">Category</label>
-                      <select id="transactionReason" onchange="toggleTeacherChoiceMemo()">${categoryOptions(effectiveAddMoneyCategories(data.settings.addMoneyCategories), "Homework")}</select>
+                      <select id="transactionReason" onchange="toggleTeacherChoiceMemo()">
+                        <option value="">Choose a category</option>
+                        ${categoryOptions(customTransactionCategories, customTransactionDraft.reason)}
+                      </select>
 
-                      <div id="teacherChoiceMemoWrap" class="teacher-choice-memo full-row">
+                      <div id="teacherChoiceMemoWrap" class="teacher-choice-memo full-row ${customTransactionDraft.reason === "Teacher's Choice" ? "visible" : ""}">
                         <label for="teacherChoiceMemo">Teacher’s Choice memo</label>
-                        <input id="teacherChoiceMemo" placeholder="Optional reason or memo" />
+                        <input id="teacherChoiceMemo" placeholder="Optional reason or memo" value="${escapeHtml(customTransactionDraft.memo)}" oninput="updateCustomTransactionDraft()" />
                       </div>
 
-                      <button id="customTransactionButton" class="primary full-row" onclick="saveTeacherTransaction()">Add Money</button>
+                      <button id="customTransactionButton" class="primary full-row" onclick="saveTeacherTransaction()">${customTransactionDraft.type === "Add" ? "Add Money" : "Subtract Money"}</button>
                     </div>
                   `}
                 </div>
@@ -5514,6 +5585,8 @@ if (screen === "editSettingsLists" && isTeacher) {
       teacherInvitationEmailDraft = "";
       teacherInvitationExpiryHours = 48;
       studentMoneyRetryPayload = null;
+      quickCashStudentId = "";
+      resetCustomTransactionDraft();
       teacherStudentListExpanded = false;
       teacherTransactionsExpanded = false;
       dashboardMoneyTool = "quick";
@@ -5979,6 +6052,8 @@ window.saveTeacherTransaction = saveTeacherTransaction;
 window.setCustomTransactionMode = setCustomTransactionMode;
 window.toggleStudentDropdown = toggleStudentDropdown;
 window.setTransactionTarget = setTransactionTarget;
+window.setQuickCashStudent = setQuickCashStudent;
+window.updateCustomTransactionDraft = updateCustomTransactionDraft;
 window.setTeacherTransactionFilter = setTeacherTransactionFilter;
 window.exportTransactionsCsv = exportTransactionsCsv;
 window.quickCash = quickCash;
