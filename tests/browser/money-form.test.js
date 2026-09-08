@@ -157,10 +157,20 @@ for (const engine of [chromium, webkit]) {
         && tx.memo === 'Rent "September" <classroom>'));
     });
 
+    test('Selected Students opens the student picker without an extra click', async t => {
+      const page = await openForm(t);
+      await customForm(page);
+      const studentPicker = page.locator('[data-testid="dashboard-student-picker"]');
+      assert.equal(await studentPicker.evaluate(details => details.open), true);
+      await studentPicker.locator('summary').click();
+      await page.locator('#transactionTarget').selectOption('whole');
+      await page.locator('#transactionTarget').selectOption('selected');
+      assert.equal(await studentPicker.evaluate(details => details.open), true);
+    });
+
     test('checked recipients and the draft survive target round trips and switching money tools', async t => {
       const page = await openForm(t);
       await enterDebit(page);
-      await page.locator('[data-testid="dashboard-student-picker"] summary').click();
       await page.locator('.student-check[value="2"]').check();
       await page.locator('#transactionTarget').selectOption('whole');
       await page.locator('#transactionTarget').selectOption('selected');
@@ -204,7 +214,6 @@ for (const engine of [chromium, webkit]) {
       const page = await openForm(t);
       await page.locator('#quickStudent').selectOption('2');
       await enterDebit(page);
-      await page.locator('[data-testid="dashboard-student-picker"] summary').click();
       await page.locator('.student-check[value="2"]').check();
       await page.locator('#transactionTarget').selectOption('whole');
       const previous = await page.evaluate(() => window.moneyFormTest.identity());
@@ -228,7 +237,6 @@ for (const engine of [chromium, webkit]) {
         await page.evaluate(() => window.moneyFormTest.newSession());
         await enterDebit(page);
         if (scope === 'selected') {
-          await page.locator('[data-testid="dashboard-student-picker"] summary').click();
           await page.locator('.student-check[value="2"]').check();
           await page.locator('[data-testid="dashboard-student-picker"] summary').click();
         } else {
@@ -299,7 +307,6 @@ for (const engine of [chromium, webkit]) {
       const page = await openForm(t, { legacy: true });
       await page.locator('#quickStudent').selectOption('2');
       await enterDebit(page);
-      await page.locator('[data-testid="dashboard-student-picker"] summary').click();
       await page.locator('.student-check[value="2"]').check();
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await page.locator('#backupFileSettings').setInputFiles({
