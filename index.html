@@ -1876,6 +1876,9 @@ function setDashboardMoneyTool(tool) {
   if (!requireTeacher()) return;
   if (tool !== "quick" && tool !== "custom") return;
   dashboardMoneyTool = tool;
+  if (dashboardMoneyTool === "custom" && transactionTarget === "selected") {
+    teacherStudentListExpanded = true;
+  }
   render();
 }
 
@@ -1895,6 +1898,7 @@ function setTransactionTarget(value) {
   if (!requireTeacher()) return;
   updateCustomTransactionDraft();
   transactionTarget = value;
+  if (transactionTarget === "selected") teacherStudentListExpanded = true;
   render();
 }
 function setTeacherTransactionFilter(value) {
