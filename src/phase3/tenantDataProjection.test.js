@@ -18,6 +18,117 @@ import {
 
 const CLASSROOM = 'classroom-alpha'
 
+// Public-path preservation tests: these pass with the original JSON comparison
+// too. Prior records are less constrained than freshly projected write bodies.
+describe('record write comparison preserves JSON semantics', () => {
+  for (const [collection, makeRecord] of [['transactions', transaction], ['loginHistory', historyEntry]]) {
+    const planFor = (current, previous) => decomposeClassroomMutation({
+      classroomId: CLASSROOM,
+      data: { students: [], transactions: [], loginHistory: [], [collection]: [current] },
+      previous: { students: [], transactions: [], loginHistory: [], [collection]: [previous] },
+    })
+    const writesFor = (current, previous) => planFor(current, previous)[collection]
+
+    it(`${collection}: skips unchanged records with reordered keys and ignored prior extras`, () => {
+      const current = Object.freeze(makeRecord())
+      const previous = Object.freeze({ ...Object.fromEntries(Object.entries(current).reverse()), extra: 'ignored', toJSON() { throw new Error('record toJSON must not run') } })
+      assert.deepEqual(writesFor(current, previous), [])
+    })
+
+    it(`${collection}: detects changes to every persisted field`, () => {
+      const previous = Object.freeze(makeRecord())
+      for (const [field, value] of Object.entries(previous)) {
+        const current = makeRecord({ [field]: typeof value === 'number' ? value + 1 : `${value} changed` })
+        const writes = writesFor(current, previous)
+        assert.equal(writes.length, 1, field)
+        assert.equal(writes[0].path, `classrooms/${CLASSROOM}/${collection}/${current.id}`)
+        assert.deepEqual(writes[0].body, current)
+      }
+    })
+
+    it(`${collection}: missing and undefined prior fields still require a write`, () => {
+      const current = makeRecord()
+      for (const field of Object.keys(current).filter(key => key !== 'id')) {
+        const missing = { ...current }
+        delete missing[field]
+        assert.equal(writesFor(current, missing).length, 1, field)
+        assert.equal(writesFor(current, { ...current, [field]: undefined }).length, 1, field)
+      }
+    })
+
+    it(`${collection}: preserves fallback behavior for unusual prior scalar values`, () => {
+      const current = makeRecord()
+      const field = collection === 'transactions' ? 'amount' : 'studentId'
+      for (const value of [NaN, Infinity, -Infinity, null, true, '5', Symbol('fictional'), () => 5]) {
+        assert.equal(writesFor(current, { ...current, [field]: value }).length, 1)
+      }
+    })
+
+    it(`${collection}: serializes boxed and toJSON prior values with the selected field key`, () => {
+      const current = makeRecord()
+      assert.deepEqual(writesFor(current, { ...current, studentName: new String(current.studentName) }), [])
+      const keys = []
+      assert.deepEqual(writesFor(current, { ...current, studentName: { toJSON(key) { keys.push(key); return current.studentName } } }), [])
+      assert.deepEqual(keys, ['studentName'])
+    })
+
+    it(`${collection}: reads all selected prior fields before serialization`, () => {
+      const current = makeRecord()
+      const reads = []
+      const previous = { ...current }
+      for (const [field, value] of Object.entries(current)) {
+        if (field === 'id') continue
+        Object.defineProperty(previous, field, { enumerable: true, get() { reads.push(field); return value } })
+      }
+      assert.deepEqual(writesFor(current, previous), [])
+      assert.deepEqual(reads, Object.keys(current).filter(field => field !== 'id'))
+    })
+
+    it(`${collection}: does not short circuit away later serialization failures`, () => {
+      const current = makeRecord()
+      const lastField = Object.keys(current).at(-1)
+      assert.throws(() => writesFor(current, { ...current, date: 'different', [lastField]: 1n }), TypeError)
+      const failure = new Error('fictional serialization failure')
+      assert.throws(() => writesFor(current, { ...current, date: 'different', [lastField]: { toJSON() { throw failure } } }), error => error === failure)
+      const cyclic = {}; cyclic.self = cyclic
+      assert.throws(() => writesFor(current, { ...current, [lastField]: cyclic }), TypeError)
+    })
+
+    it(`${collection}: keeps validation precedence even when prior values match`, () => {
+      const invalid = makeRecord({ password: 'fictional', classroomId: 'foreign', extra: 1 })
+      expectRejection(() => writesFor(invalid, invalid), PROJECTION_CATEGORIES.CREDENTIAL)
+      delete invalid.password
+      expectRejection(() => writesFor(invalid, invalid), PROJECTION_CATEGORIES.TENANT)
+      delete invalid.classroomId
+      expectRejection(() => writesFor(invalid, invalid), PROJECTION_CATEGORIES.SHAPE)
+    })
+  }
+
+  it('nullable history studentId preserves equal, changed, and JSON-equivalent priors', () => {
+    const current = historyEntry({ studentId: null })
+    const data = { students: [], transactions: [], loginHistory: [current] }
+    for (const studentId of [null, NaN, { toJSON() { return null } }, 1]) {
+      const previous = { ...data, loginHistory: [historyEntry({ studentId })] }
+      const plan = decomposeClassroomMutation({ classroomId: CLASSROOM, data, previous })
+      assert.deepEqual(plan.loginHistory, studentId === 1 ? [{
+        path: `classrooms/${CLASSROOM}/loginHistory/${current.id}`,
+        id: String(current.id),
+        body: current,
+      }] : [])
+      assert.deepEqual(plan.deletes, [])
+      assert.equal(plan.totalWrites, studentId === 1 ? 1 : 0)
+    }
+  })
+
+  it('transaction amount treats positive and negative zero as equal', () => {
+    for (const [amount, previousAmount] of [[0, -0], [-0, 0]]) {
+      const data = { students: [], transactions: [transaction({ amount })], loginHistory: [] }
+      const previous = { ...data, transactions: [transaction({ amount: previousAmount })] }
+      assert.deepEqual(decomposeClassroomMutation({ classroomId: CLASSROOM, data, previous }).transactions, [])
+    }
+  })
+})
+
 // Exercise the shared exact-key check only through public projection paths.
 // These are preservation tests: they must pass before and after optimization.
 describe('exact document keys without depending on insertion order', () => {
