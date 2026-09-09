@@ -94,7 +94,8 @@ release:
 The current final-rules candidate includes the narrowly bounded
 `classrooms/{classroomId}/studentDisplay/rent` surface documented in
 `SECURITY_PLAN.md`. That candidate and the matching Hosting build must complete
-the normal Claude and Grok review gates before any separate deployment request.
+Muse Spark's detailed read-only check, then Claude's final independent
+100-foot review before any separate deployment request.
 
 Never copy a candidate over `firestore.rules` for testing. Never deploy the
 recursive baseline, bridge, or rollback-safe rules in the clean-start route.
@@ -395,9 +396,9 @@ privacy-preserving.
 
 The following is an operator checklist, not permission to execute it.
 
-1. Complete Codex implementation and self-verification. Obtain Claude's
-   detailed read-only PASS, then Grok's independent 5,000-foot PASS for the
-   exact reviewed range.
+1. Complete Codex implementation and self-verification. Obtain
+   Muse Spark's detailed read-only check, then Claude's final independent
+   100-foot review, each with PASS for the exact reviewed range.
 2. Run the required local gate above from the final clean reviewed commit.
    Record only non-secret checksums, counts, and verdicts.
 3. Bind the release record to that exact commit, the reviewed Functions
@@ -500,8 +501,8 @@ withdrawal, not a return to V1.
    applicable but client-denied. Preserve them; do not migrate, reconcile, or
    delete them.
 6. Diagnose and correct forward. Re-enter the full clean-start release sequence
-   only after the correction completes Codex, Claude, and Grok review and the
-   complete local gate passes again.
+   only after Codex's correction completes Muse Spark's detailed read-only check, then Claude's final independent
+   100-foot review, and the complete local gate passes again.
 
 Disabling the Functions gate does not revoke an already authenticated teacher's
 direct Firestore permission under final rules. This rollback is therefore

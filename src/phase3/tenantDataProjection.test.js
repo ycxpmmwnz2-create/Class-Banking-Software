@@ -18,6 +18,88 @@ import {
 
 const CLASSROOM = 'classroom-alpha'
 
+// Exercise the shared exact-key check only through public projection paths.
+// These are preservation tests: they must pass before and after optimization.
+describe('exact document keys without depending on insertion order', () => {
+  const cases = [
+    { name: 'student', body: () => student(), run: body => load({ students: [body], transactions: [] }) },
+    { name: 'transaction', body: () => transaction(), run: body => load({ transactions: [body] }) },
+    { name: 'login history', body: () => historyEntry(), run: body => load({ loginHistory: [body] }) },
+    { name: 'rent', body: () => ({ rentAmount: 25, updatedAt: '2026-09-09T12:00:00.000Z' }), run: body => load({ studentRent: body }) },
+  ]
+  for (const fixture of cases) {
+    it(`${fixture.name}: accepts every rotation and reversed key order without mutating input`, () => {
+      const body = fixture.body()
+      const expected = fixture.run(body)
+      const entries = Object.entries(body)
+      for (let shift = 0; shift < entries.length; shift++) {
+        const rotated = entries.slice(shift).concat(entries.slice(0, shift))
+        for (const ordered of [rotated, [...rotated].reverse()]) {
+          const input = Object.fromEntries(ordered)
+          const before = JSON.stringify(input)
+          Object.freeze(input)
+          assert.deepEqual(fixture.run(input), expected)
+          assert.equal(JSON.stringify(input), before)
+        }
+      }
+    })
+    it(`${fixture.name}: rejects every missing, extra, or same-count substituted field`, () => {
+      const body = fixture.body()
+      for (const field of Object.keys(body)) {
+        const missing = { ...body }
+        delete missing[field]
+        expectRejection(() => fixture.run(missing), PROJECTION_CATEGORIES.SHAPE)
+        // Public-path rejection is preserved here; downstream field validators
+        // also reject the missing value. The inherited/hidden-field cases below
+        // retain readable values and discriminate the exact-key membership check.
+        expectRejection(() => fixture.run({ ...missing, unexpectedField: body[field] }), PROJECTION_CATEGORIES.SHAPE)
+      }
+      expectRejection(() => fixture.run({ ...body, unexpectedField: 1 }), PROJECTION_CATEGORIES.SHAPE)
+    })
+    it(`${fixture.name}: inherited and non-enumerable required fields cannot stand in for own enumerable fields`, () => {
+      const body = fixture.body()
+      for (const field of Object.keys(body)) {
+        const inherited = { ...body }
+        delete inherited[field]
+        Object.setPrototypeOf(inherited, { [field]: body[field] })
+        expectRejection(() => fixture.run(inherited), PROJECTION_CATEGORIES.SHAPE)
+        inherited.unexpectedField = 1
+        expectRejection(() => fixture.run(inherited), PROJECTION_CATEGORIES.SHAPE)
+        const hidden = { ...body }
+        Object.defineProperty(hidden, field, { value: body[field], enumerable: false })
+        expectRejection(() => fixture.run(hidden), PROJECTION_CATEGORIES.SHAPE)
+        hidden.unexpectedField = 1
+        expectRejection(() => fixture.run(hidden), PROJECTION_CATEGORIES.SHAPE)
+      }
+    })
+  }
+  it('mutation planning preserves exact ledger/history keys and mirror ordering', () => {
+    const data = load({ transactions: [transaction({ id: 3 }), transaction({ id: 1 }), transaction({ id: 2 })] })
+    const expected = decomposeClassroomMutation({ classroomId: CLASSROOM, data })
+    assert.deepEqual(expected.students[0].body.transactions.map(entry => entry.id), [3, 2, 1])
+    const reordered = structuredClone(data)
+    for (const name of ['students', 'transactions', 'loginHistory']) {
+      reordered[name] = reordered[name].map(body => Object.fromEntries(Object.entries(body).reverse()))
+    }
+    assert.deepEqual(decomposeClassroomMutation({ classroomId: CLASSROOM, data: reordered }), expected)
+    for (const name of ['students', 'transactions', 'loginHistory']) {
+      for (const field of Object.keys(data[name][0])) {
+        const invalid = structuredClone(data)
+        const body = invalid[name][0]
+        body.unexpectedField = body[field]
+        delete body[field]
+        expectRejection(() => decomposeClassroomMutation({ classroomId: CLASSROOM, data: invalid }), PROJECTION_CATEGORIES.SHAPE)
+      }
+    }
+  })
+  it('credential and tenant failures retain priority over shape failures', () => {
+    expectRejection(() => load({ transactions: [transaction({ password: 'fictional', unexpectedField: 1 })] }), PROJECTION_CATEGORIES.CREDENTIAL)
+    expectRejection(() => load({ transactions: [transaction({ classroomId: 'foreign-classroom', unexpectedField: 1 })] }), PROJECTION_CATEGORIES.TENANT)
+    const expected = load()
+    assert.deepEqual(load({ transactions: [transaction({ classroomId: CLASSROOM })] }), expected)
+  })
+})
+
 function student(overrides = {}) {
   return { id: 1, name: 'Ada', balance: 10, frozen: false, transactions: [], ...overrides }
 }

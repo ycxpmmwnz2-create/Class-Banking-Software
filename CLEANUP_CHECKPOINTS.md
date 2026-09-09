@@ -50,6 +50,7 @@ Cleanup checkpoints require review; they do not authorize automatic code deletio
 - Preserve migration and rollback capabilities until their window closes.
 - Use small, purpose-specific, reversible commits.
 - Run proportionate regression and emulator tests after each removal.
-- Use the Codex implementation, Claude detailed review, and final manual Grok
-  handoff in `GROK_REVIEW_HANDOFF.md` for material cleanup.
+- Use Codex implementation, Muse Spark detailed checking, and Claude final
+  independent 100-foot review under `AI_COLLABORATION_WORKFLOW.md` and
+  `GROK_REVIEW_HANDOFF.md` for material cleanup.
 - Treat a cleanup checkpoint as a review requirement, not authorization to delete code automatically.

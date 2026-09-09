@@ -21,6 +21,21 @@ const runbook = readFileSync(
   new URL('../../PHASE3_RELEASE_RUNBOOK.md', import.meta.url),
   'utf8',
 )
+const brief = readFileSync(
+  new URL('../../PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md', import.meta.url),
+  'utf8',
+)
+
+function paragraphContaining(markdown, marker) {
+  const matches = markdown.split(/\n\s*\n/).filter(part => part.includes(marker))
+  assert.equal(matches.length, 1, `one paragraph must contain ${marker}`)
+  return matches[0].replace(/\s+/g, ' ')
+}
+
+function assertCurrentReviewOrder(text) {
+  assert.match(text, /Muse Spark's detailed read-only check, then Claude's final independent 100-foot review/)
+  assert.doesNotMatch(text, /Grok|Claude's detailed/)
+}
 
 function isolatedSection(markdown, startHeading, endHeading) {
   const startMarker = `## ${startHeading}`
@@ -40,14 +55,51 @@ function isolatedSection(markdown, startHeading, endHeading) {
 }
 
 function exceptionText() {
-  return isolatedSection(
-    workflow,
-    'One-time Claude founding-invitation operator exception',
-    'Durable handoff format',
-  )
+  const marker = '## Historical retired operator exception — not current policy'
+  const sections = workflow.split(marker)
+  assert.equal(sections.length, 2, 'one terminal historical parent section')
+  const heading = '### One-time Claude founding-invitation operator exception'
+  const record = sections[1].split(heading)
+  assert.equal(record.length, 2, 'one nested retired invitation record')
+  assert.doesNotMatch(record[1], /^## /m, 'no current section inside historical tail')
+  return record[1]
 }
 
 describe('Phase 3 retired Claude invitation operator governance', () => {
+  it('source contract: historical scope is the terminal parent section, with no active handoff policy hidden below it', () => {
+    const marker = '## Historical retired operator exception — not current policy'
+    const pieces = workflow.split(marker)
+    assert.equal(pieces.length, 2)
+    assert.match(pieces[0], /^## Durable handoff format$/m)
+    assert.doesNotMatch(pieces[1], /^## /m)
+    assert.deepEqual(pieces[1].match(/^### .+$/gm), ['### One-time Claude founding-invitation operator exception'])
+    assert.doesNotMatch(pieces[1], /Muse Spark|100-foot|## Durable handoff/)
+  })
+  it('source contract: brief and runbook gates resolve to Muse checking followed by Claude final review', () => {
+    for (const text of [
+      paragraphContaining(brief, 'inventory for'),
+      paragraphContaining(brief, 'final-read-set observation is the fresh inventory'),
+      paragraphContaining(brief, '1. Complete Codex implementation'),
+      paragraphContaining(brief, 'Codex remains the primary builder'),
+      paragraphContaining(runbook, 'That candidate and the matching Hosting build'),
+      paragraphContaining(runbook, '1. Complete Codex implementation'),
+      paragraphContaining(runbook, '6. Diagnose and correct forward.'),
+    ]) assertCurrentReviewOrder(text)
+    const standing = paragraphContaining(brief, 'Codex remains the primary builder')
+    assert.match(standing, /defined in `AI_COLLABORATION_WORKFLOW.md`/)
+    assert.match(workflow, /^### 3\. Muse Spark checks the implementation$/m)
+    assert.match(workflow, /^### 4\. Claude gives the final independent 100-foot review$/m)
+  })
+  it('source contract: retired review history is attributed, not reactivated as a current gate', () => {
+    assert.match(brief, /The original review required focused Claude review,\s+Grok independent review/)
+    assert.match(brief, /the v1 identifier is permanently terminated\s+and cannot be activated/)
+    assert.match(brief, /Any newly authorized reuse would require\s+Muse Spark's detailed read-only check, then Claude's final independent\s+100-foot review/)
+    assert.match(brief, /clean-start release does not run\s+any of them/)
+    // Keep the recorded reviews/waivers, never relabel them as Muse reviews.
+    assert.match(runbook, /Its Codex, Claude, and\s+Grok review gates closed/)
+    assert.match(runbook, /Andrew explicitly directed Codex to skip the proposal's Claude and Grok reviews/)
+    assert.match(brief, /Andrew later explicitly instructed Codex to skip Claude and Grok review/)
+  })
   it('source contract: the retired exception is pinned to one release, project, commit, console create, and permanent non-activation', () => {
     const exception = exceptionText()
     assert.match(
@@ -160,7 +212,7 @@ describe('Phase 3 retired Claude invitation operator governance', () => {
   it('source contract: AGENTS preserves the reviewer ban and records the exact exception as retired', () => {
     assert.match(
       agents,
-      /Claude normally performs the required\s+detailed, read-only technical review/,
+      /Muse Spark is the default independent, read-only implementation checker/,
     )
     assert.match(
       agents,
@@ -176,5 +228,14 @@ describe('Phase 3 retired Claude invitation operator governance', () => {
     assert.match(agents, /leaves Claude\s+unconditionally read-only/)
     assert.match(agents, /granted Grok nothing/)
     assert.doesNotMatch(agents, /Outside the exact, contract-pinned/)
+  })
+  it('source contract: the permanent order covers Insights and preserves independent final review', () => {
+    assert.match(agents, /Codex \/ Astra is the primary builder and engineering lead for all Morgan Bank\s+work, including AI Insights/)
+    assert.match(agents, /Claude provides the\s+final independent, read-only 100-foot review/)
+    const active = workflow.split('## Historical retired operator exception')[0]
+    assert.match(active, /permanent role change, not a temporary credit exception/)
+    assert.match(active, /Claude must form an independent judgment from the actual\s+candidate and requirements/)
+    assert.match(active, /Any resulting code correction returns to\s+Muse for detailed delta checking, then to Claude/)
+    assert.match(active, /Review PASS closes only that review gate/)
   })
 })

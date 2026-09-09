@@ -411,7 +411,11 @@ any of them and does not author or consume inventory, expectations, preflight,
 write, re-verification, snapshot, freeze, or copy artifacts. The detailed
 runner material below is a retained historical contract, not the current
 operator sequence. Nothing in this section may be used to infer clean-start
-authorization.
+authorization. Historical completed reviews retain their original attribution.
+Any newly authorized reuse would require
+Muse Spark's detailed read-only check, then Claude's final independent
+100-foot review under `AI_COLLABORATION_WORKFLOW.md`, plus Andrew's separate
+authorization. Updating reviewer names below does not reactivate this route.
 
 The inventory entrypoint closes the expectations-bootstrap gap without widening
 preflight. It is a separately authorized, production-only, control-plane-only
@@ -441,7 +445,8 @@ field. It cannot be supplied to `write.js` or `reverify.js`, does not satisfy
 preflight authorization, and does not create a preflight manifest. An operator
 must independently corroborate the named deployment surfaces and current
 releases/parameters through Firebase or Google Cloud Console, retain the
-inventory for detailed Claude and independent Grok review, and obtain Andrew's
+inventory for Muse Spark's detailed read-only check, then Claude's final
+independent 100-foot review, and obtain Andrew's
 separate approval before its opaque observed values may be transcribed into a
 checksum-bound expectations artifact. The console check corroborates the
 surface names, counts, current release/version identities, parameters, and
@@ -542,7 +547,8 @@ its own separately approved, time-bounded, checksum-bound inventory
 authorization, the final clean reviewed commit, and the explicit credential;
 there is no unauthorized preliminary diagnostic. If the required comparison
 passes, the final-read-set observation is the fresh inventory that proceeds
-through Claude and Grok review. Its deployment and active-writer values are the
+through Muse Spark's detailed read-only check, then Claude's final independent
+100-foot review. Its deployment and active-writer values are the
 sole inventory source for those fields in the new preflight expectations;
 every other required expectations field retains its own separately reviewed
 source. No third inventory run exists solely for expectations authoring.
@@ -669,9 +675,9 @@ the absent student, retained inactive credential, preserved transaction, and
 counter `2`. That authorization is spent and grants no observation, rollback,
 deployment, real-student, or second-teacher authority.
 
-1. Complete Codex implementation and self-verification. Obtain Claude's
-   detailed read-only PASS, then Grok's independent 5,000-foot PASS for the
-   exact reviewed range.
+1. Complete Codex implementation and self-verification. Obtain
+   Muse Spark's detailed read-only check, then Claude's final independent
+   100-foot review, each with PASS for the exact reviewed range.
 2. Run the complete credential-isolated local gate, including the gate-on
    fresh-classroom Auth/Functions/Firestore seam and final-rules orphan denial.
 3. Record the exact reviewed commit, V2 Functions artifact, gate-on Hosting
@@ -924,9 +930,11 @@ under the narrower `npm run test:phase3:contracts` name.
 13. Production-readiness expectations-bootstrap correction: separate
     control-plane-only inventory entrypoint, immutable non-authorizing artifact,
     focused behavioral/source contracts, and governing-document updates. This
-    local item performs no production read and requires focused Claude review,
+    local item performed no production read. The original review required focused Claude review,
     Grok independent review, and Andrew's approval before any operational
-    inventory authorization is prepared or used.
+    inventory authorization was prepared or used. It is dormant under the
+    clean-start route; any newly authorized reuse follows the current reviewer
+    order in Section 8 and `AI_COLLABORATION_WORKFLOW.md`.
 14. Clean-start pivot: initialize the counter in V2 onboarding, prove the full
     fresh-classroom seam through real emulators and final rules, deny orphaned
     legacy mirrors to stale student tokens, retire migration operations from the
@@ -937,9 +945,10 @@ under the narrower `npm run test:phase3:contracts` name.
     existing invitation's `expiresAt` through at most one Save; pin its
     preconditions, privacy, no-retry, and separate-onboarding authority in the
     release-order source contract; and reconcile source status with the external
-    release record through step 9. This item changes no runtime code or
-    production state and requires Claude and Grok review before Andrew may
-    separately activate its identifier.
+    release record through step 9. This item changed no runtime code or
+    production state. Its original gates required Claude and Grok review before
+    Andrew's separate activation; the v1 identifier is permanently terminated
+    and cannot be activated. This is historical attribution, not a pending gate.
 16. Privacy-preserving expired-invitation recovery: record v1 as permanently
     terminated without a Save or mutation, define a distinct inactive v2
     identifier, confine raw invitation values to transient browser-control
@@ -951,11 +960,11 @@ under the narrower `npm run test:phase3:contracts` name.
     recovery and normal onboarding, and both completed. This one-time execution
     record creates no standing review or production exception.
 
-Claude and Codex retain the detailed plan-build-review-correct loop. After a
-material item reaches review-quality, Grok performs the bounded read-only
-systems-level/residual-risk checkpoint defined in
-`AI_COLLABORATION_WORKFLOW.md`. A deeper third review remains required at the
-production-readiness gate.
+Codex remains the primary builder and engineering lead. A material item uses
+Muse Spark's detailed read-only check, then Claude's final independent
+100-foot review, as defined in `AI_COLLABORATION_WORKFLOW.md`. These current
+gates also apply at production readiness; neither PASS authorizes release.
+Completed historical reviews above keep their original attribution.
 
 ## 14. Historical Commit 1 boundary
 
