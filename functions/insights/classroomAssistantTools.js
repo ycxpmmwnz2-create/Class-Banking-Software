@@ -3,6 +3,7 @@ const TOOL_NAMES = Object.freeze([
   'aggregate_transactions',
   'find_students_without_transactions',
   'get_balances',
+  'get_balances_as_of',
   'get_balance_history',
   'compare_periods',
   'describe_schema',
@@ -66,6 +67,17 @@ export const CLASSROOM_ASSISTANT_TOOL_DECLARATIONS = Object.freeze([
       studentRefs: studentRefsSchema(),
       condition: { type: 'string', enum: ['any', 'negative', 'zero', 'positive', 'nonpositive'] },
       frozen: { type: 'string', enum: ['any', 'frozen', 'unfrozen'] },
+      sort: { type: 'string', enum: ['lowest', 'highest', 'name'] },
+      limit: { type: 'integer', minimum: 1, maximum: 500 },
+    },
+  }),
+  declaration('get_balances_as_of', 'Reconstruct every current student\'s balance for ONE classroom date within retained history, then filter by balance sign in code. Use this for who was negative, zero, or positive on a specific past date. Past dates give that date\'s completed closing balance; the current classroom date gives the balance at the snapshot taken so far today, which is not a completed end-of-day figure. Future dates are refused. get_balances answers only about today, and get_balance_history covers at most eight named students, so neither can answer a historical question about the whole class.', {
+    type: 'object',
+    additionalProperties: false,
+    required: ['asOfDate'],
+    properties: {
+      asOfDate: dateSchema(),
+      condition: { type: 'string', enum: ['any', 'negative', 'zero', 'positive', 'nonpositive'] },
       sort: { type: 'string', enum: ['lowest', 'highest', 'name'] },
       limit: { type: 'integer', minimum: 1, maximum: 500 },
     },
@@ -195,6 +207,9 @@ export function createClassroomAssistantToolbox(evidence, { memoResolver } = {})
         if (name === 'compare_student_earnings') return compareStudentEarnings(args, data, transactions)
         if (name === 'describe_schema') return describeSchema(context)
         if (name === 'get_balances') return getBalances(args, data.students)
+        if (name === 'get_balances_as_of') {
+          return getBalancesAsOf(args, data, transactions)
+        }
         if (name === 'get_balance_history') {
           return getBalanceHistory(args, data, transactions, studentsByRef)
         }
@@ -496,6 +511,74 @@ function getBalances(args, students) {
       student: student.displayName,
       currentBalance: student.balance,
       frozen: student.frozen,
+    }))),
+  })
+}
+
+// The closing balance on a classroom-local date is the current balance with
+// every LATER approved transaction unwound. Same-day transactions are part of
+// that date's closing figure, which is the rule getBalanceHistory already uses
+// when it records the pre-transaction balance against the preceding day.
+function reconstructBalanceOn(student, date, transactions) {
+  if (student.balance === null) return null
+  let closing = student.balance
+  for (const transaction of transactions) {
+    if (transaction.studentRef !== student.ref) continue
+    if (transaction.status !== 'Approved') continue
+    if (transaction.calendarDay <= date) continue
+    closing -= transaction.type === 'Add' ? transaction.amount : -transaction.amount
+  }
+  if (!Number.isFinite(closing)) return null
+  // Round to cents so accumulated float error cannot report an exactly-zero
+  // balance as negative. Zero is not negative.
+  return roundMoney(closing)
+}
+
+// Reconstruct the COMPLETE current roster at one cutoff, then filter by sign in
+// code. Never prefilter by today's balance, and never use the eight-student
+// get_balance_history call as a full-roster ceiling.
+function getBalancesAsOf(args, data, transactions) {
+  const asOfDate = validatedDate(args.asOfDate, 'asOfDate')
+  assertAvailableDateRange(asOfDate, asOfDate, data)
+  const condition = enumeration(args.condition ?? 'any', ['any', 'negative', 'zero', 'positive', 'nonpositive'])
+  const sort = enumeration(args.sort ?? 'lowest', ['lowest', 'highest', 'name'])
+  const limit = integer(args.limit, 1, 500, 100)
+  const currentStudents = data.students.filter(student => student.current)
+  const reconstructed = []
+  let unavailableCount = 0
+  for (const student of currentStudents) {
+    const balanceAsOf = reconstructBalanceOn(student, asOfDate, transactions)
+    // An unknown balance stays unavailable. It is never coerced to zero and
+    // never silently dropped: unavailableCount keeps a "none" claim honest.
+    if (balanceAsOf === null) unavailableCount += 1
+    else reconstructed.push({ student, balanceAsOf })
+  }
+  // Filtering runs across every eligible student BEFORE any output limiting.
+  const filtered = reconstructed.filter(entry => balanceMatches(entry.balanceAsOf, condition))
+  filtered.sort((left, right) => {
+    if (sort === 'lowest') return left.balanceAsOf - right.balanceAsOf || left.student.displayName.localeCompare(right.student.displayName, 'en-US')
+    if (sort === 'highest') return right.balanceAsOf - left.balanceAsOf || left.student.displayName.localeCompare(right.student.displayName, 'en-US')
+    return left.student.displayName.localeCompare(right.student.displayName, 'en-US')
+  })
+  return Object.freeze({
+    ok: true,
+    asOfDate,
+    // The classroom date is only covered through the snapshot taken so far, so
+    // it is not a completed end-of-day balance. Same meaning as the field
+    // compare_student_earnings already reports.
+    throughSnapshot: asOfDate === data.asOfDate,
+    matchedCount: filtered.length,
+    currentStudentCount: currentStudents.length,
+    matchedPercent: currentStudents.length > 0 ? roundPercent(filtered.length / currentStudents.length * 100) : 0,
+    unavailableCount,
+    returnedCount: Math.min(limit, filtered.length),
+    truncated: filtered.length > limit,
+    // Frozen status is a present-day attribute and is deliberately absent: this
+    // tool cannot reconstruct who was frozen on a past date.
+    students: Object.freeze(filtered.slice(0, limit).map(entry => Object.freeze({
+      studentRef: entry.student.ref,
+      student: entry.student.displayName,
+      balanceAsOf: entry.balanceAsOf,
     }))),
   })
 }

@@ -49,6 +49,7 @@ test('publishes the read-only classroom tools including full-roster earnings', (
     'aggregate_transactions',
     'find_students_without_transactions',
     'get_balances',
+    'get_balances_as_of',
     'get_balance_history',
     'compare_periods',
     'compare_student_earnings',

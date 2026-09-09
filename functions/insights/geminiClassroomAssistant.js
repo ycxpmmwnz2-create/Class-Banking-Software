@@ -41,6 +41,7 @@ const SAFE_DIAGNOSTIC_TOOL_NAMES = new Set([
   'aggregate_transactions',
   'find_students_without_transactions',
   'get_balances',
+  'get_balances_as_of',
   'get_balance_history',
   'compare_periods',
   'describe_schema',
@@ -150,6 +151,7 @@ const SYSTEM_INSTRUCTION = [
   'Use the read-only tools to inspect the classroom. You may combine tools and filters to answer questions the teacher did not anticipate in advance.',
   'For any claim about current students, balances, transactions, dates, categories, duplicates, timing, or trends, call at least one tool and cite the tool-call IDs used.',
   'For students who have no transactions matching filters, use find_students_without_transactions instead of trying to subtract a truncated roster yourself.',
+  'For who was negative, zero, or positive on a PAST date, use get_balances_as_of with that asOfDate and condition. get_balances answers only about today, so never filter today\u2019s balances and then look those students up in history: the population that matched today is not the population that matched on the earlier date.',
   'To state how many students match a filter, cite a student count a tool returned; never count distinct names yourself from a returned row list, because that list may be truncated and the resulting number cannot be cited. For students still in the class, cite list_transactions distinctCurrentStudentCount, the aggregate_transactions distinctCurrentStudents metric, get_balances matchedCount, or find_students_without_transactions. A transaction from a student who has left the class still matches a filter, so distinctParticipantCount and the distinctStudents metric count former students too; cite those only in an answer that says it is including students who are no longer in the class.',
   'Whenever you say something about students as a group, put the number in digits inside that same phrase, directly after the quantifier: write all 3 current students, not all students. A number elsewhere in the sentence does not count, because nothing shows it is the size of the group you spoke about. Do not write every student, all students, both students, everyone, nobody, or none of the students without the number, because a count is the only part of such a sentence that can be checked.',
   'Saying all, every, or each of a number of students also claims that number is the whole class, which a count of who matched does not show. Cite a roster total -- get_balances currentStudentCount or find_students_without_transactions currentStudentCount -- alongside the count, or state the count without the quantifier. Both and neither additionally claim the class is exactly two.',
@@ -221,6 +223,9 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
       async function completeSelection(selection, turn) {
         try {
           const rendered = registry.render(selection)
+          // Check the validated, result-bound selection, never the question or
+          // provider prose. Historical facts must reach the teacher unchanged.
+          const requiresVerifiedAnswer = registry.requiresVerifiedAnswer(selection)
           let presentation = null, usageUncertain = false
           if (conversational && registry.hasFactualSelection(selection) && Buffer.byteLength(rendered.answer, 'utf8') <= 24000) {
             const [calculatedSummary, ...details] = rendered.answer.split('\n')
@@ -234,7 +239,7 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
               // The original structured response remains the size-safe fallback.
             }
             if (presentation) {
-              const narration = narrationAllowed && turn < CLASSROOM_ASSISTANT_MAX_TURNS - 1
+              const narration = narrationAllowed && !requiresVerifiedAnswer && turn < CLASSROOM_ASSISTANT_MAX_TURNS - 1
                 ? await narrateClassroomAnswer({ answer: rendered.answer, question: assistantEvidence.question,
                   generateContent, timeoutMs: Math.floor(deadline - now()) })
                 : { aiSummary: null, usage: { inputTokens: 0, outputTokens: 0, thinkingTokens: 0 }, uncertain: false }
@@ -676,8 +681,9 @@ function factKind(path, result, callName) {
   // A count that includes former students is a different population and gets a
   // different kind, so it can never satisfy a claim about the current class.
   if (field === 'distinctParticipantCount') return 'participant-count'
-  if (field === 'matchedCount' && callName === 'get_balances') return 'student-count'
-  if (field === 'returnedCount' && ['find_students_without_transactions', 'get_balances'].includes(callName)) return 'student-count'
+  if (field === 'matchedCount' && ['get_balances', 'get_balances_as_of'].includes(callName)) return 'student-count'
+  if (field === 'returnedCount' && ['find_students_without_transactions', 'get_balances', 'get_balances_as_of'].includes(callName)) return 'student-count'
+  if (field === 'unavailableCount' && callName === 'get_balances_as_of') return 'student-count'
   if (field === 'returnedCount' && callName === 'aggregate_transactions') return 'result-count'
   if (['matchedTransactionCount', 'transactionCount'].includes(field)) return 'transaction-count'
   if (['matchedCount', 'returnedCount'].includes(field) && callName === 'list_transactions') return 'transaction-count'
@@ -1879,6 +1885,7 @@ function describeEvidenceCall(call) {
   if (call.name === 'list_transactions') return `Checked ${result.matchedCount ?? 0} matching transaction${result.matchedCount === 1 ? '' : 's'}.`
   if (call.name === 'aggregate_transactions') return `Calculated ${result.resultCount ?? 0} grouped result${result.resultCount === 1 ? '' : 's'} from ${result.matchedTransactionCount ?? 0} matching transaction${result.matchedTransactionCount === 1 ? '' : 's'}.`
   if (call.name === 'find_students_without_transactions') return `Found ${result.studentsWithoutCount ?? 0} current student${result.studentsWithoutCount === 1 ? '' : 's'} without matching transactions.`
+  if (call.name === 'get_balances_as_of') return `Reconstructed ${result.currentStudentCount ?? 0} current roster balance${result.currentStudentCount === 1 ? '' : 's'} for ${result.asOfDate}.`
   if (call.name === 'get_balance_history') return `Calculated ${result.rows?.length ?? 0} daily balance point${result.rows?.length === 1 ? '' : 's'}.`
   if (call.name === 'compare_periods') return 'Compared the two requested classroom date ranges.'
   return 'Checked the available Morgan Bank classroom fields and date range.'
@@ -2009,6 +2016,7 @@ function capitalizedWholeTextSpans(answer, value) {
 const TRUNCATION_DISCLOSURE_NOUNS = Object.freeze({
   list_transactions: 'matching transactions',
   get_balances: 'matching balances',
+  get_balances_as_of: 'matching students',
   aggregate_transactions: 'grouped results',
   find_students_without_transactions: 'matching students',
 })
@@ -2044,6 +2052,7 @@ function rawTruncationTotal(call) {
   if (call.name === 'list_transactions') return call.result?.matchedCount
   if (call.name === 'aggregate_transactions') return call.result?.resultCount
   if (call.name === 'get_balances') return call.result?.matchedCount
+  if (call.name === 'get_balances_as_of') return call.result?.matchedCount
   return undefined
 }
 
