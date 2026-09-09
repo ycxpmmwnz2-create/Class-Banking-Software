@@ -967,7 +967,7 @@ function collectRecordWrites({ records, classroomId, collection, fields, previou
     seen.add(id);
 
     const before = previousById.get(id);
-    if (before && JSON.stringify(pick(before, fields)) === JSON.stringify(body)) continue;
+    if (before && recordBodyUnchanged(before, body, fields)) continue;
 
     writes.push({ path: `classrooms/${classroomId}/${collection}/${id}`, id, body });
   }
@@ -978,6 +978,21 @@ function pick(record, fields) {
   const picked = {};
   for (const field of fields) picked[field] = record[field];
   return picked;
+}
+
+function recordBodyUnchanged(before, body, fields) {
+  // Read every selected prior field once, in the same order as the JSON path.
+  const picked = pick(before, fields);
+  for (const field of fields) {
+    // These two schemas project only strings, finite numbers, and null. Equal
+    // primitives (including +/-0) therefore have identical JSON. A differing
+    // prior value can have unusual serialization behavior, so retain the full
+    // comparison, including toJSON calls and errors, rather than returning false.
+    if (picked[field] !== body[field]) {
+      return JSON.stringify(picked) === JSON.stringify(body);
+    }
+  }
+  return true;
 }
 
 function buildRootPatch(classroomId, data, previous) {
