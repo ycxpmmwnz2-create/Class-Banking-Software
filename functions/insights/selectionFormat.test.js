@@ -23,9 +23,9 @@ function checkFormat(request) {
   assert.deepEqual(schema.properties.sections.items.required, ['resultId', 'view'])
   assert.equal(schema.properties.sections.items.additionalProperties, false)
   assert.equal(request.config.toolConfig.functionCallingConfig.mode, 'VALIDATED')
-  assert.equal(request.config.tools[0].functionDeclarations.length, 8)
+  assert.equal(request.config.tools[0].functionDeclarations.length, 9)
 }
-for (const item of REPORTING_CASES.filter(item => item.id !== 'earnings')) test(`provider format is constrained while keeping ${item.id} calculations and narration`, async () => {
+for (const item of REPORTING_CASES.filter(item => item.id !== 'earnings')) test(`provider format preserves ${item.id} calculations and its narration policy`, async () => {
   const e = reportingEvidence(); e.question = item.question
   let turn = 0
   const assistant = createConversationalClassroomAssistant({ generateContent: async request => {
@@ -41,7 +41,8 @@ for (const item of REPORTING_CASES.filter(item => item.id !== 'earnings')) test(
   } })
   const result = await assistant.answer({ assistantEvidence: e })
   assert.match(result.answer, item.expected)
-  assert.equal(result.presentation.aiSummary, 'Friendly summary of the calculated facts.')
+  // Historical balances now display the verified answer rather than prose.
+  assert.equal(result.presentation.aiSummary, item.id === 'history' ? null : 'Friendly summary of the calculated facts.')
   assert.equal(turn, 2)
 })
 test('structured output still permits another calculation and a multi-result final answer', async () => {

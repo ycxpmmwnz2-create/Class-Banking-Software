@@ -4,6 +4,7 @@ import { Buffer } from 'node:buffer'
 export const STRUCTURED_ANSWER_CONTRACT = 'structured-v1'
 export const STRUCTURED_ANSWER_VIEWS = Object.freeze({
   get_balances: 'student-balances',
+  get_balances_as_of: 'balances-as-of',
   find_students_without_transactions: 'students-without-transactions',
   list_transactions: 'transaction-list',
   aggregate_transactions: 'transaction-summary',
@@ -84,6 +85,15 @@ export function createStructuredAnswerRegistry(toolbox) {
         return record && record.name !== 'describe_schema'
       })
     },
+    // Called only after render validates ownership and view binding. A mixed
+    // answer containing either historical view also keeps the complete verified
+    // answer. Merely executing an unselected history tool does not change it.
+    requiresVerifiedAnswer(selection) {
+      return selection.sections.some(section => {
+        const record = results.get(section.resultId)
+        return record?.name === 'get_balances_as_of' || record?.name === 'get_balance_history'
+      })
+    },
     render(selection) {
       if (!isPlainObject(selection)) fail('envelope-type')
       if (!exactKeys(selection, ['schemaVersion', 'sections'])) fail('envelope-keys')
@@ -117,6 +127,10 @@ function normalizeArguments(name, args, result, context) {
     studentRefs, condition: args.condition ?? 'any', frozen: args.frozen ?? 'any',
     sort: args.sort ?? 'name', limit: args.limit ?? 100,
   })
+  if (name === 'get_balances_as_of') return freezeCopy({
+    asOfDate: result.asOfDate, condition: args.condition ?? 'any',
+    sort: args.sort ?? 'lowest', limit: args.limit ?? 100,
+  })
   if (name === 'get_balance_history') return freezeCopy({
     studentRefs, startDate: result.startDate, endDate: result.endDate,
     limitDays: result.limitDays,
@@ -142,6 +156,7 @@ function normalizeArguments(name, args, result, context) {
 function renderResult(record) {
   if (record.name === 'compare_student_earnings') return renderEarnings(record)
   if (record.name === 'get_balances') return renderBalances(record)
+  if (record.name === 'get_balances_as_of') return renderBalancesAsOf(record)
   if (record.name === 'find_students_without_transactions') return renderAbsence(record)
   if (record.name === 'list_transactions') return renderTransactions(record)
   if (record.name === 'aggregate_transactions') return renderAggregate(record)
@@ -252,8 +267,12 @@ function renderHistory({ args, result, context }) {
     studentScope(args, context, false),
     `Requested dates: ${args.startDate} through ${args.endDate} (${context.timeZone}).`,
     `Showing ${dates.length} of ${totalDates} requested dates, up to the latest ${args.limitDays} dates per available student.`,
-    `Today's value reflects the snapshot on ${context.classroomDate}, not a future end-of-day balance.`,
   ]
+  // A historical-only range has no "today" column, so the snapshot caveat would
+  // describe a value the answer never shows.
+  if (args.startDate <= context.classroomDate && context.classroomDate <= args.endDate) {
+    lines.push(`Today's value reflects the snapshot on ${context.classroomDate}, not a future end-of-day balance.`)
+  }
   for (const ref of args.studentRefs) {
     if (!result.rows.some(row => row.studentRef === ref)) lines.push(`Balance history unavailable for ${studentName(ref, context)}.`)
   }
@@ -301,6 +320,33 @@ function renderBalances({ args, result, context }) {
   lines.push(`Total balance: ${money(result.totalBalance)}. Average: ${money(result.averageBalance)}.`)
   lines.push(...result.students.map(row => studentBalanceRow(row, context)))
   return rendered(lines, 'Current balances', context)
+}
+
+function renderBalancesAsOf({ args, result, context }) {
+  const condition = enumText(args.condition, {
+    any: 'any balance', positive: 'positive balances', negative: 'negative balances',
+    zero: 'zero balances', nonpositive: 'zero or negative balances',
+  })
+  const sort = enumText(args.sort, { name: 'name', lowest: 'balance, lowest first', highest: 'balance, highest first' })
+  const lines = [
+    `${result.matchedCount} current ${plural(result.matchedCount, 'student')} ${result.matchedCount === 1 ? 'matches' : 'match'}: ${condition} on ${result.asOfDate}.`,
+    // The classroom date is still in progress, so calling it a completed
+    // end-of-day balance would state something the snapshot cannot show.
+    result.throughSnapshot
+      ? `Balances for ${result.asOfDate} (${context.timeZone}) as of the classroom snapshot taken so far that day, not a completed end-of-day total.`
+      : `Reconstructed end-of-day balances for ${result.asOfDate} (${context.timeZone}) from current balances and retained Approved transactions.`,
+    // The roster is today's. Students who left before now are not restored, so
+    // this must not be read as the roster as it stood on that date.
+    `Population: the ${result.currentStudentCount} current classroom ${plural(result.currentStudentCount, 'student')}, not the roster as it existed on ${result.asOfDate}.`,
+    page(result, result.matchedCount, 'students', sort),
+  ]
+  if (result.unavailableCount > 0) {
+    lines.push(`Balance history is unavailable for ${result.unavailableCount} current ${plural(result.unavailableCount, 'student')}, who could not be checked and are not covered by this count.`)
+  }
+  lines.push(...result.students.map(row => `\u2022 ${studentName(row.studentRef, context)} \u2014 ${money(row.balanceAsOf)} on ${result.asOfDate}.`))
+  return rendered(lines, result.throughSnapshot
+    ? `Balances at the ${result.asOfDate} classroom snapshot`
+    : `Reconstructed balances as of ${result.asOfDate}`, context)
 }
 
 function renderAbsence({ args, result, context }) {

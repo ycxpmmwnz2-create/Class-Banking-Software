@@ -34,8 +34,11 @@ async function run(items, { extraPlannerTurns = 0, mode = 'valid', evidence = re
   if(result.presentation) validateProviderQuestionResponse({schemaVersion:2,source:'ai-grounded',periodDays:30,generatedAt:evidence.generatedAt,answer:result.answer,evidence:result.evidence,presentation:result.presentation,usage:{...result.usage,costMicroUsd:1}})
   return {result,calls,expected}
 }
-for(const item of REPORTING_CASES)test(`narration reaches calculated ${item.id} results without changing facts`,async()=>{
-  const {result,calls}=await run([item]);assert.match(result.answer,item.expected);assert.equal(result.presentation?.aiSummary,'A friendly reporting summary.');assert.equal(calls.filter(x=>!x.config.tools).length,1)
+for(const item of REPORTING_CASES)test(`calculated ${item.id} results preserve facts and the narration policy`,async()=>{
+  const {result,calls}=await run([item]);assert.match(result.answer,item.expected)
+  // History is deliberately code-owned; the other reporting views still narrate.
+  assert.equal(result.presentation?.aiSummary,item.id==='history'?null:'A friendly reporting summary.')
+  assert.equal(calls.filter(x=>!x.config.tools).length,item.id==='history'?0:1)
 })
 test('a multi-part selection receives one narration containing every selected fact section',async()=>{const {result,calls}=await run(REPORTING_CASES.slice(0,2));assert.equal(result.presentation?.aiSummary,'A friendly reporting summary.');assert.equal(calls.length,3);assert.match(result.answer,/Total balance: \$16.00/u)})
 test('absence facts identify the missing transaction predicate and label balance separately',async()=>{
