@@ -18,7 +18,7 @@ function evidence() {
     historyStart: '2026-05-29T18:00:00.000Z',
     configuredRentAmount: 10,
     students: [
-      { ref: 'student-001', displayName: 'Ava R.', current: true, balance: 8, frozen: false },
+      { ref: 'student-001', displayName: 'Ava R.', current: true, balance: 8, frozen: false, balanceHistory: { '2026-08-26': -2 } },
       { ref: 'student-002', displayName: 'Ava S.', current: true, balance: -2, frozen: false },
     ],
     categories: [{ label: 'Technology', transactionTypes: ['Add'] }],
@@ -42,6 +42,18 @@ function transaction(ref, studentRef, date, amount) {
     status: 'Approved',
   }
 }
+
+test('date-range errors name the actual 91-date history and 90-date explicit transaction limits', () => {
+  const toolbox = createClassroomAssistantToolbox(evidence())
+  for (const [name, args, maximum] of [
+    ['get_balance_history', { studentRefs: ['student-001'], startDate: '2026-05-28', endDate: '2026-08-27' }, 91],
+    ['list_transactions', { startDate: '2026-05-29', endDate: '2026-08-27' }, 90],
+  ]) {
+    const result = toolbox.execute(name, args)
+    assert.equal(result.ok, false)
+    assert.equal(result.error, `A tool date range cannot exceed ${maximum} calendar dates.`)
+  }
+})
 
 test('publishes the read-only classroom tools including full-roster earnings', () => {
   assert.deepEqual(CLASSROOM_ASSISTANT_TOOL_DECLARATIONS.map(item => item.name), [

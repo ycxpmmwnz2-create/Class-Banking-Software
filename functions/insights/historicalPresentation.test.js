@@ -12,7 +12,11 @@ const evidence = (students = known) => ({
   question: 'Who had negative balances on September 4?',
   generatedAt: '2026-09-08T18:00:00.000Z', asOfDate: '2026-09-08', timeZone: 'America/Denver',
   periodDays: 7, periodStart: '2026-09-01T18:00:00.000Z', historyStart: '2026-06-10T18:00:00.000Z',
-  configuredRentAmount: 10, students, categories: [], transactions: [],
+  configuredRentAmount: 10,
+  // Fictional stable dated balances, independent of a transaction ledger.
+  students: students.map(student => ({ ...student, balanceHistory: student.balance === null ? {} :
+    Object.fromEntries(['04', '05', '06', '07'].map(day => [`2026-09-${day}`, student.balance])) })),
+  categories: [], transactions: [],
 })
 const historical = (args = {}) => ({ name: 'get_balances_as_of', args: { asOfDate: CUTOFF, condition: 'negative', ...args } })
 const current = { name: 'get_balances', args: { condition: 'negative' } }
@@ -93,7 +97,7 @@ test('no known matches still discloses an unknown balance', async () => {
   const students = [{ ...known[0], balance: 5 }, unknown[2]]
   const response = await run('Nobody had a negative balance on September 4.', { students })
   assertVerified(response)
-  assert.match(response.html, /0 current students match/u)
+  assert.match(response.html, /Cannot determine the complete list/u)
   assert.match(response.html, /Balance history is unavailable for 1 current student/u)
 })
 

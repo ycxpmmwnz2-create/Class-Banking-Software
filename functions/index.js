@@ -337,3 +337,15 @@ export const syncStudentProfilesV2 = onDocumentWritten(
     })
   },
 )
+
+// Separate create-only audit trail; never writes a student or transaction.
+export const recordStudentBalanceHistoryV3 = onDocumentWritten({
+  document: 'classrooms/{classroomId}/students/{studentId}',
+  retry: true,
+  maxInstances: 2,
+}, async (event) => {
+  if (!MULTI_TEACHER_V2_ENABLED.value()) return
+  assertV2Invocation('recordStudentBalanceHistoryV3')
+  const { recordBalanceWitness } = await import('./insights/balanceHistoryLedger.js')
+  return recordBalanceWitness(event, { firestore: getFirestore() })
+})

@@ -71,7 +71,7 @@ export const CLASSROOM_ASSISTANT_TOOL_DECLARATIONS = Object.freeze([
       limit: { type: 'integer', minimum: 1, maximum: 500 },
     },
   }),
-  declaration('get_balances_as_of', 'Reconstruct every current student\'s balance for ONE classroom date within retained history, then filter by balance sign in code. Use this for who was negative, zero, or positive on a specific past date. Past dates give that date\'s completed closing balance; the current classroom date gives the balance at the snapshot taken so far today, which is not a completed end-of-day figure. Future dates are refused. get_balances answers only about today, and get_balance_history covers at most eight named students, so neither can answer a historical question about the whole class.', {
+  declaration('get_balances_as_of', 'Read verified dated balances for the whole current roster for ONE classroom date, then filter by balance sign in code. Missing history is unavailable, never zero; select that successful result to display its coverage warning. Use this for who was negative, zero, or positive on a specific past date. Past dates give completed closing balances only when verified; today gives the current snapshot, not an end-of-day figure. Future dates are refused. get_balances answers only about today, and get_balance_history covers at most eight named students.', {
     type: 'object',
     additionalProperties: false,
     required: ['asOfDate'],
@@ -82,7 +82,7 @@ export const CLASSROOM_ASSISTANT_TOOL_DECLARATIONS = Object.freeze([
       limit: { type: 'integer', minimum: 1, maximum: 500 },
     },
   }),
-  declaration('get_balance_history', 'Calculate daily balances from the current snapshot and approved history. Omitted dates cover all calendar dates touched by the selected period. limitDays caps the latest returned dates per student; it does not define the requested window. At most 90 dates are returned.', {
+  declaration('get_balance_history', 'Read verified dated balances and the current snapshot. Missing past dates cannot be inferred from editable transactions and must remain unavailable. Omitted dates cover all calendar dates touched by the selected period. limitDays caps the latest returned dates per student; it does not define the requested window. At most 90 dates are returned.', {
     type: 'object',
     additionalProperties: false,
     required: ['studentRefs'],
@@ -208,10 +208,10 @@ export function createClassroomAssistantToolbox(evidence, { memoResolver } = {})
         if (name === 'describe_schema') return describeSchema(context)
         if (name === 'get_balances') return getBalances(args, data.students)
         if (name === 'get_balances_as_of') {
-          return getBalancesAsOf(args, data, transactions)
+          return getBalancesAsOf(args, data)
         }
         if (name === 'get_balance_history') {
-          return getBalanceHistory(args, data, transactions, studentsByRef)
+          return getBalanceHistory(args, data, studentsByRef)
         }
         if (name === 'compare_periods') {
           return comparePeriods(args, data, transactions, studentsByRef)
@@ -515,29 +515,20 @@ function getBalances(args, students) {
   })
 }
 
-// The closing balance on a classroom-local date is the current balance with
-// every LATER approved transaction unwound. Same-day transactions are part of
-// that date's closing figure, which is the rule getBalanceHistory already uses
-// when it records the pre-transaction balance against the preceding day.
-function reconstructBalanceOn(student, date, transactions) {
+// Past values come only from the trusted adapter's connected Firestore version
+// chain. Editable transaction dates and current balances cannot prove history:
+// a roster reset (or a later status edit) may not be represented in that ledger.
+function recordedBalanceOn(student, date, today) {
   if (student.balance === null) return null
-  let closing = student.balance
-  for (const transaction of transactions) {
-    if (transaction.studentRef !== student.ref) continue
-    if (transaction.status !== 'Approved') continue
-    if (transaction.calendarDay <= date) continue
-    closing -= transaction.type === 'Add' ? transaction.amount : -transaction.amount
-  }
-  if (!Number.isFinite(closing)) return null
-  // Round to cents so accumulated float error cannot report an exactly-zero
-  // balance as negative. Zero is not negative.
-  return roundMoney(closing)
+  if (date === today) return roundMoney(student.balance)
+  if (!Object.hasOwn(student.balanceHistory ?? {}, date)) return null
+  return roundMoney(student.balanceHistory[date])
 }
 
 // Reconstruct the COMPLETE current roster at one cutoff, then filter by sign in
 // code. Never prefilter by today's balance, and never use the eight-student
 // get_balance_history call as a full-roster ceiling.
-function getBalancesAsOf(args, data, transactions) {
+function getBalancesAsOf(args, data) {
   const asOfDate = validatedDate(args.asOfDate, 'asOfDate')
   assertAvailableDateRange(asOfDate, asOfDate, data)
   const condition = enumeration(args.condition ?? 'any', ['any', 'negative', 'zero', 'positive', 'nonpositive'])
@@ -547,7 +538,7 @@ function getBalancesAsOf(args, data, transactions) {
   const reconstructed = []
   let unavailableCount = 0
   for (const student of currentStudents) {
-    const balanceAsOf = reconstructBalanceOn(student, asOfDate, transactions)
+    const balanceAsOf = recordedBalanceOn(student, asOfDate, data.asOfDate)
     // An unknown balance stays unavailable. It is never coerced to zero and
     // never silently dropped: unavailableCount keeps a "none" claim honest.
     if (balanceAsOf === null) unavailableCount += 1
@@ -569,7 +560,7 @@ function getBalancesAsOf(args, data, transactions) {
     throughSnapshot: asOfDate === data.asOfDate,
     matchedCount: filtered.length,
     currentStudentCount: currentStudents.length,
-    matchedPercent: currentStudents.length > 0 ? roundPercent(filtered.length / currentStudents.length * 100) : 0,
+    matchedPercent: unavailableCount > 0 ? null : currentStudents.length > 0 ? roundPercent(filtered.length / currentStudents.length * 100) : 0,
     unavailableCount,
     returnedCount: Math.min(limit, filtered.length),
     truncated: filtered.length > limit,
@@ -583,7 +574,7 @@ function getBalancesAsOf(args, data, transactions) {
   })
 }
 
-function getBalanceHistory(args, data, transactions, studentsByRef) {
+function getBalanceHistory(args, data, studentsByRef) {
   const refs = studentRefs(args.studentRefs, data.students, 1)
   const endDate = validatedDate(args.endDate ?? data.asOfDate, 'endDate')
   const startDate = validatedDate(args.startDate ?? localDateKey(data.periodStart, data.timeZone), 'startDate')
@@ -597,27 +588,14 @@ function getBalanceHistory(args, data, transactions, studentsByRef) {
   for (const ref of refs) {
     const student = studentsByRef.get(ref)
     if (!student || student.balance === null) continue
-    let closing = student.balance
-    const byDate = new Map([[data.asOfDate, closing]])
-    const approved = transactions
-      .filter(transaction => transaction.studentRef === ref && transaction.status === 'Approved')
-      .sort((left, right) => right.date.localeCompare(left.date))
-    let cursorDate = data.asOfDate
-    for (const transaction of approved) {
-      while (cursorDate > transaction.calendarDay) {
-        cursorDate = shiftDate(cursorDate, -1)
-        byDate.set(cursorDate, closing)
-      }
-      closing -= transaction.type === 'Add' ? transaction.amount : -transaction.amount
-      byDate.set(shiftDate(transaction.calendarDay, -1), closing)
-    }
     for (const date of dates) {
-      const knownDates = [...byDate.keys()].filter(key => key <= date).sort()
+      const closingBalance = recordedBalanceOn(student, date, data.asOfDate)
+      if (closingBalance === null) continue
       rows.push(Object.freeze({
         studentRef: ref,
         student: student.displayName,
         date,
-        closingBalance: byDate.get(knownDates.at(-1)) ?? closing,
+        closingBalance,
       }))
     }
   }
@@ -846,6 +824,13 @@ function validateEvidence(value) {
       fail('invalid-evidence', 'Classroom balance evidence is malformed.')
     }
     if (student.frozen !== null && typeof student.frozen !== 'boolean') fail('invalid-evidence', 'Classroom student evidence is malformed.')
+    if (student.balanceHistory !== undefined && (!isPlainObject(student.balanceHistory) ||
+        Object.keys(student.balanceHistory).length > 91 || Object.entries(student.balanceHistory).some(([date, balance]) =>
+          !DATE_PATTERN.test(date) || !Number.isFinite(Date.parse(date)) ||
+          new Date(date).toISOString().slice(0, 10) !== date || date > value.asOfDate ||
+          !Number.isFinite(balance) || Math.abs(balance) > 1_000_000))) {
+      fail('invalid-evidence', 'Classroom balance history is malformed.')
+    }
     refs.add(student.ref)
   }
   for (const transaction of value.transactions) {
@@ -875,7 +860,7 @@ function validatedDate(value, field) {
 function assertDateRange(start, end, maximumCalendarDays = 90) {
   if (start > end) fail('invalid-tool-arguments', 'The start date must not be after the end date.')
   const calendarDays = daysBetweenInclusive(start, end)
-  if (calendarDays > maximumCalendarDays) fail('invalid-tool-arguments', 'A tool date range cannot exceed 90 days.')
+  if (calendarDays > maximumCalendarDays) fail('invalid-tool-arguments', `A tool date range cannot exceed ${maximumCalendarDays} calendar dates.`)
 }
 
 function daysBetweenInclusive(start, end) {

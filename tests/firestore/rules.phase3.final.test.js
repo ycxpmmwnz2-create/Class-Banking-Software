@@ -7,6 +7,8 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { after, before, beforeEach, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+import { recordBalanceWitness, resolveBalanceDays, snapshotBalanceVersion } from '../../functions/insights/balanceHistoryLedger.js'
 
 import {
   assertFails,
@@ -672,6 +674,45 @@ describe('Phase 3 Item 10 final rules', () => {
     const executable = readFileSync(FINAL_RULES_PATH, 'utf8')
       .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
     assert.doesNotMatch(executable, /studentPins/)
+  })
+
+  test('dated balance history is server-only, including for its own teacher', async () => {
+    const identities = [teacher(A_UID), teacher(B_UID), student('student-a-auth', A_ROOM, A_STUDENT),
+      testEnv.unauthenticatedContext().firestore()]
+    for (const db of identities) {
+      for (const room of [A_ROOM, B_ROOM]) {
+        await denyAllDocumentVerbs(db, `classrooms/${room}/balanceHistory`, '1-version', room)
+      }
+    }
+  })
+
+  test('real emulator Admin snapshots produce idempotent, queryable version witnesses', async () => {
+    // These checks occur before constructing an Admin client. No ADC or real
+    // project can be selected by this test even when run outside the wrapper.
+    assert.match(process.env.FIRESTORE_EMULATOR_HOST ?? '', /^(127\.0\.0\.1|localhost):8080$/u)
+    const require = createRequire(new URL('../../functions/package.json', import.meta.url))
+    const { Firestore } = require('firebase-admin/firestore')
+    const db = new Firestore({ projectId: 'demo-morgan-bank-phase3-rules-test' })
+    try {
+      const ref = db.doc(`classrooms/${A_ROOM}/students/${A_STUDENT}`)
+      const before = await ref.get()
+      await ref.update({ balance: 0 })
+      const after = await ref.get()
+      const event = { params: { classroomId: A_ROOM, studentId: A_STUDENT }, data: { before, after } }
+      await recordBalanceWitness(event, { firestore: db })
+      await recordBalanceWitness(event, { firestore: db })
+      const history = await db.collection(`classrooms/${A_ROOM}/balanceHistory`).orderBy('afterVersion', 'desc').limit(5000).get()
+      assert.equal(history.size, 1)
+      assert.equal(history.docs[0].data().beforeBalance, 10)
+      assert.equal(history.docs[0].data().afterBalance, 0)
+      assert.equal(history.docs[0].data().afterVersion, snapshotBalanceVersion(after).version)
+      assert.equal(history.docs[0].data().beforeVersion, snapshotBalanceVersion(before).version)
+      const date = after.updateTime.toDate().toISOString().slice(0, 10)
+      assert.deepEqual(resolveBalanceDays(snapshotBalanceVersion(after), history.docs.map(doc => doc.data()), {
+        classroomId: A_ROOM, dates: [date], timeZone: 'UTC',
+      }), { [date]: 0 })
+      assert.equal((await ref.get()).data().balance, 0, 'history writer must not change the student')
+    } finally { await db.terminate() }
   })
 
   test('ownership writes, sensitive collections, unenumerated paths, and anonymous access fail closed', async () => {

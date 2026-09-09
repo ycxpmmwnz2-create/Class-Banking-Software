@@ -61,6 +61,7 @@ for (const [asOfDate, startDate, endDate] of [
   ['2026-03-09','2026-03-02','2026-03-08'],
 ]) for (const timeZone of ['America/Denver','Pacific/Kiritimati']) test(`previous week is server-owned for ${asOfDate} in ${timeZone}`,()=>{
   const e={...reportingEvidence(),asOfDate,timeZone,generatedAt:`${asOfDate}T18:00:00.000Z`,historyStart:'2025-11-01T00:00:00.000Z',periodStart:`${startDate}T00:00:00.000Z`,transactions:[]}
+  e.students = e.students.map(student => ({ ...student, balanceHistory: {} }))
   const tools=createClassroomAssistantToolbox(e)
   assert.deepEqual(tools.context.previousCalendarWeek,{startDate,endDate})
   assert(Object.isFrozen(tools.context.previousCalendarWeek))

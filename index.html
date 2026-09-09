@@ -1472,6 +1472,7 @@ import { sortStudentsByName } from "./src/phase2b/studentDisplay.js";
 import { DEFAULT_ADD_MONEY_CATEGORIES, effectiveAddMoneyCategories, sortTransactionCategories } from "./src/phase2b/transactionCategoryDisplay.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { MAX_RENT_AMOUNT, projectBackupExport } from "./src/phase3/tenantDataProjection.js";
+import { applyRosterBalanceEdits } from "./src/teacher/rosterBalanceAdjustments.js";
 import { sanitizeLegacyBackup } from "./src/legacy/backupImport.js";
 import { buildInsightsDataSignature } from "./src/insights/classInsights.js";
 import { PROVIDER_INSIGHTS_PERIODS, VERSION3_GEMINI_BROWSER_PROJECT_ID, createProviderInsightsBrowserClient, mapProviderInsightsError, resolveLiveProviderInsightsBrowserActivation, resolveProviderInsightsBrowserActivation } from "./src/insights/providerInsightsClient.js";
@@ -1587,6 +1588,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let temporaryProfileStudentPin = null;
     let bulkOperationPending = false;
     let studentLifecyclePending = false;
+    let rosterBalanceSaveOperation = null;
     let studentMoneySubmissionPending = false;
     let rentUpdatePending = false;
     // Preserve only the latest failed in-memory attempt so an ambiguous network
@@ -1746,8 +1748,10 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
 
       try {
         await setDoc(doc(db, "morganBank", "classroomData"), data);
+        return { executed: true };
       } catch (error) {
         console.error("Firestore save failed:", error);
+        return { executed: false, error: "The classroom change could not be saved." };
       }
     }
 
@@ -3441,66 +3445,54 @@ const targetStudents = transactionTarget === "whole"
       render();
     }
 
-    function updateStudent(studentId) {
+    async function updateStudent(studentId) {
       if (!requireTeacher()) return;
+      if (rosterBalanceSaveOperation && (!IS_MULTI_TEACHER_V2_ENABLED ||
+          v2TenantSession.validateCapturedIdentity(rosterBalanceSaveOperation))) return;
       const name = document.getElementById("name-" + studentId).value.trim();
-      const balance = Number(document.getElementById("balance-" + studentId).value);
-
-      // V2 renders no roster PIN input, so there is no PIN to read or write
-      // here. PIN changes go only through resetStudentPinV2.
-      if (IS_MULTI_TEACHER_V2_ENABLED) {
-        if (!name) {
-          showMessage("Student name cannot be blank.");
-          return;
-        }
-
-        data.students = data.students.map(student => {
-          if (student.id !== studentId) return student;
-          return {
-            ...student,
-            name,
-            balance: Number.isFinite(balance) ? balance : 0,
-            frozen: Boolean(student.frozen)
-          };
-        });
-
-        data.transactions = data.transactions.map(transaction => {
-          if (transaction.studentId !== studentId) return transaction;
-          return { ...transaction, studentName: name };
-        });
-
-        saveData();
-        message = "Student updated.";
-        render();
+      const balanceText = document.getElementById("balance-" + studentId).value.trim();
+      const balance = balanceText === "" ? NaN : Number(balanceText);
+      if (!name) {
+        showMessage("Student name cannot be blank.");
         return;
       }
-
-      const pin = document.getElementById("pin-" + studentId).value.trim();
-
-      if (!name || !pin) {
+      const pin = IS_MULTI_TEACHER_V2_ENABLED ? null : document.getElementById("pin-" + studentId).value.trim();
+      if (!IS_MULTI_TEACHER_V2_ENABLED && !pin) {
         showMessage("Student name and PIN cannot be blank.");
         return;
       }
-
-      data.students = data.students.map(student => {
-        if (student.id !== studentId) return student;
-        return {
-          ...student,
-          name,
-          pin,
-          balance: Number.isFinite(balance) ? balance : 0,
-          frozen: Boolean(student.frozen)
-        };
+      let candidate;
+      try {
+        candidate = applyRosterBalanceEdits(data, [{ studentId, balance }]);
+      } catch (error) {
+        showMessage(error.message);
+        return;
+      }
+      candidate.students = candidate.students.map(student => student.id !== studentId ? student : {
+        ...student, name, frozen: Boolean(student.frozen),
+        ...(IS_MULTI_TEACHER_V2_ENABLED ? {} : { pin })
       });
+      candidate.transactions = candidate.transactions.map(transaction => transaction.studentId !== studentId
+        ? transaction : { ...transaction, studentName: name });
 
-      data.transactions = data.transactions.map(transaction => {
-        if (transaction.studentId !== studentId) return transaction;
-        return { ...transaction, studentName: name };
-      });
-
-      saveData();
-      message = "Student updated.";
-      render();
+      // V2 renders no roster PIN input, so there is no PIN to read or write
+      // here. PIN changes go only through resetStudentPinV2.
+      const captured = IS_MULTI_TEACHER_V2_ENABLED ? v2TenantSession.captureIdentity() : {};
+      rosterBalanceSaveOperation = captured;
+      data = candidate;
+      try {
+        const result = await saveData();
+        if (IS_MULTI_TEACHER_V2_ENABLED && !v2TenantSession.validateCapturedIdentity(captured)) return;
+        if (result?.executed) message = "Student updated. Balance changes are recorded in transaction history.";
+        else if (!IS_MULTI_TEACHER_V2_ENABLED) message = "Student could not be saved. Please retry.";
+        render();
+      } catch {
+        if (!IS_MULTI_TEACHER_V2_ENABLED || v2TenantSession.validateCapturedIdentity(captured)) {
+          showMessage("Student could not be saved. Please retry.");
+        }
+      } finally {
+        if (rosterBalanceSaveOperation === captured) rosterBalanceSaveOperation = null;
+      }
     }
 
     async function removeStudent(studentId) {
@@ -3667,14 +3659,37 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
       render();
     }
 
-    function resetBalancesToZero() {
+    async function resetBalancesToZero() {
       if (!requireTeacher()) return;
-      const confirmed = confirm("Reset every student balance to $0? Transaction history will stay.");
+      if (rosterBalanceSaveOperation && (!IS_MULTI_TEACHER_V2_ENABLED ||
+          v2TenantSession.validateCapturedIdentity(rosterBalanceSaveOperation))) return;
+      const confirmed = confirm("Reset every student balance to $0? Each changed balance will be recorded as an adjustment in transaction history.");
       if (!confirmed) return;
-      data.students = data.students.map(student => ({ ...student, balance: 0 }));
-      saveData();
-      message = "All balances reset to $0.";
-      render();
+      let candidate;
+      try {
+        candidate = applyRosterBalanceEdits(data, data.students.map(student => ({ studentId: student.id, balance: 0 })), {
+          reason: "Balance reset to zero"
+        });
+      } catch (error) {
+        showMessage(error.message);
+        return;
+      }
+      const captured = IS_MULTI_TEACHER_V2_ENABLED ? v2TenantSession.captureIdentity() : {};
+      rosterBalanceSaveOperation = captured;
+      data = candidate;
+      try {
+        const result = await saveData();
+        if (IS_MULTI_TEACHER_V2_ENABLED && !v2TenantSession.validateCapturedIdentity(captured)) return;
+        if (result?.executed) message = "All balances reset to $0. Adjustments are recorded in transaction history.";
+        else if (!IS_MULTI_TEACHER_V2_ENABLED) message = "Balances could not be saved. Please retry.";
+        render();
+      } catch {
+        if (!IS_MULTI_TEACHER_V2_ENABLED || v2TenantSession.validateCapturedIdentity(captured)) {
+          showMessage("Balances could not be saved. Please retry.");
+        }
+      } finally {
+        if (rosterBalanceSaveOperation === captured) rosterBalanceSaveOperation = null;
+      }
     }
 
     function resetEverything() {
