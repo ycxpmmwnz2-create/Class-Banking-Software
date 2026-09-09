@@ -133,9 +133,11 @@ function isPlainObject(value) {
 
 function hasExactKeys(value, expected) {
   if (!isPlainObject(value)) return false;
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  return actual.length === wanted.length && actual.every((key, i) => key === wanted[i]);
+  const actual = Object.keys(value);
+  // Object.keys is unique, and these fixed field contracts contain strings.
+  // Equal counts plus membership preserve exactness without sorting two arrays
+  // for every document and embedded transaction on each load/save.
+  return actual.length === expected.length && actual.every(key => expected.includes(key));
 }
 
 /**
