@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { INSIGHT_QUERY_PLAN_SCHEMA_VERSION } from './questionContracts.js'
 import { InsightIdentityError, validateInsightIdentity } from './identity.js'
 import { normalizeStoredTransactionDate } from './storedTransactionDate.js'
+import { BALANCE_HISTORY_READ_LIMIT, resolveBalanceDays, snapshotBalanceVersion } from './balanceHistoryLedger.js'
 
 const STUDENT_KEYS = Object.freeze(['balance', 'frozen', 'id', 'name', 'transactions'])
 const TRANSACTION_KEYS = Object.freeze([
@@ -107,7 +108,33 @@ export function createFirestoreQuestionEvidenceLoader({
       if (studentsSnapshot.size > MAX_STUDENTS || transactionsSnapshot.size > MAX_TRANSACTIONS) {
         fail('evidence-too-large', 'Classroom evidence exceeds the question read limit.')
       }
+      // A question begun just before local midnight must not label the next
+      // day's snapshot as yesterday's completed balance.
+      if (studentsSnapshot.readTime?.toDate && localDateKey(studentsSnapshot.readTime.toDate(), timeZone) !== asOfDate) {
+        fail('evidence-unavailable', 'The classroom date changed during the read. Ask again.')
+      }
+      // One bounded same-snapshot query. Only the trusted trigger may write
+      // these records; current rules deny every browser access to this path.
+      const balanceHistorySnapshot = assistantMode ? await transaction.get(
+        classroomRef.collection('balanceHistory').orderBy('afterVersion', 'desc').limit(BALANCE_HISTORY_READ_LIMIT),
+      ) : null
+      const balanceDays = {}
+      if (assistantMode) {
+        const dates = Array.from({ length: 91 }, (_, index) => new Date(
+          Date.parse(`${asOfDate}T12:00:00Z`) - index * 86_400_000,
+        ).toISOString().slice(0, 10))
+        const records = balanceHistorySnapshot.docs.flatMap(snapshot => {
+          const value = snapshot.data()
+          return value && typeof value === 'object' && snapshot.id === `${value.studentId}-${value.afterVersion}` ? [value] : []
+        })
+        for (const snapshot of studentsSnapshot.docs) {
+          balanceDays[snapshot.id] = resolveBalanceDays(snapshotBalanceVersion(snapshot), records, {
+            classroomId: classroom, dates, timeZone,
+          })
+        }
+      }
       return Object.freeze({
+        balanceDays: Object.freeze(balanceDays),
         configuredRentAmount: validateRentSnapshot(rentSnapshot),
         students: Object.freeze(studentsSnapshot.docs.map(validateStudentSnapshot)
           .sort((left, right) => left.id - right.id)),
@@ -266,6 +293,7 @@ export function createFirestoreQuestionEvidenceLoader({
         current: student.current,
         balance: student.balance,
         frozen: student.frozen,
+        balanceHistory: Object.freeze(raw.balanceDays[String(student.id)] ?? {}),
       }))),
       categories: Object.freeze(assistantCategoryCatalog.map(category => Object.freeze({
         label: safeAssistantText(category.label, 120).text,
@@ -325,6 +353,7 @@ export function createFirestoreQuestionEvidenceLoader({
         asOfDate,
         configuredRentAmount: raw.configuredRentAmount,
         students: raw.students,
+        balanceDays: raw.balanceDays,
         transactions: availableTransactions.map(transaction => ({
           ...transaction,
           insideRollingPeriod: Date.parse(transaction.date) >= cutoff,

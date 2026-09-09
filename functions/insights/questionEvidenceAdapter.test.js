@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { URL } from 'node:url'
+import { createClassroomAssistantToolbox } from './classroomAssistantTools.js'
+import { makeBalanceWitness, versionKey } from './balanceHistoryLedger.js'
 
 import {
   InsightQuestionEvidenceError,
@@ -9,6 +11,44 @@ import {
 } from './questionEvidenceAdapter.js'
 
 const NOW = new Date('2026-08-20T18:00:00.000Z')
+
+test('a read crossing classroom midnight cannot pass off the next-day snapshot as today', async () => {
+  const double = createFirestoreDouble(fixture(), {
+    'classrooms/class-a/students': { readTime: { toDate: () => new Date('2026-08-21T06:00:00Z') } },
+  })
+  const load = createFirestoreQuestionEvidenceLoader({ firestore: double.firestore, now: () => new Date('2026-08-21T05:59:59Z') })
+  await assert.rejects(load({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 7,
+    timeZone: 'America/Denver', question: 'Who was negative today?', assistantMode: true }), /date changed/u)
+})
+
+test('real evidence adapter uses trusted version history, binds its signature and keeps it out of legacy evidence', async () => {
+  const ts = iso => ({ seconds: Date.parse(iso) / 1000, nanoseconds: 0 })
+  const path = 'classrooms/class-a/students/1'
+  const make = (iso, balance) => ({ id: '1', exists: true, ref: { path },
+    createTime: ts('2026-09-01T12:00:00Z'), updateTime: ts(iso), data: () => ({ id: 1, balance }) })
+  const before = make('2026-09-04T17:00:00Z', -10), after = make('2026-09-08T17:00:00Z', 0)
+  const witness = makeBalanceWitness({ params: { classroomId: 'class-a', studentId: '1' }, data: { before, after } })
+  const data = fixture({ [path]: { ...fixture()[path], balance: 0 },
+    [`classrooms/class-a/balanceHistory/1-${witness.afterVersion}`]: witness })
+  const double = createFirestoreDouble(data, { [path]: { createTime: after.createTime, updateTime: after.updateTime } })
+  const load = createFirestoreQuestionEvidenceLoader({ firestore: double.firestore, now: () => new Date('2026-09-08T18:00:00Z') })
+  const args = { teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 7, timeZone: 'America/Denver', question: 'Who was negative on September 4?', assistantMode: true }
+  const first = await load(args)
+  assert.equal(first.assistantEvidence.students[0].balanceHistory['2026-09-04'], -10)
+  assert.equal(Object.hasOwn(first.answerEvidence.students[0], 'balanceHistory'), false)
+  const result = createClassroomAssistantToolbox(first.assistantEvidence).execute('get_balances_as_of', { asOfDate: '2026-09-04', condition: 'negative' })
+  assert.equal(result.students[0].balanceAsOf, -10)
+  assert.equal(result.unavailableCount, 1) // Student 2 has no trusted metadata.
+  assert(double.reads.includes('classrooms/class-a/balanceHistory|limit=5000'))
+  assert(double.reads.every(read => !read.includes('class-b')))
+  assert.doesNotMatch(JSON.stringify(first.assistantEvidence), /class-a|afterVersion|incarnation/u)
+  delete data[`classrooms/class-a/balanceHistory/1-${witness.afterVersion}`]
+  const absent = createFirestoreDouble(data, { [path]: { createTime: after.createTime, updateTime: after.updateTime } })
+  const second = await createFirestoreQuestionEvidenceLoader({ firestore: absent.firestore, now: () => new Date('2026-09-08T18:00:00Z') })(args)
+  assert.equal(second.assistantEvidence.students[0].balanceHistory['2026-09-04'], undefined)
+  assert.notEqual(first.evidenceSignature, second.evidenceSignature)
+  assert.equal(witness.afterVersion, versionKey(after.updateTime))
+})
 
 function fixture(overrides = {}) {
   return {
@@ -49,7 +89,7 @@ function fixture(overrides = {}) {
   }
 }
 
-function createFirestoreDouble(initial) {
+function createFirestoreDouble(initial, metadata = {}) {
   const store = new Map(Object.entries(initial))
   const reads = []
   function document(path) {
@@ -65,11 +105,12 @@ function createFirestoreDouble(initial) {
       kind: 'query',
       limitCount: null,
       doc(id) { return document(`${path}/${id}`) },
+      orderBy(field, direction) { assert.equal(direction, 'desc'); return { ...this, orderField: field } },
       limit(count) { return { ...this, limitCount: count } },
     }
   }
   function snapshot(path) {
-    return { exists: store.has(path), id: path.split('/').at(-1), data: () => store.get(path) }
+    return { exists: store.has(path), id: path.split('/').at(-1), data: () => store.get(path), ...metadata[path] }
   }
   return {
     reads,
@@ -83,10 +124,12 @@ function createFirestoreDouble(initial) {
             const prefix = `${reference.path}/`
             const docs = [...store.keys()]
               .filter(path => path.startsWith(prefix) && !path.slice(prefix.length).includes('/'))
-              .sort()
+              .filter(path => !reference.orderField || store.get(path)[reference.orderField] !== undefined)
+              .sort((a, b) => reference.orderField
+                ? String(store.get(b)[reference.orderField]).localeCompare(String(store.get(a)[reference.orderField])) : a.localeCompare(b))
               .map(snapshot)
               .slice(0, reference.limitCount ?? undefined)
-            return { size: docs.length, docs }
+            return { size: docs.length, docs, ...metadata[reference.path] }
           },
         })
       },

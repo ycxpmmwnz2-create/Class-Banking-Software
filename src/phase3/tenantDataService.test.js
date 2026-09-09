@@ -9,6 +9,7 @@ import {
   createTenantDataSaver,
 } from './tenantDataService.js'
 import { projectClassroomData, TenantProjectionError } from './tenantDataProjection.js'
+import { applyRosterBalanceEdits } from '../teacher/rosterBalanceAdjustments.js'
 
 const CLASSROOM = 'classroom-alpha'
 const TEACHER_UID = 'teacher-uid-1'
@@ -474,6 +475,34 @@ describe('Phase 3 tenant data service — student loader', () => {
 })
 
 describe('Phase 3 tenant data service — saver', () => {
+  for (const mode of ['success', 'failed', 'concurrent']) it(`roster adjustment balance and ledger commit together: ${mode}`, async () => {
+    let previous = baseData({ students: [student({ balance: -10, transactions: [] })], transactions: [] })
+    const next = applyRosterBalanceEdits(previous, [{ studentId: 1, balance: 0 }], { now: 1788886800000 })
+    const double = createFirestoreDouble(persistedDataStore(previous))
+    const session = createActiveSession()
+    const save = createTenantDataSaver({ db: {}, session, firestore: double.firestore, previousRef: () => previous })
+    if (mode === 'concurrent') double.store.set(`classrooms/${CLASSROOM}/students/1`, student({ balance: -8 }))
+    const before = structuredClone([...double.store])
+    if (mode === 'failed') double.failNextCommitWith(new Error('offline'))
+    if (mode !== 'success') {
+      await assert.rejects(save(next, session.captureIdentity()))
+      assert.deepEqual([...double.store], before)
+      assert.equal(double.commits.length, 0)
+      return
+    }
+    await save(next, session.captureIdentity())
+    assert.equal(double.commits.length, 1)
+    const persisted = double.store.get(`classrooms/${CLASSROOM}/students/1`)
+    const ledger = double.store.get(`classrooms/${CLASSROOM}/transactions/${next.transactions[0].id}`)
+    assert.equal(persisted.balance, 0)
+    assert.deepEqual(persisted.transactions, [ledger])
+    assert.equal(ledger.type, 'Add'); assert.equal(ledger.amount, 10)
+    assert.deepEqual(Object.keys(persisted).sort(), ['balance', 'frozen', 'id', 'name', 'transactions'])
+    previous = next
+    const retry = applyRosterBalanceEdits(next, [{ studentId: 1, balance: 0 }])
+    await save(retry, session.captureIdentity())
+    assert.equal([...double.store.keys()].filter(path => path.includes('/transactions/')).length, 1)
+  })
   function baseData(overrides = {}) {
     return {
       students: [student({ transactions: [transaction()] })],

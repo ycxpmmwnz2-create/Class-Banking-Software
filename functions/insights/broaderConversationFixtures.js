@@ -3,7 +3,7 @@
 export function reportingEvidence() {
   const transaction = (id, studentRef, date, amount, category = 'Technology', status = 'Approved') => ({ ref: `transaction-${String(id).padStart(5, '0')}`, studentRef, date, amount, category, type: 'Add', purpose: 'other', status })
   return { question: '', generatedAt: '2026-09-06T18:00:00.000Z', asOfDate: '2026-09-06', timeZone: 'America/Denver', periodDays: 30, periodStart: '2026-08-07T18:00:00.000Z', historyStart: '2026-06-08T18:00:00.000Z', configuredRentAmount: 5,
-    students: [{ ref: 'student-001', displayName: 'Fable', current: true, balance: 12, frozen: false }, { ref: 'student-002', displayName: 'Quill', current: true, balance: 4, frozen: false }],
+    students: [{ ref: 'student-001', displayName: 'Fable', current: true, balance: 12, frozen: false, balanceHistory: { '2026-08-28': 12 } }, { ref: 'student-002', displayName: 'Quill', current: true, balance: 4, frozen: false }],
     categories: [{ label: 'Technology', transactionTypes: ['Add'] }, { label: 'Homework', transactionTypes: ['Add'] }],
     transactions: [transaction(1, 'student-001', '2026-08-28T16:00:00.000Z', 2), transaction(2, 'student-001', '2026-08-28T19:00:00.000Z', 3), transaction(3, 'student-001', '2026-08-27T16:00:00.000Z', 50, 'Technology', 'Pending'), transaction(4, 'student-001', '2026-08-26T16:00:00.000Z', 1, 'Homework'), transaction(5, 'student-002', '2026-08-25T16:00:00.000Z', 4)] }
 }

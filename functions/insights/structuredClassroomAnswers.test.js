@@ -11,6 +11,11 @@ function fixture(overrides = {}) {
     configuredRentAmount: 10,
     students: ['Avery', 'Blake', 'Casey'].map((displayName, i) => ({
       ref: `student-00${i + 1}`, displayName, current: true, balance: i + 1, frozen: false,
+      // Explicit fictional dated evidence; source-chain proof is tested in
+      // balanceHistoryLedger and the real adapter integration tests.
+      balanceHistory: Object.fromEntries(Array.from({ length: 90 }, (_, n) => [
+        new Date(Date.parse('2026-08-26T12:00:00Z') - n * 86400000).toISOString().slice(0, 10), i - 4,
+      ])),
     })),
     categories: [{ label: 'Technology', transactionTypes: ['Add'] }],
     transactions: [1, 2, 3].map(i => ({

@@ -39,7 +39,7 @@ function evidence(overrides = {}) {
     question: 'Who had a negative account balance as of last Friday 9/4?',
     generatedAt: '2026-09-08T18:00:00.000Z', asOfDate: '2026-09-08', timeZone: 'America/Denver',
     periodDays: 7, periodStart: '2026-09-01T18:00:00.000Z', historyStart: '2026-06-10T18:00:00.000Z',
-    configuredRentAmount: 10, students,
+    configuredRentAmount: 10,
     categories: [{ label: 'Technology', transactionTypes: ['Add', 'Subtract'] }],
     transactions: [
       // Negative today, POSITIVE on the cutoff. Must be excluded.
@@ -55,6 +55,14 @@ function evidence(overrides = {}) {
       transaction('transaction-00006', 'student-012', '2026-09-07T15:00:00.000Z', 'Subtract', 50, 'Pending'),
     ],
     ...overrides,
+    // These tests now exercise filtering and presentation over dated evidence,
+    // NOT the removed current-balance-minus-ledger reconstruction algorithm.
+    // The server version-chain tests independently prove the date calculation.
+    students: (overrides.students ?? students).map((student, index) => ({ ...student,
+      balanceHistory: student.balance === null ? {} : {
+        [CUTOFF]: overrides.students ? student.balance : [10, -5, 0, 7, 0, 0, 0, 0, 0, -5, null, 3][index],
+      },
+    })),
   }
 }
 
@@ -115,17 +123,21 @@ test('reconstruction agrees with the existing balance-history tool', () => {
   }
 })
 
-test('the classroom-local date boundary decides which transactions count', () => {
+test('dated values are not recalculated from editable transaction timestamps or amounts', () => {
   const { toolbox } = setup()
   const dana = asOf(toolbox, { condition: 'any' }).students.find(row => row.student === 'Dana')
-  // 23:30 local on the 4th is inside the cutoff's closing balance; 00:30 local
-  // on the 5th is unwound. Mishandling either boundary yields $0.00 instead.
   assert.equal(dana.balanceAsOf, 7)
+  const changed = evidence()
+  changed.transactions = changed.transactions.map(tx => ({ ...tx, date: '2026-09-08T17:00:00Z', amount: 999 }))
+  assert.equal(asOf(setup(changed).toolbox).students.find(row => row.student === 'Dana').balanceAsOf, 7)
 })
 
-test('pending transactions never move a reconstructed balance', () => {
+test('a later transaction-status edit does not rewrite a verified historical balance', () => {
   const { toolbox } = setup()
   assert.equal(asOf(toolbox, { condition: 'any' }).students.find(row => row.student === 'Sam').balanceAsOf, 3)
+  const changed = evidence()
+  changed.transactions = changed.transactions.map(tx => ({ ...tx, status: 'Approved' }))
+  assert.equal(asOf(setup(changed).toolbox).students.find(row => row.student === 'Sam').balanceAsOf, 3)
 })
 
 test('no matches reports zero without inventing students', () => {
@@ -159,7 +171,7 @@ test('a none answer discloses students that could not be checked', () => {
   }))
   const call = registry.execute('get_balances_as_of', { asOfDate: CUTOFF, condition: 'negative' })
   const { answer } = registry.render({ schemaVersion: 1, sections: [{ resultId: call.resultId, view: call.view }] })
-  assert.match(answer, /^0 current students match/u)
+  assert.match(answer, /^Cannot determine the complete list/u)
   // An unconditional "none" would be a false claim while a balance is unknown.
   assert.match(answer, /Balance history is unavailable for 1 current student, who could not be checked and are not covered by this count\./u)
 })
@@ -217,14 +229,14 @@ test('the rendered historical answer is bound to the reconstructed result', () =
   const call = registry.execute('get_balances_as_of', { asOfDate: CUTOFF, condition: 'negative' })
   assert.equal(call.view, 'balances-as-of')
   const { answer, evidence: lines } = registry.render({ schemaVersion: 1, sections: [{ resultId: call.resultId, view: call.view }] })
-  assert.match(answer, /^2 current students match: negative balances on 2026-09-04\./u)
+  assert.match(answer, /2 verified matches found/u)
   assert.match(answer, /"Blake" — -\$5\.00 on 2026-09-04\./u)
   assert.match(answer, /"Quinn" — -\$5\.00 on 2026-09-04\./u)
   assert.doesNotMatch(answer, /"Avery"/u)
   // The roster is today's, and the answer must not claim otherwise.
   assert.match(answer, /Population: the 12 current classroom students, not the roster as it existed on 2026-09-04\./u)
   assert.match(answer, /Balance history is unavailable for 1 current student/u)
-  assert.match(lines[0], /^Reconstructed balances as of 2026-09-04;/u)
+  assert.match(lines[0], /^Verified available balances as of 2026-09-04;/u)
 })
 
 test('a historical-only answer carries no today-snapshot sentence', () => {
@@ -269,7 +281,7 @@ test('the active assistant answers the historical question from the reconstructe
   } })
   const result = await assistant.answer({ assistantEvidence: evidence() })
   assert.equal(sawTool, true)
-  assert.match(result.answer, /2 current students match: negative balances on 2026-09-04\./u)
+  assert.match(result.answer, /2 verified matches found/u)
   assert.match(result.answer, /"Blake"/u)
   assert.match(result.answer, /"Quinn"/u)
   assert.doesNotMatch(result.answer, /"Avery"/u)
@@ -297,9 +309,9 @@ test('a past cutoff keeps its completed end-of-day wording', () => {
   const { registry } = setup()
   const call = registry.execute('get_balances_as_of', { asOfDate: CUTOFF, condition: 'negative' })
   const { answer, evidence: lines } = registry.render({ schemaVersion: 1, sections: [{ resultId: call.resultId, view: call.view }] })
-  assert.match(answer, /Reconstructed end-of-day balances for 2026-09-04 \(America\/Denver\) from current balances and retained Approved transactions\./u)
+  assert.match(answer, /Available end-of-day balances for 2026-09-04 \(America\/Denver\) are verified against dated student-record versions/u)
   assert.doesNotMatch(answer, /snapshot taken so far/u)
-  assert.match(lines[0], /^Reconstructed balances as of 2026-09-04;/u)
+  assert.match(lines[0], /^Verified available balances as of 2026-09-04;/u)
 })
 
 test('the population line agrees in number with the roster it counts', () => {

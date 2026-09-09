@@ -263,7 +263,7 @@ function renderHistory({ args, result, context }) {
   const dates = [...new Set(result.rows.map(row => row.date))].sort()
   const totalDates = Math.round((Date.parse(args.endDate) - Date.parse(args.startDate)) / 86_400_000) + 1
   const lines = [
-    'Reconstructed balances from current balances and retained Approved transactions.',
+    'Verified dated balance records; missing dates are unavailable, not zero.',
     studentScope(args, context, false),
     `Requested dates: ${args.startDate} through ${args.endDate} (${context.timeZone}).`,
     `Showing ${dates.length} of ${totalDates} requested dates, up to the latest ${args.limitDays} dates per available student.`,
@@ -274,15 +274,20 @@ function renderHistory({ args, result, context }) {
     lines.push(`Today's value reflects the snapshot on ${context.classroomDate}, not a future end-of-day balance.`)
   }
   for (const ref of args.studentRefs) {
-    if (!result.rows.some(row => row.studentRef === ref)) lines.push(`Balance history unavailable for ${studentName(ref, context)}.`)
+    const count = result.rows.filter(row => row.studentRef === ref).length
+    if (count === 0) lines.push(`Balance history unavailable for ${studentName(ref, context)}.`)
+    else if (count < Math.min(args.limitDays, totalDates)) lines.push(`Some requested balance history is unavailable for ${studentName(ref, context)}; only ${count} verified dates are shown.`)
+  }
+  if (args.studentRefs.some(ref => result.rows.filter(row => row.studentRef === ref).length < Math.min(args.limitDays, totalDates))) {
+    lines.push('Missing history may predate recording, fall outside the available history window, or still be arriving. It cannot be reconstructed reliably from transactions alone.')
   }
   for (const row of result.rows) lines.push(`• ${studentName(row.studentRef, context)} — ${row.date}: ${money(row.closingBalance)}.`)
-  return rendered(lines, 'Balance reconstruction', context)
+  return rendered(lines, 'Verified dated balance records', context)
 }
 
 function renderCapabilities({ context }) {
   return rendered([
-    'I can check balances, frozen accounts, transaction totals and lists, rent-payment records, date comparisons, and reconstructed balance history.',
+    'I can check balances, frozen accounts, transaction totals and lists, rent-payment records, date comparisons, and verified dated balances when history is available.',
     'For a more specific answer, include the student display name, transaction status, category, or dates you mean.',
     'I can show redacted memos on selected transactions. Searching or filtering by memo text is unavailable, including within the selected period.',
     'Predicting behavior, changing accounts, and accessing other classrooms are unavailable.',
@@ -329,12 +334,14 @@ function renderBalancesAsOf({ args, result, context }) {
   })
   const sort = enumText(args.sort, { name: 'name', lowest: 'balance, lowest first', highest: 'balance, highest first' })
   const lines = [
-    `${result.matchedCount} current ${plural(result.matchedCount, 'student')} ${result.matchedCount === 1 ? 'matches' : 'match'}: ${condition} on ${result.asOfDate}.`,
+    result.unavailableCount > 0
+      ? `Cannot determine the complete list for ${condition} on ${result.asOfDate}: ${result.unavailableCount} current ${plural(result.unavailableCount, 'student')} could not be verified. ${result.matchedCount} verified ${result.matchedCount === 1 ? 'match' : 'matches'} found among the available records.`
+      : `${result.matchedCount} current ${plural(result.matchedCount, 'student')} ${result.matchedCount === 1 ? 'matches' : 'match'}: ${condition} on ${result.asOfDate}.`,
     // The classroom date is still in progress, so calling it a completed
     // end-of-day balance would state something the snapshot cannot show.
     result.throughSnapshot
       ? `Balances for ${result.asOfDate} (${context.timeZone}) as of the classroom snapshot taken so far that day, not a completed end-of-day total.`
-      : `Reconstructed end-of-day balances for ${result.asOfDate} (${context.timeZone}) from current balances and retained Approved transactions.`,
+      : `Available end-of-day balances for ${result.asOfDate} (${context.timeZone}) are verified against dated student-record versions, not inferred from today's balance and editable transactions.`,
     // The roster is today's. Students who left before now are not restored, so
     // this must not be read as the roster as it stood on that date.
     `Population: the ${result.currentStudentCount} current classroom ${plural(result.currentStudentCount, 'student')}, not the roster as it existed on ${result.asOfDate}.`,
@@ -342,11 +349,12 @@ function renderBalancesAsOf({ args, result, context }) {
   ]
   if (result.unavailableCount > 0) {
     lines.push(`Balance history is unavailable for ${result.unavailableCount} current ${plural(result.unavailableCount, 'student')}, who could not be checked and are not covered by this count.`)
+    lines.push('Missing history may predate recording, fall outside the available history window, or still be arriving. It cannot be reconstructed reliably from transactions alone.')
   }
   lines.push(...result.students.map(row => `\u2022 ${studentName(row.studentRef, context)} \u2014 ${money(row.balanceAsOf)} on ${result.asOfDate}.`))
   return rendered(lines, result.throughSnapshot
     ? `Balances at the ${result.asOfDate} classroom snapshot`
-    : `Reconstructed balances as of ${result.asOfDate}`, context)
+    : `Verified available balances as of ${result.asOfDate}`, context)
 }
 
 function renderAbsence({ args, result, context }) {

@@ -28,11 +28,16 @@ function database() {
     if (reference.kind !== 'query') return snapshot(reference.path)
     const prefix = reference.path + '/'
     const docs = [...store.keys()].filter(path => path.startsWith(prefix) && !path.slice(prefix.length).includes('/'))
-      .sort().slice(0, reference.limitCount ?? undefined).map(snapshot)
+      .filter(path => !reference.orderField || store.get(path)[reference.orderField] !== undefined)
+      .sort((a, b) => reference.orderField
+        ? String(store.get(b)[reference.orderField]).localeCompare(String(store.get(a)[reference.orderField])) : a.localeCompare(b))
+      .slice(0, reference.limitCount ?? undefined).map(snapshot)
     return { size: docs.length, docs }
   }
   function doc(path) { return { path, id: path.split('/').at(-1), get: async () => get({ path }), collection: name => query(`${path}/${name}`) } }
-  function query(path) { return { path, kind: 'query', doc: id => doc(`${path}/${id}`), limit(count) { return { ...this, limitCount: count } } } }
+  function query(path) { return { path, kind: 'query', doc: id => doc(`${path}/${id}`),
+    orderBy(field, direction) { assert.equal(direction, 'desc'); return { ...this, orderField: field } },
+    limit(count) { return { ...this, limitCount: count } } } }
   return {
     initial, store, reads, writes,
     firestore: {
