@@ -123,23 +123,24 @@ for (const selected of [[0, 1], [1, 0]]) test(`mixed selection ${selected.join('
   assert.match(response.html, /negative balances on 2026-09-04/u)
 })
 
-test('unselected history does not disable ordinary current-balance narration', async () => {
+test('unselected history is omitted from the verified current-balance answer', async () => {
   const summary = 'Blake and Quinn currently have negative balances.'
   const response = await run(summary, { calls: [historical(), current], selected: [1] })
-  assert.equal(response.narratorCalls, 1)
-  assert.equal(response.result.presentation.aiSummary, summary)
-  assert.match(response.html, /provider-question-ai-summary/u)
+  assert.doesNotMatch(response.result.answer, /negative balances on 2026-09-04/u)
+  assert.equal(response.narratorCalls, 0)
+  assert.equal(response.result.presentation.aiSummary, null)
+  assert.match(response.html, /provider-question-calculated-summary/u)
 })
 
-test('ordinary current-balance narration remains unchanged', async () => {
+test('ordinary current balances now use verified text', async () => {
   const summary = 'Blake and Quinn currently have negative balances.'
   const response = await run(summary, { calls: [current] })
-  assert.equal(response.narratorCalls, 1)
-  assert.equal(response.result.presentation.aiSummary, summary)
-  assert.match(response.html, /provider-question-ai-summary/u)
+  assert.equal(response.narratorCalls, 0)
+  assert.equal(response.result.presentation.aiSummary, null)
+  assert.match(response.html, /provider-question-calculated-summary/u)
 })
 
-test('the existing narrationAllowed gate still skips non-historical narration', async () => {
+test('narrationAllowed false remains compatible with verified current balances', async () => {
   const response = await run('Unused', { calls: [current], narrationAllowed: false })
   assertVerified(response)
 })

@@ -41,8 +41,8 @@ for (const item of REPORTING_CASES.filter(item => item.id !== 'earnings')) test(
   } })
   const result = await assistant.answer({ assistantEvidence: e })
   assert.match(result.answer, item.expected)
-  // Historical balances now display the verified answer rather than prose.
-  assert.equal(result.presentation.aiSummary, item.id === 'history' ? null : 'Friendly summary of the calculated facts.')
+  // All factual selections display the verified answer.
+  assert.equal(result.presentation.aiSummary, null)
   assert.equal(turn, 2)
 })
 test('structured output still permits another calculation and a multi-result final answer', async () => {

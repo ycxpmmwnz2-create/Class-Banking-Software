@@ -82,15 +82,15 @@ test('actual live composition saves a 40-student comparison without narration in
   for (const [path, value] of s.initial) assert.deepEqual(s.store.get(path), value)
   await assertReplay(s, result)
 })
-for (const mode of ['bad-json', 'truncated', 'html', 'timeout', 'missing-usage']) test(`balance narration ${mode} preserves calculated facts, accounting and replay`, async () => {
+for (const mode of ['bad-json', 'truncated', 'html', 'timeout', 'missing-usage', 'false-prose']) test(`unused balance narrator ${mode} cannot affect calculated facts, accounting or replay`, async () => {
   const s = setup({ mode, tool: 'get_balances' }), result = await s.handler(s.request)
   assert.equal(result.presentation.aiSummary, null)
   assert.match(result.answer, /Total balance:/u)
-  const unknown = ['timeout', 'missing-usage'].includes(mode)
-  assert.equal(result.presentation.billingBasis, unknown ? 'reserved-unknown' : 'observed')
+  assert.equal(result.presentation.billingBasis, 'observed')
+  assert.doesNotMatch(result.answer, /999|lazy/u)
   const record = [...s.store].find(([path]) => path.startsWith('insightUsageReservations/'))[1]
-  if (unknown) assert.equal(record.actualCostMicroUsd, record.worstCaseCostMicroUsd)
-  assert.equal(s.calls.length, 3)
+  assert.ok(record.actualCostMicroUsd < record.worstCaseCostMicroUsd)
+  assert.equal(s.calls.length, 2)
   assert.ok(s.writes.every(path => /^insightUsage/u.test(path)))
   await assertReplay(s, result)
 })
@@ -116,15 +116,12 @@ test('concurrent duplicate requests do not duplicate planner or narration work',
   assert.equal(s.calls.length, 1)
   await assertReplay(s, results.find(r => r.status === 'fulfilled').value)
 })
-test('balance answers receive a separate summary and replay without another charge', async () => {
+test('balance answers preserve verified text and replay without another charge', async () => {
   const s = setup({ tool: 'get_balances' }), result = await s.handler(s.request)
-  assert.equal(typeof result.presentation.aiSummary, 'string')
+  assert.equal(result.presentation.aiSummary, null)
   assert.match(result.answer, /Total balance:/u)
-  assert.equal(s.calls[2].config.httpOptions.retryOptions.attempts, 1)
-  assert.ok(s.calls[2].config.httpOptions.timeout <= 15000)
-  assert.equal(s.calls[2].config.tools, undefined)
-  assert.doesNotMatch(s.calls[2].contents[0].parts[0].text, /teacher-a|class-a|Avery Morgan|currentBalance/u)
-  assert.equal(s.calls.length, 3)
+  assert.ok(s.calls.every(call => call.config.tools))
+  assert.equal(s.calls.length, 2)
   await assertReplay(s, result)
 })
 test('earnings never calls the narrator that would return fluent false prose', async () => {
@@ -167,6 +164,6 @@ test('live SDK receives constrained selection format and saves/replays a broader
   assert.match(result.answer, /Total balance:/u)
   assert.equal(s.calls[1].config.responseMimeType, 'application/json')
   assert.equal(s.calls[1].config.toolConfig.functionCallingConfig.mode, 'VALIDATED')
-  assert.equal(s.calls.length, 3)
+  assert.equal(s.calls.length, 2)
   await assertReplay(s, result)
 })

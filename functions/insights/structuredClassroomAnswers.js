@@ -91,7 +91,7 @@ export function createStructuredAnswerRegistry(toolbox) {
     requiresVerifiedAnswer(selection) {
       return selection.sections.some(section => {
         const record = results.get(section.resultId)
-        return record?.name === 'get_balances_as_of' || record?.name === 'get_balance_history' || record?.name === 'compare_student_earnings'
+        return Boolean(record && record.name !== 'describe_schema')
       })
     },
     render(selection) {

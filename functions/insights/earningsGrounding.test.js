@@ -48,7 +48,7 @@ test('focus accepts only declared values and never changes calculated totals', (
   for (const focus of ['S', null, 1, {}, 'highest']) assert.equal(toolbox.execute('compare_student_earnings', { ...args, focus }).ok, false)
 })
 
-test('an unselected earnings result does not disable narration for a current balance selection', async () => {
+test('an unselected earnings result stays out of the verified current balance answer', async () => {
   let planner = 0, narrator = 0
   const assistant = createConversationalClassroomAssistant({ generateContent: async request => {
     if (!request.config.tools) { narrator++; return { usageMetadata, finishReason: 'STOP', text: JSON.stringify({ answer: 'All current balances are zero.' }) } }
@@ -60,7 +60,7 @@ test('an unselected earnings result does not disable narration for a current bal
     return { usageMetadata, finishReason: 'STOP', text: JSON.stringify({ schemaVersion: 1, sections: [{ resultId: result.resultId, view: result.view }] }) }
   } })
   const result = await assistant.answer({ assistantEvidence: evidence })
-  assert.equal(narrator, 1)
-  assert.equal(result.presentation.aiSummary, 'All current balances are zero.')
+  assert.equal(narrator, 0)
+  assert.equal(result.presentation.aiSummary, null)
   assert.doesNotMatch(result.answer, /Most money added/u)
 })
