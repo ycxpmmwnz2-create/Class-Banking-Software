@@ -36,18 +36,18 @@ async function run(items, { extraPlannerTurns = 0, mode = 'valid', evidence = re
 }
 for(const item of REPORTING_CASES)test(`calculated ${item.id} results preserve facts and the narration policy`,async()=>{
   const {result,calls}=await run([item]);assert.match(result.answer,item.expected)
-  // History and earnings are code-owned; other reporting views still narrate.
-  assert.equal(result.presentation?.aiSummary,['history','earnings'].includes(item.id)?null:'A friendly reporting summary.')
-  assert.equal(calls.filter(x=>!x.config.tools).length,['history','earnings'].includes(item.id)?0:1)
+  // Every factual reporting view uses the complete calculated answer.
+  assert.equal(result.presentation?.aiSummary,null)
+  assert.equal(calls.filter(x=>!x.config.tools).length,0)
 })
-test('a multi-part selection receives one narration containing every selected fact section',async()=>{const {result,calls}=await run(REPORTING_CASES.slice(0,2));assert.equal(result.presentation?.aiSummary,'A friendly reporting summary.');assert.equal(calls.length,3);assert.match(result.answer,/Total balance: \$16.00/u)})
+test('a multi-part selection preserves every calculated fact section without narration',async()=>{const {result,calls}=await run(REPORTING_CASES.slice(0,2));assert.equal(result.presentation?.aiSummary,null);assert.equal(calls.length,2);assert.match(result.answer,/Total balance: \$16.00/u)})
 test('absence facts identify the missing transaction predicate and label balance separately',async()=>{
   const {result}=await run([REPORTING_CASES.find(item=>item.id==='absence')])
   assert.match(result.answer,/• "Quill" — no matching transactions under the filters above; current balance: \$4\.00; unfrozen\./u)
   assert.doesNotMatch(result.answer,/• "Fable"/u)
 })
 test('capabilities-only answers remain fixed without a narrator request',async()=>{const {result,calls}=await run([{tool:'describe_schema',args:{},question:'Can you search memos?'}]);assert.equal(result.presentation,null);assert.equal(calls.length,2)})
-for(const mode of ['timeout','missing-usage','malformed'])test(`non-earnings ${mode} keeps original facts and accounting classification`,async()=>{const {result}=await run([REPORTING_CASES[0]],{mode});assert.equal(result.presentation?.aiSummary,null);assert.equal(result.usageUncertain,mode!=='malformed')})
+for(const mode of ['timeout','missing-usage','malformed'])test(`unused narrator ${mode} cannot affect facts or accounting`,async()=>{const {result}=await run([REPORTING_CASES[0]],{mode});assert.equal(result.presentation?.aiSummary,null);assert.equal(result.usageUncertain,false)})
 test('existing structured contract never makes a narrator call',async()=>{const {result,calls}=await run([REPORTING_CASES[0]],{structured:true});assert.equal(result.presentation,undefined);assert.equal(calls.length,2)})
 test('large details stay intact in structured fallback and cannot fail the presentation size contract',async()=>{const evidence=reportingEvidence();evidence.students=Array.from({length:150},(_,i)=>({ref:`student-${String(i+1).padStart(3,'0')}`,displayName:`Fictional student ${String(i).padStart(3,'0')} with a longer display name`,current:true,balance:i,frozen:false}));evidence.transactions=[];const {result,calls}=await run([{...REPORTING_CASES[1],args:{limit:500}}],{evidence});assert.ok(result.answer.length>8000);assert.equal(result.presentation,null);assert.equal(calls.length,2);assert.match(result.answer,/Fictional student 149/u)})
 
