@@ -61,17 +61,15 @@ async function assertReplay(s, first) {
   assert.deepEqual([...s.store], before)
 }
 
-test('actual live composition saves a 40-student comparison and narration in one reservation with exact replay', async () => {
+test('actual live composition saves a 40-student comparison without narration in one reservation with exact replay', async () => {
   const s = setup(), result = await s.handler(s.request)
-  assert.match(result.presentation.aiSummary, /\$30/u)
+  assert.equal(result.presentation.aiSummary, null)
+  assert.match(result.answer, /\$30.00/u)
   assert.match(result.presentation.calculatedSummary, /Least:/u)
   assert.match(result.presentation.calculationDetails, /40 students/u)
   assert.equal(result.presentation.billingBasis, 'observed')
-  assert.equal(s.calls.length, 2)
-  assert.equal(s.calls[1].config.httpOptions.retryOptions.attempts, 1)
-  assert.ok(s.calls[1].config.httpOptions.timeout <= 15000)
-  assert.equal(s.calls[1].config.tools, undefined)
-  assert.doesNotMatch(s.calls[1].contents[0].parts[0].text, /teacher-a|class-a|Avery Morgan|frozen|currentBalance/u)
+  assert.equal(s.calls.length, 1)
+  assert.ok(s.calls.every(call => call.config.tools))
   assert.deepEqual(validateProviderQuestionResponse(result), result)
   const reservations = [...s.store].filter(([path]) => path.startsWith('insightUsageReservations/'))
   assert.equal(reservations.length, 1)
@@ -84,48 +82,55 @@ test('actual live composition saves a 40-student comparison and narration in one
   for (const [path, value] of s.initial) assert.deepEqual(s.store.get(path), value)
   await assertReplay(s, result)
 })
-for (const mode of ['bad-json', 'truncated', 'html', 'timeout', 'missing-usage']) test(`${mode} preserves calculated answer and replays the saved fallback`, async () => {
-  const s = setup({ mode }), result = await s.handler(s.request)
+for (const mode of ['bad-json', 'truncated', 'html', 'timeout', 'missing-usage']) test(`balance narration ${mode} preserves calculated facts, accounting and replay`, async () => {
+  const s = setup({ mode, tool: 'get_balances' }), result = await s.handler(s.request)
   assert.equal(result.presentation.aiSummary, null)
-  assert.match(result.answer, /\$30.00/u)
+  assert.match(result.answer, /Total balance:/u)
   const unknown = ['timeout', 'missing-usage'].includes(mode)
   assert.equal(result.presentation.billingBasis, unknown ? 'reserved-unknown' : 'observed')
   const record = [...s.store].find(([path]) => path.startsWith('insightUsageReservations/'))[1]
   if (unknown) assert.equal(record.actualCostMicroUsd, record.worstCaseCostMicroUsd)
-  assert.equal(s.calls.length, 2)
+  assert.equal(s.calls.length, 3)
+  assert.ok(s.writes.every(path => /^insightUsage/u.test(path)))
   await assertReplay(s, result)
 })
 test('same request ID for two tenants never reuses names, amounts or narration', async () => {
   const s = setup(), a = await s.handler(s.request)
   const b = await s.handler({ ...s.request, auth: { uid: 'teacher-b' } })
-  assert.match(b.presentation.aiSummary, /Blake.*\$60/u)
+  assert.equal(b.presentation.aiSummary, null)
+  assert.match(b.answer, /Blake.*\$60/u)
   assert.doesNotMatch(b.answer, /Avery|Fable/u)
-  assert.doesNotMatch(s.calls[3].contents[0].parts[0].text, /Avery|Fable/u)
+  assert.doesNotMatch(s.calls[1].contents[0].parts[0].text, /Avery|Fable/u)
   await assertReplay(s, a)
 })
 test('changed evidence conflicts without calling Gemini again', async () => {
   const s = setup(); await s.handler(s.request)
   s.store.get('classrooms/class-a/transactions/101').amount = 31
   await assert.rejects(s.handler(s.request))
-  assert.equal(s.calls.length, 2)
+  assert.equal(s.calls.length, 1)
 })
 test('concurrent duplicate requests do not duplicate planner or narration work', async () => {
   const s = setup()
   const results = await Promise.allSettled([s.handler(s.request), s.handler(s.request)])
   assert.equal(results.filter(r => r.status === 'fulfilled').length, 1)
-  assert.equal(s.calls.length, 2)
+  assert.equal(s.calls.length, 1)
   await assertReplay(s, results.find(r => r.status === 'fulfilled').value)
 })
 test('balance answers receive a separate summary and replay without another charge', async () => {
   const s = setup({ tool: 'get_balances' }), result = await s.handler(s.request)
   assert.equal(typeof result.presentation.aiSummary, 'string')
   assert.match(result.answer, /Total balance:/u)
+  assert.equal(s.calls[2].config.httpOptions.retryOptions.attempts, 1)
+  assert.ok(s.calls[2].config.httpOptions.timeout <= 15000)
+  assert.equal(s.calls[2].config.tools, undefined)
+  assert.doesNotMatch(s.calls[2].contents[0].parts[0].text, /teacher-a|class-a|Avery Morgan|currentBalance/u)
   assert.equal(s.calls.length, 3)
   await assertReplay(s, result)
 })
-test('fluent false prose is explicitly unverified and never overwrites the calculated answer', async () => {
+test('earnings never calls the narrator that would return fluent false prose', async () => {
   const s = setup({ mode: 'false-prose' }), result = await s.handler(s.request)
-  assert.match(result.presentation.aiSummary, /\$999/u)
+  assert.equal(result.presentation.aiSummary, null)
+  assert.equal(s.calls.length, 1)
   assert.doesNotMatch(result.answer, /999|lazy/u)
   assert.match(result.answer, /\$30.00/u)
 })
@@ -133,7 +138,7 @@ test('save and markUncertain failure keep the reservation active, blocking anoth
   const s = setup({ failSave: true })
   await assert.rejects(s.handler(s.request))
   await assert.rejects(s.handler(s.request))
-  assert.equal(s.calls.length, 2)
+  assert.equal(s.calls.length, 1)
 })
 test('when narration will not fit the remaining allowance, calculate within one base reservation', async () => {
   const s = setup(); await s.handler(s.request)
@@ -145,7 +150,7 @@ test('when narration will not fit the remaining allowance, calculate within one 
   const result = await s.handler(request)
   assert.equal(result.presentation.aiSummary, null)
   assert.match(result.answer, /\$30.00/u)
-  assert.equal(s.calls.length, 3)
+  assert.equal(s.calls.length, 2)
   await assertReplay({ ...s, request }, result)
 })
 
@@ -154,20 +159,7 @@ test('a completed response with a different stored answer contract is refused wi
   const record = [...s.store].find(([path]) => path.startsWith('insightUsageReservations/'))[1]
   record.result.answerContract = 'structured-v1'
   await assert.rejects(s.handler(s.request), error => error.category === 'invalid-replay')
-  assert.equal(s.calls.length, 2)
-})
-
-for (const mode of ['timeout', 'missing-usage', 'bad-json']) test(`balance narration ${mode} preserves one settlement and exact replay`, async () => {
-  const s = setup({ mode, tool: 'get_balances' }), result = await s.handler(s.request)
-  assert.equal(result.presentation.aiSummary, null)
-  assert.match(result.answer, /Total balance:/u)
-  const unknown = mode !== 'bad-json'
-  assert.equal(result.presentation.billingBasis, unknown ? 'reserved-unknown' : 'observed')
-  const record = [...s.store].find(([path]) => path.startsWith('insightUsageReservations/'))[1]
-  if (unknown) assert.equal(record.actualCostMicroUsd, record.worstCaseCostMicroUsd)
-  assert.equal(s.calls.length, 3)
-  assert.ok(s.writes.every(path => /^insightUsage/u.test(path)))
-  await assertReplay(s, result)
+  assert.equal(s.calls.length, 1)
 })
 
 test('live SDK receives constrained selection format and saves/replays a broader answer', async () => {

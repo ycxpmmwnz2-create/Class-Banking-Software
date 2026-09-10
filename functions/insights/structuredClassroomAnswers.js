@@ -86,12 +86,12 @@ export function createStructuredAnswerRegistry(toolbox) {
       })
     },
     // Called only after render validates ownership and view binding. A mixed
-    // answer containing either historical view also keeps the complete verified
-    // answer. Merely executing an unselected history tool does not change it.
+    // answer containing a protected view also keeps the complete verified
+    // answer. Merely executing an unselected protected tool does not change it.
     requiresVerifiedAnswer(selection) {
       return selection.sections.some(section => {
         const record = results.get(section.resultId)
-        return record?.name === 'get_balances_as_of' || record?.name === 'get_balance_history'
+        return record?.name === 'get_balances_as_of' || record?.name === 'get_balance_history' || record?.name === 'compare_student_earnings'
       })
     },
     render(selection) {
@@ -122,7 +122,8 @@ export function createStructuredAnswerRegistry(toolbox) {
 
 function normalizeArguments(name, args, result, context) {
   const studentRefs = [...new Set(args.studentRefs ?? [])]
-  if (name === 'describe_schema' || name === 'compare_student_earnings') return Object.freeze({})
+  if (name === 'describe_schema') return Object.freeze({})
+  if (name === 'compare_student_earnings') return Object.freeze({ focus: args.focus ?? 'both' })
   if (name === 'get_balances') return freezeCopy({
     studentRefs, condition: args.condition ?? 'any', frozen: args.frozen ?? 'any',
     sort: args.sort ?? 'name', limit: args.limit ?? 100,
@@ -165,12 +166,16 @@ function renderResult(record) {
   return renderCapabilities(record)
 }
 
-function renderEarnings({ result, context }) {
+function renderEarnings({ args, result, context }) {
+  const focus = args.focus
+  const extreme = focus === 'both' ? 'most or least' : focus
   const names = refs => refs.map(ref => studentName(ref, context)).join(', ')
   let summary
-  if (!result.complete) summary = 'I cannot determine who received the most or least money added because the retained history does not cover the full requested period.'
+  if (!result.complete) summary = `I cannot determine who received the ${extreme} money added because the retained history does not cover the full requested period.`
   else if (!result.currentStudentCount) summary = 'There are no current students to compare.'
   else if (result.allTied) summary = `Everyone is tied at ${money(result.highestAmount)} in approved money added per student.`
+  else if (focus === 'most') summary = `Most money added: ${names(result.highestRefs)} — ${money(result.highestAmount)} each.`
+  else if (focus === 'least') summary = `Least money added: ${names(result.lowestRefs)} — ${money(result.lowestAmount)} each.`
   else summary = `Most money added: ${names(result.highestRefs)} — ${money(result.highestAmount)} each. Least: ${names(result.lowestRefs)} — ${money(result.lowestAmount)} each.`
   return rendered([
     summary,

@@ -224,7 +224,7 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
         try {
           const rendered = registry.render(selection)
           // Check the validated, result-bound selection, never the question or
-          // provider prose. Historical facts must reach the teacher unchanged.
+          // provider prose. Historical and earnings facts must reach the teacher unchanged.
           const requiresVerifiedAnswer = registry.requiresVerifiedAnswer(selection)
           let presentation = null, usageUncertain = false
           if (conversational && registry.hasFactualSelection(selection) && Buffer.byteLength(rendered.answer, 'utf8') <= 24000) {

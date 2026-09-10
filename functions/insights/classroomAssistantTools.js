@@ -107,6 +107,7 @@ export const CLASSROOM_ASSISTANT_TOOL_DECLARATIONS = Object.freeze([
     type: 'object', additionalProperties: false, required: ['window'],
     properties: {
       window: { type: 'string', enum: ['last-week', 'selected-period', 'explicit'] },
+      focus: { type: 'string', enum: ['most', 'least', 'both'], description: 'Which extreme the teacher requested; omit only for both.' },
       startDate: dateSchema(), endDate: dateSchema(),
     },
   }),
@@ -243,6 +244,8 @@ function previousCalendarWeek(classroomDate) {
 // It always includes the complete current roster; the provider cannot select
 // a subset and then describe it as the whole classroom.
 function compareStudentEarnings(args, data, transactions) {
+  // Presentation-only selection; never restrict the roster or totals.
+  enumeration(args.focus === undefined ? 'both' : args.focus, ['most', 'least', 'both'])
   const window = enumeration(args.window, ['last-week', 'selected-period', 'explicit'])
   if (window !== 'explicit' && (args.startDate !== undefined || args.endDate !== undefined)) {
     fail('invalid-tool-arguments', 'Only an explicit window accepts dates.')
