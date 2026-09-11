@@ -60,4 +60,4 @@ Read the documents relevant to the change before editing:
 - [`CLEANUP_CHECKPOINTS.md`](CLEANUP_CHECKPOINTS.md) — evidence required before cleanup.
 - [`tests/phase2b/README.md`](tests/phase2b/README.md) and [`tests/phase3/README.md`](tests/phase3/README.md) — test contracts and recorded evidence.
 
-Material changes follow the Codex implementation, Claude detailed-review, and Grok final-review workflow. A review `PASS` does not authorize merge or deployment.
+Material changes follow Codex implementation and coordination, Muse Spark detailed read-only checking, then Claude final independent read-only review. This order includes AI Insights. Historical review verdicts retain their original attribution. Reviews and PASS verdicts do not authorize commits, pushes, merges, deployments, data changes, or feature-gate changes; Andrew authorizes those actions separately.
