@@ -117,3 +117,27 @@ test("Luther AI credit uses the compact, complete Luther AI logo asset", () => {
     "the high-density logo source must render at an unobtrusive Luther AI size"
   );
 });
+
+test("ownership footer survives every app render and links the original Progress Pal pages", () => {
+  const appShell = indexHtml.indexOf('<div id="app"></div>');
+  const footerStart = indexHtml.indexOf('<footer class="site-credit"');
+  const scriptStart = indexHtml.indexOf('<script type="module">');
+  assert.ok(appShell < footerStart && footerStart < scriptStart,
+    "footer must be outside the app container replaced during navigation and sign-in");
+  assert.equal(indexHtml.match(/<footer class="site-credit"/g)?.length, 1);
+  const footer = indexHtml.slice(footerStart, indexHtml.indexOf('</footer>', footerStart));
+  assert.deepEqual([...footer.matchAll(/href="([^"]+)"/g)].map(match => match[1]), [
+    'https://progress-pal-78be2.web.app/about.html',
+    'https://progress-pal-78be2.web.app/privacy.html',
+  ]);
+  assert.equal(footer.match(/target="_blank" rel="noopener noreferrer"/g)?.length, 2);
+  assert.equal(footer.match(/opens in a new tab/g)?.length, 2);
+  const footerStyle = indexHtml.match(/\.site-credit \{([^}]+)\}/)[1];
+  assert.doesNotMatch(footerStyle, /opacity:/);
+  assert.match(footerStyle, /color: #51464d;/);
+  assert.match(indexHtml, /outline: 2px solid #51464d;/);
+  assert.match(footer, /AGM LUTHCORP/);
+  assert.match(footer, /stroke-width="9"/);
+  assert.match(indexHtml, /\.site-credit \{[^}]*flex-wrap: wrap;/);
+  assert.match(indexHtml, /\.site-credit a:focus-visible \{[^}]*outline: 2px solid/);
+});
