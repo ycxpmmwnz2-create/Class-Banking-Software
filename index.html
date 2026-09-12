@@ -1484,6 +1484,7 @@
     <a href="https://progress-pal-78be2.web.app/privacy.html" target="_blank" rel="noopener noreferrer" aria-label="Privacy (opens in a new tab)">Privacy</a>
   </footer>
   <script type="module">
+import { createApprovalQueue, prepareApprovalDecision } from "./src/phase2b/approvalQueue.js";
 import { renderQuestionAnswer } from "./src/insights/renderQuestionAnswer.js";
 import { app, auth, db, functions, connectPhase2bEmulatorsIfConfigured, firebaseDeploymentTier, providerAppCheckReadyPromise } from "./src/firebase/firebase.js";
 import { browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider, inMemoryPersistence, linkWithPopup, onAuthStateChanged, setPersistence, signInWithCustomToken, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
@@ -1656,7 +1657,34 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let resolvedTeacher = null;
     let v2IsOffline = false;
 
-    function requireTeacher() {
+    let activeClassroomSaves = 0;
+    let approvalGeneration = 0;
+    let approvalRefreshRequired = false;
+    const approvalQueue = createApprovalQueue({
+      capture: () => ({ generation: approvalGeneration, uid: auth.currentUser?.uid,
+        tenant: IS_MULTI_TEACHER_V2_ENABLED ? v2TenantSession.captureIdentity() : null }),
+      isCurrent: identity => identity.generation === approvalGeneration && isTeacher &&
+        identity.uid === auth.currentUser?.uid && (!IS_MULTI_TEACHER_V2_ENABLED ||
+        v2TenantSession.validateCapturedIdentity(identity.tenant)),
+      getData: () => data,
+      save: candidate => saveClassroomCandidate(candidate),
+      publish: candidate => { data = candidate; },
+      notify: (text, { requiresRefresh = false } = {}) => {
+        message = text;
+        if (requiresRefresh) approvalRefreshRequired = true;
+      },
+      changed: () => render(),
+    });
+
+    function requireTeacher({ allowApprovalQueue = false, readOnly = false } = {}) {
+      if (!readOnly && !allowApprovalQueue && approvalRefreshRequired) {
+        showMessage("Refresh the classroom before making more changes.");
+        return false;
+      }
+      if (!readOnly && !allowApprovalQueue && approvalQueue.busy) {
+        showMessage("Please wait for the queued requests to finish saving.");
+        return false;
+      }
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         return v2TenantSession.requireTeacher(auth.currentUser?.uid);
       }
@@ -1745,6 +1773,16 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     }
 
     async function saveData() {
+      return saveClassroomCandidate(data);
+    }
+
+    async function saveClassroomCandidate(candidate) {
+      activeClassroomSaves++;
+      try { return await persistClassroomData(candidate); }
+      finally { activeClassroomSaves--; }
+    }
+
+    async function persistClassroomData(candidate) {
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         if (typeof v2SaveTenantData !== "function") {
           console.error("The V2 tenant data service is required in V2 mode.");
@@ -1753,7 +1791,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
         // Snapshot the exact attempted state. Callers historically do not await
         // saveData(), so a later UI mutation must not be mistaken for the state
         // this particular server commit accepted.
-        const attemptedData = JSON.parse(JSON.stringify(data));
+        const attemptedData = JSON.parse(JSON.stringify(candidate));
         const result = await orchestrateClassroomDataSave(v2TenantSession, v2SaveTenantData, attemptedData, { storageAdapter: localStorage, projectId: v2TenantSession.projectId });
         if (result.executed) {
           // Only a server-accepted write may advance the diff baseline. A
@@ -1761,7 +1799,8 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
           // documents this one never persisted.
           v2LastPersistedData = attemptedData;
         } else if (result.reason === "concurrent-classroom-change") {
-          await reloadV2ClassroomAfterSaveConflict();
+          const reloaded = await reloadV2ClassroomAfterSaveConflict();
+          return { ...result, reloaded };
         } else if (!result.reason?.startsWith("stale-epoch-ignored")) {
           message = result.error || "The classroom change could not be saved.";
           render();
@@ -1769,10 +1808,9 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
         return result;
       }
 
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-
       try {
-        await setDoc(doc(db, "morganBank", "classroomData"), data);
+        await setDoc(doc(db, "morganBank", "classroomData"), candidate);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(candidate));
         return { executed: true };
       } catch (error) {
         console.error("Firestore save failed:", error);
@@ -1781,6 +1819,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     }
 
     async function reloadV2ClassroomAfterSaveConflict() {
+      let reloaded = false;
       const captured = v2TenantSession.captureIdentity();
       try {
         const loaded = await v2LoadTenantData({
@@ -1798,12 +1837,14 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
           loaded,
           captured
         );
+        reloaded = true;
         message = "Your classroom changed while you were working. The latest data was reloaded; please try again.";
       } catch {
         if (!v2TenantSession.validateCapturedIdentity(captured)) return;
         message = "Your classroom changed while you were working. Refresh the page before trying again.";
       }
       render();
+      return reloaded;
     }
 
     function dollars(amount) {
@@ -1822,12 +1863,12 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     }
 
     function printRoster() {
-      if (!requireTeacher()) return;
+      if (!requireTeacher({ readOnly: true })) return;
       window.print();
     }
 
     function filterRoster(searchTerm) {
-      if (!requireTeacher()) return;
+      if (!requireTeacher({ readOnly: true })) return;
       const normalizedSearch = searchTerm.trim().toLowerCase();
       document.querySelectorAll("[data-roster-student-name]").forEach(row => {
         row.style.display = row.dataset.rosterStudentName.includes(normalizedSearch) ? "" : "none";
@@ -1874,12 +1915,12 @@ function resetCustomTransactionDraft() {
 }
 
 function setQuickCashStudent(value) {
-  if (!requireTeacher()) return;
+  if (!requireTeacher({ readOnly: true })) return;
   quickCashStudentId = String(value);
 }
 
 function updateCustomTransactionDraft() {
-  if (!requireTeacher()) return;
+  if (!requireTeacher({ readOnly: true })) return;
   const typeInput = document.getElementById("transactionType");
   if (!typeInput) return;
   customTransactionDraft = {
@@ -1896,13 +1937,13 @@ function updateCustomTransactionDraft() {
 }
 
 function setDashboardSectionExpanded(section, expanded) {
-  if (!requireTeacher()) return;
+  if (!requireTeacher({ readOnly: true })) return;
   if (section === "students") teacherStudentListExpanded = Boolean(expanded);
   if (section === "transactions") teacherTransactionsExpanded = Boolean(expanded);
 }
 
 function setDashboardMoneyTool(tool) {
-  if (!requireTeacher()) return;
+  if (!requireTeacher({ readOnly: true })) return;
   if (tool !== "quick" && tool !== "custom") return;
   dashboardMoneyTool = tool;
   if (dashboardMoneyTool === "custom" && transactionTarget === "selected") {
@@ -1912,7 +1953,7 @@ function setDashboardMoneyTool(tool) {
 }
 
 function openDashboardTransactions() {
-  if (!requireTeacher()) return;
+  if (!requireTeacher({ readOnly: true })) return;
   teacherTransactionsExpanded = true;
   render();
   requestAnimationFrame(() => {
@@ -1924,14 +1965,14 @@ function openDashboardTransactions() {
 }
 
 function setTransactionTarget(value) {
-  if (!requireTeacher()) return;
+  if (!requireTeacher({ readOnly: true })) return;
   updateCustomTransactionDraft();
   transactionTarget = value;
   if (transactionTarget === "selected") teacherStudentListExpanded = true;
   render();
 }
 function setTeacherTransactionFilter(value) {
-  if (!requireTeacher()) return;
+  if (!requireTeacher({ readOnly: true })) return;
   teacherTransactionFilter = value;
   render();
 }
@@ -1951,7 +1992,7 @@ function filteredTeacherTransactions() {
   });
 }
 function exportTransactionsCsv(scope) {
-  if (!requireTeacher()) return;
+  if (!requireTeacher({ readOnly: true })) return;
 
   const today = new Date().toDateString();
   const transactions = scope === "today"
@@ -2010,13 +2051,13 @@ function exportTransactionsCsv(scope) {
   URL.revokeObjectURL(url);
 }
 function toggleStudentDropdown() {
-  if (!requireTeacher()) return;
+  if (!requireTeacher({ readOnly: true })) return;
   const menu = document.getElementById("studentDropdown");
   if (!menu) return;
   menu.classList.toggle("open");
 }
     async function openStudentAuthLogs({ navigate = true } = {}) {
-      if (!requireTeacher()) return;
+      if (!requireTeacher({ readOnly: true })) return;
 
       if (navigate) screen = "studentAuthLogs";
       studentAuthLogsLoading = true;
@@ -2079,7 +2120,7 @@ function toggleStudentDropdown() {
     }
 
     async function downloadStudentAuthLogsCsv() {
-      if (!requireTeacher() || studentAuthLogsLoading) return;
+      if (!requireTeacher({ readOnly: true }) || studentAuthLogsLoading) return;
       const loaded = await openStudentAuthLogs({ navigate: false });
       if (!loaded) return;
       if (studentAuthLogs.length === 0) {
@@ -2106,7 +2147,7 @@ function toggleStudentDropdown() {
      * invalidated map is cleared before the call.
      */
     async function loadStudentPinDirectory() {
-      if (!IS_MULTI_TEACHER_V2_ENABLED || !requireTeacher()) return;
+      if (!IS_MULTI_TEACHER_V2_ENABLED || !requireTeacher({ readOnly: true })) return;
       if (v2StudentPinsLoading) return;
 
       const captured = v2TenantSession.captureIdentity();
@@ -2254,7 +2295,7 @@ function toggleStudentDropdown() {
     }
 
     function setInsightsPeriod(days) {
-      if (!requireTeacher()) return;
+      if (!requireTeacher({ readOnly: true })) return;
       const nextDays = Number(days);
       if (!PROVIDER_INSIGHTS_PERIODS.includes(nextDays)) return;
       if (nextDays !== insightsPeriodDays) {
@@ -2298,12 +2339,12 @@ function toggleStudentDropdown() {
     }
 
     function setProviderQuestionDraft(value) {
-      if (!requireTeacher()) return;
+      if (!requireTeacher({ readOnly: true })) return;
       providerQuestionDraft = String(value).slice(0, 500);
     }
 
     function selectProviderQuickQuestion(index) {
-      if (!requireTeacher() || providerQuestionLoading) return;
+      if (!requireTeacher({ readOnly: true }) || providerQuestionLoading) return;
       const selected = PROVIDER_QUICK_QUESTIONS[Number(index)];
       if (!selected) return;
       providerQuestionDraft = selected.question;
@@ -2480,7 +2521,7 @@ function toggleStudentDropdown() {
     }
 
     async function viewStudentProfile(studentId) {
-      if (!requireTeacher()) return;
+      if (!requireTeacher({ readOnly: true })) return;
       const nextStudentId = Number(studentId);
       if (teacherProfileStudentId !== nextStudentId) {
         clearTemporaryProfileStudentPin();
@@ -2658,7 +2699,7 @@ function toggleStudentDropdown() {
     }
 
     function updateLoginHistoryView() {
-      if (!requireTeacher()) return;
+      if (!requireTeacher({ readOnly: true })) return;
       const container = document.getElementById("studentLoginHistoryContainer");
       if (!container) return;
       container.innerHTML = loginHistoryTableForSelectedStudent();
@@ -3152,76 +3193,45 @@ const targetStudents = transactionTarget === "whole"
       render();
     }
 
-    function approveAllCreditRequests() {
-      if (!requireTeacher()) return;
-      const pendingCredits = data.transactions.filter(transaction =>
-        transaction.status === "Pending" && transaction.type === "Add"
-      );
+    function queueApprovalDecision(ids, status) {
+      if (!requireTeacher({ allowApprovalQueue: true })) return;
+      if (approvalRefreshRequired) {
+        showMessage("Refresh the classroom before processing more requests.");
+        return;
+      }
+      if ((!approvalQueue.busy && activeClassroomSaves > 0) || studentLifecyclePending ||
+          bulkOperationPending || studentPinResetPending || rosterBalanceSaveOperation) {
+        showMessage("Another classroom change is saving. Please try again when it finishes.");
+        return;
+      }
+      if (!approvalQueue.busy && IS_MULTI_TEACHER_V2_ENABLED &&
+          JSON.stringify(data) !== JSON.stringify(v2LastPersistedData)) {
+        showMessage("Refresh the classroom before processing requests; there are unconfirmed local changes.");
+        return;
+      }
+      const available = ids.filter(id => !approvalQueue.has(id));
+      const queued = approvalQueue.enqueue(available, snapshot => prepareApprovalDecision(snapshot, available, status,
+        student => confirm("This approval would make " + student.name + "'s balance negative. Approve anyway?")));
+      if (!queued && available.length) showMessage("A previous session save is finishing. Please try again shortly.");
+    }
 
-      if (pendingCredits.length === 0) {
+    function approveAllCreditRequests() {
+      if (!requireTeacher({ allowApprovalQueue: true })) return;
+      const ids = data.transactions.filter(t => t.status === "Pending" && t.type === "Add" &&
+        !approvalQueue.has(t.id)).map(t => t.id);
+      if (!ids.length) {
         showMessage("No pending credit requests to approve.");
         return;
       }
-
-      const confirmed = confirm("Approve all pending credit requests?");
-      if (!confirmed) return;
-
-      pendingCredits.forEach(transaction => {
-        changeStudentBalance(transaction.studentId, "Add", Number(transaction.amount));
-      });
-
-      const pendingCreditIds = new Set(pendingCredits.map(transaction => transaction.id));
-
-      data.transactions = data.transactions.map(transaction => {
-        if (pendingCreditIds.has(transaction.id)) {
-          return { ...transaction, status: "Approved" };
-        }
-        return transaction;
-      });
-
-      saveData();
-      message = pendingCredits.length + " credit request(s) approved.";
-      render();
+      if (confirm("Approve all pending credit requests?")) queueApprovalDecision(ids, "Approved");
     }
 
     function approveTransaction(transactionId) {
-      if (!requireTeacher()) return;
-      const transaction = data.transactions.find(item => item.id === transactionId);
-      if (!transaction || transaction.status !== "Pending") return;
-
-      const student = data.students.find(item => item.id === transaction.studentId);
-      if (!student) {
-        showMessage("Student no longer exists on the roster.");
-        return;
-      }
-
-      if (transaction.type === "Subtract" && Number(transaction.amount) > Number(student.balance)) {
-        const confirmed = confirm("This approval would make " + student.name + "'s balance negative. Approve anyway?");
-        if (!confirmed) return;
-      }
-
-      changeStudentBalance(transaction.studentId, transaction.type, transaction.amount);
-
-      data.transactions = data.transactions.map(item => {
-        if (item.id === transactionId) return { ...item, status: "Approved" };
-        return item;
-      });
-
-      saveData();
-      message = "Transaction approved.";
-      render();
+      queueApprovalDecision([transactionId], "Approved");
     }
 
     function denyTransaction(transactionId) {
-      if (!requireTeacher()) return;
-      data.transactions = data.transactions.map(item => {
-        if (item.id === transactionId) return { ...item, status: "Denied" };
-        return item;
-      });
-
-      saveData();
-      message = "Transaction denied.";
-      render();
+      queueApprovalDecision([transactionId], "Denied");
     }
 
     async function addStudent() {
@@ -3824,7 +3834,7 @@ link.click();
     }
 
     function setCustomTransactionMode(type) {
-      if (!requireTeacher()) return;
+      if (!requireTeacher({ readOnly: true })) return;
       const typeInput = document.getElementById("transactionType");
       const addButton = document.getElementById("addModeButton");
       const subtractButton = document.getElementById("subtractModeButton");
@@ -3848,7 +3858,7 @@ link.click();
     }
 
     function toggleTeacherChoiceMemo() {
-      if (!requireTeacher()) return;
+      if (!requireTeacher({ readOnly: true })) return;
       const categorySelect = document.getElementById("transactionReason");
       const memoWrap = document.getElementById("teacherChoiceMemoWrap");
       if (!categorySelect || !memoWrap) return;
@@ -4076,7 +4086,7 @@ link.click();
           <td>${escapeHtml(transaction.status)}</td>
 <td>
           ${showActions && transaction.status === "Pending"
-    ? '<button class="approve" onclick="approveTransaction(' + transaction.id + ')">Approve</button>' +
+    ? approvalQueue.has(transaction.id) ? '<span role="status">Saving…</span>' : '<button class="approve" onclick="approveTransaction(' + transaction.id + ')">Approve</button>' +
       '<button class="danger" onclick="denyTransaction(' + transaction.id + ')">Deny</button>'
     : "—"}
 </td>
@@ -4403,7 +4413,7 @@ link.click();
     }
 
     function toggleProfileNewStudentPinVisibility() {
-      if (!requireTeacher() || screen !== "studentProfile") return;
+      if (!requireTeacher({ readOnly: true }) || screen !== "studentProfile") return;
       const input = document.getElementById("profileNewStudentPin");
       const button = document.getElementById("profileNewStudentPinVisibilityButton");
       if (!input || !button) return;
@@ -4415,7 +4425,7 @@ link.click();
     }
 
     async function copyProfileNewStudentPin() {
-      if (!requireTeacher() || screen !== "studentProfile") return;
+      if (!requireTeacher({ readOnly: true }) || screen !== "studentProfile") return;
       const studentId = teacherProfileStudentId;
       const pin = document.getElementById("profileNewStudentPin")?.value ?? "";
       const status = document.getElementById("profileNewStudentPinCopyStatus");
@@ -4435,7 +4445,7 @@ link.click();
     }
 
     async function copyTemporaryProfileStudentPin() {
-      if (!requireTeacher() || screen !== "studentProfile") return;
+      if (!requireTeacher({ readOnly: true }) || screen !== "studentProfile") return;
       const temporaryPin = temporaryProfileStudentPin;
       if (!temporaryPin || temporaryPin.studentId !== teacherProfileStudentId) return;
 
@@ -4454,14 +4464,14 @@ link.click();
     }
 
     function dismissTemporaryProfileStudentPin() {
-      if (!requireTeacher() || screen !== "studentProfile") return;
+      if (!requireTeacher({ readOnly: true }) || screen !== "studentProfile") return;
       const banner = document.getElementById("temporaryProfileStudentPin");
       clearTemporaryProfileStudentPin();
       if (banner) banner.remove();
     }
 
     async function copyStudentClassroomCode() {
-      if (!requireTeacher()) return;
+      if (!requireTeacher({ readOnly: true })) return;
       const code = resolvedStudentLoginCode();
       if (!code) {
         showMessage("The classroom code is not available yet.");
@@ -4475,7 +4485,7 @@ link.click();
     }
 
     async function copyStudentClassroomLoginLink() {
-      if (!requireTeacher()) return;
+      if (!requireTeacher({ readOnly: true })) return;
       const code = resolvedStudentLoginCode();
       const link = studentClassroomLoginLink(code);
       if (!link) {
@@ -4484,7 +4494,7 @@ link.click();
       }
 
       const copied = await copyTextWithFallback(link);
-      if (!requireTeacher() || resolvedStudentLoginCode() !== code) return;
+      if (!requireTeacher({ readOnly: true }) || resolvedStudentLoginCode() !== code) return;
       showMessage(copied
         ? "Student login link copied."
         : "Could not copy the student login link. Please try again.");
@@ -5608,6 +5618,8 @@ if (screen === "editSettingsLists" && isTeacher) {
     };
 
     function resetAllGlobalState() {
+      approvalGeneration++;
+      approvalRefreshRequired = false;
       resetGlobalApplicationState(windowAppGlobals, cloneDefault);
       // The remembered login locator is intentionally separate from tenant data.
       // Rehydrate it after the shared reset so an ordinary logout keeps the next
@@ -5917,6 +5929,7 @@ if (screen === "editSettingsLists" && isTeacher) {
     let authObservedGeneration = 0;
 
     onAuthStateChanged(auth, async user => {
+      approvalGeneration++;
       const currentAuthGeneration = ++authObservedGeneration;
 
       if (IS_MULTI_TEACHER_V2_ENABLED) {
