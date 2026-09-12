@@ -2762,7 +2762,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.match(teacherBlock, /onclick="copyStudentClassroomCode\(\)"/);
     assert.match(
       source,
-      /async function copyStudentClassroomCode\(\) \{\s*if \(!requireTeacher\(\)\) return;/,
+      /async function copyStudentClassroomCode\(\) \{\s*if \(!requireTeacher\(\{ readOnly: true \}\)\) return;/,
       "the copy action must remain teacher-gated"
     );
   });
@@ -2879,13 +2879,13 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     const showStart = source.indexOf("function toggleProfileNewStudentPinVisibility");
     const copyEnd = source.indexOf("\n    async function copyStudentClassroomCode", showStart);
     const interactionBlock = source.slice(showStart, copyEnd);
-    assert.match(interactionBlock, /if \(!requireTeacher\(\) \|\| screen !== "studentProfile"\) return;/);
+    assert.match(interactionBlock, /if \(!requireTeacher\(\{ readOnly: true \}\) \|\| screen !== "studentProfile"\) return;/);
     assert.match(interactionBlock, /input\.type = reveal \? "text" : "password";/);
     assert.match(interactionBlock, /copyTextWithFallback\(pin\)/);
     assert.match(interactionBlock, /copyTextWithFallback\(temporaryPin\.pin\)/);
     assert.match(
       interactionBlock,
-      /function dismissTemporaryProfileStudentPin\(\) \{\s*if \(!requireTeacher\(\) \|\| screen !== "studentProfile"\) return;\s*const banner = document\.getElementById\("temporaryProfileStudentPin"\);\s*clearTemporaryProfileStudentPin\(\);\s*if \(banner\) banner\.remove\(\);/,
+      /function dismissTemporaryProfileStudentPin\(\) \{\s*if \(!requireTeacher\(\{ readOnly: true \}\) \|\| screen !== "studentProfile"\) return;\s*const banner = document\.getElementById\("temporaryProfileStudentPin"\);\s*clearTemporaryProfileStudentPin\(\);\s*if \(banner\) banner\.remove\(\);/,
       "the manual dismiss control must remain teacher/profile-gated and remove only the cleared banner"
     );
     assert.doesNotMatch(
@@ -3192,7 +3192,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       /<\/section>\s*<details[\s\S]*?class="card dashboard-disclosure dashboard-transaction-disclosure dashboard-history-disclosure"[\s\S]*?data-testid="dashboard-transactions"[\s\S]*?\$\{teacherTransactionsExpanded \? "open" : ""\}[\s\S]*?<h2>Transaction History<\/h2>/
     );
     assert.match(source, /ontoggle="setDashboardSectionExpanded\('transactions', this\.open\)"/);
-    assert.match(source, /function openDashboardTransactions\(\) \{\s*if \(!requireTeacher\(\)\) return;\s*teacherTransactionsExpanded = true;\s*render\(\);/);
+    assert.match(source, /function openDashboardTransactions\(\) \{\s*if \(!requireTeacher\(\{ readOnly: true \}\)\) return;\s*teacherTransactionsExpanded = true;\s*render\(\);/);
   });
 
   test("dashboard cash tools share one persistent tabbed workspace", () => {
@@ -3200,7 +3200,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.match(source, /let dashboardMoneyTool = "quick";/);
     assert.match(
       source,
-      /function setDashboardMoneyTool\(tool\) \{\s*if \(!requireTeacher\(\)\) return;\s*if \(tool !== "quick" && tool !== "custom"\) return;/,
+      /function setDashboardMoneyTool\(tool\) \{\s*if \(!requireTeacher\(\{ readOnly: true \}\)\) return;\s*if \(tool !== "quick" && tool !== "custom"\) return;/,
       "the view-only tool switch must remain teacher-gated and allowlisted"
     );
     assert.match(source, /role="tablist" aria-label="Transaction tool"/);
