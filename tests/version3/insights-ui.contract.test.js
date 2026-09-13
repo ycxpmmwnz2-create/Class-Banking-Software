@@ -14,7 +14,7 @@ test("source contract: AI Insights is teacher-only and immediately after Dashboa
     /isTeacher\s*\?\s*`<button onclick="setScreen\('teacher'\)">Dashboard<\/button>`[\s\S]*?isTeacher\s*\?\s*`<button onclick="setScreen\('insights'\)">Insights<\/button>`/,
   );
   assert.match(indexHtml, /if \(screen === "insights" && isTeacher\)/);
-  assert.match(indexHtml, /function setInsightsPeriod\(days\) \{\s*if \(!requireTeacher\(\)\) return;/);
+  assert.match(indexHtml, /function setInsightsPeriod\(days\) \{\s*if \(!requireTeacher\(\{ readOnly: true \}\)\) return;/);
   assert.match(indexHtml, /async function askProviderQuestion\(retry = false\)/);
 });
 

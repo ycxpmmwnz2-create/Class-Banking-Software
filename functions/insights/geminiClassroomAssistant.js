@@ -1,4 +1,4 @@
-import { CONVERSATIONAL_ANSWER_CONTRACT, validateConversationPresentation } from './conversationContract.js'
+import { CALCULATION_DETAILS_HEADING, CONVERSATIONAL_ANSWER_CONTRACT, validateConversationPresentation } from './conversationContract.js'
 import { narrateClassroomAnswer } from './conversationNarrator.js'
 import { Buffer } from 'node:buffer'
 
@@ -222,7 +222,7 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
 
       async function completeSelection(selection, turn) {
         try {
-          const rendered = registry.render(selection)
+          const { presentationParts, ...rendered } = registry.render(selection)
           // Check the validated, result-bound selection, never the question or
           // provider prose. Every selected factual view must reach the teacher unchanged.
           const requiresVerifiedAnswer = registry.requiresVerifiedAnswer(selection)
@@ -237,6 +237,23 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
                 calculationDetails: details.join('\n'), billingBasis: 'observed' }, rendered.answer)
             } catch {
               // The original structured response remains the size-safe fallback.
+            }
+            if (presentationParts) {
+              const calculatedSummary = presentationParts.summary
+              const calculationDetails = CALCULATION_DETAILS_HEADING + presentationParts.details
+              const answer = `${calculatedSummary}\n${calculationDetails}`
+              try {
+                const briefPresentation = validateConversationPresentation({ aiSummary: null, calculatedSummary,
+                  calculationDetails, billingBasis: 'observed' }, answer)
+                // Preserve existing response/ledger limits and every detail.
+                // An oversized report falls back to the original full answer.
+                if (Buffer.byteLength(answer, 'utf8') <= 24000) {
+                  presentation = briefPresentation
+                  rendered.answer = answer
+                }
+              } catch {
+                // No truncation or partial summary on an oversized report.
+              }
             }
             if (presentation) {
               const narration = narrationAllowed && !requiresVerifiedAnswer && turn < CLASSROOM_ASSISTANT_MAX_TURNS - 1

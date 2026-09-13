@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderQuestionAnswer } from './renderQuestionAnswer.js';
 import { validateProviderQuestionResponse } from './providerInsightsClient.js';
+import { CALCULATION_DETAILS_HEADING } from '../../functions/insights/conversationContract.js';
 const p = { aiSummary: 'Fable had $30 added.', calculatedSummary: 'Fable: $30.', calculationDetails: 'Approved additions; current roster.', billingBasis: 'observed' };
 const result = { schemaVersion: 2, source: 'ai-grounded', periodDays: 7, generatedAt: '2026-09-07T18:00:00.000Z', answer: `${p.calculatedSummary}\n${p.calculationDetails}`, evidence: ['Computed from classroom records.'], usage: { inputTokens: 100, outputTokens: 10, thinkingTokens: 0, costMicroUsd: 200 }, presentation: p };
 test('client validates the optional presentation and preserves old responses', () => {
@@ -30,4 +31,17 @@ test('legacy answers remain visible and escaped', () => {
   const html = renderQuestionAnswer({ answer: '<script>bad</script> actual answer' });
   assert.doesNotMatch(html, /<script/u);
   assert.match(html, /actual answer/u);
+});
+
+test('verified briefs escape both visible and expandable text without changing the saved answer', () => {
+  const presentation = { ...p, aiSummary: null, calculatedSummary: 'History is available for 2 students. <script>bad</script>', calculationDetails: CALCULATION_DETAILS_HEADING + '<img src=x onerror=bad> Complete report.' };
+  const response = { ...result, presentation, answer: `${presentation.calculatedSummary}\n${presentation.calculationDetails}` };
+  const before = JSON.stringify(response);
+  validateProviderQuestionResponse(response);
+  const html = renderQuestionAnswer(response);
+  assert.match(html, /<summary>View details<\/summary>/u);
+  assert.doesNotMatch(html, /<details[^>]*open|<script>|<img /u);
+  assert.match(html, /&lt;script&gt;/u);
+  assert.match(html, /&lt;img/u);
+  assert.equal(JSON.stringify(response), before);
 });

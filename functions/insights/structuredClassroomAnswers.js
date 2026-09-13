@@ -115,7 +115,13 @@ export function createStructuredAnswerRegistry(toolbox) {
       // The usage ledger permits 64 KiB for the entire completed result.
       // Leave room for evidence and usage; never trim a factual sentence.
       if (Buffer.byteLength(answer, 'utf8') > 48 * 1024) fail('answer-too-large')
-      return Object.freeze({ answer, evidence: Object.freeze(sections.map(section => section.evidence)) })
+      return Object.freeze({ answer, evidence: Object.freeze(sections.map(section => section.evidence)),
+        // Only collapse when EVERY selected section has a complete brief.
+        // Mixed answers retain their original full presentation.
+        ...(sections.every(section => typeof section.brief === 'string')
+          ? { presentationParts: Object.freeze({ summary: sections.map(section => section.brief).join('\n\n'), details: answer }) }
+          : {}),
+      })
     },
   })
 }
@@ -357,9 +363,42 @@ function renderBalancesAsOf({ args, result, context }) {
     lines.push('Missing history may predate recording, fall outside the available history window, or still be arriving. It cannot be reconstructed reliably from transactions alone.')
   }
   lines.push(...result.students.map(row => `\u2022 ${studentName(row.studentRef, context)} \u2014 ${money(row.balanceAsOf)} on ${result.asOfDate}.`))
-  return rendered(lines, result.throughSnapshot
+  return { ...rendered(lines, result.throughSnapshot
     ? `Balances at the ${result.asOfDate} classroom snapshot`
-    : `Verified available balances as of ${result.asOfDate}`, context)
+    : `Verified available balances as of ${result.asOfDate}`, context), brief: historicalBalanceBrief(args, result) }
+}
+
+function historicalBalanceBrief(args, result) {
+  const date = new Intl.DateTimeFormat('en-US', {
+    month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC',
+  }).format(new Date(`${result.asOfDate}T12:00:00Z`))
+  const total = result.currentStudentCount
+  const available = total - result.unavailableCount
+  const wholeClass = total === 1 ? 'the student in your current class' : `all ${total} students in your current class`
+  const when = result.throughSnapshot ? `So far on ${date}` : `At the end of ${date}`
+  if (total === 0) return `${date}: There are no students in your current class to check.`
+  if (available === 0) return `${when}, balance history is missing for ${wholeClass}. I can’t determine their balances for that time; missing history doesn’t mean a zero balance.`
+  const lines = [result.unavailableCount === 0
+    ? `${when}, balances are available for ${wholeClass}.`
+    : `${when}, balances are available for ${available} of the ${total} students in your current class. History is missing for the other ${result.unavailableCount}, so their balances are unknown.`]
+  if (args.condition === 'any' && !result.truncated) {
+    const negative = result.students.filter(row => row.balanceAsOf < 0).length
+    lines.push(negative === 0
+      ? (result.unavailableCount ? 'None of the students with available history had a negative balance.' : 'No one had a negative balance.')
+      : `${negative} ${plural(negative, 'student')} had a negative balance${result.unavailableCount ? ' among those with available history' : ''}.`)
+  } else if (args.condition !== 'any') {
+    const description = enumText(args.condition, { negative: 'a negative balance', zero: 'a zero balance', positive: 'a positive balance', nonpositive: 'a zero or negative balance' })
+    lines.push(result.matchedCount === 0
+      ? (result.unavailableCount ? `None of the students with available history had ${description}.` : `No one had ${description}.`)
+      : `${result.matchedCount} ${plural(result.matchedCount, 'student')} had ${description}${result.unavailableCount ? ' among those with available history' : ''}.`)
+  }
+  if (result.truncated) {
+    lines.push(args.sort === 'name'
+      ? `The details show ${result.returnedCount} of ${result.matchedCount} matching students; the list is incomplete.`
+      : `The details show the ${result.returnedCount} ${enumText(args.sort, { lowest: 'lowest', highest: 'highest' })} ${plural(result.returnedCount, 'balance')} out of ${result.matchedCount} matching students. Other students may be tied.`)
+  }
+  if (result.throughSnapshot) lines.push('These are the balances when checked, not final balances for the day.')
+  return lines.join(' ')
 }
 
 function renderAbsence({ args, result, context }) {
