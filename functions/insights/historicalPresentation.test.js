@@ -62,6 +62,126 @@ function assertVerified({ result, html, narratorCalls, modelTurns }) {
   assert.equal(result.answer, `${result.presentation.calculatedSummary}\n${result.presentation.calculationDetails}`)
 }
 
+test('two dated results lead with readable coverage and counts, with rosters only in details', async () => {
+  const response = await run('Invented prose', { calls: [historical({ condition: 'any' }), historical({ asOfDate: '2026-09-05', condition: 'any' })] })
+  assertVerified(response)
+  const visible = response.html.split('<details')[0]
+  assert.match(visible, /At the end of September 4, 2026/u)
+  assert.match(visible, /At the end of September 5, 2026/u)
+  assert.equal((visible.match(/all 2 students in your current class/gu) ?? []).length, 2)
+  assert.equal((visible.match(/2 students had a negative balance/gu) ?? []).length, 2)
+  assert.doesNotMatch(visible, /Blake|Quinn|Population:|student-record versions|Showing/u)
+  assert.match(response.html, /<details class="insights-answer-details"><summary>View details<\/summary>/u)
+  assert.match(response.html, /Blake&quot; — -\$5\.00 on 2026-09-04/u)
+  assert.match(response.html, /Quinn&quot; — -\$20\.00 on 2026-09-05/u)
+  assert.deepEqual(Object.keys(response.result.presentation).sort(), ['aiSummary', 'billingBasis', 'calculatedSummary', 'calculationDetails'])
+  assert.equal(Object.hasOwn(response.result, 'presentationParts'), false)
+})
+
+test('unknown history stays explicit before details, including when no known balance is negative', async () => {
+  const { html } = await run('', { students: [{ ...known[0], balance: 5 }, unknown[2]], calls: [historical({ condition: 'any' })] })
+  const visible = html.split('<details')[0]
+  assert.match(visible, /available for 1 of the 2 students/u)
+  assert.match(visible, /History is missing for the other 1, so their balances are unknown/u)
+  assert.match(visible, /None of the students with available history had a negative balance/u)
+  assert.doesNotMatch(visible, /No one had/u)
+})
+
+test('all missing history never becomes a zero-student finding', async () => {
+  const { html } = await run('', { students: [unknown[2]], calls: [historical({ condition: 'any' })] })
+  const visible = html.split('<details')[0]
+  assert.match(visible, /history is missing for the student in your current class/u)
+  assert.match(visible, /missing history doesn’t mean a zero balance/u)
+  assert.doesNotMatch(visible, /No one had|0 students|0 verified/u)
+})
+
+test('a limited any-balance page cannot invent a full-roster negative count', async () => {
+  const { html } = await run('', { calls: [historical({ condition: 'any', limit: 1 })] })
+  const visible = html.split('<details')[0]
+  assert.match(visible, /details show the 1 lowest balance out of 2 matching students/u)
+  assert.doesNotMatch(visible, /list is incomplete/u)
+  assert.doesNotMatch(visible, /had a negative balance/u)
+})
+
+test('today and filtered counts keep their qualifications in the visible brief', async () => {
+  const { html } = await run('', { calls: [historical({ asOfDate: '2026-09-08', limit: 1 })] })
+  const visible = html.split('<details')[0]
+  assert.match(visible, /So far on September 8, 2026/u)
+  assert.match(visible, /2 students had a negative balance/u)
+  assert.match(visible, /not final balances for the day/u)
+  assert.match(visible, /details show the 1 lowest balance out of 2 matching students/u)
+  assert.doesNotMatch(visible, /list is incomplete/u)
+  assert.doesNotMatch(visible, /At the end/u)
+})
+
+test('mixed views never hide a later selected answer under the first summary', async () => {
+  const { html } = await run('', { calls: [historical(), current] })
+  assert.doesNotMatch(html, /<details/u)
+  assert.match(html, /2026-09-04/u)
+  assert.match(html, /Balances as of 2026-09-08/u)
+})
+
+test('oversized detail reports fall back to the complete original answer', async () => {
+  const students = Array.from({ length: 100 }, (_, index) => ({ ...known[0], ref: `student-${String(index + 1).padStart(3, '0')}`, displayName: `Fictional ${index} ${'x'.repeat(65)}` }))
+  const { result, html, narratorCalls } = await run('', { students, calls: [historical({ condition: 'any' })] })
+  assert.equal(narratorCalls, 0)
+  assert.equal(result.presentation, null)
+  assert.doesNotMatch(html, /<details/u)
+  assert.equal((result.answer.match(/^• /gmu) ?? []).length, 100)
+})
+
+for (const [sort, expectedName] of [['lowest', 'Quinn'], ['highest', 'Blake']]) {
+  test(`a deliberate ${sort} balance page describes its rank without implying a failed list`, async () => {
+    const response = await run('', { calls: [historical({ condition: 'any', sort, limit: 1 })] })
+    assertVerified(response)
+    const visible = response.html.split('<details')[0]
+    assert.match(visible, new RegExp(`The details show the 1 ${sort} balance out of 2 matching students`))
+    assert.match(visible, /Other students may be tied/u)
+    assert.doesNotMatch(visible, /list is incomplete|had a negative balance/u)
+    assert.match(response.html.split('<details')[1], new RegExp(`${expectedName}&quot; — -\\$`))
+  })
+}
+
+test('a limited alphabetical page makes no lowest or highest claim', async () => {
+  const { html } = await run('', { calls: [historical({ condition: 'any', sort: 'name', limit: 1 })] })
+  const visible = html.split('<details')[0]
+  assert.match(visible, /details show 1 of 2 matching students; the list is incomplete/u)
+  assert.doesNotMatch(visible, /lowest|highest|may be tied/u)
+})
+
+test('an empty current roster says there are no students to check', async () => {
+  const response = await run('', { students: [] })
+  assertVerified(response)
+  const visible = response.html.split('<details')[0]
+  assert.match(visible, /September 4, 2026: There are no students in your current class to check/u)
+  assert.doesNotMatch(visible, /No one had|missing|0 students/u)
+})
+
+test('a complete filtered result with no negatives can honestly say no one', async () => {
+  const response = await run('', { students: [{ ...known[0], balance: 5 }] })
+  assertVerified(response)
+  const visible = response.html.split('<details')[0]
+  assert.match(visible, /No one had a negative balance/u)
+  assert.doesNotMatch(visible, /unknown|missing|among those/u)
+})
+
+test('a filtered count with missing history remains qualified in the visible brief', async () => {
+  const response = await run('', { students: [known[0], unknown[2]] })
+  assertVerified(response)
+  const visible = response.html.split('<details')[0]
+  assert.match(visible, /History is missing for the other 1, so their balances are unknown/u)
+  assert.match(visible, /1 student had a negative balance among those with available history/u)
+})
+
+test('one student with complete history uses singular class wording', async () => {
+  const response = await run('', { students: [known[0]] })
+  assertVerified(response)
+  const visible = response.html.split('<details')[0]
+  assert.match(visible, /balances are available for the student in your current class/u)
+  assert.match(visible, /1 student had a negative balance/u)
+  assert.doesNotMatch(visible, /all 1 students/u)
+})
+
 for (const [name, summary] of [
   ['reversed polarity', 'On September 4, Blake and Quinn had positive account balances.'],
   ['swapped amounts', 'On September 4, Blake had -$20.00 and Quinn had -$5.00.'],

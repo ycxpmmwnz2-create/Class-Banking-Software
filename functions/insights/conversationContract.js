@@ -1,5 +1,8 @@
 // Shared server/browser contract. The summary is explicitly not a verified fact.
 export const CONVERSATIONAL_ANSWER_CONTRACT = 'conversational-v1'
+// A fixed report heading, not provider-generated markup. Keeping it inside
+// the existing answer fields lets older clients display the complete report.
+export const CALCULATION_DETAILS_HEADING = 'Details for this answer:\n'
 export function validateConversationPresentation(value, answer) {
   if (value === null) return null
   const fields = ['aiSummary', 'calculatedSummary', 'calculationDetails', 'billingBasis']
