@@ -354,7 +354,12 @@ export async function orchestrateTeacherOnboarding(session, callableAdapter, { c
   }
 }
 
-export async function loadClassroomDataWithCacheFallback(session, { loadNetworkFn, storageAdapter, projectId }) {
+export async function loadClassroomDataWithCacheFallback(session, {
+  loadNetworkFn,
+  storageAdapter,
+  projectId,
+  waitBeforeRetry = () => new Promise(resolve => setTimeout(resolve, 500))
+}) {
   if (session.getState() !== SESSION_STATES.ACTIVE) {
     throw new Error("Data load requires ACTIVE session state following authoritative resolution.");
   }
@@ -373,7 +378,39 @@ export async function loadClassroomDataWithCacheFallback(session, { loadNetworkF
   const captured = session.captureIdentity();
 
   try {
-    const networkData = await loadNetworkFn();
+    let networkData;
+    try {
+      networkData = await loadNetworkFn();
+    } catch (error) {
+      if (!session.validateCapturedIdentity(captured) || !classifyOfflineFailure(error)) {
+        throw error;
+      }
+      // Preserve the existing fallback when a valid cache is already available.
+      // An optional retry can lose its HTTP status (for example, an HTML error
+      // becomes SDK unknown/SyntaxError), so it must not put that cache at risk.
+      // Rethrow the original transient error to the unchanged fallback below.
+      if (readTeacherCache(storageAdapter, session, projectId)?.data) throw error;
+      // With no usable cache, one read-only retry can recover fresh data instead
+      // of stopping at the error screen. Never retry for a changed tenant.
+      // Do not register this awaited timer with the session: cancellation would
+      // leave the promise pending. Let it settle, then check the captured identity.
+      await waitBeforeRetry();
+      if (!session.validateCapturedIdentity(captured)) {
+        return { executed: false, reason: "stale-epoch-ignored" };
+      }
+      try {
+        networkData = await loadNetworkFn();
+      } catch (retryError) {
+        // Preserve the first transport failure for these Firestore Lite server
+        // responses only. An unrecognized, permission or data-integrity error
+        // must still fail closed, even after a connection interruption.
+        const retryServerFailure = retryError?.name === "FirebaseError" &&
+          ["aborted", "resource-exhausted", "internal"].includes(retryError.code) &&
+          typeof retryError.message === "string" &&
+          retryError.message.startsWith("Request failed with error:");
+        throw retryServerFailure ? error : retryError;
+      }
+    }
 
     if (!session.validateCapturedIdentity(captured)) {
       return { executed: false, reason: "stale-epoch-ignored" };
