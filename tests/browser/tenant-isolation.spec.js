@@ -1456,7 +1456,7 @@ test("a permission/integrity failure never falls back to cache, and fails closed
   expect(text).not.toContain(TENANT_B.studentMarker);
 });
 
-test("a missing matching cache under transient failure fails closed rather than showing another tenant", async ({
+test("a missing cache recovers its own classroom after a single transient failure", async ({
   page
 }) => {
   await gotoApp(page);
@@ -1474,7 +1474,52 @@ test("a missing matching cache under transient failure fails closed rather than 
 
   const text = await pageText(page);
   expect(text).not.toContain(TENANT_A.studentMarker);
+  expect(text).toContain(TENANT_B.studentMarker);
+  expect(text.toLowerCase()).not.toMatch(/offline|cached/);
+  const counters = await page.evaluate(() => window.__PHASE2B_TEST__.counters());
+  expect(counters.loadAdapterCalls).toBe(2);
+  const restored = await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), bKey);
+  expect(restored).not.toBeNull();
+});
+
+test("a missing matching cache under two transient failures fails closed rather than showing another tenant", async ({
+  page
+}) => {
+  await gotoApp(page);
+  await signIn(page, TENANT_B);
+  await waitForQuiescence(page);
+  await assertTenantEstablished(page, TENANT_B, seeded.bUid);
+
+  // Remove B's envelope, leave A's absent too, then fail transiently.
+  const bKey = cacheKey(PROJECT_ID, seeded.bUid, TENANT_B.classroomId);
+  await page.evaluate((k) => window.__PHASE2B_TEST__.localRemove(k), bKey);
+  await page.evaluate(() => window.__PHASE2B_TEST__.failNextLoad("unavailable"));
+  // Keep the injected outage active for the one permitted retry by retaining
+  // only this failure key on its first removal. The second attempt consumes it
+  // normally; all other session and local storage removals stay unchanged.
+  await page.addInitScript(() => {
+    const original = Storage.prototype.removeItem;
+    let retained = false;
+    Storage.prototype.removeItem = function (key) {
+      if (this === sessionStorage && key === "__phase2b_fail_next_load__" && !retained) {
+        retained = true;
+        return;
+      }
+      return original.call(this, key);
+    };
+  });
+  await page.reload();
+  await waitForAppReady(page);
+  await waitForQuiescence(page);
+
+  const text = await pageText(page);
+  expect(text).not.toContain(TENANT_A.studentMarker);
   expect(text).not.toContain(TENANT_B.studentMarker);
+  const events = await page.evaluate(() => window.__PHASE2B_TEST__.events());
+  expect(events.filter((event) => event.type === "loadAdapter:injectedFailure")).toHaveLength(2);
+  const counters = await page.evaluate(() => window.__PHASE2B_TEST__.counters());
+  expect(counters.loadAdapterCalls).toBe(2);
+  expect(await page.evaluate((k) => window.__PHASE2B_TEST__.localGet(k), bKey)).toBeNull();
 });
 
 test("a released stale SAVE completion cannot affect the incoming tenant's client state", async ({
