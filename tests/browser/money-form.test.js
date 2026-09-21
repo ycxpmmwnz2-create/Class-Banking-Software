@@ -17,8 +17,14 @@ const saveStart = appSource.indexOf('    async function saveData() {');
 const saveEnd = appSource.indexOf('    async function reloadV2ClassroomAfterSaveConflict()');
 assert.ok(saveStart > 0 && saveEnd > saveStart, 'external save boundary exists');
 const isolatedAppSource = appSource.slice(0, saveStart) + `
-async function saveData() {
-  savedSnapshots.push(JSON.parse(JSON.stringify(data)));
+async function saveData() { return saveClassroomCandidate(data); }
+async function saveClassroomCandidate(candidate) {
+  const captured = v2TenantSession.captureIdentity();
+  savedSnapshots.push(JSON.parse(JSON.stringify(candidate)));
+  if (saveGate) await saveGate;
+  if (IS_MULTI_TEACHER_V2_ENABLED && !v2TenantSession.validateCapturedIdentity(captured)) return { executed: false, reason: 'stale-epoch-ignored' };
+  if (rejectSave) return { executed: false, reason: 'save-failed' };
+  v2LastPersistedData = JSON.parse(JSON.stringify(candidate));
   return { executed: true };
 }
 ` + appSource.slice(saveEnd);
@@ -34,6 +40,7 @@ const handlerExports = source.split('\n').filter(line =>
   handlerNames.some(name => line === `window.${name} = ${name};`)).join('\n');
 const helpers = [
   '../../src/phase2b/tenantSession.js',
+  '../../src/phase2b/approvalQueue.js',
   '../../src/phase2b/studentDisplay.js',
   '../../src/phase2b/transactionCategoryDisplay.js',
   '../../src/legacy/backupImport.js'
@@ -53,6 +60,9 @@ let v2LastPersistedData = null;
 
 const probe = `
 const savedSnapshots = [];
+let saveGate = null;
+let releaseSave;
+let rejectSave = false;
 let sessionNumber = 0;
 window.moneyFormTest = {
   newSession() {
@@ -71,12 +81,16 @@ window.moneyFormTest = {
       { id: 1, name: 'Fictional Avery', balance: 20, frozen: false, transactions: [] },
       { id: 2, name: 'Fictional Blake', balance: 20, frozen: false, transactions: [] }
     ];
+    v2LastPersistedData = JSON.parse(JSON.stringify(data));
     screen = 'teacher';
     isTeacher = true;
     savedSnapshots.length = 0;
     render();
   },
-  removeStudent(id) { data.students = data.students.filter(s => s.id !== id); render(); },
+  holdSave(fail = false) { rejectSave = fail; saveGate = new Promise(resolve => { releaseSave = resolve; }); },
+  releaseSave() { releaseSave(); saveGate = null; },
+  balances() { return data.students.map(student => student.balance); },
+  removeStudent(id) { data.students = data.students.filter(s => s.id !== id); v2LastPersistedData = JSON.parse(JSON.stringify(data)); render(); },
   identity() { return v2TenantSession.captureIdentity(); },
   snapshots() { return JSON.parse(JSON.stringify(savedSnapshots)); },
   redraw() { render(); }
@@ -127,6 +141,77 @@ for (const engine of [chromium, webkit]) {
       assert.equal(await page.locator('#transactionReason').inputValue(), "Teacher's Choice");
       assert.equal(await page.locator('#teacherChoiceMemo').inputValue(), 'Rent "September" <classroom>');
       assert.equal(await page.locator('#customTransactionButton').innerText(), 'Subtract Money');
+    }
+
+    for (const legacy of [false, true]) {
+      test(`${legacy ? 'legacy' : 'V2'} session reset prevents an outgoing save from clearing the new draft`, async t => {
+        const page = await openForm(t, { legacy });
+        await enterDebit(page);
+        await page.locator('.student-check[value="2"]').check();
+        await page.evaluate(() => window.moneyFormTest.holdSave());
+        await page.locator('#customTransactionButton').click();
+        await page.evaluate(() => window.moneyFormTest.newSession());
+        await enterDebit(page);
+        await page.locator('#transactionAmount').fill('9');
+        await page.locator('.student-check[value="1"]').check();
+        await page.evaluate(() => window.moneyFormTest.releaseSave());
+        assert.equal(await page.locator('#transactionAmount').inputValue(), '9');
+        assert.equal(await page.locator('.student-check[value="1"]').isChecked(), true);
+        assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [20, 20]);
+        assert.doesNotMatch(await page.locator('body').innerText(), /saved and approved/);
+      });
+
+      for (const tool of ['quick', 'custom']) {
+        for (const fail of [false, true]) {
+          test(`${legacy ? 'legacy' : 'V2'} ${tool} waits for ${fail ? 'rejected' : 'confirmed'} save without losing its draft`, async t => {
+            const page = await openForm(t, { legacy });
+            if (tool === 'custom') {
+              await enterDebit(page);
+              await page.locator('.student-check[value="2"]').check();
+            } else {
+              await page.locator('#quickStudent').selectOption('2');
+            }
+            await page.evaluate(fail => window.moneyFormTest.holdSave(fail), fail);
+            const button = tool === 'custom'
+              ? page.locator('#customTransactionButton')
+              : page.getByRole('button', { name: '-$1', exact: true });
+            await button.click();
+            assert.equal(await button.isDisabled(), true);
+            assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [20, 20]);
+            assert.match(await page.locator('body').innerText(), /Saving transaction/);
+            // A duplicate handler invocation bypasses the disabled DOM button;
+            // the runtime guard must still prevent a second save.
+            await page.evaluate(tool => {
+              if (tool === 'custom') window.saveTeacherTransaction();
+              else window.quickCash('Subtract', 1);
+            }, tool);
+            assert.equal((await page.evaluate(() => window.moneyFormTest.snapshots())).length, 1);
+            if (tool === 'custom') {
+              assert.equal(await page.locator('#transactionAmount').isDisabled(), true);
+              await assertDebitDraft(page);
+            }
+            await page.evaluate(() => window.moneyFormTest.releaseSave());
+            await page.waitForFunction(() => !document.querySelector('#customTransactionButton, .quick-btn')?.disabled);
+            if (fail) {
+              assert.match(await page.locator('body').innerText(), /could not be confirmed.*Refresh/);
+              assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [20, 20]);
+              if (tool === 'custom') {
+                await assertDebitDraft(page);
+                assert.equal(await page.locator('.student-check[value="2"]').isChecked(), true);
+              }
+              await button.click();
+              assert.equal((await page.evaluate(() => window.moneyFormTest.snapshots())).length, 1);
+            } else {
+              assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [20, tool === 'custom' ? 13 : 19]);
+              assert.match(await page.locator('body').innerText(), tool === 'custom' ? /saved and approved/ : /paid/);
+              if (tool === 'custom') {
+                assert.equal(await page.locator('#transactionAmount').inputValue(), '1');
+                assert.equal(await page.locator('.student-check[value="2"]').isChecked(), false);
+              }
+            }
+          });
+        }
+      }
     }
 
     test('Quick Cash keeps the chosen recipient through repeated clicks and unrelated redraws', async t => {

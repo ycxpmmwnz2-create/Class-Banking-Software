@@ -1663,6 +1663,7 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     let v2IsOffline = false;
 
     let activeClassroomSaves = 0;
+    let teacherMoneySaveOperation = null;
     let approvalGeneration = 0;
     let approvalRefreshRequired = false;
     const approvalQueue = createApprovalQueue({
@@ -1682,6 +1683,10 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     });
 
     function requireTeacher({ allowApprovalQueue = false, readOnly = false } = {}) {
+      if (!readOnly && teacherMoneySaveOperation) {
+        showMessage("Please wait for the transaction to finish saving.");
+        return false;
+      }
       if (!readOnly && !allowApprovalQueue && approvalRefreshRequired) {
         showMessage("Refresh the classroom before making more changes.");
         return false;
@@ -1920,12 +1925,12 @@ function resetCustomTransactionDraft() {
 }
 
 function setQuickCashStudent(value) {
-  if (!requireTeacher({ readOnly: true })) return;
+  if (teacherMoneySaveOperation || !requireTeacher({ readOnly: true })) return;
   quickCashStudentId = String(value);
 }
 
 function updateCustomTransactionDraft() {
-  if (!requireTeacher({ readOnly: true })) return;
+  if (teacherMoneySaveOperation || !requireTeacher({ readOnly: true })) return;
   const typeInput = document.getElementById("transactionType");
   if (!typeInput) return;
   customTransactionDraft = {
@@ -1970,7 +1975,7 @@ function openDashboardTransactions() {
 }
 
 function setTransactionTarget(value) {
-  if (!requireTeacher({ readOnly: true })) return;
+  if (teacherMoneySaveOperation || !requireTeacher({ readOnly: true })) return;
   updateCustomTransactionDraft();
   transactionTarget = value;
   if (transactionTarget === "selected") teacherStudentListExpanded = true;
@@ -2958,8 +2963,8 @@ function toggleStudentDropdown() {
       render();
     }
 
-    function changeStudentBalance(studentId, transactionType, transactionAmount) {
-      data.students = data.students.map(student => {
+    function changeStudentBalance(studentId, transactionType, transactionAmount, classroomData = data) {
+      classroomData.students = classroomData.students.map(student => {
         if (student.id !== studentId) return student;
         const newBalance = transactionType === "Add"
           ? Number(student.balance) + transactionAmount
@@ -2968,8 +2973,63 @@ function toggleStudentDropdown() {
       });
     }
 
-    function quickCash(type, amount) {
+    function canStartTeacherMoneySave() {
       if (!requireTeacher()) return;
+      if (activeClassroomSaves > 0 || studentLifecyclePending || bulkOperationPending ||
+          studentPinResetPending || rosterBalanceSaveOperation || rentUpdatePending) {
+        showMessage("Another classroom change is saving. Please try again when it finishes.");
+        return false;
+      }
+      if (IS_MULTI_TEACHER_V2_ENABLED &&
+          JSON.stringify(data) !== JSON.stringify(v2LastPersistedData)) {
+        showMessage("Refresh the classroom before making changes; there are unconfirmed local changes.");
+        return false;
+      }
+      return true;
+    }
+
+    async function saveTeacherMoneyCandidate(candidate, successMessage, onSuccess = () => {}) {
+      const operation = { generation: approvalGeneration, uid: auth.currentUser?.uid,
+        tenant: IS_MULTI_TEACHER_V2_ENABLED ? v2TenantSession.captureIdentity() : null };
+      const isCurrent = () => operation.generation === approvalGeneration && isTeacher &&
+        operation.uid === auth.currentUser?.uid && (!IS_MULTI_TEACHER_V2_ENABLED ||
+        v2TenantSession.validateCapturedIdentity(operation.tenant));
+      const before = data;
+      const beforeStamp = JSON.stringify(before);
+      try {
+        teacherMoneySaveOperation = operation;
+        message = "Saving transaction...";
+        render();
+        const result = await saveClassroomCandidate(candidate);
+        if (!isCurrent()) return;
+        if (!result?.executed) {
+          // A confirmed conflict reload is safe to retry deliberately. Other
+          // failures may be lost acknowledgements: never replay a debit blindly.
+          if (result?.reason === "concurrent-classroom-change" && result.reloaded) return;
+          approvalRefreshRequired = true;
+          message = "The transaction could not be confirmed. Refresh the classroom before trying again.";
+          return;
+        }
+        if (data !== before || JSON.stringify(data) !== beforeStamp) {
+          approvalRefreshRequired = true;
+          message = "The transaction was saved, but the displayed classroom changed. Refresh before making more changes.";
+          return;
+        }
+        data = candidate;
+        onSuccess();
+        message = successMessage;
+      } catch {
+        if (!isCurrent()) return;
+        approvalRefreshRequired = true;
+        message = "The transaction could not be confirmed. Refresh the classroom before trying again.";
+      } finally {
+        if (teacherMoneySaveOperation === operation) teacherMoneySaveOperation = null;
+        if (isCurrent()) render();
+      }
+    }
+
+    async function quickCash(type, amount) {
+      if (!canStartTeacherMoneySave()) return;
       const select = document.getElementById("quickStudent");
       if (!select) {
         showMessage("Choose a student first.");
@@ -2985,7 +3045,8 @@ function toggleStudentDropdown() {
       }
 
       quickCashStudentId = String(student.id);
-      changeStudentBalance(student.id, type, amount);
+      const candidate = JSON.parse(JSON.stringify(data));
+      changeStudentBalance(student.id, type, amount, candidate);
 
       const transaction = {
         id: Date.now(),
@@ -3001,10 +3062,9 @@ function toggleStudentDropdown() {
         source: "Teacher"
       };
 
-      data.transactions = [transaction].concat(data.transactions);
-      saveData();
-      message = student.name + " " + (type === "Add" ? "received " : "paid ") + dollars(amount) + ".";
-      render();
+      candidate.transactions = [transaction].concat(candidate.transactions);
+      await saveTeacherMoneyCandidate(candidate,
+        student.name + " " + (type === "Add" ? "received " : "paid ") + dollars(amount) + ".");
     }
 
     function recentActivity() {
@@ -3025,8 +3085,8 @@ function toggleStudentDropdown() {
       `;
     }
 
-    function saveTeacherTransaction() {
-      if (!requireTeacher()) return;
+    async function saveTeacherTransaction() {
+      if (!canStartTeacherMoneySave()) return;
       updateCustomTransactionDraft();
       const transactionTarget = document.getElementById("transactionTarget").value;
       const type = document.getElementById("transactionType").value;
@@ -3057,8 +3117,9 @@ const targetStudents = transactionTarget === "whole"
         return;
       }
 
+      const candidate = JSON.parse(JSON.stringify(data));
       const newTransactions = targetStudents.map((student, index) => {
-        changeStudentBalance(student.id, type, amount);
+        changeStudentBalance(student.id, type, amount, candidate);
         return {
           id: Date.now() + index,
           date: new Date().toLocaleString(),
@@ -3074,13 +3135,9 @@ const targetStudents = transactionTarget === "whole"
         };
       });
 
-      data.transactions = newTransactions.concat(data.transactions);
-      saveData();
-      // Keep unfinished drafts through redraws, but require a fresh recipient
-      // selection once this submission has been dispatched.
-      resetCustomTransactionDraft();
-      message = "Teacher transaction saved and approved.";
-      render();
+      candidate.transactions = newTransactions.concat(candidate.transactions);
+      await saveTeacherMoneyCandidate(candidate, "Teacher transaction saved and approved.",
+        resetCustomTransactionDraft);
     }
 
     function submitStudentRequest() {
@@ -3839,7 +3896,7 @@ link.click();
     }
 
     function setCustomTransactionMode(type) {
-      if (!requireTeacher({ readOnly: true })) return;
+      if (teacherMoneySaveOperation || !requireTeacher({ readOnly: true })) return;
       const typeInput = document.getElementById("transactionType");
       const addButton = document.getElementById("addModeButton");
       const subtractButton = document.getElementById("subtractModeButton");
@@ -3863,7 +3920,7 @@ link.click();
     }
 
     function toggleTeacherChoiceMemo() {
-      if (!requireTeacher({ readOnly: true })) return;
+      if (teacherMoneySaveOperation || !requireTeacher({ readOnly: true })) return;
       const categorySelect = document.getElementById("transactionReason");
       const memoWrap = document.getElementById("teacherChoiceMemoWrap");
       if (!categorySelect || !memoWrap) return;
@@ -4807,17 +4864,17 @@ link.click();
                     <div class="empty">Add students on the Roster page first.</div>
                   ` : `
                     <label for="quickStudent">Student</label>
-                    <select id="quickStudent" onchange="setQuickCashStudent(this.value)">
+                    <select ${teacherMoneySaveOperation ? "disabled" : ""} id="quickStudent" onchange="setQuickCashStudent(this.value)">
                       <option value="">Choose a student</option>
                       ${studentOptions}
                     </select>
                     <div class="dashboard-quick-cash-actions">
-                      <button class="quick-btn" onclick="quickCash('Add', 1)">+$1</button>
-                      <button class="quick-btn" onclick="quickCash('Add', 5)">+$5</button>
-                      <button class="quick-btn" onclick="quickCash('Add', 10)">+$10</button>
-                      <button class="quick-btn subtract" onclick="quickCash('Subtract', 1)">-$1</button>
-                      <button class="quick-btn subtract" onclick="quickCash('Subtract', 5)">-$5</button>
-                      <button class="quick-btn subtract" onclick="quickCash('Subtract', 10)">-$10</button>
+                      <button ${teacherMoneySaveOperation ? "disabled" : ""} class="quick-btn" onclick="quickCash('Add', 1)">+$1</button>
+                      <button ${teacherMoneySaveOperation ? "disabled" : ""} class="quick-btn" onclick="quickCash('Add', 5)">+$5</button>
+                      <button ${teacherMoneySaveOperation ? "disabled" : ""} class="quick-btn" onclick="quickCash('Add', 10)">+$10</button>
+                      <button ${teacherMoneySaveOperation ? "disabled" : ""} class="quick-btn subtract" onclick="quickCash('Subtract', 1)">-$1</button>
+                      <button ${teacherMoneySaveOperation ? "disabled" : ""} class="quick-btn subtract" onclick="quickCash('Subtract', 5)">-$5</button>
+                      <button ${teacherMoneySaveOperation ? "disabled" : ""} class="quick-btn subtract" onclick="quickCash('Subtract', 10)">-$10</button>
                     </div>
                   `}
                 </div>
@@ -4828,16 +4885,16 @@ link.click();
                     <div class="empty">Add students on the Roster page first.</div>
                   ` : `
                     <div class="transaction-form">
-                      <input id="transactionType" type="hidden" value="${escapeHtml(customTransactionDraft.type)}" />
+                      <input ${teacherMoneySaveOperation ? "disabled" : ""} id="transactionType" type="hidden" value="${escapeHtml(customTransactionDraft.type)}" />
 
                       <label>Transaction type</label>
                       <div class="segmented-control">
-                        <button id="addModeButton" class="segment-button ${customTransactionDraft.type === "Add" ? "active" : ""}" onclick="setCustomTransactionMode('Add')">Add Money</button>
-                        <button id="subtractModeButton" class="segment-button ${customTransactionDraft.type === "Subtract" ? "active" : ""}" onclick="setCustomTransactionMode('Subtract')">Subtract Money</button>
+                        <button ${teacherMoneySaveOperation ? "disabled" : ""} id="addModeButton" class="segment-button ${customTransactionDraft.type === "Add" ? "active" : ""}" onclick="setCustomTransactionMode('Add')">Add Money</button>
+                        <button ${teacherMoneySaveOperation ? "disabled" : ""} id="subtractModeButton" class="segment-button ${customTransactionDraft.type === "Subtract" ? "active" : ""}" onclick="setCustomTransactionMode('Subtract')">Subtract Money</button>
                       </div>
 
                       <label for="transactionTarget">Who gets this transaction?</label>
-                      <select id="transactionTarget" onchange="setTransactionTarget(this.value)">
+                      <select ${teacherMoneySaveOperation ? "disabled" : ""} id="transactionTarget" onchange="setTransactionTarget(this.value)">
                         <option value="selected" ${transactionTarget === "selected" ? "selected" : ""}>Selected Students</option>
                         <option value="whole" ${transactionTarget === "whole" ? "selected" : ""}>Whole Class</option>
                       </select>
@@ -4855,7 +4912,7 @@ link.click();
                           <div class="student-check-list" style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
                             ${sortStudentsByName(data.students).map(student => `
                               <label class="student-check-item" style="display: flex; align-items: center; gap: 10px; width: 100%;">
-                                <input
+                                <input ${teacherMoneySaveOperation ? "disabled" : ""}
                                   type="checkbox"
                                   class="student-check"
                                   value="${student.id}"
@@ -4870,20 +4927,20 @@ link.click();
                       ` : ""}
 
                       <label for="transactionAmount">Amount</label>
-                      <input id="transactionAmount" type="number" min="1" value="${escapeHtml(customTransactionDraft.amount)}" oninput="updateCustomTransactionDraft()" />
+                      <input ${teacherMoneySaveOperation ? "disabled" : ""} id="transactionAmount" type="number" min="1" value="${escapeHtml(customTransactionDraft.amount)}" oninput="updateCustomTransactionDraft()" />
 
                       <label for="transactionReason">Category</label>
-                      <select id="transactionReason" onchange="toggleTeacherChoiceMemo()">
+                      <select ${teacherMoneySaveOperation ? "disabled" : ""} id="transactionReason" onchange="toggleTeacherChoiceMemo()">
                         <option value="">Choose a category</option>
                         ${categoryOptions(customTransactionCategories, customTransactionDraft.reason)}
                       </select>
 
                       <div id="teacherChoiceMemoWrap" class="teacher-choice-memo full-row ${customTransactionDraft.reason === "Teacher's Choice" ? "visible" : ""}">
                         <label for="teacherChoiceMemo">Teacher’s Choice memo</label>
-                        <input id="teacherChoiceMemo" placeholder="Optional reason or memo" value="${escapeHtml(customTransactionDraft.memo)}" oninput="updateCustomTransactionDraft()" />
+                        <input ${teacherMoneySaveOperation ? "disabled" : ""} id="teacherChoiceMemo" placeholder="Optional reason or memo" value="${escapeHtml(customTransactionDraft.memo)}" oninput="updateCustomTransactionDraft()" />
                       </div>
 
-                      <button id="customTransactionButton" class="primary full-row" onclick="saveTeacherTransaction()">${customTransactionDraft.type === "Add" ? "Add Money" : "Subtract Money"}</button>
+                      <button ${teacherMoneySaveOperation ? "disabled" : ""} id="customTransactionButton" class="primary full-row" onclick="saveTeacherTransaction()">${customTransactionDraft.type === "Add" ? "Add Money" : "Subtract Money"}</button>
                     </div>
                   `}
                 </div>
@@ -5625,6 +5682,7 @@ if (screen === "editSettingsLists" && isTeacher) {
     function resetAllGlobalState() {
       approvalGeneration++;
       approvalRefreshRequired = false;
+      teacherMoneySaveOperation = null;
       resetGlobalApplicationState(windowAppGlobals, cloneDefault);
       // The remembered login locator is intentionally separate from tenant data.
       // Rehydrate it after the shared reset so an ordinary logout keeps the next
