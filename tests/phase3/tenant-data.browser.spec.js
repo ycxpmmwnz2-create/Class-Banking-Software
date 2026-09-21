@@ -27,7 +27,13 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
       ({ email, password }) => window.__PHASE2B_TEST__.signInTeacher(email, password),
       { email: tenant.email, password: tenant.password },
     )
-    await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain(tenant.studentMarker)
+    // Roster-removal tests legitimately delete the original sentinel student.
+    // Readiness must identify the signed-in owner and loaded classroom, not rely
+    // on that deleted student remaining in the six most recent transactions.
+    const seeded = getSeeded()
+    const uid = tenant.classroomId === TENANT_A.classroomId ? seeded.aUid : seeded.bUid
+    await expect.poll(() => page.evaluate(() => window.__PHASE2B_TEST__.currentUid())).toBe(uid)
+    await expect(page.locator('#teacherStudentClassroomCode')).toHaveText(tenant.studentLoginCode)
   }
 
   async function logout(page) {
@@ -1150,4 +1156,91 @@ export function registerTenantDataBrowserTests({ getSeeded, gotoApp, waitForQuie
     await expect.poll(() => page.evaluate(() => document.body.innerText))
       .toContain('Baseline Probe removed.')
   })
+
+  test('teacher deductions and approval survive reload after a rejected money save', async ({ page }) => {
+    await gotoApp(page)
+    await activateThroughProductionUi(page, TENANT_A, '2468')
+    await submitStudentLogin(page, {
+      classroomCode: TENANT_A.studentLoginCode, loginId: SHARED_LOGIN_ID, pin: '2468',
+    })
+    await expect(page.locator('.big-balance')).toBeVisible()
+    const startingBalance = Number((await page.locator('.big-balance').innerText()).replace(/[$,]/g, ''))
+    await page.locator('#studentAddReason').selectOption('Homework')
+    await page.locator('#studentAddAmount').fill('4')
+    await page.getByRole('button', { name: 'Submit Add Money', exact: true }).click()
+    await expect(page.getByText('Add Money submitted for teacher approval.', { exact: true })).toBeVisible()
+    await logout(page)
+    await signInTeacher(page, TENANT_A)
+    await waitForQuiescence(page)
+
+    // Reject only the browser's local Firestore commit. Production handlers,
+    // projection, transaction reads, and save orchestration stay intact.
+    let rejectedCommits = 0
+    const commitUrl = url => url.hostname === '127.0.0.1' && url.port === '8080' &&
+      url.pathname.includes(`/projects/${PROJECT_ID}/`) && url.pathname.endsWith('/documents:commit')
+    await page.route(commitUrl, async route => {
+      rejectedCommits++
+      await route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({
+        error: { code: 403, status: 'PERMISSION_DENIED', message: 'Synthetic save denial' },
+      }) })
+    })
+    await page.locator('#quickStudent').selectOption(TENANT_A.sharedStudentId)
+    await page.getByRole('button', { name: '-$1', exact: true }).click()
+    await expect(page.getByText('The transaction could not be confirmed. Refresh the classroom before trying again.', { exact: true })).toBeVisible()
+    expect(rejectedCommits).toBe(1)
+    await page.evaluate(() => window.setScreen('roster'))
+    await expect(page.locator(`#balance-${TENANT_A.sharedStudentId}`)).toHaveValue(String(startingBalance))
+    await page.evaluate(() => window.setScreen('approvals'))
+    const pending = page.locator('tr').filter({ has: page.getByRole('cell', { name: '$4', exact: true }) })
+    await pending.getByRole('button', { name: 'Approve', exact: true }).click()
+    await expect(page.getByText('Refresh the classroom before processing more requests.', { exact: true })).toBeVisible()
+    expect(rejectedCommits).toBe(1)
+    await expect(pending.getByRole('cell', { name: 'Pending', exact: true })).toBeVisible()
+    await page.unroute(commitUrl)
+
+    const reloadTeacher = async () => {
+      await page.reload()
+      await expect(page.locator('#teacherStudentClassroomCode')).toHaveText(TENANT_A.studentLoginCode)
+      await waitForQuiescence(page)
+      await expect(page.locator('body')).not.toContainText(/offline|cached/i)
+    }
+    await reloadTeacher()
+    await page.evaluate(() => window.setScreen('roster'))
+    await expect(page.locator(`#balance-${TENANT_A.sharedStudentId}`)).toHaveValue(String(startingBalance))
+    await page.evaluate(() => window.setScreen('teacher'))
+    await page.locator('#quickStudent').selectOption(TENANT_A.sharedStudentId)
+    await page.getByRole('button', { name: '-$1', exact: true }).click()
+    await expect(page.getByText('Shared Name paid $1.', { exact: true })).toBeVisible()
+    await reloadTeacher()
+    await page.evaluate(() => window.setScreen('roster'))
+    await expect(page.locator(`#balance-${TENANT_A.sharedStudentId}`)).toHaveValue(String(startingBalance - 1))
+    await page.evaluate(() => window.setScreen('teacher'))
+    await page.getByRole('tab', { name: 'Custom Transaction' }).click()
+    await page.locator('#subtractModeButton').click()
+    await page.locator(`.student-check[value="${TENANT_A.sharedStudentId}"]`).check()
+    await page.locator('#transactionAmount').fill('1')
+    await page.locator('#transactionReason').selectOption("Teacher's Choice")
+    await page.locator('#teacherChoiceMemo').fill('Fictional persistence regression')
+    await page.locator('#customTransactionButton').click()
+    await expect(page.getByText('Teacher transaction saved and approved.', { exact: true })).toBeVisible()
+    await reloadTeacher()
+    await page.evaluate(() => window.setScreen('approvals'))
+    await pending.getByRole('button', { name: 'Approve', exact: true }).click()
+    await expect(pending).toHaveCount(0)
+    await reloadTeacher()
+    await page.evaluate(() => window.setScreen('roster'))
+    await expect(page.locator(`#balance-${TENANT_A.sharedStudentId}`)).toHaveValue(String(startingBalance + 2))
+    await page.evaluate(() => { window.setScreen('teacher'); window.openDashboardTransactions() })
+    const debit = page.locator('tr').filter({ hasText: 'Fictional persistence regression' })
+    await expect(debit).toHaveCount(1)
+    await expect(debit.getByRole('cell', { name: 'Approved', exact: true })).toBeVisible()
+    const credit = page.locator('tr').filter({ has: page.getByRole('cell', { name: '$4', exact: true }) })
+    await expect(credit.getByRole('cell', { name: 'Approved', exact: true })).toBeVisible()
+    // The real student self-read independently confirms the balance and mirror.
+    await logout(page)
+    await submitRememberedStudentPin(page, '2468')
+    await expect(page.locator('.big-balance')).toHaveText(`$${startingBalance + 2}`)
+    await expect(page.locator('.student-transaction-card').filter({ hasText: 'Fictional persistence regression' })).toHaveCount(1)
+  })
+
 }
