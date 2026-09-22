@@ -1,0 +1,6 @@
+{
+  "terminal.integrated.env.osx": {
+    "CLOUDSDK_CORE_PROJECT": "morgan-bank",
+    "GOOGLE_CLOUD_PROJECT": "morgan-bank"
+  }
+}
