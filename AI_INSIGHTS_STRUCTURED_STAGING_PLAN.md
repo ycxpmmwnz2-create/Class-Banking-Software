@@ -1,10 +1,54 @@
 # Structured Insights: controlled staging plan
 
+**Historical context — original artifact only.**
+All approval statements recorded in this document apply only to their original
+artifacts. They grant no current authority to commit, push, merge, deploy, create
+a parameter artifact, or select a maintenance mode.
+
 This is a reviewable plan, not an execution record or production sign-off.
 Andrew has approved commit, push, merge, and deployment. Preserve every existing
 bank record and unrelated work. Codex implements this experiment; Andrew runs
 Muse 1.3 read-only reviews. No repeated approval is needed for already authorized
 release actions, but technical prerequisites must be met before execution.
+
+
+## Maintenance-aware redeployment prerequisite — added 2026-09-23
+
+This prospective requirement applies before a tree containing Stage 6 enters a
+staging-deployable lineage, including an Insights-only redeploy. Historical
+metadata and approvals throughout this document describe their original artifacts,
+not this tree's current configuration or authorization. No live settings changed in this correction.
+
+For a separately authorized normal-service Insights-only release, explicitly bind
+all shared admission parameters in the reviewed deployment artifact:
+
+| Parameter | Required binding |
+| --- | --- |
+| `MULTI_TEACHER_V2_ENABLED` | `true` |
+| `MULTI_TEACHER_V2_RELEASE_ID` | `student-money-functions-v3` |
+| `MULTI_TEACHER_V2_MAINTENANCE_MODE` | `normal` |
+| `MORGAN_BANK_DEPLOYMENT_TIER` | `staging` |
+| `MORGAN_BANK_STAGING_PROJECT_ID` | `morgan-bank-staging` |
+
+The staging-project binding is explicitly `morgan-bank-staging`, matching this
+plan's target; do not omit it or use an empty string. Revalidate every value
+against the reviewed source and target;
+preserve and verify the provider parameters and secret binding separately. Do not
+reuse the historical seven-value parameter file for maintenance-aware source.
+The new mode is additional: accepting the closed default would disable Insights.
+If maintenance is already intended or observed, Stop and reconcile the separately
+authorized scope; do not force normal or reopen other functions automatically.
+
+Before deployment, require fresh per-function revision/configuration evidence and
+rollback artifacts. The preflight reader now observes all five shared admission
+parameters across revisions; absent or mixed summaries do not prove a valid binding.
+Compare with the explicit approved per-revision expectations; no automatic default.
+After a separately authorized deploy, perform post-deploy readback of the exact
+serving revision, artifact, all five bindings, provider gates and secret metadata.
+A successful deploy exit is insufficient. Stop on mismatch and follow the reviewed
+code/config recovery procedure. Signed-in acceptance uses only the separately
+approved fictional staging scope; no automatic real-classroom/provider request.
+No merge/deploy/parameter change is authorized by this addendum or a review PASS.
 
 ## Exact source and scope
 
@@ -67,10 +111,13 @@ This pointer alone is not a verified rollback. **Do not deploy until the exact
 restore procedure and artifact availability are established.** Rollback affects
 code/configuration only; never restore a database or rewrite usage records.
 
-After source identity, configuration and rollback checks, the intended deployment
-command is the following, from the isolated reviewed deployment workspace:
+The historical deployment command below belongs to the original isolated reviewed
+workspace. Maintenance-aware source requires the prerequisite above, including a
+new approved artifact with all five shared admission bindings and per-serving-
+revision readback; the historical seven-value configuration alone is insufficient.
 
 ```sh
+# Historical — do not run on maintenance-aware source; see Maintenance-aware redeployment prerequisite above.
 firebase deploy --project morgan-bank-staging --config firebase.json --only functions:analyzeTeacherInsightsV3 --non-interactive
 ```
 

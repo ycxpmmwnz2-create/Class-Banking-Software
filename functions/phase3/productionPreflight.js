@@ -2093,6 +2093,9 @@ async function readFunctionsInventory(client, projectId) {
     for (const parameter of [
       'MULTI_TEACHER_V2_ENABLED',
       'MULTI_TEACHER_V2_RELEASE_ID',
+      'MULTI_TEACHER_V2_MAINTENANCE_MODE',
+      'MORGAN_BANK_DEPLOYMENT_TIER',
+      'MORGAN_BANK_STAGING_PROJECT_ID',
     ]) {
       const value = Object.hasOwn(environmentVariables, parameter)
         ? environmentVariables[parameter]
@@ -2109,6 +2112,9 @@ async function readFunctionsInventory(client, projectId) {
   for (const parameter of [
     'MULTI_TEACHER_V2_ENABLED',
     'MULTI_TEACHER_V2_RELEASE_ID',
+    'MULTI_TEACHER_V2_MAINTENANCE_MODE',
+    'MORGAN_BANK_DEPLOYMENT_TIER',
+    'MORGAN_BANK_STAGING_PROJECT_ID',
   ]) {
     const values = gateValues.get(parameter)
     if (!values || values.size === 0) {

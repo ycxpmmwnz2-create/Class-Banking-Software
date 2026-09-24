@@ -26,6 +26,7 @@ import {
   resolveActiveTeacherTenant,
   validateCanonicalDocumentId,
 } from './teacherTenantResolver.js'
+import { ClassroomAccessError, requireClassroomAccess } from '../phase3/classroomAccess.js'
 
 export class TeacherOnboardingError extends Error {
   constructor(code, message) {
@@ -162,6 +163,20 @@ function validateUid(uid) {
   return uid
 }
 
+function initialClassroomControl(now) {
+  const millis = toEpochMillis(now())
+  const date = new Date(millis ?? NaN)
+  if (!Number.isFinite(date.getTime()) || date.getUTCFullYear() < 0 || date.getUTCFullYear() > 9999) {
+    throw new TeacherOnboardingError('failed-precondition', 'Control initialization time is invalid.')
+  }
+  // The control schema uses canonical ISO time, not a Firestore write sentinel.
+  // The per-classroom onboarding audit ID is reserved for this create-only event.
+  return {
+    schemaVersion: 1, mode: 'active', generation: 1,
+    changedAt: date.toISOString(), auditId: 'onboarding',
+  }
+}
+
 export async function onboardTeacherClassroomService({
   firestore,
   auth,
@@ -189,6 +204,10 @@ export async function onboardTeacherClassroomService({
 
   const uid = validateUid(auth.uid)
   const token = auth.token ?? {}
+
+  if (token.role !== undefined && token.role !== 'teacher') {
+    throw new ClassroomAccessError()
+  }
 
   if (token.email_verified !== true) {
     throw new TeacherOnboardingError('permission-denied', 'Verified email required.')
@@ -309,6 +328,10 @@ export async function onboardTeacherClassroomService({
           'Classroom owner UID mismatch.',
         )
       }
+
+      // An existing foundation is a read-only replay, never an enrollment or
+      // repair. Recheck current control on every attempt, preserving generation.
+      requireClassroomAccess(classroomData.accessControl, { operation: 'read' })
 
       const studentLoginCode = classroomData.studentLoginCode
       if (typeof studentLoginCode !== 'string' || !studentLoginCode) {
@@ -503,6 +526,10 @@ export async function onboardTeacherClassroomService({
       .doc()
     const generatedClassroomId = generatedClassroomRef.id
     const timestamp = serverTimestamp()
+    const accessControl = initialClassroomControl(now)
+    const accessAuditRef = firestore
+      .collection(`${FIRESTORE_COLLECTIONS.CLASSROOMS}/${generatedClassroomId}/accessControlAudits`)
+      .doc(accessControl.auditId)
 
     // This is the complete V2 classroom-identity boundary. The shared Phase 1
     // model deliberately remains unchanged because its hardcoded bootstrap
@@ -517,6 +544,7 @@ export async function onboardTeacherClassroomService({
         studentLoginCode: formattedCode,
       }),
       nextStudentNumber: 1,
+      accessControl,
     }
 
     const teacherDocument = buildTeacherDocument({
@@ -535,6 +563,12 @@ export async function onboardTeacherClassroomService({
 
     transaction.create(codeRef, loginCodeDocument)
     transaction.create(generatedClassroomRef, classroomDocument)
+    // Foundation, initial control, private audit and invitation consumption all
+    // commit together. A lost response replays the existing control, not this ID.
+    transaction.create(accessAuditRef, {
+      schemaVersion: 1, kind: 'onboarding', generation: 1, mode: 'active',
+      changedAt: accessControl.changedAt,
+    })
     transaction.create(teacherRef, teacherDocument)
     transaction.update(invRef, {
       status: INVITATION_STATUS.CONSUMED,
@@ -586,8 +620,9 @@ export async function resolveTeacherTenantService({
   data = {},
   now = () => Date.now(),
 }) {
-  if (!firestore || typeof firestore.collection !== 'function') {
-    throw new TypeError('firestore with a collection method is required.')
+  if (!firestore || typeof firestore.collection !== 'function' ||
+      typeof firestore.runTransaction !== 'function') {
+    throw new TypeError('firestore with collection and runTransaction methods is required.')
   }
   if (typeof now !== 'function') {
     throw new TypeError('now must be a function returning the current time.')
@@ -615,9 +650,12 @@ export async function resolveTeacherTenantService({
     }
   }
 
-  // The bidirectional ownership invariant lives in exactly one place: the
-  // shared resolver. This callable maps its structured codes onto the callable
-  // contract instead of reimplementing the checks.
+  // Preserve the existing invitation/error contract and capture the tenant once.
+  // Explicit non-teacher roles cannot reach either lookup path. The response
+  // below must freshly revalidate this same tenant, not trust these early reads.
+  if (auth.token?.role !== undefined && auth.token.role !== 'teacher') {
+    throw new ClassroomAccessError()
+  }
   let tenant = null
   try {
     tenant = await resolveActiveTeacherTenant({ firestore, auth: { uid } })
@@ -648,45 +686,73 @@ export async function resolveTeacherTenantService({
   }
 
   if (tenant) {
-    const teacherData = tenant.teacher.data
-    const classroomData = tenant.classroom.data
-    const studentLoginCode = classroomData.studentLoginCode
+    // Ordinary resolution permits active/readOnly. Build all returned fields
+    // from this read-only transaction's snapshots. No readTime is supplied:
+    // Firestore defaults to strong consistency, without write locks or retries.
+    // Preliminary identity fields cannot supply the published response.
+    return firestore.runTransaction(async transaction => {
+      const teacherSnap = await transaction.get(firestore
+        .collection(FIRESTORE_COLLECTIONS.TEACHERS).doc(tenant.teacherUid))
+      const classroomSnap = await transaction.get(firestore
+        .collection(FIRESTORE_COLLECTIONS.CLASSROOMS).doc(tenant.classroomId))
+      const teacherData = teacherSnap.data?.() ?? {}
+      const classroomData = classroomSnap.data?.() ?? {}
+      if (teacherSnap.exists !== true || classroomSnap.exists !== true ||
+          teacherData.uid !== tenant.teacherUid ||
+          teacherData.classroomId !== tenant.classroomId ||
+          classroomData.ownerUid !== tenant.teacherUid) {
+        throw new TeacherOnboardingError('failed-precondition', 'Teacher foundation records changed.')
+      }
+      if (teacherData.status !== TEACHER_STATUS.ACTIVE) {
+        throw new TeacherOnboardingError(
+          teacherData.status === TEACHER_STATUS.DISABLED ? 'permission-denied' : 'failed-precondition',
+          'Teacher account is not active.',
+        )
+      }
+      const control = requireClassroomAccess(classroomData.accessControl, { operation: 'read' })
+      const studentLoginCode = classroomData.studentLoginCode
 
-    if (typeof studentLoginCode !== 'string' || !studentLoginCode) {
-      throw new TeacherOnboardingError(
-        'failed-precondition',
-        'Classroom document missing student login code.',
-      )
-    }
-    let canonicalCode
-    try {
-      canonicalCode = normalizeClassroomCode(studentLoginCode)
-    } catch {
-      throw new TeacherOnboardingError(
-        'failed-precondition',
-        'Classroom document has a malformed student login code.',
-      )
-    }
-    if (studentLoginCode !== formatClassroomCode(canonicalCode)) {
-      throw new TeacherOnboardingError(
-        'failed-precondition',
-        'Classroom login code is not in canonical display form.',
-      )
-    }
+      if (typeof studentLoginCode !== 'string' || !studentLoginCode) {
+        throw new TeacherOnboardingError(
+          'failed-precondition',
+          'Classroom document missing student login code.',
+        )
+      }
+      let canonicalCode
+      try {
+        canonicalCode = normalizeClassroomCode(studentLoginCode)
+      } catch {
+        throw new TeacherOnboardingError(
+          'failed-precondition',
+          'Classroom document has a malformed student login code.',
+        )
+      }
+      if (studentLoginCode !== formatClassroomCode(canonicalCode)) {
+        throw new TeacherOnboardingError(
+          'failed-precondition',
+          'Classroom login code is not in canonical display form.',
+        )
+      }
 
-    return {
-      state: 'active',
-      teacher: {
-        uid: tenant.teacherUid,
-        displayName: teacherData.displayName || '',
-        email: teacherData.email || '',
-      },
-      classroom: {
-        id: tenant.classroomId,
-        name: classroomData.name,
-        studentLoginCode,
-      },
-    }
+      // 'active' is the existing resolved-session state, not permission to
+      // mutate. Classroom mode/generation are separate, current policy data.
+      return {
+        state: 'active',
+        protocolVersion: 1,
+        mode: control.mode,
+        generation: control.generation,
+        teacher: {
+          uid: tenant.teacherUid,
+          displayName: teacherData.displayName || '',
+          email: teacherData.email || '',
+        },
+        classroom: {
+          id: tenant.classroomId,
+          name: classroomData.name,
+          studentLoginCode,
+        },
+      }
+    }, { readOnly: true })
   }
 
   // Not onboarded yet — evaluate invitation eligibility

@@ -29,6 +29,8 @@ import {
 } from './phase3/studentLifecycle.js'
 import { listStudentPinsV2CallableHandler } from './phase3/studentPinDirectory.js'
 import { submitStudentTransactionV2CallableHandler } from './phase3/studentMoney.js'
+import { getClassroomAccessCallable } from './phase3/classroomAccess.js'
+import { assertMaintenanceAdmission } from './phase3/maintenanceMode.js'
 import {
   ALLOWED_PRODUCTION_PROJECT_ID,
   assertV2GateAllowed,
@@ -46,6 +48,12 @@ import {
 
 export const MULTI_TEACHER_V2_ENABLED = defineBoolean('MULTI_TEACHER_V2_ENABLED', {
   default: false,
+})
+
+// Explicit admission state for this revision; missing configuration stays closed.
+// This does not drain older or already-admitted invocations. See the contract.
+export const MULTI_TEACHER_V2_MAINTENANCE_MODE = defineString('MULTI_TEACHER_V2_MAINTENANCE_MODE', {
+  default: 'closed',
 })
 
 export const MULTI_TEACHER_V2_RELEASE_ID = defineString('MULTI_TEACHER_V2_RELEASE_ID', {
@@ -119,6 +127,7 @@ function assertV2Invocation(operation) {
       stagingProjectId: MORGAN_BANK_STAGING_PROJECT_ID.value(),
       environment: process.env,
     })
+    assertMaintenanceAdmission({ mode: MULTI_TEACHER_V2_MAINTENANCE_MODE.value(), operation })
     if (getApps().length !== 1) {
       throw new Error('Firebase Admin is unavailable.')
     }
@@ -190,6 +199,11 @@ export const ensureTeacherClassroom = onCall(async (request) => {
 })
 
 // V2 exports
+export const getClassroomAccessV2 = onCall(async (request) => {
+  assertV2Invocation('getClassroomAccessV2')
+  return getClassroomAccessCallable(request, { firestore: getFirestore() })
+})
+
 export const resolveTeacherTenantV2 = onCall({
   minInstances: RESOLVE_TEACHER_TENANT_MIN_INSTANCES,
 }, async (request) => {

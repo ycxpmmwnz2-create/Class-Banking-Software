@@ -7,6 +7,7 @@ import {
   TeacherTenantResolverError,
   resolveActiveTeacherTenant,
 } from '../phase2b/teacherTenantResolver.js'
+import { ClassroomAccessError, requireClassroomAccess } from './classroomAccess.js'
 
 /**
  * Teacher-visible current student PINs.
@@ -164,7 +165,7 @@ function snapshotExists(snapshot) {
   return Boolean(snapshot && snapshot.exists === true)
 }
 
-async function readAuthorizedPinSnapshot(transaction, firestore, tenant) {
+async function readPinAccess(transaction, firestore, tenant) {
   const teacherRef = firestore
     .collection(FIRESTORE_COLLECTIONS.TEACHERS)
     .doc(tenant.teacherUid)
@@ -191,7 +192,7 @@ async function readAuthorizedPinSnapshot(transaction, firestore, tenant) {
     )
   }
 
-  return transaction.get(studentPinCollection(firestore, tenant.classroomId))
+  return requireClassroomAccess(classroom.accessControl, { operation: 'sensitiveRead' })
 }
 
 /**
@@ -224,9 +225,15 @@ export async function listStudentPinsV2(request, { firestore, auth } = {}) {
     }
   }
 
+  // An explicit non-teacher role must not reach the teacher lookup, even if a
+  // misconfigured identity also has a reciprocal teacher foundation.
+  if (auth?.token?.role !== undefined && auth.token.role !== 'teacher') {
+    throw new ClassroomAccessError()
+  }
   const tenant = await resolveActiveTeacherTenant({ firestore, auth })
-  return firestore.runTransaction(async transaction => {
-    const snapshot = await readAuthorizedPinSnapshot(transaction, firestore, tenant)
+  const result = await firestore.runTransaction(async transaction => {
+    const control = await readPinAccess(transaction, firestore, tenant)
+    const snapshot = await transaction.get(studentPinCollection(firestore, tenant.classroomId))
     const pins = []
     for (const docSnap of snapshot.docs ?? []) {
       const entry = readableEntry(docSnap)
@@ -234,8 +241,17 @@ export async function listStudentPinsV2(request, { firestore, auth } = {}) {
     }
     pins.sort((a, b) => a.studentId.localeCompare(b.studentId))
 
-    return Object.freeze({ classroomId: tenant.classroomId, pins })
+    return { pins, generation: control.generation }
   })
+  // A separate fresh check follows the committed snapshot attempt and all PIN
+  // filtering/sorting. Retry rechecks this SAME tenant; never return an old
+  // snapshot across a pause/resume generation. This cannot recall output already
+  // sent, or prevent a pause after this final transaction finishes.
+  await firestore.runTransaction(async transaction => {
+    const control = await readPinAccess(transaction, firestore, tenant)
+    if (control.generation !== result.generation) throw new ClassroomAccessError()
+  })
+  return Object.freeze({ classroomId: tenant.classroomId, pins: result.pins })
 }
 
 function externalCodeFor(error) {
@@ -251,7 +267,7 @@ function externalCodeFor(error) {
         return 'failed-precondition'
     }
   }
-  if (error instanceof StudentPinDirectoryError) {
+  if (error instanceof StudentPinDirectoryError || error instanceof ClassroomAccessError) {
     return Object.prototype.hasOwnProperty.call(GENERIC_CLIENT_MESSAGES, error.code)
       ? error.code
       : 'internal'

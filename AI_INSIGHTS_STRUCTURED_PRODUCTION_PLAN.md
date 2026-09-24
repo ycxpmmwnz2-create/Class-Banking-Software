@@ -1,9 +1,52 @@
 # Structured Insights production release review
 
+**Historical context — original artifact only.**
+All approval statements recorded in this document apply only to their original
+artifacts. They grant no current authority to commit, push, merge, deploy, create
+a parameter artifact, or select a maintenance mode.
+
 Prepared September 6, 2026. This is a concrete release plan awaiting Muse's final
 technical verdict, not a deployment record. Andrew already approved commit,
 push, merge and deployment. Codex implements this experiment; Muse 1.3 is the
 independent read-only reviewer. Andrew operates Muse's interactive terminal chat.
+
+
+## Maintenance-aware redeployment prerequisite — added 2026-09-23
+
+This prospective requirement applies before a tree containing Stage 6 enters a
+production-deployable lineage, including an Insights-only redeploy. Historical
+metadata and approvals throughout this document describe their original artifacts,
+not this tree's current configuration or authorization. No live settings changed in this correction.
+
+For a separately authorized normal-service Insights-only release, explicitly bind
+all shared admission parameters in the reviewed deployment artifact:
+
+| Parameter | Required binding |
+| --- | --- |
+| `MULTI_TEACHER_V2_ENABLED` | `true` |
+| `MULTI_TEACHER_V2_RELEASE_ID` | `student-money-functions-v3` |
+| `MULTI_TEACHER_V2_MAINTENANCE_MODE` | `normal` |
+| `MORGAN_BANK_DEPLOYMENT_TIER` | `production` |
+| `MORGAN_BANK_STAGING_PROJECT_ID` | `` |
+
+The empty production staging-project binding is an explicit empty string, not an
+omitted value. Revalidate every value against the reviewed source and target;
+preserve and verify the provider parameters and secret binding separately. Do not
+reuse the historical seven-value parameter file for maintenance-aware source.
+The new mode is additional: accepting the closed default would disable Insights.
+If maintenance is already intended or observed, Stop and reconcile the separately
+authorized scope; do not force normal or reopen other functions automatically.
+
+Before deployment, require fresh per-function revision/configuration evidence and
+rollback artifacts. The preflight reader now observes all five shared admission
+parameters across revisions; absent or mixed summaries do not prove a valid binding.
+Compare with the explicit approved per-revision expectations; no automatic default.
+After a separately authorized deploy, perform post-deploy readback of the exact
+serving revision, artifact, all five bindings, provider gates and secret metadata.
+A successful deploy exit is insufficient. Stop on mismatch and follow the reviewed
+code/config recovery procedure. Signed-in acceptance uses only the separately
+approved fictional staging scope; no automatic real-classroom/provider request.
+No merge/deploy/parameter change is authorized by this addendum or a review PASS.
 
 ## Candidate and completed acceptance
 
@@ -122,7 +165,11 @@ References:
 https://cloud.google.com/run/docs/deploying
 https://cloud.google.com/run/docs/rollouts-rollbacks-traffic-migration
 
-## Execution sequence after final review
+## Historical execution sequence after final review
+
+This procedure and its approval references describe the original artifact only.
+For maintenance-aware source, it is superseded by the prerequisite above and
+grants no current merge, deployment, or mode-selection authority.
 
 1. Recheck the completed Muse verdict, immutable packet/source/asset hashes,
    expected PR/main refs, current production metadata and rollback targets.
@@ -132,10 +179,15 @@ https://cloud.google.com/run/docs/rollouts-rollbacks-traffic-migration
    ready and merge only the reviewed branch. Prefer a merge commit retaining the
    reviewed history; verify the merged runtime tree matches the artifact pins.
    Do not incorporate original-checkout dirty work or an unrelated PR.
-3. From the pinned deployment workspace run only:
+3. Historical command from the original pinned deployment workspace:
 
+       # Historical — do not run on maintenance-aware source; see Maintenance-aware redeployment prerequisite above.
        firebase deploy --project morgan-bank --config firebase.json --only functions:analyzeTeacherInsightsV3 --non-interactive
 
+   The historical readback below records the original parameter set. For
+   maintenance-aware source it is insufficient: the prerequisite above requires
+   all five shared admission bindings plus provider parameters and secret metadata
+   in the approved artifact and post-deploy readback for each serving revision.
    Retain its lint predeploy hook. On success read back new revision, runtime,
    image/source identity, traffic, existing six parameters plus the explicitly
    empty staging-project parameter, and the same version-1 secret binding. Verify

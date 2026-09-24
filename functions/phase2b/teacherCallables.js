@@ -1,5 +1,6 @@
 import { getFirestore } from 'firebase-admin/firestore'
 import { HttpsError } from 'firebase-functions/v2/https'
+import { ClassroomAccessError } from '../phase3/classroomAccess.js'
 
 import {
   TeacherOnboardingError,
@@ -45,7 +46,7 @@ function mapToHttpsError(error) {
     return genericHttpsError(error.code)
   }
 
-  if (error instanceof TeacherOnboardingError) {
+  if (error instanceof TeacherOnboardingError || error instanceof ClassroomAccessError) {
     return genericHttpsError(error.code)
   }
 

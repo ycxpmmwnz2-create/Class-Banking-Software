@@ -1082,6 +1082,13 @@ describe('Phase 3 release-order source contract', () => {
       // credential document keeps its exact key set and its authentication
       // material is untouched.
       'studentPinDirectory.js', 'studentPinDirectory.test.js',
+      // Authorized integrity/recovery implementation stages. This allows the
+      // named source files, not their deployment or a containment claim.
+      'teacherMoneyContract.js', 'teacherMoneyContract.test.js',
+      'plannerReadBudget.js', 'plannerReadBudget.test.js',
+      'classroomAccess.js', 'classroomAccess.test.js',
+      'classroomAccessPlan.js', 'classroomAccessPlan.test.js',
+      'maintenanceMode.js', 'maintenanceMode.test.js',
     ])
 
     /**

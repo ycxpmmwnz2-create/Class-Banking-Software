@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { FieldValue, Timestamp } from 'firebase-admin/firestore'
+import { control } from '../../tests/phase3/classroomAccess.fixture.js'
 
 import { CLASSROOM_CODE_ALPHABET, hashEmailDigest } from './identityNormalization.js'
 import {
@@ -321,6 +322,7 @@ test('onboardTeacherClassroomService: idempotent retry returns existing foundati
       ownerUid: 'teacher-uid-1',
       name: 'Original Name',
       studentLoginCode: '2345-6789',
+      accessControl: control(),
     },
     'classroomLoginCodes/23456789': {
       classroomId: 'classroom-1',
@@ -427,6 +429,7 @@ test('resolveTeacherTenantService: returns active state for existing valid teach
       ownerUid: 'teacher-uid-1',
       name: "Teacher One's Class",
       studentLoginCode: '2345-6789',
+      accessControl: control(),
     },
   })
 
@@ -436,6 +439,9 @@ test('resolveTeacherTenantService: returns active state for existing valid teach
   })
 
   assert.equal(res.state, 'active')
+  assert.equal(res.protocolVersion, 1)
+  assert.equal(res.mode, 'active')
+  assert.equal(res.generation, 3)
   assert.equal(res.teacher.uid, 'teacher-uid-1')
   assert.equal(res.classroom.id, 'classroom-1')
   assert.equal(res.classroom.studentLoginCode, '2345-6789')
@@ -663,6 +669,7 @@ test('onboardTeacherClassroomService: duplicate login code indexes block instead
       ownerUid: 'teacher-uid-1',
       name: 'Original Name',
       studentLoginCode: '2345-6789',
+      accessControl: control(),
     },
     'classroomLoginCodes/23456789': { classroomId: 'classroom-1', status: 'active' },
     // Stale duplicate left by a partially completed operation.
@@ -693,6 +700,7 @@ test('onboardTeacherClassroomService: code index naming a different code than th
       ownerUid: 'teacher-uid-1',
       name: 'Original Name',
       studentLoginCode: '2345-6789',
+      accessControl: control(),
     },
     // Index exists for the classroom, but under a different code.
     'classroomLoginCodes/3456789A': { classroomId: 'classroom-1', status: 'active' },
@@ -716,7 +724,7 @@ test('onboardTeacherClassroomService: classroom lacking a login code blocks with
       classroomId: 'classroom-1',
       status: 'active',
     },
-    'classrooms/classroom-1': { ownerUid: 'teacher-uid-1', name: 'Original Name' },
+    'classrooms/classroom-1': { ownerUid: 'teacher-uid-1', name: 'Original Name', accessControl: control() },
   })
 
   await assert.rejects(
@@ -808,7 +816,7 @@ test('onboardTeacherClassroomService: simultaneous calls for one UID create exac
   )
 
   const teacherCreates = db.creates.filter(entry => entry.path.startsWith('teachers/'))
-  const classroomCreates = db.creates.filter(entry => entry.path.startsWith('classrooms/'))
+  const classroomCreates = db.creates.filter(entry => /^classrooms\/[^/]+$/.test(entry.path))
   const codeCreates = db.creates.filter(entry => entry.path.startsWith('classroomLoginCodes/'))
 
   assert.equal(teacherCreates.length, 1)
@@ -914,7 +922,7 @@ test('resolveTeacherTenantService: classroom missing a student login code blocks
       classroomId: 'classroom-1',
       status: 'active',
     },
-    'classrooms/classroom-1': { ownerUid: 'teacher-uid-1', name: 'Class' },
+    'classrooms/classroom-1': { ownerUid: 'teacher-uid-1', name: 'Class', accessControl: control() },
   })
 
   await assert.rejects(
@@ -1029,6 +1037,7 @@ test('existing and resolved classrooms require canonical login-code display form
         ownerUid: 'teacher-uid-1',
         name: 'Class',
         studentLoginCode,
+        accessControl: control(),
       },
       'classroomLoginCodes/23456789': {
         classroomId: 'classroom-1',

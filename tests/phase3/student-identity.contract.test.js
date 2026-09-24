@@ -586,7 +586,9 @@ describe('Phase 3 student-identity source contract', () => {
     assert.ok(end > start)
     const body = indexHtml.slice(start, end)
 
-    assert.match(body, /const attemptedData = JSON\.parse\(JSON\.stringify\(data\)\)/)
+    assert.match(body, /async function saveData\(\) \{\s*return saveClassroomCandidate\(data\);\s*\}/)
+    assert.match(body, /async function saveClassroomCandidate\(candidate\)/)
+    assert.match(body, /const attemptedData = JSON\.parse\(JSON\.stringify\(candidate\)\)/)
     assert.match(
       body,
       /orchestrateClassroomDataSave\(v2TenantSession, v2SaveTenantData, attemptedData,/,

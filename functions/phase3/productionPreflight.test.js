@@ -2223,7 +2223,7 @@ describe('Phase 3 production preflight', () => {
       }
     }
 
-    async function readFunctionRevision(functionResource) {
+    async function readFunctionDeployment(functionResources) {
       const readers = createProductionControlPlaneReaders({
         projectId: 'morgan-bank',
         credential,
@@ -2242,7 +2242,7 @@ describe('Phase 3 production preflight', () => {
             })
           }
           if (pathname.endsWith('/locations/-/functions')) {
-            return jsonResponse({ functions: [functionResource] })
+            return jsonResponse({ functions: functionResources })
           }
           if (pathname.endsWith('/projects/morgan-bank/sites')) {
             return jsonResponse({ sites: [] })
@@ -2257,8 +2257,43 @@ describe('Phase 3 production preflight', () => {
         },
       })
       const deployment = await readers.readDeploymentInventory()
+      return deployment
+    }
+
+    async function readFunctionRevision(functionResource) {
+      const deployment = await readFunctionDeployment([functionResource])
       return deployment.functions['us-central1/functions/trigger']
     }
+
+    it('observes maintenance mode for every revision, including absent, mixed and invalid metadata', async () => {
+      const resource = (mode, suffix = 'a') => {
+        const value = triggerFunctionResource()
+        value.name += suffix
+        const env = value.serviceConfig.environmentVariables
+        if (mode !== undefined) env.MULTI_TEACHER_V2_MAINTENANCE_MODE = mode
+        env.MORGAN_BANK_DEPLOYMENT_TIER = 'production'
+        env.MORGAN_BANK_STAGING_PROJECT_ID = ''
+        return value
+      }
+      const observe = async resources => (await readFunctionDeployment(resources)).gateParameters
+      for (const mode of ['normal', 'verification', 'closed', '', 'unrecognized', undefined]) {
+        const result = await observe([resource(mode)])
+        assert.equal(result.MULTI_TEACHER_V2_MAINTENANCE_MODE, mode ?? 'absent')
+        assert.equal(result.MORGAN_BANK_DEPLOYMENT_TIER, 'production')
+        assert.equal(result.MORGAN_BANK_STAGING_PROJECT_ID, '')
+      }
+      assert.equal((await observe([])).MULTI_TEACHER_V2_MAINTENANCE_MODE, 'absent')
+      const a = resource('normal', 'a'), b = resource(undefined, 'b')
+      const mixed = (await observe([a, b])).MULTI_TEACHER_V2_MAINTENANCE_MODE
+      assert.match(mixed, /^mixed:[a-f0-9]{64}$/)
+      assert.equal((await observe([b, a])).MULTI_TEACHER_V2_MAINTENANCE_MODE, mixed)
+      b.serviceConfig.environmentVariables.MULTI_TEACHER_V2_MAINTENANCE_MODE = 'verification'
+      assert.notEqual((await observe([a, b])).MULTI_TEACHER_V2_MAINTENANCE_MODE, mixed)
+      for (const invalid of [true, null, 1, {}]) {
+        await assert.rejects(observe([resource(invalid)]), error =>
+          error instanceof PreflightAbortError && error.category === PREFLIGHT_ABORT_CATEGORIES.INSPECTION_UNAVAILABLE)
+      }
+    })
 
     it('normalizes EventTrigger filter permutations before hashing', async () => {
       const originalOrder = EVENT_FILTERS.map(filter => ({ ...filter }))
