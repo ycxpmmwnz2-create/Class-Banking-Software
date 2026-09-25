@@ -179,6 +179,14 @@ describe('Phase 3 command-safety source contract', () => {
     )
   })
 
+  it('source contract: maintenance rules gate is present and covered by isolation checks', () => {
+    const name = 'test:phase3:maintenance-rules'
+    assert.ok(ISOLATED_EMULATOR_COMMANDS.includes(name), 'maintenance rules gate must be discovered')
+    const script = scripts[name]
+    assert.deepEqual(projectArguments(script), ['demo-morgan-bank-maintenance-rules'])
+    assert.ok(script.includes('--only firestore "node --test tests/phase3/maintenance-rules.emulator.test.js"'))
+  })
+
   it('source contract: each isolated command refuses local Google ADC', () => {
     for (const name of ISOLATED_EMULATOR_COMMANDS) {
       assert.ok(

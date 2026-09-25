@@ -284,6 +284,7 @@ no deployment or production access occurred.
 | `npm run test:phase3:unit` | no | no |
 | `npm run test:phase3:migration` | yes | no |
 | `npm run test:phase3:rules` | yes | no |
+| `npm run test:phase3:maintenance-rules` | yes | no |
 | `npm run test:phase3:release-rehearsal` | yes | yes |
 | `npm run test:phase3:rollback-rehearsal` | yes | no |
 
@@ -295,6 +296,16 @@ the narrowing and that no `*.emulator.test.js` file matches it.
 `test:phase3:migration` starts the Firestore and Auth emulators, so automatic
 discovery in `command-safety.contract.test.js` applies the complete isolation
 contract to it with no special-case entry.
+
+`test:phase3:maintenance-rules` starts an isolated Firestore emulator for
+`demo-morgan-bank-maintenance-rules`, runs only the interim maintenance rules
+suite, and shuts it down. The suite explicitly loads the maintenance candidate;
+the default Firebase rules selection is unchanged. Like `test:phase3:rules`, the
+command refuses local Google ADC, scrubs inherited credentials/project/gate
+variables, and uses a temporary CLI configuration. Automatic command discovery
+applies the full isolation contract. Keep the configured local emulator ports
+free; do not share a running rehearsal database. Java, Firebase CLI and test dependencies are
+required; first use may download the emulator. This is a local test, not a deploy.
 
 `test:phase3:unit` runs the colocated `functions/phase3/*.test.js` **and**
 `src/phase3/*.test.js` suites. Commit 7 widened the glob to the second directory
