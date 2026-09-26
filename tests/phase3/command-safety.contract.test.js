@@ -187,6 +187,14 @@ describe('Phase 3 command-safety source contract', () => {
     assert.ok(script.includes('--only firestore "node --test tests/phase3/maintenance-rules.emulator.test.js"'))
   })
 
+  it('source contract: classroom initialization rehearsal stays in its guarded demo suite', () => {
+    const name = 'test:phase3:classroom-initialization'
+    assert.ok(ISOLATED_EMULATOR_COMMANDS.includes(name), 'initialization rehearsal gate must be discovered')
+    assert.deepEqual(projectArguments(scripts[name]), ['demo-morgan-bank-classroom-init'])
+    assert.ok(scripts[name].includes('--only firestore "node --test tests/phase3/classroom-initialization.emulator.test.js"'))
+    assert.ok(existsSync(new URL('./classroom-initialization.emulator.test.js', import.meta.url)))
+  })
+
   it('source contract: each isolated command refuses local Google ADC', () => {
     for (const name of ISOLATED_EMULATOR_COMMANDS) {
       assert.ok(

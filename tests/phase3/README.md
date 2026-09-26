@@ -285,6 +285,7 @@ no deployment or production access occurred.
 | `npm run test:phase3:migration` | yes | no |
 | `npm run test:phase3:rules` | yes | no |
 | `npm run test:phase3:maintenance-rules` | yes | no |
+| `npm run test:phase3:classroom-initialization` | yes | no |
 | `npm run test:phase3:release-rehearsal` | yes | yes |
 | `npm run test:phase3:rollback-rehearsal` | yes | no |
 
@@ -1195,3 +1196,9 @@ local; no production access, deployment, commit, or push is implied.
 
 These suites supplement, and never replace, the complete Phase 2B and repository
 matrix recorded in [../phase2b/README.md](../phase2b/README.md).
+
+`test:phase3:classroom-initialization` uses the same isolated Firestore-only wrapper
+for `demo-morgan-bank-classroom-init`. It rehearses foundation inventory and
+readOnly-control initialization/recovery using fictional data. It cannot select a
+production project and is not the money compatibility scan or a production
+initializer. See `CLASSROOM_INITIALIZATION_REHEARSAL.md` for bounds and gaps.

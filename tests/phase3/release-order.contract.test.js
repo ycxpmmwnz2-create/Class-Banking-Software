@@ -1089,6 +1089,7 @@ describe('Phase 3 release-order source contract', () => {
       'classroomAccess.js', 'classroomAccess.test.js',
       'classroomAccessPlan.js', 'classroomAccessPlan.test.js',
       'maintenanceMode.js', 'maintenanceMode.test.js',
+      'classroomInitialization.js', 'classroomInitialization.test.js',
     ])
 
     /**
