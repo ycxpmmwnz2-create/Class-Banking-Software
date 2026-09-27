@@ -1202,3 +1202,17 @@ for `demo-morgan-bank-classroom-init`. It rehearses foundation inventory and
 readOnly-control initialization/recovery using fictional data. It cannot select a
 production project and is not the money compatibility scan or a production
 initializer. See `CLASSROOM_INITIALIZATION_REHEARSAL.md` for bounds and gaps.
+
+## Money-data compatibility advisory rehearsal (Stage9)
+
+Run `npm run test:phase3:money-compatibility` using the guarded Firestore-only demo
+wrapper. The new module stays outside the deployed import graph. It reads all
+scoped balances, ledger records, mirrors and Pending decisions, compares complete
+path/version sets again, and returns counts/reasons plus a separate restricted
+manifest. Synthetic emulator fixtures prove numeric classification, exact parity,
+pagination, capacity boundaries, change detection and absence of writes.
+
+See `MONEY_COMPATIBILITY_REHEARSAL.md` for scope, privacy, limits, commands and
+remaining production requirements. A compatible advisory observation is not a
+frozen snapshot, live data approval, or activation permit. No original values are
+corrected. Previous Stage8 L1/L3 are addressed; L2 remains explicitly deferred.

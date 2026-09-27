@@ -1090,6 +1090,7 @@ describe('Phase 3 release-order source contract', () => {
       'classroomAccessPlan.js', 'classroomAccessPlan.test.js',
       'maintenanceMode.js', 'maintenanceMode.test.js',
       'classroomInitialization.js', 'classroomInitialization.test.js',
+      'moneyCompatibility.js', 'moneyCompatibility.test.js',
     ])
 
     /**
@@ -1326,6 +1327,10 @@ describe('Phase 3 release-order source contract', () => {
       !visited.has(OPERATOR_ONLY),
       `${OPERATOR_ONLY} is operator-only and must stay out of the deployed graph`,
     )
+
+    for (const module of ['phase3/classroomInitialization.js', 'phase3/moneyCompatibility.js']) {
+      assert.ok(!visited.has(module), `${module} must remain outside the deployed graph`)
+    }
 
     // The converse: the operator entrypoints must actually use it, so the
     // separation cannot be satisfied by deleting the proof outright.

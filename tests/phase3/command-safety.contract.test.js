@@ -195,6 +195,14 @@ describe('Phase 3 command-safety source contract', () => {
     assert.ok(existsSync(new URL('./classroom-initialization.emulator.test.js', import.meta.url)))
   })
 
+  it('source contract: money compatibility stays in its guarded demo suite', () => {
+    const name = 'test:phase3:money-compatibility'
+    assert.ok(ISOLATED_EMULATOR_COMMANDS.includes(name), 'money compatibility gate must be discovered')
+    assert.deepEqual(projectArguments(scripts[name]), ['demo-morgan-bank-money-compatibility'])
+    assert.ok(scripts[name].includes('--only firestore "node --test tests/phase3/money-compatibility.emulator.test.js"'))
+    assert.ok(existsSync(new URL('./money-compatibility.emulator.test.js', import.meta.url)))
+  })
+
   it('source contract: each isolated command refuses local Google ADC', () => {
     for (const name of ISOLATED_EMULATOR_COMMANDS) {
       assert.ok(

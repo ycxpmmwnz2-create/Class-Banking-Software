@@ -9,12 +9,14 @@ path. No deployed Functions export or client imports it.
 ## Hard execution boundary
 
 Both exported functions accept only `demo-morgan-bank-classroom-init`, the default
-database and the exact local emulator host `127.0.0.1:8080`. They require an
+database and the exact caller-declared emulator host `127.0.0.1:8080`. They require an
 explicit matching injected Firestore handle; there is no SDK creation, credential
 discovery, default project or production override. The environment argument is a
 trusted test seam, not a user-controlled callable request. This is a rehearsal
 module, not an IAM authorization mechanism or protection against a malicious
-caller supplying a fake SDK. No production CLI is provided.
+caller supplying a fake SDK. The handle's actual endpoint is not independently
+attested; a misconfigured injected SDK can attempt credential discovery internally.
+No production CLI is provided.
 
 Run `npm run test:phase3:classroom-initialization`. The command uses the existing
 ADC refusal, variable scrubbing, temporary CLI configuration and cleanup wrapper.
@@ -42,7 +44,7 @@ never reset or silently skipped. A future production transition must explicitly
 reconcile those classrooms through the separate control-transition protocol.
 
 The restricted plan contains project/database, a 32-hex operation ID, a validated
-server-clock ISO instant, sorted classroom/owner IDs, exact seconds/nanoseconds
+invoking-process clock ISO instant, sorted classroom/owner IDs, exact seconds/nanoseconds
 update versions and a digest binding all these values. It contains no names,
 PINs, balances or raw records. Store the plan as a restricted local artifact if
 rehearsing process restart; this stage provides no local file persister. JSON
