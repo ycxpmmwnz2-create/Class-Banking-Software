@@ -128,3 +128,10 @@ behavior is changed. Pending decisions' eventual balance effects must still be
 rechecked by the future money service. No transaction/money correction, operator
 audit, client/rules deployment, final scan, maintenance-window claim or release is
 included. Node22 and production evidence remain separate from local Node24 tests.
+
+## Protected real-data check preparation
+
+[PROTECTED_MONEY_SCAN_PLAN.md](PROTECTED_MONEY_SCAN_PLAN.md) proposes the separate
+operator, maintenance evidence, read scope, private report and acceptance criteria
+for a future live check. It is a design awaiting review, not a production runner
+or approval to read real data. This rehearsal's hard demo boundary is unchanged.
