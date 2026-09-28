@@ -1246,3 +1246,10 @@ fictional. Tests do not prove Cloud change-history completeness or a live fence.
 See `MAINTENANCE_OBSERVER_REHEARSAL.md` for the exact acceptance contract, scope
 and remaining live/operator gates. No command, dependency, rules artifact,
 default config or deployed export is changed by this extension.
+
+## Private operator lease component
+
+`npm run test:phase3:unit` includes `operatorLease.test.js`, which runs actual
+Python filesystem/process-lock tests using fictional temporary directories.
+See `PRIVATE_OPERATOR_LEASE.md` for the lifetime contract and remaining launcher,
+privacy and Cloud-fence integration gates. This adds no live scanner entry point.
