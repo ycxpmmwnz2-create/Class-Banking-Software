@@ -1216,3 +1216,20 @@ See `MONEY_COMPATIBILITY_REHEARSAL.md` for scope, privacy, limits, commands and
 remaining production requirements. A compatible advisory observation is not a
 frozen snapshot, live data approval, or activation permit. No original values are
 corrected. Previous Stage8 L1/L3 are addressed; L2 remains explicitly deferred.
+
+## Stage11 protected money scan rehearsal
+
+`npm run test:phase3:protected-money-scan` runs only the fixed
+`demo-morgan-bank-protected-scan` Firestore emulator suite at `127.0.0.1:8080`.
+The standard ADC refusal, environment scrub and isolated CLI config apply. Node,
+root/functions dependencies, Java, installed Firebase CLI, cached emulator and
+`/usr/bin/python3` are required. No production login or live reads occur. Keep ports
+free; do not fetch missing dependencies in a network-disabled review.
+
+`npm run test:phase3:unit` also includes `functions/operator/protectedMoneyScan`
+unit/storage fault tests. They create and remove only their own fictional temporary
+files. The emulator suite seeds fictional data, checks unchanged real emulator
+versions after GET-only scanning and compares identical canary writes under exact
+prior and maintenance rule artifacts. Default `firebase.json` remains unchanged.
+See `PROTECTED_MONEY_SCAN_REHEARSAL.md` for evidence limits and open live gates;
+none of these tests may be used as production fence/credential/terminal proof.

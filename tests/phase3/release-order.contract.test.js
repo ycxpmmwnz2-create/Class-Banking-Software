@@ -1332,6 +1332,9 @@ describe('Phase 3 release-order source contract', () => {
       assert.ok(!visited.has(module), `${module} must remain outside the deployed graph`)
     }
 
+    assert.ok(![...visited].some(path => path.startsWith('operator/protectedMoneyScan/')),
+      'protected scan must remain outside the deployed graph')
+
     // The converse: the operator entrypoints must actually use it, so the
     // separation cannot be satisfied by deleting the proof outright.
     for (const entrypoint of [

@@ -1,10 +1,12 @@
 # Protected money-data check — Stage10 preparation
 
-Status: proposed operating design for Muse then Claude review. No live runner,
+Status: Stage10 design review closed; Stage11 rehearsal implementation is pending
+Muse then Claude review (see PROTECTED_MONEY_SCAN_REHEARSAL.md). No live runner,
 production read, maintenance change or scan approval is provided by this document.
 Baseline: `859946d074f2b0f6e0f5d1db1e3a74bb9823ba29`, branch
 `codex/teacher-money-integrity-design`. Stage9 and its correction have both reviews
-closed; L1 is closed. Their demo-only scanner remains unchanged.
+closed; L1 is closed. Their demo-only scanner behavior remains unchanged; Stage11 exports its existing
+pure room analyzer for reuse without opening its demo transport guard.
 
 Andrew requested preparation of a protected read-only check of real money data.
 The intended result is a private, version-bound report of compatibility problems,
@@ -55,14 +57,18 @@ passing report nor this plan may be consumed by a production initializer.
 
 ### Human operator and model boundary
 
-Andrew executes the eventual reviewed live runner in his own local Terminal,
-outside Codex/Muse/Claude agent tools or any terminal session whose output is fed
-to an agent. The same boundary applies to live inventory, observer and credential-
+Andrew executes the eventual reviewed live runner in macOS Terminal.app, outside
+Codex/Muse/Claude embedded terminals and any session readable by or visible to an
+agent. No active agent screen or terminal access may exist during a private-data run. The same boundary applies to live inventory, observer and credential-
 verification processes that handle private data. Codex prepares reviewed tools and
 step-by-step instructions using fictional fixtures; Andrew runs them and does not
 need to make technical judgments about the evidence. A failed or ambiguous gate
 stops the tool, rather than asking Andrew to override it. The exact execution
 principal and permissions still require verification before any live operation.
+The runner cannot detect every agent or revoke OS access. If this privacy boundary
+cannot be independently established, live execution is unavailable; agents must
+not inspect the private terminal to verify it. The full human-operated procedure
+and unsafe-context refusal remain future implementation/rehearsal gates.
 
 Raw records and restricted manifests/evidence never enter any model context,
 including manual uploads, agent file reads, shell output, computer-use screenshots,
@@ -215,6 +221,12 @@ contracts. Auth/foundation/code-index or other supporting records created by the
 separately reviewed setup are explicitly inventoried in its private lifecycle
 record; they are not new scan read paths. Check path absence/ownership before setup;
 never borrow a real classroom, overwrite records or forge a foundation casually.
+
+Each denial probe requires a matching successful control under the exact prior
+rules artifact, with equivalent identity, payload and fixture. Prefer isolated
+emulator proof; an invalid-auth or invalid-schema control cannot establish a
+maintenance denial. Any live pre-interim success write needs separate explicit
+authority before final inventory and must enter canary lifecycle accounting.
 
 Final inventory includes the canary as declared fictional scope in the complete
 classroom allowlist; it is subject to the same scan and compatibility checks. Run
@@ -377,13 +389,21 @@ a stored digest or old report must never bypass that requirement.
 Normal output to Andrew's non-agent local terminal is a fixed-schema summary:
 completion/abort status, project-total room/student/ledger/Pending counts, counts by
 fixed reason, blocked-room count, and always-false initialization/activation flags.
-No per-classroom breakdown or stable run identifier is included in this summary.
+Project totals include all declared fictional canary records; no per-room rows
+are exposed to separate those records. No stable run identifier is included.
 No document paths, IDs, names, balances, amounts,
 text, error details or raw SDK responses reach stdout, stderr, chats or providers.
 Summary counts still describe a class. Andrew may manually share ONLY this bounded
 summary with Codex under his section 2 decision; the runner never uploads it and
 Codex never runs the live command or reads its local output files to obtain it.
-Abort output is a fixed category and says no complete report was published.
+Abort output uses a bounded category: live-unavailable, invalid-plan, authorization,
+expired, clock, scope, foundation, transport, budget, drift, continuity or storage.
+These distinguish missing authority/target, inventory conflict, read limits,
+changed evidence and failed storage without returning private diagnostics.
+If storage was never attempted, publication is not-attempted. After an attempted
+publication it is unconfirmed: interruption can occur after atomic file creation
+but before acknowledgement. Never assert that no file exists in that case. Close
+the run as aborted, do not reuse its ID, and do not consume any leftover artifact.
 
 The restricted manifest additionally binds source hashes, scope, principal/approval
 and fence-evidence references, observation times, document presence/versions,
@@ -401,8 +421,12 @@ no-follow creation and descriptor-based verification, not only a racy path check
 Use a private temporary file, bounded serialization, flush/fsync, no-clobber atomic
 publication and directory durability check. Publish completion only after readback
 and digest verification. Crash, disk-full, symlink/hardlink collision, existing run,
-permission failure or interrupted publication must never leave an apparently
-complete report. Do not overwrite or automatically delete a prior run. Verify the
+permission failure or interrupted publication must never confer successful-run
+authority on an artifact. Artifact presence/JSON status/digest alone is insufficient:
+a Stage11 file always carries artifactAccepted:false, even after a successful
+rehearsal. Only the in-process durable receipt plus the final interval/clock checks
+permit returning a completion summary. There is no persistent acceptance token or
+production consumer; crash leftovers remain unaccepted. Do not overwrite or automatically delete a prior run. Verify the
 actual macOS filesystem primitive and adversarial cases before choosing it.
 
 Keep the private record locally until the maintenance decision and follow-up review
@@ -471,8 +495,8 @@ report persister have been verified for this proposed operation. A prior offered
 maintenance day is not a current window. Nothing here closes the remaining upgrade,
 strict-rules, operator-audit, Stage8 L2 or production gates.
 
-Next: Muse reviews this plan against the included source, then Claude independently
-reviews the design. Codex builds and rehearses the agreed runner and safeguards.
+Next: Muse reviews the Stage11 implementation candidate and these clarifications,
+then Claude independently reviews it. Stage10 PASS is not approval of new code.
 Before real access, Codex presents Andrew a short concrete scope for the authorized
 inventory, maintenance mutations and scan, with actual artifacts and recovery.
 There is deliberately no copy/paste production command in this preparation.

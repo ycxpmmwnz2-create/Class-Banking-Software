@@ -203,6 +203,14 @@ describe('Phase 3 command-safety source contract', () => {
     assert.ok(existsSync(new URL('./money-compatibility.emulator.test.js', import.meta.url)))
   })
 
+  it('source contract: protected scan stays in its guarded demo suite', () => {
+    const name = 'test:phase3:protected-money-scan'
+    assert.ok(ISOLATED_EMULATOR_COMMANDS.includes(name), 'protected scan gate must be discovered')
+    assert.deepEqual(projectArguments(scripts[name]), ['demo-morgan-bank-protected-scan'])
+    assert.ok(scripts[name].includes('--only firestore "node --test tests/phase3/protected-money-scan.emulator.test.js"'))
+    assert.ok(existsSync(new URL('./protected-money-scan.emulator.test.js', import.meta.url)))
+  })
+
   it('source contract: each isolated command refuses local Google ADC', () => {
     for (const name of ISOLATED_EMULATOR_COMMANDS) {
       assert.ok(

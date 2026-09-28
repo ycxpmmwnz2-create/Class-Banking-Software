@@ -91,7 +91,8 @@ function transactionEqual(a, b) {
   return TRANSACTION_KEYS.every(key => a[key] === b[key])
 }
 
-function analyzeRoom(room, students, ledger, issue) {
+// Pure analysis shared by the separate operator rehearsal; performs no I/O.
+export function analyzeRoom(room, students, ledger, issue) {
   const capacities = []
   if (students.length > TEACHER_MONEY_LIMITS.targets) issue('warning', 'roster-requires-explicit-batches', room)
   const root = room.data
