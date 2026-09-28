@@ -1233,3 +1233,16 @@ versions after GET-only scanning and compares identical canary writes under exac
 prior and maintenance rule artifacts. Default `firebase.json` remains unchanged.
 See `PROTECTED_MONEY_SCAN_REHEARSAL.md` for evidence limits and open live gates;
 none of these tests may be used as production fence/credential/terminal proof.
+
+## Stage12 protected scan observer rehearsal
+
+The existing Phase3 unit command includes `maintenanceObserver.test.js`. The
+protected scan emulator command also composes the new observer with the actual
+loopback REST reader and private report store, checks refusal before any reader
+request, and covers maintenance loss after real file publication. The platform
+collector, inventory, IAM/drain/credential/audit/canary evidence and lease are
+fictional. Tests do not prove Cloud change-history completeness or a live fence.
+
+See `MAINTENANCE_OBSERVER_REHEARSAL.md` for the exact acceptance contract, scope
+and remaining live/operator gates. No command, dependency, rules artifact,
+default config or deployed export is changed by this extension.

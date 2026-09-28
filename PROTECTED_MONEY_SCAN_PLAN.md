@@ -1,7 +1,8 @@
 # Protected money-data check — Stage10 preparation
 
-Status: Stage10 design review closed; Stage11 rehearsal implementation is pending
-Muse then Claude review (see PROTECTED_MONEY_SCAN_REHEARSAL.md). No live runner,
+Status: Stage10 design and Stage11 rehearsal reviews closed. Stage11 was committed
+as `c80a83f`; Stage12 observer rehearsal passed Muse and Claude review
+(2026-09-28; see MAINTENANCE_OBSERVER_REHEARSAL.md). No live runner,
 production read, maintenance change or scan approval is provided by this document.
 Baseline: `859946d074f2b0f6e0f5d1db1e3a74bb9823ba29`, branch
 `codex/teacher-money-integrity-design`. Stage9 and its correction have both reviews
@@ -495,8 +496,8 @@ report persister have been verified for this proposed operation. A prior offered
 maintenance day is not a current window. Nothing here closes the remaining upgrade,
 strict-rules, operator-audit, Stage8 L2 or production gates.
 
-Next: Muse reviews the Stage11 implementation candidate and these clarifications,
-then Claude independently reviews it. Stage10 PASS is not approval of new code.
+Next: Muse reviews the Stage12 observer rehearsal and affected scanner integration,
+then Claude independently reviews it. Earlier PASS verdicts do not cover new code.
 Before real access, Codex presents Andrew a short concrete scope for the authorized
 inventory, maintenance mutations and scan, with actual artifacts and recovery.
 There is deliberately no copy/paste production command in this preparation.

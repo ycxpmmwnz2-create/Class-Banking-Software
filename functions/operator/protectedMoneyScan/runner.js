@@ -11,7 +11,7 @@ const PLAN_KEYS = ['kind', 'projectId', 'databaseId', 'runId', 'sourceCommit', '
 const OWNER_MASK = Object.freeze(['uid', 'status', 'classroomId'])
 const ROOT_MASK = Object.freeze(['ownerUid', 'classroomId', 'accessControl'])
 const FIXED_PROJECTION = new Set(Object.values(PROJECTION_CATEGORIES))
-function planCopy(input) {
+export function copyScanPlan(input) {
   // Hard stop before reading dependency properties or constructing transport.
   if (!exact(input, PLAN_KEYS)) fail('invalid-plan')
   if (input.projectId !== DEMO_PROJECT) fail('live-unavailable')
@@ -53,7 +53,7 @@ export async function runProtectedMoneyScan(input, dependencies) {
   let publicationAttempted = false
   let settled = false, receiptVerified = false
   try {
-    const plan = planCopy(input), planDigest = hash(plan)
+    const plan = copyScanPlan(input), planDigest = hash(plan)
     const { reader, observer, publisher, clock = () => Date.now(), monotonic = () => performance.now() } = dependencies
     if (reader?.projectId !== DEMO_PROJECT || reader.databaseId !== '(default)' || reader.kind !== 'loopback-read-only' ||
         typeof reader.listPage !== 'function' || typeof reader.get !== 'function' ||

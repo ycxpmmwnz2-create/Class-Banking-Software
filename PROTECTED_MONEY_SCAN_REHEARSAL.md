@@ -1,6 +1,8 @@
 # Protected money scan — Stage11 implementation rehearsal
 
-Status: built for fictional local tests; pending Muse then Claude review. Baseline
+Status: Stage11 and its timeout/receipt correction passed Muse and Claude; committed
+as `c80a83f`. The Stage12 observer extension passed Muse and Claude review
+(2026-09-28); see MAINTENANCE_OBSERVER_REHEARSAL.md. Stage11 baseline
 `d64617e03221bdec9c59bf19dbd631a2fffa5c74` (reviewed Stage10 preparation).
 This implements the bounded reader, shared money/projection analysis, change
 checks and private file writer. It does not yet implement a production reader,
@@ -21,6 +23,10 @@ literal `Bearer owner` header is an emulator convention required for metadata
 operations, not a credential or proof of production read-only IAM. Test setup and
 race injection use explicit emulator-only SDK writes; the reader has no write API.
 Never seed real records into this demo or use its test output for a live decision.
+
+The Stage12 `runObservedMoneyScan` composition adds an evidence-validating observer
+and checks its continuity before each reader invocation. Its platform collector
+and cooperative lease remain fictional; it does not establish a live fence.
 
 The injected reader/clock/observer/publisher interfaces are trusted fictional test
 seams, not a sandbox against hostile JavaScript. The fixture source SHA, owner IDs,

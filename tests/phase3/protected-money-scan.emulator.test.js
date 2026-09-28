@@ -13,6 +13,8 @@ import { makeFixture } from '../../functions/operator/protectedMoneyScan/fixture
 import { createLoopbackReader } from '../../functions/operator/protectedMoneyScan/loopbackReader.js'
 import { createPrivatePublisher } from '../../functions/operator/protectedMoneyScan/reportStore.js'
 import { runProtectedMoneyScan } from '../../functions/operator/protectedMoneyScan/runner.js'
+import { runObservedMoneyScan } from '../../functions/operator/protectedMoneyScan/observedRunner.js'
+import { makeMaintenanceFixture } from '../../functions/operator/protectedMoneyScan/maintenanceFixtures.js'
 
 assert.equal(process.env.FIRESTORE_EMULATOR_HOST, '127.0.0.1:8080', 'Use the guarded protected scan npm command')
 const { Firestore, Timestamp } = createRequire(new URL('../../functions/package.json', import.meta.url))('firebase-admin/firestore')
@@ -31,6 +33,46 @@ beforeEach(async () => {
   f.dependencies.reader = createLoopbackReader(f.plan)
 })
 const scan = () => runProtectedMoneyScan(f.plan, f.dependencies)
+test('maintenance observer composes with the real REST reader and private file store', async t => {
+  const m = makeMaintenanceFixture()
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'fictional-observed-emulator-')))
+  await chmod(directory, 0o700);t.after(() => rm(directory, { recursive: true, force: true }))
+  m.observedDependencies.reader = createLoopbackReader(m.plan)
+  m.observedDependencies.publisher = createPrivatePublisher(directory)
+  const paths = [...m.store.keys()], before = await db.getAll(...paths.map(path => db.doc(path)))
+  const result = await runObservedMoneyScan(m.plan, m.expectation, m.observedDependencies)
+  assert.equal(result.status, 'complete', JSON.stringify(result))
+  assert.equal(m.releaseCount, 1);assert.equal(m.leaseHeld(), false)
+  const report = JSON.parse(await readFile(join(directory, m.plan.runId, 'report.json'), 'utf8'))
+  assert.equal(report.artifactAccepted, false);assert.equal(report.productionEligible, false)
+  const after = await db.getAll(...paths.map(path => db.doc(path)))
+  before.forEach((doc, n) => { assert.deepEqual(after[n].data(), doc.data());assert.ok(after[n].updateTime.isEqual(doc.updateTime)) })
+})
+test('unresolved writer evidence prevents every real-reader request', async () => {
+  const m = makeMaintenanceFixture(), reader = createLoopbackReader(m.plan)
+  let requests = 0
+  m.observedDependencies.reader = { ...reader,
+    get(...args) { requests++;return reader.get(...args) },
+    listPage(...args) { requests++;return reader.listPage(...args) },
+  }
+  m.maintenance.writers[0].inFlight = 1
+  const result = await runObservedMoneyScan(m.plan, m.expectation, m.observedDependencies)
+  assert.equal(result.category, 'continuity');assert.equal(requests, 0);assert.equal(m.published.length, 0)
+})
+test('maintenance loss after real file publication returns unconfirmed and preserves the private artifact', async t => {
+  const m = makeMaintenanceFixture()
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'fictional-observed-loss-')))
+  await chmod(directory, 0o700);t.after(() => rm(directory, { recursive: true, force: true }))
+  const publisher = createPrivatePublisher(directory)
+  m.observedDependencies.reader = createLoopbackReader(m.plan)
+  m.observedDependencies.publisher = { async publish(value) {
+    const receipt = await publisher.publish(value);m.platformChange('revisions');return receipt
+  } }
+  const result = await runObservedMoneyScan(m.plan, m.expectation, m.observedDependencies)
+  assert.equal(result.status, 'aborted');assert.equal(result.publication, 'unconfirmed')
+  const report = JSON.parse(await readFile(join(directory, m.plan.runId, 'report.json'), 'utf8'))
+  assert.equal(report.artifactAccepted, false);assert.equal(m.leaseHeld(), false)
+})
 test('actual paginated REST read and private publication leave all source versions/data unchanged', async t => {
   const batch = db.batch()
   for (let id = 2; id <= 27; id++) batch.set(db.doc(`classrooms/canary/students/${id}`), { id, name: 'Fictional', balance: 2, frozen: false, transactions: [] })
