@@ -1085,6 +1085,8 @@ describe('Phase 3 release-order source contract', () => {
       // Authorized integrity/recovery implementation stages. This allows the
       // named source files, not their deployment or a containment claim.
       'teacherMoneyContract.js', 'teacherMoneyContract.test.js',
+      // Stage16: dormant award/deduct calculation, not a callable or release.
+      'teacherAwardChanges.js', 'teacherAwardChanges.test.js',
       'plannerReadBudget.js', 'plannerReadBudget.test.js',
       'classroomAccess.js', 'classroomAccess.test.js',
       'classroomAccessPlan.js', 'classroomAccessPlan.test.js',
