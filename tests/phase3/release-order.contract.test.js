@@ -1087,6 +1087,8 @@ describe('Phase 3 release-order source contract', () => {
       'teacherMoneyContract.js', 'teacherMoneyContract.test.js',
       // Stage16: dormant award/deduct calculation, not a callable or release.
       'teacherAwardChanges.js', 'teacherAwardChanges.test.js',
+      'moneyDocumentSize.js', 'moneyDocumentSize.test.js',
+      'teacherAwardService.js', 'teacherAwardService.test.js',
       'plannerReadBudget.js', 'plannerReadBudget.test.js',
       'classroomAccess.js', 'classroomAccess.test.js',
       'classroomAccessPlan.js', 'classroomAccessPlan.test.js',
@@ -1330,9 +1332,25 @@ describe('Phase 3 release-order source contract', () => {
       `${OPERATOR_ONLY} is operator-only and must stay out of the deployed graph`,
     )
 
-    for (const module of ['phase3/classroomInitialization.js', 'phase3/moneyCompatibility.js']) {
+    for (const module of ['phase3/classroomInitialization.js', 'phase3/moneyCompatibility.js', 'phase3/teacherAwardService.js']) {
       assert.ok(!visited.has(module), `${module} must remain outside the deployed graph`)
     }
+
+    // Stage16 Claude C1: the dormant service must be importable without pulling
+    // the advisory scanner into a future callable's dependency graph.
+    const serviceGraph = new Set()
+    const serviceQueue = ['phase3/teacherAwardService.js']
+    while (serviceQueue.length) {
+      const entry = serviceQueue.shift()
+      if (serviceGraph.has(entry)) continue
+      serviceGraph.add(entry)
+      const source = readFileSync(new URL(`../../functions/${entry}`, import.meta.url), 'utf8')
+      for (const specifier of extractLocalSpecifiers(source)) serviceQueue.push(resolveSpecifier(entry, specifier))
+    }
+    assert.ok(serviceGraph.has('phase3/moneyDocumentSize.js'))
+    assert.ok(!serviceGraph.has('phase3/moneyCompatibility.js'), 'award service must not import the advisory scanner')
+    assert.ok(!serviceGraph.has(OPERATOR_ONLY))
+    assert.ok(![...serviceGraph].some(path => path.startsWith('operator/')))
 
     assert.ok(![...visited].some(path => path.startsWith('operator/protectedMoneyScan/')),
       'protected scan must remain outside the deployed graph')

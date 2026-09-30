@@ -54,4 +54,7 @@ fictional. Tests cover binding, cents, whole-action refusal, fresh recalculation
 cross-target orphan collisions, history preservation, and count/byte limits.
 They provide calculation evidence, not emulator, concurrency, or live evidence.
 
-Review status: Codex candidate; Muse and Claude independent reviews pending.
+Stage16 review status: Muse PASS; Claude PASS WITH CONDITIONS. The unchanged
+four-file component was committed as 2c1cb0a. Claude C1 required relocating the
+size estimator before deployed integration. The Stage17 candidate does that;
+see TEACHER_AWARD_SERVICE.md. Stage17 is pending its own independent reviews.

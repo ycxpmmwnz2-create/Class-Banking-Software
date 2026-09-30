@@ -6,7 +6,7 @@ import {
   requirePositiveMoneyCents, storedMoneyToCents, TeacherMoneyContractError,
   TEACHER_MONEY_LIMITS, TEACHER_MONEY_PROTOCOL,
 } from './teacherMoneyContract.js'
-import { estimateMoneyDocumentBytes } from './moneyCompatibility.js'
+import { estimateMoneyDocumentBytes } from './moneyDocumentSize.js'
 
 const REQUEST_KEYS = ['protocolVersion', 'controlGeneration', 'requestId', 'action',
   'studentIds', 'amountCents', 'reason', 'category', 'memo']
