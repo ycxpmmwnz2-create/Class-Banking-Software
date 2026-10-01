@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { executeTeacherAwardService, teacherAwardPaths } from './teacherAwardService.js'
+import { estimateMoneyDocumentBytes } from './moneyDocumentSize.js'
 
 const clone = value => globalThis.structuredClone(value)
 const uid = 'teacher-a', classroomId = 'class-a'
@@ -48,11 +49,28 @@ function fixture() {
 }
 const code = expected => error => error.code === expected
 
+// Decode independently in tests; execution compares the canonical string directly.
+const receiptMapping = receipt => receipt.version === 1 ? receipt.ledgerIds :
+  receipt.ledgerIds.slice('b36:1:'.length).split(',').map(pair => {
+    const [targetId, ledgerId] = pair.split(':').map(value => Number.parseInt(value, 36))
+    return { targetId, ledgerId }
+  })
+function seedGroup(f, count, historyCount = 0) {
+  const ids = Array.from({ length: count }, (_, i) => i + 1)
+  for (const n of ids) f.data.set(`classrooms/class-a/students/${n}`, {
+    id: n, name: 'Fictional student', balance: 0, frozen: false,
+    transactions: Array.from({ length: historyCount }, (_, j) => ({ id: j + 1,
+      date: time, studentId: n, studentName: 'Fictional student', type: 'Add', amount: 1,
+      reason: 'Homework', memo: '', category: 'Homework', status: 'Approved', source: 'Teacher' })),
+  })
+  return ids
+}
+
 test('one atomic batch saves exact cents, matching ledger/history and private minimal receipt', async () => {
   const f = fixture(), result = await f.run()
   const student = f.data.get('classrooms/class-a/students/1'), receipt = f.data.get(paths.receipt)
   assert.equal(student.balance, 2.2)
-  assert.deepEqual(f.data.get(`classrooms/class-a/transactions/${receipt.ledgerIds[0].ledgerId}`), student.transactions[0])
+  assert.deepEqual(f.data.get(`classrooms/class-a/transactions/${receiptMapping(receipt)[0].ledgerId}`), student.transactions[0])
   assert.equal(f.batches.length, 1); assert.equal(f.batches[0].length, 5)
   assert.equal(f.data.get(paths.actor).unacknowledgedRequestId, id)
   assert.equal(f.data.get(paths.quota).count, 1)
@@ -71,7 +89,8 @@ test('lost response followed by same-intent retry returns receipt without applyi
 })
 test('replay tolerates Firestore map-key order and checks exact mapping', async () => {
   const f = fixture(); await f.run()
-  const r = f.data.get(paths.receipt), item = r.ledgerIds[0]
+  const r = f.data.get(paths.receipt), item = receiptMapping(r)[0]
+  r.version = 1 // Preserve replay of the earlier dormant receipt representation.
   r.ledgerIds = [{ ledgerId: item.ledgerId, targetId: item.targetId }]
   await f.run()
   r.ledgerIds[0].targetId = 2
@@ -142,9 +161,16 @@ test('deductions allow teacher overdraft/frozen accounts and use subtraction pol
 })
 test('oversized cumulative read/write and receipt budgets fail atomically', async () => {
   const f = fixture()
-  const ids = Array.from({ length: 70 }, (_, i) => i + 1)
-  for (const n of ids) f.data.set(`classrooms/class-a/students/${n}`, { id: n, name: 'Fictional', balance: 0, frozen: false, transactions: [] })
-  await assert.rejects(f.run(request({ studentIds: ids })), code('receipt-size-limit')); assert.equal(f.batches.length, 0)
+  const ids = seedGroup(f, 100)
+  const longUid = 't'.repeat(1500), longPaths = teacherAwardPaths(classroomId, longUid, id)
+  f.data.delete('teachers/teacher-a')
+  f.data.set(`teachers/${longUid}`, { uid: longUid, status: 'active', classroomId })
+  f.data.get('classrooms/class-a').ownerUid = longUid
+  f.data.delete(paths.actor)
+  f.data.set(longPaths.actor, { version: 1, actorUid: longUid, unacknowledgedRequestId: null })
+  const before = clone([...f.data])
+  await assert.rejects(f.run(request({ studentIds: ids }), { auth: { uid: longUid, token: { role: 'teacher' } } }), code('receipt-size-limit'))
+  assert.equal(f.batches.length, 0); assert.deepEqual([...f.data], before)
   const g = fixture()
   for (const n of ids) g.data.set(`classrooms/class-a/students/${n}`, { id: n, name: 'x'.repeat(150000), balance: 0, frozen: false, transactions: [] })
   await assert.rejects(g.run(request({ studentIds: ids })), code('transaction-size-limit'))
@@ -174,25 +200,65 @@ test('inconsistent receipt actor and counter state refuses replay without writes
   }
 })
 
-for (const count of [3, 23, 24]) test(`multi-target capacity boundary ${count}`, async () => {
-  const f = fixture(), ids = Array.from({length: count}, (_, i) => i + 1)
-  for (const n of ids) f.data.set(`classrooms/class-a/students/${n}`, {id:n, name:'Fictional', balance:0, frozen:false, transactions:[]})
-  const before = clone([...f.data])
-  if (count === 24) {
-    await assert.rejects(f.run(request({studentIds:ids})), code('receipt-size-limit'))
-    assert.deepEqual([...f.data], before); assert.equal(f.batches.length, 0)
-  } else {
-    const result = await f.run(request({studentIds:ids}))
-    assert.equal(result.itemCount, count); assert.equal(f.batches.length, 1)
-    assert.equal(f.batches[0].length, 2 * count + 3)
-    const receipt = f.data.get(paths.receipt)
-    for (const n of ids) {
-      const student = f.data.get(`classrooms/class-a/students/${n}`)
-      assert.equal(student.balance, 1.1); assert.equal(student.transactions.length, 1)
-      const ledger = receipt.ledgerIds.find(item => item.targetId === n)
-      assert.deepEqual(f.data.get(`classrooms/class-a/transactions/${ledger.ledgerId}`), student.transactions[0])
-    }
-    const saved = clone([...f.data]); await f.run(request({studentIds:ids}))
-    assert.deepEqual([...f.data], saved); assert.equal(f.batches.length, 1)
+for (const count of [3, 23, 24, 30, 100]) test(`compact receipt saves ${count} targets atomically and replays`, async () => {
+  const f = fixture(), ids = seedGroup(f, count)
+  const result = await f.run(request({ studentIds: ids }))
+  assert.equal(result.itemCount, count); assert.equal(f.batches.length, 1)
+  assert.equal(f.batches[0].length, 2 * count + 3)
+  const receipt = f.data.get(paths.receipt)
+  assert.equal(receipt.version, 2); assert.ok(receipt.ledgerIds.startsWith('b36:1:'))
+  assert.ok(estimateMoneyDocumentBytes(paths.receipt, receipt) <= 8192)
+  const mapping = receiptMapping(receipt)
+  assert.deepEqual(mapping.map(item => item.targetId), ids)
+  for (const n of ids) {
+    const student = f.data.get(`classrooms/class-a/students/${n}`)
+    assert.equal(student.balance, 1.1); assert.equal(student.transactions.length, 1)
+    const ledger = mapping.find(item => item.targetId === n)
+    assert.deepEqual(f.data.get(`classrooms/class-a/transactions/${ledger.ledgerId}`), student.transactions[0])
+  }
+  const saved = clone([...f.data]); f.reads = []
+  assert.deepEqual(await f.run(request({ studentIds: ids })), result)
+  assert.deepEqual([...f.data], saved); assert.equal(f.batches.length, 1)
+  assert.ok(!f.reads.some(path => path.includes('/students/') || path.includes('/transactions/')))
+})
+
+test('compact receipt rejects noncanonical, corrupt, reordered and unknown-version mappings', async () => {
+  for (const mutate of [r => { r.ledgerIds += ',' }, r => { r.ledgerIds = r.ledgerIds.replace('b36:1:', 'b36:2:') },
+    r => { r.ledgerIds = r.ledgerIds.replace('b36:1:1:', 'b36:1:01:') }, r => { r.ledgerIds = 'b36:1:' + r.ledgerIds.slice(6).split(',').reverse().join(',') },
+    r => { r.ledgerIds = [] }, r => { r.version = 3 }]) {
+    const f = fixture(), ids = seedGroup(f, 3)
+    await f.run(request({ studentIds: ids })); mutate(f.data.get(paths.receipt))
+    const before = clone([...f.data])
+    await assert.rejects(f.run(request({ studentIds: ids })), code('invalid-receipt'))
+    assert.deepEqual([...f.data], before); assert.equal(f.batches.length, 1)
   }
 })
+
+test('largest safe student IDs retain their exact mapping within receipt budget', async () => {
+  const f = fixture(), ids = Array.from({ length: 100 }, (_, i) => Number.MAX_SAFE_INTEGER - i)
+  f.data.delete('classrooms/class-a/students/1')
+  for (const n of ids) f.data.set(`classrooms/class-a/students/${n}`, { id: n, name: 'Fictional student', balance: 0, frozen: false, transactions: [] })
+  await f.run(request({ studentIds: ids }))
+  const receipt = f.data.get(paths.receipt)
+  assert.deepEqual(receiptMapping(receipt).map(item => item.targetId), [...ids].sort((a, b) => a - b))
+  assert.ok(estimateMoneyDocumentBytes(paths.receipt, receipt) <= 8192)
+  for (const { targetId, ledgerId } of receiptMapping(receipt)) {
+    assert.deepEqual(f.data.get(`classrooms/class-a/transactions/${ledgerId}`), f.data.get(`classrooms/class-a/students/${targetId}`).transactions[0])
+  }
+})
+
+for (const [historyCount, maximum] of [[50, 54], [100, 27], [200, 14], [300, 9], [600, 4]]) {
+  test(`history fixture ${historyCount}: ${maximum} fits, next target refuses all writes`, async () => {
+    const f = fixture(), ids = seedGroup(f, maximum, historyCount)
+    const before = clone([...f.data])
+    await f.run(request({ studentIds: ids }))
+    for (const n of ids) {
+      const path = `classrooms/class-a/students/${n}`, student = f.data.get(path)
+      assert.equal(student.balance, 1.1)
+      assert.deepEqual(student.transactions.slice(1), new Map(before).get(path).transactions)
+    }
+    const g = fixture(), tooMany = seedGroup(g, maximum + 1, historyCount), unchanged = clone([...g.data])
+    await assert.rejects(g.run(request({ studentIds: tooMany })), code('transaction-size-limit'))
+    assert.deepEqual([...g.data], unchanged); assert.equal(g.batches.length, 0)
+  })
+}

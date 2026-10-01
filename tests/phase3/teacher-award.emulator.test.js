@@ -79,3 +79,45 @@ test('SDK cancelled receipt fences a new action without touching money or quota'
   assert.equal((await db.doc(paths.quota).get()).data().count, 1)
   assert.equal((await db.collection(`classrooms/${room}/transactions`).get()).size, 0)
 })
+
+async function seedGroup(count, historyCount) {
+  const ids = Array.from({ length: count }, (_, i) => i + 1), batch = db.batch()
+  for (const n of ids) batch.set(db.doc(`classrooms/${room}/students/${n}`), {
+    id: n, name: 'Fictional student', balance: 0, frozen: false,
+    transactions: Array.from({ length: historyCount }, (_, j) => ({ id: j + 1, date: time,
+      studentId: n, studentName: 'Fictional student', type: 'Add', amount: 1,
+      reason: 'Homework', memo: '', category: 'Homework', status: 'Approved', source: 'Teacher' })),
+  })
+  await batch.commit()
+  return ids
+}
+for (const [count, historyCount] of [[30, 50], [100, 0], [14, 200]]) {
+  test(`SDK ${count} students with ${historyCount} history entries save once with compact receipt`, async () => {
+    const ids = await seedGroup(count, historyCount), raw = request({ studentIds: ids })
+    const results = await Promise.all([run(raw), run(raw)])
+    assert.deepEqual(results[0], results[1]); assert.deepEqual(await run(raw), results[0])
+    assert.equal(results[0].itemCount, count)
+    const receipt = (await db.doc(paths.receipt).get()).data()
+    assert.equal(receipt.version, 2); assert.ok(receipt.ledgerIds.startsWith('b36:1:'))
+    const ledgers = await db.collection(`classrooms/${room}/transactions`).get()
+    assert.equal(ledgers.size, count)
+    for (const n of ids) {
+      const student = (await db.doc(`classrooms/${room}/students/${n}`).get()).data()
+      assert.equal(student.balance, 1.1); assert.equal(student.transactions.length, historyCount + 1)
+      assert.deepEqual(ledgers.docs.find(d => d.data().studentId === n).data(), student.transactions[0])
+    }
+    assert.equal((await db.doc(paths.quota).get()).data().count, 1)
+    assert.equal((await db.doc(paths.actor).get()).data().unacknowledgedRequestId, id)
+  })
+}
+test('SDK history-heavy class refuses atomically without saving a prefix', async () => {
+  const ids = await seedGroup(30, 200)
+  const before = await db.getAll(...ids.map(n => db.doc(`classrooms/${room}/students/${n}`)))
+  await assert.rejects(run(request({ studentIds: ids })), e => e.code === 'transaction-size-limit')
+  const after = await db.getAll(...ids.map(n => db.doc(`classrooms/${room}/students/${n}`)))
+  assert.deepEqual(after.map(s => s.data()), before.map(s => s.data()))
+  assert.equal((await db.collection(`classrooms/${room}/transactions`).get()).size, 0)
+  assert.equal((await db.doc(paths.receipt).get()).exists, false)
+  assert.equal((await db.doc(paths.quota).get()).data().count, 0)
+  assert.equal((await db.doc(paths.actor).get()).data().unacknowledgedRequestId, null)
+})

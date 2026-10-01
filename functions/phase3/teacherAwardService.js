@@ -38,20 +38,29 @@ function receiptCount(data) {
       !Number.isSafeInteger(data.count) || data.count < 0 || data.count > LIMITS.receipts) fail('invalid-quota')
   return data.count
 }
+// Receipt v2 keeps the complete ordered mapping as canonical lowercase base36
+// pairs. Both IDs are positive safe integers; ':' and ',' cannot occur in them.
+// Replay compares to the freshly derived encoding, never parses stored input.
+const compactLedgerMapping = ledgerIds => 'b36:1:' + ledgerIds
+  .map(({ targetId, ledgerId }) => `${targetId.toString(36)}:${ledgerId.toString(36)}`).join(',')
+
 function storedReceipt(data, bound, uid) {
   const common = ['version', 'actorUid', 'requestId', 'generation', 'status', 'serverTime']
   const keys = data?.status === 'cancelled' ? common : [...common, 'digest', 'action', 'itemCount', 'ledgerIds', 'acknowledged']
-  if (!hasExactDataKeys(data, keys) || data.version !== 1 || data.actorUid !== uid ||
+  if (!hasExactDataKeys(data, keys) ||
+      (data.version !== 1 && !(data.version === 2 && data.status === 'committed')) || data.actorUid !== uid ||
       data.requestId !== bound.intent.requestId || !isControlGeneration(data.generation) || !validTime(data.serverTime)) fail('invalid-receipt')
   if (data.status === 'cancelled') fail('request-cancelled')
   if (data.status !== 'committed' || typeof data.acknowledged !== 'boolean' ||
       typeof data.digest !== 'string' || !/^[a-f0-9]{64}$/.test(data.digest)) fail('invalid-receipt')
   if (data.digest !== bound.digest) fail('request-conflict')
-  if (data.generation !== bound.intent.controlGeneration || data.action !== bound.intent.action ||
-      data.itemCount !== bound.ledgerIds.length || !Array.isArray(data.ledgerIds) ||
-      data.ledgerIds.length !== bound.ledgerIds.length || !bound.ledgerIds.every((expected, i) =>
+  const mappingMatches = data.version === 2 ? data.ledgerIds === compactLedgerMapping(bound.ledgerIds) :
+    Array.isArray(data.ledgerIds) && data.ledgerIds.length === bound.ledgerIds.length &&
+    bound.ledgerIds.every((expected, i) =>
         hasExactDataKeys(data.ledgerIds[i], ['targetId', 'ledgerId']) &&
-        data.ledgerIds[i].targetId === expected.targetId && data.ledgerIds[i].ledgerId === expected.ledgerId)) fail('invalid-receipt')
+        data.ledgerIds[i].targetId === expected.targetId && data.ledgerIds[i].ledgerId === expected.ledgerId)
+  if (data.generation !== bound.intent.controlGeneration || data.action !== bound.intent.action ||
+      data.itemCount !== bound.ledgerIds.length || !mappingMatches) fail('invalid-receipt')
   return data
 }
 function reply(receipt, count) {
@@ -129,9 +138,9 @@ export async function executeTeacherAwardService(request, { firestore, auth, pro
     const serverTime = now()
     if (!validTime(serverTime)) fail('invalid-clock')
     const calculated = buildTeacherAwardChanges(wire, { identity, students, candidateLedgerReads, allowedReasons, serverTime })
-    const receipt = { version: 1, actorUid: identity.teacherUid, requestId: wire.requestId,
+    const receipt = { version: 2, actorUid: identity.teacherUid, requestId: wire.requestId,
       generation: wire.controlGeneration, status: 'committed', serverTime, digest: bound.digest,
-      action: wire.action, itemCount: bound.ledgerIds.length, ledgerIds: bound.ledgerIds, acknowledged: false }
+      action: wire.action, itemCount: bound.ledgerIds.length, ledgerIds: compactLedgerMapping(bound.ledgerIds), acknowledged: false }
     const nextActor = { ...actor, unacknowledgedRequestId: wire.requestId }
     const nextQuota = { version: 1, count: count + 1 }
     const receiptBytes = estimateMoneyDocumentBytes(paths.receipt, receipt)

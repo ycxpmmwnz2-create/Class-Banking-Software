@@ -226,6 +226,14 @@ The committed money-action baseline for server-only receipts contains version, a
 request ID/digest, generation,
 terminal status (committed/cancelled), server time, action code, item count and
 ledger-ID mapping; no PIN, name, memo, before/after balance or full input payload.
+For the dormant award/deduct service, Stage18 uses receipt version 2 with the
+full ordered ledger-ID mapping encoded as `b36:1:<target>:<ledger>,...` (canonical
+lowercase base36 positive safe integers, no leading zeroes). Exact comparison to
+the freshly derived mapping preserves replay validation; version 1 object-array
+receipts remain readable without mutation and cancellation stays version 1.
+Other action receipt formats are unchanged. See TEACHER_AWARD_SERVICE.md for
+measured capacity and the remaining integration requirements.
+
 Keep at most 100,000 terminal receipts per classroom, each at most 8 KiB. Enforce
 that cap transactionally using a server-owned counter; warn the teacher at 80%
 and 95%. At the cap, refuse NEW actions before writes while preserving status,
@@ -463,6 +471,12 @@ emulator requests before release. Neither a document-count calculation nor this
 proposal proves actual platform byte accounting or guaranteed success under races.
 Resolve/fence any dispatched prior ID before composing that new action/plan;
 never change the digest, generation or plan of an unresolved request in place.
+
+Andrew confirmed this capacity policy on 2026-09-30 for teacher awards/deductions:
+one whole-class action when it fits; separately shown and confirmed groups when
+necessary. Compact receipts remove the fixed 23-target bottleneck, but do not
+remove history-size constraints. This decision authorizes no UI activation and
+does not waive the bounded planner, recovery, review or release requirements.
 
 The UI permits explicitly selected, separately planned batches. It never
 automatically chunks or labels a partial batch as "whole class reset". Completed
