@@ -1,7 +1,7 @@
-# Atomic teacher award/deduct service — Stage18 capacity candidate
+# Teacher award/deduct service — Stage19 preview and recovery candidate
 
-Stage17 committed as 9ab312a after Muse/Claude review. Stage18 capacity candidate
-awaits Muse then Claude review. Dormant: not exported by functions/index.js,
+Stage17 committed as 9ab312a and Stage18 as a69833b after Muse/Claude reviews.
+Stage19 preview/recovery candidate awaits Muse then Claude review. Dormant: not exported by functions/index.js,
 not callable from the browser, and not deployed. Stage16 is committed as 2c1cb0a;
 this stage builds on its reviewed calculations. No real-data scanner activation.
 
@@ -113,13 +113,72 @@ with empty histories, and a 14-student group with 200 entries; a 30-student clas
 with 200 entries is refused in full. They verify atomicity/replay, not production
 index sizes or a completed preview/recovery workflow.
 
-The product choice is resolved. Before UI integration, implement and independently
-review the existing §4 bounded read-only planner using the SAME receipt encoding
-and conservative accounting as execution. It must return only a proven fitting
-prefix, retain ordered unplanned IDs, enforce snapshot/version/expiry checks and
-require fresh confirmation per group. Do not use the table or failed writes to
-choose group sizes. The planner, acknowledgment and dispatch-rejection fencing
-remain separate required work; this component must stay dormant until integrated.
+### Stage19 server preview and recovery
+
+The product choice is resolved. This stage adds dormant server functions within
+the same excluded module; no callable, browser or rules change is included.
+All dependencies remain trusted server inputs. The older unplanned executor stays
+available for component tests; a future application callable must use the planned
+executor for new award/deduct actions, never expose a way to skip the plan.
+
+- `planTeacherAwardService(request, dependencies)` accepts the existing award
+  intent. It checks current ownership, active control/generation, unused request
+  ID, actor/quota and settings. It hydrates only a sorted prefix in one consistent
+  transaction. Before either point read for a target, the complete student/ledger
+  dependency group reserves two worst-case document bounds. Foundation and
+  metadata reads also reserve bounds. Accounting resets on each callback retry.
+- Each hydrated prefix is checked through the SAME `awardMutation` helper used
+  by execution: unchanged calculator, compact receipt, read/write estimates and
+  quotas. It stops at the first capacity or reply-size exclusion without reading
+  further targets. The entire ordered remainder, including any fetched-but-excluded
+  target, stays in `notYetPlanned`; its existence/ownership is not asserted.
+- The response contains `{plan, request, selected, notYetPlanned, reason}`.
+  `request` is the exact subset intent for confirmation; selected summaries have
+  current name and current/expected cents. `plan` binds project, teacher, classroom,
+  intent digest, a 60-second window and exact SDK document `updateTime` seconds/
+  nanoseconds (absence represented by null) for the selected dependencies. The
+  result is capped at 64 KiB. If no target fits, plan/request are null and all IDs
+  remain; there is no executable plan and no retry loop. Invalid/auth/collision
+  conditions reject rather than silently skipping a target.
+- `executePlannedTeacherAwardService({request, plan}, dependencies)` snapshots the
+  supplied plan, re-derives identity/digest/authorization and all money/capacity
+  checks, and compares the full exact selected dependency version vector and time
+  window immediately before staging any write. Stale/expired plans fail without
+  financial writes. A matching committed receipt may replay after expiry: an
+  expired preview must never hide a save that already committed. Client-supplied
+  plan fields confer no authority or proof of human confirmation; no signature or
+  secret is introduced. Execution does not trust preview balances or names.
+- `recoverTeacherAwardService({protocolVersion:1, classroomId, requestId,
+  operation}, dependencies)` handles `status`, `acknowledge`, or `cancel` with
+  fresh reciprocal ownership and active/readOnly access. Suspended is denied.
+  The expected classroom binding prevents an old marker being reinterpreted after
+  teacher rebinding. Status permits a null requestId to inspect the sole actor
+  pointer; no pointer/receipt yields `unconfirmed`, never permission to resubmit.
+- Recovery validates both committed receipt formats, canonical mapping/ledger
+  derivation, receipt size, quota and actor consistency without reading money or
+  requiring the lost payload. It returns only minimal status metadata. Idempotent
+  acknowledgment marks a committed receipt and clears only its matching actor
+  pointer; replaying an old acknowledgment cannot clear a newer operation.
+- Cancellation creates a v1 tombstone plus one quota increment atomically, never
+  alters balances or clears another actor pointer. It serializes against execution
+  on the same receipt/actor/quota reads: if execution won, it returns committed;
+  if cancellation won, any payload using that ID is fenced. Missing/corrupt
+  metadata is never initialized. A full quota blocks new tombstones but permits
+  existing status/acknowledgment. Cancellation of a cancelled key is idempotent.
+
+Recovery has a fixed bound of five point-read documents (two foundation, actor,
+quota, receipt) and at most two small metadata writes. The existing document
+maximum plus headroom bounds that read set below 8 MiB; exact metadata schemas
+and the 8 KiB receipt cap bound writes. Planning remains read-only, not a
+reservation, and must never concatenate separate snapshots into one class plan.
+
+Server fencing is now available, but the future client still must persist the
+bound unresolved marker before dispatch, make one status/cancel recovery attempt
+following a rejected/uncertain dispatch, keep blocked on failed recovery, and
+require explicit acknowledgment before a new group. Callable error mapping must
+return fixed safe responses and distinguish rejection from terminal cancellation.
+Those browser/callable paths are NOT implemented or qualified here. Tests simulate
+service invocations, not teacher confirmation or end-to-end UI behavior.
 
 Stage16 Claude C1 is addressed by extracting the unchanged estimator algorithm
 into moneyDocumentSize.js. The scanner retains its existing exported wrapper and
@@ -127,12 +186,16 @@ error contract. moneyCompatibility.js stays excluded from the deployed graph;
 the new service is also explicitly excluded while dormant. The release-order
 file inventory gains only the paired estimator/service modules and tests.
 
-Before application use: implement/review metadata initialization, status,
-acknowledgment and cancellation recovery; bounded preview and dispatch-rejection
-fencing; strict rules and UI; other money writers; compatibility qualification;
-and the integrated release sequence. This service intentionally leaves the actor
-blocked after success until that future acknowledgment operation. Never clear it
-manually to make a pilot work. It does not supersede Stage15's scanner NO-GO.
+Before application use: review these preview/recovery services, implement/review
+metadata initialization and the callable/client recovery integration, strict rules
+and UI, other money writers, compatibility qualification and the release sequence.
+The actor stays blocked after a save until explicit acknowledgment through the
+recovery service. Never clear metadata manually to make a pilot work. This does
+not supersede Stage15's scanner NO-GO or certify production readiness.
+
+Andrew's October 1 finish line is this bounded server step plus an outstanding-work
+audit, then a stop before further implementation. No UI integration or additional
+feature implementation is inferred from the remaining requirements.
 
 Tests use fictional records: optimistic transaction fakes for retries, revocation,
 quota, malformed state and budgets; actual Firestore emulator transactions for

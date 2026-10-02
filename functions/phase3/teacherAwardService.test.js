@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { executeTeacherAwardService, teacherAwardPaths } from './teacherAwardService.js'
+import { createHash } from 'node:crypto'
+import { executeTeacherAwardService, teacherAwardPaths, planTeacherAwardService, executePlannedTeacherAwardService, recoverTeacherAwardService } from './teacherAwardService.js'
 import { estimateMoneyDocumentBytes } from './moneyDocumentSize.js'
 
 const clone = value => globalThis.structuredClone(value)
@@ -30,7 +31,8 @@ function fixture() {
       const start = revision, snapshot = new Map([...data].map(([k, v]) => [k, clone(v)])), writes = []
       const result = await callback({
         async get(ref) { assert.equal(writes.length, 0, 'read after write'); state.reads.push(ref.path)
-          return { exists: snapshot.has(ref.path), data: () => clone(snapshot.get(ref.path)) } },
+          return { exists: snapshot.has(ref.path), data: () => clone(snapshot.get(ref.path)),
+            updateTime: { seconds: 1, nanoseconds: Number.parseInt(createHash('sha256').update(JSON.stringify(snapshot.get(ref.path) ?? null)).digest('hex').slice(0, 7), 16) } } },
         create(ref, value) { writes.push(['create', ref.path, clone(value)]) },
         update(ref, value) { writes.push(['update', ref.path, clone(value)]) },
       })
@@ -262,3 +264,144 @@ for (const [historyCount, maximum] of [[50, 54], [100, 27], [200, 14], [300, 9],
     assert.deepEqual([...g.data], unchanged); assert.equal(g.batches.length, 0)
   })
 }
+
+const deps = f => ({ firestore: f.firestore, auth, projectId: 'demo-integrity', now: () => time })
+const recover = (f, operation, requestId = id, extra = {}) => recoverTeacherAwardService({ protocolVersion: 1, classroomId, requestId, operation }, { ...deps(f), ...extra })
+
+test('planner is read-only and its full-class plan executes once, including expiry-safe replay', async () => {
+  const f = fixture(), ids = seedGroup(f, 30, 50), before = clone([...f.data])
+  const preview = await planTeacherAwardService(request({ studentIds: ids }), deps(f))
+  assert.equal(preview.selected.length, 30); assert.deepEqual(preview.notYetPlanned, [])
+  assert.equal(preview.plan.expiresAt - preview.plan.createdAt, 60000)
+  assert.deepEqual([...f.data], before); assert.equal(f.batches.length, 0)
+  const envelope = { request: preview.request, plan: preview.plan }
+  const result = await executePlannedTeacherAwardService(envelope, deps(f))
+  assert.equal(result.itemCount, 30); assert.equal(f.batches.length, 1)
+  assert.deepEqual(await executePlannedTeacherAwardService(envelope, { ...deps(f), now: () => '2026-09-29T19:00:00.000Z' }), result)
+  assert.equal(f.batches.length, 1)
+})
+test('history-sized prefix preserves every remainder ID and does not fetch beyond the first excluded target', async () => {
+  const f = fixture(), ids = seedGroup(f, 30, 200)
+  const preview = await planTeacherAwardService(request({ studentIds: ids }), deps(f))
+  assert.equal(preview.selected.length, 14); assert.deepEqual(preview.notYetPlanned, ids.slice(14))
+  assert.equal(preview.reason, 'transaction-size-limit'); assert.equal(f.batches.length, 0)
+  assert.ok(!f.reads.includes('classrooms/class-a/students/16'))
+  await executePlannedTeacherAwardService({ request: preview.request, plan: preview.plan }, deps(f))
+  for (const n of ids) assert.equal(f.data.get(`classrooms/class-a/students/${n}`).balance, n <= 14 ? 1.1 : 0)
+})
+test('planner handles reply trimming and single-target no-progress without writes', async () => {
+  const f = fixture(), ids = seedGroup(f, 3)
+  for (const n of ids) f.data.get(`classrooms/class-a/students/${n}`).name = 'x'.repeat(40000)
+  const preview = await planTeacherAwardService(request({ studentIds: ids }), deps(f))
+  assert.equal(preview.selected.length, 1); assert.deepEqual(preview.notYetPlanned, [2, 3])
+  assert.equal(preview.reason, 'reply-size-limit'); assert.ok(JSON.stringify(preview).length < 65536)
+  const g = fixture(); g.data.get('classrooms/class-a/students/1').name = 'x'.repeat(70000)
+  const noProgress = await planTeacherAwardService(request(), deps(g))
+  assert.equal(noProgress.plan, null); assert.deepEqual(noProgress.notYetPlanned, [1]); assert.equal(g.batches.length, 0)
+  const k = fixture(); seedGroup(k, 1, 1000)
+  assert.equal((await planTeacherAwardService(request(), deps(k))).reason, 'mirror-capacity')
+})
+test('planned execution refuses stale versions, expired/future plan, wrong tenant or altered intent with no writes', async () => {
+  for (const mutate of [ (f) => { f.data.get('classrooms/class-a/students/1').balance = 5 },
+    (f, p) => { p.plan.createdAt -= 60000; p.plan.expiresAt -= 60000 },
+    (f, p) => { p.plan.createdAt += 1; p.plan.expiresAt += 1 },
+    (f, p) => { p.plan.classroomId = 'other' }, (f, p) => { p.request.amountCents++ },
+    (f, p) => { p.plan.versions = [] }]) {
+    const f = fixture(), p = await planTeacherAwardService(request(), deps(f)); mutate(f, p)
+    const before = clone([...f.data])
+    await assert.rejects(executePlannedTeacherAwardService({ request: p.request, plan: p.plan }, deps(f)), code('stale-plan'))
+    assert.deepEqual([...f.data], before); assert.equal(f.batches.length, 0)
+  }
+})
+test('planner rebuilds each callback attempt and planned save rechecks versions on a retry', async () => {
+  const f = fixture(); f.beforeCommit = data => { data.get('classrooms/class-a/students/1').balance = 5 }
+  const p = await planTeacherAwardService(request(), deps(f)); assert.equal(f.attempts, 2)
+  assert.equal(p.selected[0].expectedBalanceCents, 610)
+  f.beforeCommit = data => { data.get('classrooms/class-a/students/1').balance = 6 }
+  await assert.rejects(executePlannedTeacherAwardService({ request: p.request, plan: p.plan }, deps(f)), code('stale-plan'))
+  assert.equal(f.batches.length, 0)
+})
+test('status absence is unconfirmed; cancellation tombstone fences execution and is idempotent', async () => {
+  const f = fixture(), before = clone([...f.data])
+  assert.equal((await recover(f, 'status')).status, 'unconfirmed'); assert.deepEqual([...f.data], before)
+  await assert.rejects(recover(f, 'acknowledge'), code('unconfirmed-request'))
+  const cancelled = await recover(f, 'cancel')
+  assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.itemCount, 0)
+  assert.deepEqual(await recover(f, 'cancel'), cancelled); assert.equal(f.data.get(paths.quota).count, 1)
+  await assert.rejects(f.run(), code('request-cancelled')); assert.equal(f.batches.length, 1)
+  assert.deepEqual(f.data.get('classrooms/class-a/students/1'), new Map(before).get('classrooms/class-a/students/1'))
+})
+test('status finds actor pointer, acknowledgment is idempotent and never clears a newer operation', async () => {
+  const f = fixture(); await f.run()
+  const status = await recover(f, 'status', null); assert.equal(status.requestId, id)
+  for (const key of ['digest', 'ledgerIds', 'name', 'balance', 'memo']) assert.equal(Object.hasOwn(status, key), false)
+  assert.equal((await recover(f, 'acknowledge')).acknowledged, true)
+  assert.equal((await recover(f, 'acknowledge')).acknowledged, true)
+  const newId = 'b'.repeat(32); await f.run(request({ requestId: newId }))
+  await recover(f, 'acknowledge'); assert.equal(f.data.get(paths.actor).unacknowledgedRequestId, newId)
+  await recover(f, 'cancel', 'c'.repeat(32)); assert.equal(f.data.get(paths.actor).unacknowledgedRequestId, newId)
+  assert.equal((await recover(f, 'cancel', newId)).status, 'committed')
+  assert.equal(f.data.get('classrooms/class-a/students/1').balance, 3.3)
+})
+test('execution and cancellation race commits exactly one terminal outcome', async () => {
+  for (const cancelFirst of [false, true]) {
+    const f = fixture()
+    const calls = cancelFirst ? [recover(f, 'cancel'), f.run()] : [f.run(), recover(f, 'cancel')]
+    await Promise.allSettled(calls)
+    const receipt = f.data.get(paths.receipt)
+    assert.ok(['cancelled', 'committed'].includes(receipt.status)); assert.equal(f.data.get(paths.quota).count, 1)
+    assert.equal(f.batches.length, 1)
+    assert.equal(f.data.get('classrooms/class-a/students/1').balance, receipt.status === 'committed' ? 2.2 : 1.1)
+  }
+})
+test('recovery works in readOnly but rejects suspended, wrong binding, student and revoked owner', async () => {
+  const f = fixture(); await f.run(); f.data.get('classrooms/class-a').accessControl.mode = 'readOnly'
+  await recover(f, 'acknowledge'); await recover(f, 'cancel', 'd'.repeat(32))
+  for (const mutate of [f => { f.data.get('classrooms/class-a').accessControl.mode = 'suspended' },
+    f => { f.data.get('classrooms/class-a').ownerUid = 'other' }]) {
+    const g = fixture(); mutate(g); await assert.rejects(recover(g, 'cancel')); assert.equal(g.batches.length, 0)
+  }
+  await assert.rejects(recover(f, 'status', id, { auth: { uid, token: { role: 'student' } } }))
+  await assert.rejects(recoverTeacherAwardService({ protocolVersion: 1, classroomId: 'other', requestId: id, operation: 'status' }, deps(f)))
+})
+test('recovery validates both receipt versions, malformed mapping, metadata and quota without bypass', async () => {
+  const f = fixture(); await f.run(); const receipt = f.data.get(paths.receipt)
+  receipt.ledgerIds = receiptMapping(receipt); receipt.version = 1
+  assert.equal((await recover(f, 'status')).status, 'committed'); await recover(f, 'acknowledge')
+  for (const mutate of [r => { r.ledgerIds += ',' }, r => { r.version = 3 }, r => { r.itemCount++ }, r => { r.digest = 'bad' }]) {
+    const g = fixture(); await g.run(); mutate(g.data.get(paths.receipt)); const before = clone([...g.data])
+    await assert.rejects(recover(g, 'acknowledge')); assert.deepEqual([...g.data], before)
+  }
+  const k = fixture(); k.data.get(paths.quota).count = 100000
+  await assert.rejects(recover(k, 'cancel'), code('receipt-quota-exhausted')); assert.equal(k.batches.length, 0)
+  const j = fixture(); j.data.delete(paths.actor); await assert.rejects(recover(j, 'cancel')); assert.equal(j.batches.length, 0)
+})
+
+test('lost cancellation/acknowledgment response is safe to retry without changing money or quota twice', async () => {
+  const f = fixture(); f.loseResponse = true
+  await assert.rejects(recover(f, 'cancel'), /response loss/)
+  assert.equal((await recover(f, 'cancel')).status, 'cancelled'); assert.equal(f.data.get(paths.quota).count, 1)
+  const g = fixture(); await g.run(); g.loseResponse = true
+  await assert.rejects(recover(g, 'acknowledge'), /response loss/)
+  assert.equal((await recover(g, 'acknowledge')).acknowledged, true)
+  assert.equal(g.data.get(paths.quota).count, 1); assert.equal(g.data.get('classrooms/class-a/students/1').balance, 2.2)
+})
+test('planner rejects pending actors and invalid authority, and cannot plan a used request ID', async () => {
+  const f = fixture(); await f.run()
+  await assert.rejects(planTeacherAwardService(request(), deps(f)), code('request-already-used'))
+  await assert.rejects(planTeacherAwardService(request({ requestId: 'f'.repeat(32) }), deps(f)), code('acknowledgment-required'))
+  const g = fixture(); g.data.get('classrooms/class-a').accessControl.mode = 'readOnly'
+  await assert.rejects(planTeacherAwardService(request(), deps(g))); assert.equal(g.batches.length, 0)
+  const k = fixture(); await assert.rejects(planTeacherAwardService(request(), { ...deps(k), auth: { uid: 'other' } }))
+  assert.equal(k.batches.length, 0)
+})
+test('recovery malformed envelopes and v2 cancellation never mutate state', async () => {
+  const f = fixture()
+  for (const input of [{}, { protocolVersion: 1, classroomId, requestId: null, operation: 'cancel' },
+    { protocolVersion: 1, classroomId, requestId: id, operation: 'acknowledge', extra: true }]) {
+    await assert.rejects(recoverTeacherAwardService(input, deps(f)), code('invalid-recovery'))
+  }
+  f.data.set(paths.receipt, { version: 2, actorUid: uid, requestId: id, generation: 7, status: 'cancelled', serverTime: time })
+  f.data.get(paths.quota).count = 1
+  await assert.rejects(recover(f, 'status'), code('invalid-receipt')); assert.equal(f.batches.length, 0)
+})

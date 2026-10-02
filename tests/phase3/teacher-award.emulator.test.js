@@ -3,7 +3,7 @@ import process from 'node:process'
 import { createRequire } from 'node:module'
 import { before, beforeEach, after, test } from 'node:test'
 import { initializeTestEnvironment } from '@firebase/rules-unit-testing'
-import { executeTeacherAwardService, teacherAwardPaths } from '../../functions/phase3/teacherAwardService.js'
+import { executeTeacherAwardService, teacherAwardPaths, planTeacherAwardService, executePlannedTeacherAwardService, recoverTeacherAwardService } from '../../functions/phase3/teacherAwardService.js'
 
 const projectId = 'demo-morgan-bank-teacher-award'
 assert.equal(process.env.FIRESTORE_EMULATOR_HOST, '127.0.0.1:8080', 'Use guarded teacher award command')
@@ -120,4 +120,62 @@ test('SDK history-heavy class refuses atomically without saving a prefix', async
   assert.equal((await db.doc(paths.receipt).get()).exists, false)
   assert.equal((await db.doc(paths.quota).get()).data().count, 0)
   assert.equal((await db.doc(paths.actor).get()).data().unacknowledgedRequestId, null)
+})
+
+const dependencies = () => ({ firestore: db, auth: { uid, token: { role: 'teacher' } }, projectId, now: () => time })
+const recovery = (operation, requestId = id) => recoverTeacherAwardService({ protocolVersion: 1, classroomId: room, requestId, operation }, dependencies())
+test('SDK preview and confirmed save recover through status and idempotent acknowledgment', async () => {
+  const ids = await seedGroup(30, 50)
+  const preview = await planTeacherAwardService(request({ studentIds: ids }), dependencies())
+  assert.equal(preview.selected.length, 30); assert.deepEqual(preview.notYetPlanned, [])
+  assert.equal((await db.collection(`classrooms/${room}/teacherMoneyReceipts`).get()).size, 0)
+  const envelope = { request: preview.request, plan: preview.plan }
+  const result = await executePlannedTeacherAwardService(envelope, dependencies())
+  assert.deepEqual(await executePlannedTeacherAwardService(envelope, dependencies()), result)
+  assert.equal((await recovery('status', null)).requestId, id)
+  assert.equal((await recovery('acknowledge')).acknowledged, true)
+  assert.equal((await recovery('acknowledge')).acknowledged, true)
+  const newId = 'f'.repeat(32)
+  const next = await planTeacherAwardService(request({ studentIds: ids, requestId: newId }), dependencies())
+  await executePlannedTeacherAwardService({ request: next.request, plan: next.plan }, dependencies())
+  await recovery('acknowledge')
+  assert.equal((await db.doc(paths.actor).get()).data().unacknowledgedRequestId, newId)
+  assert.equal((await db.doc(`classrooms/${room}/students/1`).get()).data().balance, 2.2)
+})
+test('SDK history prefix is executable and leaves the remainder untouched', async () => {
+  const ids = await seedGroup(30, 200)
+  const preview = await planTeacherAwardService(request({ studentIds: ids }), dependencies())
+  assert.equal(preview.selected.length, 14); assert.deepEqual(preview.notYetPlanned, ids.slice(14))
+  await executePlannedTeacherAwardService({ request: preview.request, plan: preview.plan }, dependencies())
+  for (const n of ids) assert.equal((await db.doc(`classrooms/${room}/students/${n}`).get()).data().balance, n <= 14 ? 1.1 : 0)
+})
+test('SDK plan rejects an intervening change restored to its original value and rejects expiration', async () => {
+  const preview = await planTeacherAwardService(request(), dependencies())
+  await db.doc(`classrooms/${room}/students/1`).update({ balance: 2.2 })
+  await db.doc(`classrooms/${room}/students/1`).update({ balance: 1.1 })
+  const changedVersion = (await db.doc(`classrooms/${room}/students/1`).get()).updateTime
+  assert.notEqual(preview.plan.versions.find(([path]) => path === `classrooms/${room}/students/1`)[1], `${changedVersion.seconds}:${changedVersion.nanoseconds}`)
+  await assert.rejects(executePlannedTeacherAwardService({ request: preview.request, plan: preview.plan }, dependencies()), e => e.code === 'stale-plan')
+  const fresh = await planTeacherAwardService(request(), dependencies())
+  await assert.rejects(executePlannedTeacherAwardService({ request: fresh.request, plan: fresh.plan }, { ...dependencies(), now: () => '2026-09-29T18:01:00.000Z' }), e => e.code === 'stale-plan')
+  assert.equal((await db.doc(paths.receipt).get()).exists, false)
+  assert.equal((await db.doc(paths.quota).get()).data().count, 0)
+})
+test('SDK cancellation racing execution produces one terminal result and one quota increment', async () => {
+  await Promise.allSettled([recovery('cancel'), run()])
+  const status = await recovery('status')
+  assert.ok(['committed', 'cancelled'].includes(status.status))
+  assert.equal((await db.doc(paths.quota).get()).data().count, 1)
+  assert.equal((await db.doc(`classrooms/${room}/students/1`).get()).data().balance, status.status === 'committed' ? 2.2 : 1.1)
+  if (status.status === 'cancelled') await assert.rejects(run(), e => e.code === 'request-cancelled')
+  else await recovery('acknowledge')
+})
+test('SDK readOnly recovery fences a rejected dispatch; suspended recovery cannot mutate', async () => {
+  await db.doc(`classrooms/${room}`).update({ 'accessControl.mode': 'readOnly' })
+  assert.equal((await recovery('status')).status, 'unconfirmed')
+  assert.equal((await recovery('cancel')).status, 'cancelled')
+  assert.equal((await db.doc(paths.quota).get()).data().count, 1)
+  await db.doc(`classrooms/${room}`).update({ 'accessControl.mode': 'suspended' })
+  await assert.rejects(recovery('cancel', 'a'.repeat(32)))
+  assert.equal((await db.doc(paths.quota).get()).data().count, 1)
 })
