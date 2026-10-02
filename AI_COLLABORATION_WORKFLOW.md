@@ -60,6 +60,15 @@ authoritative for their technical scope.
   Improve coverage without weakening grounding. Missing historical records
   must remain unavailable, never reconstructed as confident facts or zeros.
 
+## Local coding worker
+
+Follow the "Local coding worker default" in `AGENTS.md` at the start of each
+coding task and after compaction. The installed skill defines the Gemma
+helper, independent acceptance checks, automatic loading/unloading, and
+continuation in the current cloud Codex chat. Codex owns candidate inspection,
+verification, and any authorized edits. Gemma does not replace Muse Spark or
+Claude, and use of the helper grants no release or external-state authority.
+
 ## Implementation and review sequence
 
 ### 1. Establish the baseline and acceptance criteria

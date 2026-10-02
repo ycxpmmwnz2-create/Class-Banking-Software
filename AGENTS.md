@@ -17,6 +17,34 @@ Before reviewing a change, read the documents relevant to its scope:
 - `tests/firestore/README.md`, `tests/phase2b/README.md`, and
   `tests/phase3/README.md` — test-specific contracts.
 
+## Local coding worker default
+
+At the start of each coding task, including a new chat or a resumed task after
+compaction, read the installed `local-coding-worker` skill at
+`/Users/andrewmorgan/.codex/skills/local-coding-worker/SKILL.md` when available.
+Use its configured Gemma worker for suitable small, isolated, low-risk tasks
+when the benefit exceeds loading and verification overhead. Andrew does not
+need to repeat this instruction or manually load or unload the model.
+
+Cloud Codex remains the coordinator. Define acceptance checks independently,
+inspect every local candidate and its diff, and run appropriate checks before
+accepting it. Treat local output as an untrusted suggestion. Use the helper
+for automatic loading and unloading; if it is unavailable, busy, fails,
+times out, encounters memory pressure, or produces an unsatisfactory result,
+continue the authorized task in the current cloud Codex chat without asking
+Andrew to manage the handoff or retrying locally.
+
+Keep architecture, cross-file debugging, authentication, security, tenant
+isolation, saved grades, financial correctness, migrations, and deployments
+in cloud Codex. Never supply credentials or private student records to the
+worker. This default applies where the local installation is available;
+other machines and hosted environments should continue in cloud.
+
+Gemma is an implementation helper, not an independent reviewer. Preserve the
+Codex → Muse Spark → Claude review order and all existing authorization and
+release gates. This instruction authorizes neither unrelated work nor
+commits, pushes, merges, deployments, migrations, or feature-gate changes.
+
 ## Review conventions
 
 - Treat authentication, authorization, tenant isolation, balances, transaction
