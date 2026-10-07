@@ -17,7 +17,7 @@ test('a read crossing classroom midnight cannot pass off the next-day snapshot a
     'classrooms/class-a/students': { readTime: { toDate: () => new Date('2026-08-21T06:00:00Z') } },
   })
   const load = createFirestoreQuestionEvidenceLoader({ firestore: double.firestore, now: () => new Date('2026-08-21T05:59:59Z') })
-  await assert.rejects(load({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 7,
+  await assert.rejects(load({ controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 7,
     timeZone: 'America/Denver', question: 'Who was negative today?', assistantMode: true }), /date changed/u)
 })
 
@@ -32,7 +32,7 @@ test('real evidence adapter uses trusted version history, binds its signature an
     [`classrooms/class-a/balanceHistory/1-${witness.afterVersion}`]: witness })
   const double = createFirestoreDouble(data, { [path]: { createTime: after.createTime, updateTime: after.updateTime } })
   const load = createFirestoreQuestionEvidenceLoader({ firestore: double.firestore, now: () => new Date('2026-09-08T18:00:00Z') })
-  const args = { teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 7, timeZone: 'America/Denver', question: 'Who was negative on September 4?', assistantMode: true }
+  const args = { controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 7, timeZone: 'America/Denver', question: 'Who was negative on September 4?', assistantMode: true }
   const first = await load(args)
   assert.equal(first.assistantEvidence.students[0].balanceHistory['2026-09-04'], -10)
   assert.equal(Object.hasOwn(first.answerEvidence.students[0], 'balanceHistory'), false)
@@ -53,7 +53,7 @@ test('real evidence adapter uses trusted version history, binds its signature an
 function fixture(overrides = {}) {
   return {
     'teachers/teacher-a': { uid: 'teacher-a', status: 'active', classroomId: 'class-a' },
-    'classrooms/class-a': { ownerUid: 'teacher-a' },
+    'classrooms/class-a': { accessControl: { schemaVersion: 1, mode: 'active', generation: 1, changedAt: '2026-08-01T00:00:00.000Z', auditId: 'fixture' }, ownerUid: 'teacher-a' },
     'classrooms/class-a/studentDisplay/rent': {
       rentAmount: 10,
       updatedAt: '2026-08-20T17:00:00.000Z',
@@ -150,7 +150,7 @@ test('replaces a full or unique partial roster name before constructing provider
     'What category is GianMarco earning the most money in?',
   ]) {
     const envelope = await loader()({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 30,
       timeZone: 'America/Denver',
@@ -191,7 +191,7 @@ test('builds one-classroom assistant evidence and sanitizes bounded memos only w
       memo: longMemo,
     },
   }))({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -220,7 +220,7 @@ test('tool-assistant evidence is not blocked by the legacy single-subject gramma
     'classrooms/class-a/students/2': { ...fixture()['classrooms/class-a/students/2'], name: 'Ava Stone' },
   })
   const envelope = await loader(data)({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 7,
     timeZone: 'America/Denver',
@@ -234,7 +234,7 @@ test('tool-assistant evidence is not blocked by the legacy single-subject gramma
 
 test('tool-assistant normalization cannot reveal a compatibility-form surname or contact-shaped roster name', async () => {
   const normalized = await loader()({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 7,
     timeZone: 'America/Denver',
@@ -250,7 +250,7 @@ test('tool-assistant normalization cannot reveal a compatibility-form surname or
       name: 'parent@example.com',
     },
   }))({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 7,
     timeZone: 'America/Denver',
@@ -280,7 +280,7 @@ test('tool assistant blocks concatenated, reordered, and character-obscured rost
   ]) {
     await assert.rejects(
       loader()({
-        teacherUid: 'teacher-a',
+        controlGeneration: 1, teacherUid: 'teacher-a',
         classroomId: 'class-a',
         periodDays: 7,
         timeZone: 'America/Denver',
@@ -292,7 +292,7 @@ test('tool assistant blocks concatenated, reordered, and character-obscured rost
   }
 
   const safelyShortened = await loader()({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 7,
     timeZone: 'America/Denver',
@@ -314,7 +314,7 @@ test('tool-assistant residual-name checks do not reject unrelated word overlaps'
       name: 'Grace Land',
     },
   }))({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 7,
     timeZone: 'America/Denver',
@@ -352,7 +352,7 @@ test('lazy assistant memos fail closed when they retain character-obscured roste
         memo,
       },
     }))({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 7,
       timeZone: 'America/Denver',
@@ -375,7 +375,7 @@ test('safe student aliases do not collide with an unrelated roster name token', 
     },
   })
   const envelope = await loader(data)({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -406,7 +406,7 @@ test('category words that overlap an unrelated roster name stay available to the
     },
   })
   const envelope = await loader(data)({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -435,7 +435,7 @@ test('category words that overlap an unrelated roster name stay available to the
     'Show technology totals by week.',
   ]) {
     const categoryResult = await loader(data)({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 30,
       timeZone: 'America/Denver',
@@ -466,7 +466,7 @@ test('collision handling applies across category phrases, shared name tokens, an
     'Compare Rose and Sofia Reyes by current balance.',
   ]) {
     const result = await loader(mixedNames)({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 30,
       timeZone: 'America/Denver',
@@ -487,7 +487,7 @@ test('collision handling applies across category phrases, shared name tokens, an
     },
   })
   const reconstructed = await loader(shortName)({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -508,7 +508,7 @@ test('collision handling applies across category phrases, shared name tokens, an
   })
   const ordinaryQuestion = 'Did anyone receive a grace period bonus this week?'
   const ordinary = await loader(sharedToken)({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -521,7 +521,7 @@ test('collision handling applies across category phrases, shared name tokens, an
     'Did grace apply to anyone this week?',
   ]) {
     const result = await loader(sharedToken)({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 30,
       timeZone: 'America/Denver',
@@ -546,7 +546,7 @@ test('a category catalog token is exempt only when its provider-visible phrase i
     },
   })
   const studentQuestion = await loader(data)({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -557,7 +557,7 @@ test('a category catalog token is exempt only when its provider-visible phrase i
   assert.match(studentQuestion.providerInput.question, /\[student-001\]/)
 
   const contextualStudentQuestion = await loader(data)({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -583,7 +583,7 @@ test('a category catalog token is exempt only when its provider-visible phrase i
     },
   })
   const neutralizedResult = await loader(neutralizedCategory)({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -608,7 +608,7 @@ test('single-token identities and reconstructed multi-part identities never beco
     },
   })
   const singleResult = await loader(singleToken)({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -632,7 +632,7 @@ test('single-token identities and reconstructed multi-part identities never beco
     },
   })
   const reconstructedResult = await loader(reconstructed)({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -655,7 +655,7 @@ test('classifies a V2 blank-category Rent reason only in server answer evidence'
       category: '',
     },
   }))({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -683,7 +683,7 @@ test('classifies a renamed rent-like category without exposing the configured re
       category: 'Monthly Class Rent',
     },
   }))({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -696,7 +696,7 @@ test('classifies a renamed rent-like category without exposing the configured re
 
 test('binds today questions to the classroom local date without exposing it to the provider', async () => {
   const input = {
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -712,7 +712,7 @@ test('binds today questions to the classroom local date without exposing it to t
 
 test('binds the configured rent amount into server evidence and replay identity', async () => {
   const input = {
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -750,7 +750,7 @@ test('provider receives only a bounded category catalog and never raw transactio
       category: 'Bathroom break',
     },
   }))({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -774,7 +774,7 @@ test('historical transaction participants remain answerable without entering pro
       category: 'Bathroom break',
     },
   }))({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -793,7 +793,7 @@ test('historical transaction participants remain answerable without entering pro
 
 test('up to eight named students become opaque aliases for grounded comparisons', async () => {
   const envelope = await loader()({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -839,7 +839,7 @@ test('unsafe category labels become deterministic neutral aliases without blocki
       category: 'teacher@example.com',
     },
   }))({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -863,7 +863,7 @@ test('deduplicates case and whitespace equivalent categories while accumulating 
     'classrooms/class-a/transactions/101': { ...base, category: '  Class   Job  ', type: 'Add' },
     'classrooms/class-a/transactions/102': { ...base, id: 102, category: 'class job', type: 'Subtract' },
   }))({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -906,7 +906,7 @@ test('builds maximum assistant evidence without eagerly sanitizing every memo', 
     ...transactions,
     'classrooms/class-a/transactions/101': { ...base, memo: rawMemo },
   }))({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -942,7 +942,7 @@ test('category aliases are stable across transaction order and category catalog 
   }))
   await assert.rejects(
     loader(fixture(categories))({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 30,
       timeZone: 'America/Denver',
@@ -959,7 +959,7 @@ test('normalizes the exact legacy browser date using the teacher time zone', asy
       date: '8/19/2026, 10:00:00 AM',
     },
   }))({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -977,7 +977,7 @@ test('rejects parseable date shapes outside the stored Morgan Bank contract', as
   }))
   await assert.rejects(
     load({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 30,
       timeZone: 'America/Denver',
@@ -1007,7 +1007,7 @@ test('an ordinary product word containing a surname is not an obscured roster na
       },
     })
     const result = await loader(data)({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 7,
       timeZone: 'America/Denver',
@@ -1029,7 +1029,7 @@ test('an ordinary product word containing a surname is not an obscured roster na
 test('a letter- or mixed-padded lone name token is allowed in a question but withheld from a memo', async () => {
   for (const fused of ['BelliniX', 'XBellini', 'Bellini1X']) {
     const questionEnvelope = await loader()({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 7,
       timeZone: 'America/Denver',
@@ -1045,7 +1045,7 @@ test('a letter- or mixed-padded lone name token is allowed in a question but wit
         memo: `Paid to ${fused} for chores`,
       },
     }))({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 7,
       timeZone: 'America/Denver',
@@ -1071,7 +1071,7 @@ test('ordinary wording carrying digits and a short surname is not a disguised na
       },
     })
     const result = await loader(data)({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 7,
       timeZone: 'America/Denver',
@@ -1092,7 +1092,7 @@ test('a digit-disguised or mark-disguised lone name token is refused in a questi
   for (const fused of ['Bellini1', '1Bellini', 'Bell1ini', 'Bellini123456', 'Belli\u0301ni']) {
     await assert.rejects(
       loader()({
-        teacherUid: 'teacher-a',
+        controlGeneration: 1, teacherUid: 'teacher-a',
         classroomId: 'class-a',
         periodDays: 7,
         timeZone: 'America/Denver',
@@ -1123,7 +1123,7 @@ test('an ordinary word carrying two roster name tokens is still refused', async 
     })
     await assert.rejects(
       loader(data)({
-        teacherUid: 'teacher-a',
+        controlGeneration: 1, teacherUid: 'teacher-a',
         classroomId: 'class-a',
         periodDays: 7,
         timeZone: 'America/Denver',
@@ -1153,7 +1153,7 @@ test('two fused name tokens are refused even inside an ordinary word', async () 
     })
     await assert.rejects(
       loader(data)({
-        teacherUid: 'teacher-a',
+        controlGeneration: 1, teacherUid: 'teacher-a',
         classroomId: 'class-a',
         periodDays: 7,
         timeZone: 'America/Denver',
@@ -1174,7 +1174,7 @@ test('separator-obscured roster names fail before provider input can be construc
   ]) {
     await assert.rejects(
       loader()({
-        teacherUid: 'teacher-a',
+        controlGeneration: 1, teacherUid: 'teacher-a',
         classroomId: 'class-a',
         periodDays: 30,
         timeZone: 'America/Denver',
@@ -1186,7 +1186,7 @@ test('separator-obscured roster names fail before provider input can be construc
   }
 
   const normalizedCompatibilityName = await loader()({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -1201,7 +1201,7 @@ test('separator-obscured roster names fail before provider input can be construc
   ]) {
     await assert.rejects(
       loader()({
-        teacherUid: 'teacher-a',
+        controlGeneration: 1, teacherUid: 'teacher-a',
         classroomId: 'class-a',
         periodDays: 30,
         timeZone: 'America/Denver',
@@ -1227,7 +1227,7 @@ test('separator-obscured roster names fail before provider input can be construc
   ]) {
     await assert.rejects(
       loader(shortTokenRoster)({
-        teacherUid: 'teacher-a',
+        controlGeneration: 1, teacherUid: 'teacher-a',
         classroomId: 'class-a',
         periodDays: 30,
         timeZone: 'America/Denver',
@@ -1251,7 +1251,7 @@ test('separator-obscured roster names fail before provider input can be construc
   ]) {
     await assert.rejects(
       loader(multiTokenRoster)({
-        teacherUid: 'teacher-a',
+        controlGeneration: 1, teacherUid: 'teacher-a',
         classroomId: 'class-a',
         periodDays: 30,
         timeZone: 'America/Denver',
@@ -1275,7 +1275,7 @@ test('separator-obscured roster names fail before provider input can be construc
   ]) {
     await assert.rejects(
       loader(initialRoster)({
-        teacherUid: 'teacher-a',
+        controlGeneration: 1, teacherUid: 'teacher-a',
         classroomId: 'class-a',
         periodDays: 30,
         timeZone: 'America/Denver',
@@ -1302,7 +1302,7 @@ test('ordinary words containing a roster-name substring remain valid questions',
     'Is A the top earner?',
   ]) {
     const result = await loader(commonSubstringRoster)({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 30,
       timeZone: 'America/Denver',
@@ -1320,7 +1320,7 @@ test('ordinary words containing a roster-name substring remain valid questions',
   })
   const balanceQuestion = 'List for me each student and their current balance'
   const balanceResult = await loader(singleTokenRoster)({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -1340,7 +1340,7 @@ test('reads only the active reciprocal tenant and retains at most 90 days for fl
   }))
   const load = createFirestoreQuestionEvidenceLoader({ firestore: fake.firestore, now: () => NOW })
   const envelope = await load({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: 'America/Denver',
@@ -1367,7 +1367,7 @@ test('loads the full current local week across fall-back DST while recording the
     },
   })
   const envelope = await loader(data, currentTime)({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 7,
     timeZone: 'America/Denver',
@@ -1388,7 +1388,7 @@ test('changes replay identity when the rolling cutoff crosses a retained current
     },
   })
   const request = {
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 7,
     timeZone: 'America/Denver',
@@ -1417,7 +1417,7 @@ test('shared partial student subjects request a full name while duplicate full n
   })
   await assert.rejects(
     loader(sharedPartial)({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 30,
       timeZone: 'America/Denver',
@@ -1438,7 +1438,7 @@ test('shared partial student subjects request a full name while duplicate full n
   })
   await assert.rejects(
     loader(sharedSubject)({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 30,
       timeZone: 'America/Denver',
@@ -1458,7 +1458,7 @@ test('shared partial student subjects request a full name while duplicate full n
   })
   await assert.rejects(
     loader(duplicateFullName)({
-      teacherUid: 'teacher-a',
+      controlGeneration: 1, teacherUid: 'teacher-a',
       classroomId: 'class-a',
       periodDays: 30,
       timeZone: 'America/Denver',
@@ -1472,7 +1472,7 @@ test('shared partial student subjects request a full name while duplicate full n
   ]) {
     await assert.rejects(
       loader()({
-        teacherUid: 'teacher-a',
+        controlGeneration: 1, teacherUid: 'teacher-a',
         classroomId: 'class-a',
         periodDays: 30,
         timeZone: 'America/Denver',
@@ -1514,7 +1514,7 @@ test('assistant counts category-field and student reason-field earnings on all m
     'classrooms/class-a/transactions/105': { ...base, id: 105, date: '2026-08-10T16:00:00.000Z', category: '', reason: 'Homework', source: 'Student' },
   })
   const original = JSON.stringify(records)
-  const envelope = await loader(records)({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 90, timeZone: 'America/Denver', question: 'How many days did GianMarco earn money for Homework from August 3 through August 9, 2026?', assistantMode: true })
+  const envelope = await loader(records)({ controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 90, timeZone: 'America/Denver', question: 'How many days did GianMarco earn money for Homework from August 3 through August 9, 2026?', assistantMode: true })
   const { createClassroomAssistantToolbox } = await import('./classroomAssistantTools.js')
   const { createStructuredAnswerRegistry } = await import('./structuredClassroomAnswers.js')
   const toolbox = createClassroomAssistantToolbox(envelope.assistantEvidence)
@@ -1530,7 +1530,7 @@ test('assistant counts category-field and student reason-field earnings on all m
 
 for (const label of ['Technology', 'Class Store Purchase', 'Garden helper']) test(`assistant uses blank-category display reason for ${label} without a fixed category list`, async () => {
   const base = fixture()['classrooms/class-a/transactions/101']
-  const result = await loader(fixture({ 'classrooms/class-a/transactions/101': { ...base, category: '', reason: label, memo: 'Memo must not become a category', source: 'Student' } }))({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: 'America/Denver', question: 'Show category totals.', assistantMode: true })
+  const result = await loader(fixture({ 'classrooms/class-a/transactions/101': { ...base, category: '', reason: label, memo: 'Memo must not become a category', source: 'Student' } }))({ controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: 'America/Denver', question: 'Show category totals.', assistantMode: true })
   assert.equal(result.assistantEvidence.transactions[0].category, label)
   assert.equal(result.assistantEvidence.categories[0].label, label)
   assert.doesNotMatch(JSON.stringify(result.assistantEvidence), /Memo must not/u)
@@ -1538,7 +1538,7 @@ for (const label of ['Technology', 'Class Store Purchase', 'Garden helper']) tes
 
 test('assistant keeps an explicit category authoritative over a different reason', async () => {
   const base = fixture()['classrooms/class-a/transactions/101']
-  const result = await loader(fixture({ 'classrooms/class-a/transactions/101': { ...base, category: 'Technology', reason: 'Homework' } }))({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: 'America/Denver', question: 'Show category totals.', assistantMode: true })
+  const result = await loader(fixture({ 'classrooms/class-a/transactions/101': { ...base, category: 'Technology', reason: 'Homework' } }))({ controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: 'America/Denver', question: 'Show category totals.', assistantMode: true })
   assert.equal(result.assistantEvidence.transactions[0].category, 'Technology')
   assert.deepEqual(result.assistantEvidence.categories, [{ label: 'Technology', transactionTypes: ['Add'] }])
 })
@@ -1546,9 +1546,38 @@ test('assistant keeps an explicit category authoritative over a different reason
 test('fallback display reasons retain contact and surname redaction and never expose padded names', async () => {
   const base = fixture()['classrooms/class-a/transactions/101']
   for (const reason of ['Help GianMarco Bellini contact parent@example.com 801-555-1212', 'Help G i a n M a r c o B e l l i n i']) {
-    const result = await loader(fixture({ 'classrooms/class-a/transactions/101': { ...base, category: '', reason, source: 'Student' } }))({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: 'America/Denver', question: 'Show category totals.', assistantMode: true })
+    const result = await loader(fixture({ 'classrooms/class-a/transactions/101': { ...base, category: '', reason, source: 'Student' } }))({ controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: 'America/Denver', question: 'Show category totals.', assistantMode: true })
     const serialized = JSON.stringify(result.assistantEvidence)
     assert.doesNotMatch(serialized, /Bellini|B e l l i n i|parent@example\.com|555-1212/u)
     assert.notEqual(result.assistantEvidence.transactions[0].category, '')
+  }
+})
+
+test('opening balances stay in ledger evidence but never become earned money', async () => {
+  const base = fixture()['classrooms/class-a/transactions/101']
+  const envelope = await loader(fixture({
+    'classrooms/class-a/transactions/102': {...base,id:102,source:'Opening Balance',category:'Balance adjustment',reason:'Opening balance',amount:500},
+    'classrooms/class-a/transactions/103': {...base,id:103,source:'Teacher',category:'Balance adjustment',reason:'Adjustment',amount:50},
+  }))({controlGeneration:1,teacherUid:'teacher-a',classroomId:'class-a',periodDays:7,timeZone:'America/Denver',question:'Compare earnings.',assistantMode:true})
+  assert.equal(envelope.answerEvidence.transactions.length,3)
+  assert.deepEqual(envelope.answerEvidence.transactions.map(row=>row.purpose).sort(),['adjustment','opening','other'])
+  const tools = createClassroomAssistantToolbox(envelope.assistantEvidence)
+  const earnings = tools.execute('compare_student_earnings',{window:'selected-period'})
+  assert.equal(earnings.highestAmount,20)
+  assert.equal(earnings.matchedTransactionCount,1)
+  assert.deepEqual(earnings.adjustmentTotals,{opening:500,adjustment:50})
+  assert.match(earnings.earningsScope,/Missing legacy history/)
+  assert.equal(envelope.assistantEvidence.students.find(row=>row.current).balance,42)
+})
+
+test('question evidence refuses stale or paused control before rent, roster, ledger or history reads', async () => {
+  for (const patch of [{ mode: 'readOnly' }, { mode: 'suspended' }, { generation: 3 }]) {
+    const data = fixture()
+    Object.assign(data['classrooms/class-a'].accessControl, patch)
+    const fake = createFirestoreDouble(data)
+    const load = createFirestoreQuestionEvidenceLoader({ firestore: fake.firestore, now: () => NOW })
+    await assert.rejects(load({ teacherUid: 'teacher-a', classroomId: 'class-a', controlGeneration: 1,
+      periodDays: 7, timeZone: 'America/Denver', question: 'Show balances.', assistantMode: true }))
+    assert.deepEqual(fake.reads, ['teachers/teacher-a', 'classrooms/class-a'])
   }
 })

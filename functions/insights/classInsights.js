@@ -1,3 +1,4 @@
+import { isReportingAdjustment, adjustmentTotals } from './transactionClassification.js';
 export const INSIGHTS_BUDGETS = Object.freeze({
   geminiMonthlyUsd: 7.5,
   firebaseMonthlyUsd: 5,
@@ -20,6 +21,7 @@ const TRANSACTION_SIGNATURE_FIELDS = Object.freeze([
   "reason",
   "status",
   "source",
+  "category",
 ]);
 
 const TIME_WINDOWS = Object.freeze([
@@ -116,6 +118,7 @@ function normalizeTransactions(transactions, studentNames, cutoff, now) {
       amount,
       reason,
       status: transaction.status,
+      category: typeof transaction?.category === "string" ? transaction.category : "",
       source: typeof transaction?.source === "string" ? transaction.source : "",
     }];
   });
@@ -258,7 +261,7 @@ function balanceObservations(students) {
 
 function timingObservation(transactions, type) {
   const matching = transactions.filter((transaction) => (
-    transaction.status === "Approved" && transaction.type === type
+    transaction.status === "Approved" && transaction.type === type && !isReportingAdjustment(transaction)
   ));
   if (matching.length < 2) return null;
 
@@ -299,6 +302,7 @@ function classMovementObservation(transactions, days) {
     .filter((transaction) => transaction.type === "Subtract")
     .reduce((total, transaction) => total + transaction.amount, 0);
   const net = added - subtracted;
+  const adjustments = adjustmentTotals(approved);
   if (approved.length === 0) return null;
 
   const direction = net === 0 ? "held steady" : net > 0 ? "increased" : "decreased";
@@ -308,7 +312,7 @@ function classMovementObservation(transactions, days) {
     category: "Classwide trends",
     title: `Class cash ${direction}`,
     summary: `Approved activity produced a net ${net >= 0 ? "+" : "−"}${currency(Math.abs(net))} movement over ${days} days.`,
-    evidence: `${currency(added)} added · ${currency(subtracted)} subtracted · ${approved.length} approved ${plural(approved.length, "transaction")}`,
+    evidence: `${currency(added)} added · ${currency(subtracted)} subtracted · ${approved.length} approved ${plural(approved.length, "transaction")} · Opening adjustments: ${currency(adjustments.opening)} · Other adjustments: ${currency(adjustments.adjustment)} (included in cash movement, excluded from earnings/spending)`,
   };
 }
 

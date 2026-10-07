@@ -1,3 +1,4 @@
+import { isReportingAdjustment, adjustmentTotals } from './transactionClassification.js'
 const TOOL_NAMES = Object.freeze([
   'list_transactions',
   'aggregate_transactions',
@@ -12,7 +13,7 @@ const TOOL_NAMES = Object.freeze([
 
 const TRANSACTION_TYPES = Object.freeze(['Add', 'Subtract', 'any'])
 const TRANSACTION_STATUSES = Object.freeze(['Approved', 'Pending', 'Denied', 'any'])
-const PURPOSES = Object.freeze(['rent', 'other', 'any'])
+const PURPOSES = Object.freeze(['rent', 'other', 'opening', 'adjustment', 'activity', 'any'])
 const GROUP_FIELDS = Object.freeze([
   'student',
   'category',
@@ -103,7 +104,7 @@ export const CLASSROOM_ASSISTANT_TOOL_DECLARATIONS = Object.freeze([
     'startDate',
     'endDate',
   ])),
-  declaration('compare_student_earnings', 'Compare total Approved Add amounts across the entire CURRENT roster, including students with zero additions and all ties for most and least. Money added is not net balance or a measure of effort. last-week means the previous Monday through Sunday in the classroom timezone. Use explicit only for specified calendar dates; selected-period preserves the exact rolling window. No category, subgroup, or other status filters are supported.', {
+  declaration('compare_student_earnings', 'Compare recorded Approved Add earnings, excluding opening balances and balance adjustments, across the entire CURRENT roster, including students with zero additions and all ties for most and least. Money added is not net balance or a measure of effort. last-week means the previous Monday through Sunday in the classroom timezone. Use explicit only for specified calendar dates; selected-period preserves the exact rolling window. No category, subgroup, or other status filters are supported.', {
     type: 'object', additionalProperties: false, required: ['window'],
     properties: {
       window: { type: 'string', enum: ['last-week', 'selected-period', 'explicit'] },
@@ -278,7 +279,7 @@ function compareStudentEarnings(args, data, transactions) {
   const totals = new Map(current.map(student => [student.ref, 0]))
   let matchedTransactionCount = 0
   for (const row of transactions) {
-    if (!totals.has(row.studentRef) || row.status !== 'Approved' || row.type !== 'Add' ||
+    if (!totals.has(row.studentRef) || row.status !== 'Approved' || row.type !== 'Add' || isReportingAdjustment(row) ||
       row.calendarDay < startDate || row.calendarDay > endDate ||
       Date.parse(row.date) > Date.parse(data.generatedAt) ||
       (window === 'selected-period' && Date.parse(row.date) < Date.parse(data.periodStart))) continue
@@ -291,6 +292,9 @@ function compareStudentEarnings(args, data, transactions) {
     totals.set(row.studentRef, cents)
     matchedTransactionCount += 1
   }
+  const adjustments = adjustmentTotals(transactions.filter(row => totals.has(row.studentRef) &&
+    row.calendarDay >= startDate && row.calendarDay <= endDate && Date.parse(row.date) <= Date.parse(data.generatedAt) &&
+    (window !== 'selected-period' || Date.parse(row.date) >= Date.parse(data.periodStart))))
   const values = [...totals.values()]
   const highest = complete && values.length ? Math.max(...values) : null
   const lowest = complete && values.length ? Math.min(...values) : null
@@ -300,6 +304,8 @@ function compareStudentEarnings(args, data, transactions) {
     rollingStart: window === 'selected-period' ? data.periodStart : null,
     throughSnapshot: endDate === data.asOfDate, complete,
     currentStudentCount: current.length, matchedTransactionCount,
+    adjustmentTotals: adjustments,
+    earningsScope: "Recorded earnings only; opening balances and adjustments excluded. Missing legacy history cannot establish lifetime earnings.",
     highestAmount: highest === null ? null : highest / 100,
     lowestAmount: lowest === null ? null : lowest / 100,
     allTied,
@@ -660,7 +666,7 @@ function filterTransactions(args, data, transactions, studentsByRef) {
     (refs.length === 0 || refs.includes(transaction.studentRef)) &&
     (transactionType === 'any' || transaction.type === transactionType) &&
     (status === 'any' || transaction.status === status) &&
-    (purpose === 'any' || transaction.purpose === purpose) &&
+    (purpose === 'any' || (purpose === 'activity' ? !isReportingAdjustment(transaction) : transaction.purpose === purpose)) &&
     (categoryContains === null || transaction.category.toLocaleLowerCase('en-US').includes(categoryContains)) &&
     (minimumAmount === null || transaction.amount >= minimumAmount) &&
     (maximumAmount === null || transaction.amount <= maximumAmount)

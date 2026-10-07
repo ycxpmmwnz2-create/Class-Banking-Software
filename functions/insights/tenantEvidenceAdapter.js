@@ -1,3 +1,4 @@
+import { requireClassroomAccess } from '../phase3/classroomAccess.js'
 import { createHash } from 'node:crypto'
 
 import { InsightIdentityError, validateInsightIdentity } from './identity.js'
@@ -55,6 +56,7 @@ export function createFirestoreTenantEvidenceLoader({
   return async function loadDeidentifiedTenantEvidence({
     teacherUid,
     classroomId,
+    controlGeneration,
     periodDays,
     timeZone,
   } = {}) {
@@ -83,6 +85,9 @@ export function createFirestoreTenantEvidenceLoader({
         classroomSnapshot,
         teacherUid: teacher,
         classroomId: classroom,
+      })
+      requireClassroomAccess(classroomSnapshot.data().accessControl, {
+        operation: 'mutate', protocolVersion: 1, controlGeneration,
       })
       const studentsSnapshot = await transaction.get(
         classroomRef.collection('students').limit(MAX_STUDENTS + 1),

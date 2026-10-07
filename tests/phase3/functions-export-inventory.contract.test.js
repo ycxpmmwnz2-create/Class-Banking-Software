@@ -7,8 +7,8 @@ const source = readFileSync(new URL('../../functions/index.js', import.meta.url)
 const policy = readFileSync(new URL('../../TEACHER_MONEY_ACCESS_SURFACE.md', import.meta.url), 'utf8')
 const check = (code = source, markdown = policy) => assertExportPolicyInventory(code, markdown)
 
-test('source contract: all 18 invocation and ten configuration exports have an exact classification', () => {
-  assert.equal(check().size, 28)
+test('source contract: all 25 invocation and ten configuration exports have an exact classification', () => {
+  assert.equal(check().size, 35)
 })
 
 test('source contract: added, removed, renamed, and changed-type invocation exports fail', () => {

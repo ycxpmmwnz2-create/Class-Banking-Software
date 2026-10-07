@@ -1,3 +1,4 @@
+import { isReportingAdjustment } from './transactionClassification.js'
 import { questionQueryPlanCoherenceError } from './questionContracts.js'
 
 const TIME_BUCKETS = Object.freeze([
@@ -137,7 +138,7 @@ function calculateStudentsWithoutTransactions(plan, context, answerSuffix) {
     transactions = transactions.filter(transaction => transaction.categoryAlias === plan.categoryAlias)
   }
   if (plan.purpose !== 'any') {
-    transactions = transactions.filter(transaction => transaction.purpose === plan.purpose)
+    transactions = transactions.filter(transaction => plan.purpose === 'activity' ? !isReportingAdjustment(transaction) : transaction.purpose === plan.purpose)
   }
   if (plan.transactionType !== 'any') {
     transactions = transactions.filter(transaction => transaction.type === plan.transactionType)
@@ -310,7 +311,7 @@ function calculateTransactionQuery(plan, context, answerSuffix) {
   }
   const purpose = filters.purpose ?? 'any'
   if (purpose !== 'any') {
-    transactions = transactions.filter(transaction => transaction.purpose === purpose)
+    transactions = transactions.filter(transaction => purpose === 'activity' ? !isReportingAdjustment(transaction) : transaction.purpose === purpose)
   }
   const amountMinimum = filters.amountMinimum ?? null
   const amountMaximum = filters.amountMaximum ?? null
@@ -807,7 +808,7 @@ function transactionDimension(transaction, field, context) {
     return { key, label: money(transaction.amount), chronological: key.padStart(20, '0') }
   }
   if (field === 'purpose') {
-    return { key: transaction.purpose, label: transaction.purpose === 'rent' ? 'rent' : 'other purpose', chronological: transaction.purpose }
+    return { key: transaction.purpose, label: transaction.purpose === 'rent' ? 'rent' : transaction.purpose === 'opening' ? 'opening balance' : transaction.purpose === 'adjustment' ? 'balance adjustment' : 'other purpose', chronological: transaction.purpose }
   }
   if (field === 'time-of-day') {
     const bucket = timeBucketFor(transaction.date, context.timeZone)
@@ -1188,7 +1189,7 @@ function validateEvidence(value) {
       !transaction || !Number.isSafeInteger(transaction.id) || transaction.id < 1 ||
       !participantsById.has(transaction.studentId) || !categoriesByAlias.has(transaction.categoryAlias) ||
       !['Add', 'Subtract'].includes(transaction.type) || !['Approved', 'Pending', 'Denied'].includes(transaction.status) ||
-      !['rent', 'other'].includes(transaction.purpose) ||
+      !['rent', 'other', 'opening', 'adjustment'].includes(transaction.purpose) ||
       !Number.isFinite(transaction.amount) || transaction.amount <= 0 || transactionIds.has(transaction.id) ||
       !Number.isFinite(Date.parse(transaction.date))
     ) fail('answer-unavailable', 'The server transaction evidence is malformed.')
@@ -1252,7 +1253,7 @@ function validatePlanForCalculation(plan) {
     !['active', 'frozen', 'any'].includes(plan.filters.studentState) ||
     !(plan.filters.balanceCondition === undefined ||
       ['any', 'negative', 'zero', 'positive', 'nonpositive'].includes(plan.filters.balanceCondition)) ||
-    !(plan.filters.purpose === undefined || ['any', 'rent', 'other'].includes(plan.filters.purpose)) ||
+    !(plan.filters.purpose === undefined || ['any', 'rent', 'other', 'opening', 'adjustment', 'activity'].includes(plan.filters.purpose)) ||
     !validOptionalAmount(plan.filters.amountMinimum) ||
     !validOptionalAmount(plan.filters.amountMaximum) ||
     !validGroupByFieldsForCalculation(plan.groupByFields) ||
@@ -1271,7 +1272,7 @@ function validateMissingTransactionPlanForCalculation(plan) {
     plan.subjectAliases.some(alias => !/^student-[0-9]{3}$/.test(alias)) ||
     new Set(plan.subjectAliases).size !== plan.subjectAliases.length ||
     !(plan.categoryAlias === null || /^category-[0-9]{3}$/.test(plan.categoryAlias)) ||
-    !['any', 'rent', 'other'].includes(plan.purpose) ||
+    !['any', 'rent', 'other', 'opening', 'adjustment', 'activity'].includes(plan.purpose) ||
     !['Add', 'Subtract', 'any'].includes(plan.transactionType) ||
     !['Approved', 'Pending', 'Denied', 'any'].includes(plan.status) ||
     !['period', 'today', 'yesterday', 'today-and-yesterday', 'this-week'].includes(plan.dateScope) ||
@@ -1290,10 +1291,10 @@ function validateMissingTransactionPlanForCalculation(plan) {
 
 function describeMissingTransactionFilters(plan, context, labelLength = 24) {
   const type = plan.transactionType === 'Add'
-    ? 'earning (Add) transactions'
+    ? 'Add transactions'
     : plan.transactionType === 'Subtract'
-      ? 'spending (Subtract) transactions'
-      : 'earning (Add) and spending (Subtract) transactions'
+      ? 'Subtract transactions'
+      : 'Add and Subtract transactions'
   const parts = [plan.status === 'any'
     ? `${type} across all approval statuses`
     : `${plan.status.toLocaleLowerCase('en-US')} ${type}`]
@@ -1336,10 +1337,10 @@ function describeQueryFilters(plan, context, labelLength = 24) {
     return `${state}${balance}; selected ${summarizeLabels(names, { maximum: 2, labelLength })}`
   }
   const type = plan.filters.transactionType === 'Add'
-    ? 'earning (Add) transactions'
+    ? 'Add transactions'
     : plan.filters.transactionType === 'Subtract'
-      ? 'spending (Subtract) transactions'
-      : 'earning (Add) and spending (Subtract) transactions'
+      ? 'Subtract transactions'
+      : 'Add and Subtract transactions'
   const parts = [plan.filters.status === 'any'
     ? `${type} across all approval statuses`
     : `${plan.filters.status.toLocaleLowerCase('en-US')} ${type}`]
@@ -1356,6 +1357,9 @@ function describeQueryFilters(plan, context, labelLength = 24) {
   }
   const purpose = plan.filters.purpose ?? 'any'
   if (purpose === 'rent') parts.push('rent transactions')
+  if (purpose === 'activity') parts.push('recorded activity excluding opening balances and adjustments')
+  if (purpose === 'opening') parts.push('opening balances')
+  if (purpose === 'adjustment') parts.push('balance adjustments')
   if (purpose === 'other') parts.push('non-rent transactions')
   const amountMinimum = plan.filters.amountMinimum ?? null
   const amountMaximum = plan.filters.amountMaximum ?? null

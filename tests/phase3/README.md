@@ -1253,3 +1253,142 @@ default config or deployed export is changed by this extension.
 Python filesystem/process-lock tests using fictional temporary directories.
 See `PRIVATE_OPERATOR_LEASE.md` for the lifetime contract and remaining launcher,
 privacy and Cloud-fence integration gates. This adds no live scanner entry point.
+# October 1 teacher-money button integration candidate
+
+The existing Quick Cash/custom Add/Subtract handlers now use a durable client
+controller, planned execution and five guarded server routes. Unit tests exercise
+actual services with fictional optimistic storage; the offline browser forms
+exercise real handlers/client/services in Chromium and WebKit. Exact server HTTP,
+Auth token and Firestore SDK checks live in the Phase 2B C1 emulator suite.
+
+Run with Node 22: `npm run test:phase3:unit`, `npm run test:phase3:contracts`,
+`npm run test:phase2b:client`, `node --test tests/browser/money-form.test.js`,
+`npm run test:phase2b:server`, and `npm run test:phase3:teacher-award`, plus both
+ESLint commands. The Phase 2B runner isolates public code and fictional parameter
+fixtures; no real dotenv or credentials are loaded. Browser fakes do not prove
+Firestore durability, and emulator HTTP does not prove native human confirmation
+or production deployment. Other money writers/rules and existing-classroom
+initialization remain unqualified. The real-data scanner remains NO-GO.
+
+
+October 4 teacher-writer coverage: approvals/denials, adjustment/reset, separate
+profile compare-and-set, immutable-name student replay, lost-response recovery,
+and stale/group refusals use the existing Phase 3 unit, Phase 2B client/server,
+and offline `node --test tests/browser/money-form.test.js` suites. The server
+runner remains isolated to its fixed demo projects; current selected rules are
+unchanged. Strict candidate-rule selection and remaining writers are separate.
+
+
+### Writer containment Stage 3 candidate
+
+Run the existing Phase 3 unit and contract suites plus Phase 2B client tests.
+`node --test tests/browser/student-money-form.test.js tests/browser/money-form.test.js`
+runs the actual student/removal/teacher page handlers and services over fictional
+atomic storage in Chromium and WebKit, with browser networking blocked.
+`node tests/phase2b/runServerEmulatorTests.js gate-on student-writers` selects the
+existing C2 lifecycle seam and anonymous denial in the isolated demo Auth/Functions/
+Firestore runner. It covers cents, lost-response replay/throttle, obsolete requests,
+paused/stale generations, pending-removal refusal and historical preservation.
+These layers do not establish production acceptance or trigger containment.
+
+
+October 5 Stage 4 creation coverage: existing student-writers emulator focus now
+includes receipted positive/negative opening history, replay/PIN binding, old-wire
+refusal, cancellation and stale generation. Synthetic/browser tests cover lost
+responses, failed refresh, minimal markers and both page engines. Lifecycle
+concurrency now expects identical requests to allocate once and a newly
+acknowledged request to allocate the next ID. Emulator keys are fictional and
+injected only in the disposable demo copy. No production secret or data access.
+
+
+## Writer containment Stage 5 credential integration
+
+Retain the sensitive PIN directory mode/final-return tests. The lifecycle emulator
+now expects enrolled_noop for credential events: creation/reset/removal own the
+credential synchronously. Stage 5 adds no callable export and selects no new rules
+or saver. Existing classroomAccess tests and the credential suite distinguish
+pre-mint authorization from the unavoidable late-token race: access is still
+checked against current root/credential state when the token is subsequently used.
+
+
+## Writer containment Stage 6 — combined lifecycle follow-up
+
+The normal `npm run test:phase3:migration` profile now verifies that enrolled sync
+returns enrolled_noop and leaves the persisted credential unchanged after atomic
+creation. It does not expect a loginId field in the no-op response. The release
+ordering test in that file intentionally runs only under PHASE3_REHEARSAL_MODE=release;
+its normal-profile skip is not release acceptance. Stage 6 Insights/claim/audit
+checks use `npm run test:version3:gemini-layer`, `test:version3:gemini-bridge:emulator`,
+`test:version3:gemini-callable:emulator` and `test:phase3:money-rules`. These use
+fictional data and fake providers; no paid provider or signed-in live proof.
+
+## Writer containment Stage 7 — combined local acceptance
+
+`npm run test:phase3:writer-containment` uses the isolated Phase 2B demo runner
+with the reviewed `firestore.phase3.money.rules`, then runs the new mixed-writer
+spec in Chromium and WebKit. Its test-only Vite transform selects the reviewed
+`createNonMoneyTenantDataSaver` by changing exactly one import. Application
+handlers, client/server guards, transactions and callable implementations remain
+real. The production page import and `firebase.json` rules selection stay unchanged.
+Vite dotenv loading is disabled in this composition. Functions run from a public-
+source temporary copy with fictional parameters/keys and the provider disabled.
+
+Fixtures explicitly initialize control, actor and quota metadata after the old
+pre-enrollment credential triggers have completed. This is fictional fixture
+construction, not proof of a production initializer or old-revision drain.
+
+The mixed journey exercises teacher add/subtract and acknowledgments, freeze,
+rent and list settings, rename, adjustment, receipted opening balance, student
+credit request/approval/denial and immediate debit, PIN reset, balance reset,
+removal with history retention, exact ledger/mirror equality, real balance-audit
+trigger output and an unchanged foreign student. Separate cases check direct
+client money/ledger denial, foreign reads, held saver versus pause, readOnly and
+suspended access, a real local custom token used after suspension, stale generation
+after resume, and loss of an execute response after its actual commit followed by
+status recovery/acknowledgment/reload without a second transaction.
+
+`npm run test:phase3:writer-containment:server` runs the full gate-on callable
+suite with the strict candidate rules. The existing fresh-classroom lifecycle
+case now uses the reviewed planned server action instead of relying on direct
+client balance/ledger writes; under the combined profile it also proves those
+bypass attempts fail. The ordinary gate-on profile retains its original rules
+selection. Both profiles keep the fixed demo project and credential isolation.
+
+This evidence is local. Insights uses separately identified fake-provider service/
+callable tests; no paid or live provider call is part of the browser composition.
+No live rule propagation, deployment, real initializer, scanner resolution,
+IAM/revision drain, staging cost/latency or signed-in production acceptance is
+established. Review results and exact final command counts belong to the frozen
+Stage 7 verification record; test definitions alone are not a PASS.
+
+### CB1 correction candidate — student settings
+
+The prior Stage 7 packet records the pre-existing default-category mismatch.
+The CB1 candidate adds `getStudentSettingsV2`, a read-only empty-request callable
+that derives the tenant/student from authenticated current credentials, checks the
+reciprocal foundation and active/readOnly control plus own student existence, and
+returns only protocol/identity fields and the same five normalized settings used
+by student transaction validation. No Firestore rules or settings mirror changes.
+Normal maintenance admission only; suspended and stale credentials deny.
+
+Student loads require the endpoint response and validate its exact shape and
+identity; failure never falls back to default categories. The existing post-await
+session check prevents stale publication. Settings update on the next load/reload,
+not via a live subscription; server validation remains authoritative if settings
+change after load. Default/legacy category normalization is shared server-side.
+
+The combined browser fixture now saves custom lists through the teacher UI and
+proves exact student choices, successful custom transactions, forged default-reason
+denial with no balance change, and each enablement flag on reload in both engines.
+Enablement updates in this test use explicit fictional Admin fixture writes to
+isolate the read contract; they do not certify the unrelated settings editor.
+Unit tests cover missing/default settings, empty lists, malformed responses,
+credential/identity/control failures, no writes/private data, retries and stale
+client completion. Run both full ordinary gate-on and strict combined-server
+profiles at this combined validation boundary.
+
+Deploy the reviewed endpoint before the dependent client. A missing endpoint
+fails student load closed; backend rollback must retain it while new clients are
+active. This implementation adds one callable per student load and five transaction
+get calls (four distinct documents). No staging latency/cost claim. Both independent
+reviews and operational release gates remain separate; CB1 is not Stage8 L2.

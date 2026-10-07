@@ -13,8 +13,15 @@ const baselineTriggers = [
   'syncStudentProfiles', 'syncStudentProfilesV2', 'recordStudentBalanceHistoryV3',
 ]
 const planned = [
+  'getStudentSettingsV2',
   'planTeacherMoneyV2', 'executeTeacherMoneyV2', 'getTeacherMoneyStatusV2',
   'acknowledgeTeacherMoneyV2', 'cancelTeacherMoneyV2', 'editStudentProfileV2',
+]
+const integratedAwards = [
+  'getStudentSettingsV2',
+  'editStudentProfileV2',
+  'planTeacherMoneyV2', 'executeTeacherMoneyV2', 'getTeacherMoneyStatusV2',
+  'acknowledgeTeacherMoneyV2', 'cancelTeacherMoneyV2',
 ]
 const configuration = {
   MULTI_TEACHER_V2_ENABLED: 'defineBoolean',
@@ -113,6 +120,7 @@ export function assertExportPolicyInventory(source, markdown) {
     ...baselineCallables.map(name => [name, 'onCall']),
     ...baselineTriggers.map(name => [name, 'onDocumentWritten']),
     ['getClassroomAccessV2', 'onCall'],
+    ...integratedAwards.map(name => [name, 'onCall']),
     ...Object.entries(configuration),
   ])
   const actual = extractExports(source)

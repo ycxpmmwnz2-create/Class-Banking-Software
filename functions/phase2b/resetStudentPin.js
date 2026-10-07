@@ -1,3 +1,4 @@
+import { ClassroomAccessError, hasExactDataKeys, isControlGeneration, readTeacherClassroomAccess } from '../phase3/classroomAccess.js'
 import bcrypt from 'bcryptjs'
 import { HttpsError } from 'firebase-functions/v2/https'
 import {
@@ -111,9 +112,9 @@ export async function resetStudentPinV2(
     )
   }
 
-  const keys = Object.keys(request)
-  const allowedKeys = ['studentId', 'newPin']
-  if (keys.some(k => !allowedKeys.includes(k))) {
+  const allowedKeys = ['studentId', 'newPin', 'classroomId', 'protocolVersion', 'controlGeneration']
+  if (!hasExactDataKeys(request, allowedKeys) || request.protocolVersion !== 1 ||
+      !isControlGeneration(request.controlGeneration)) {
     throw new ResetStudentPinError(
       'invalid-argument',
       'Request contains unknown or unauthorized fields.',
@@ -130,6 +131,7 @@ export async function resetStudentPinV2(
   let validStudentId
   try {
     validStudentId = validateCanonicalDocumentId(request.studentId, 'studentId')
+    validateCanonicalDocumentId(request.classroomId, 'classroomId')
   } catch (error) {
     throw new ResetStudentPinError(
       'invalid-argument',
@@ -147,7 +149,9 @@ export async function resetStudentPinV2(
     )
   }
 
+  if (auth?.token?.role !== undefined && auth.token.role !== 'teacher') throw new ClassroomAccessError()
   const tenant = await resolveActiveTeacherTenant({ firestore, auth })
+  if (tenant.classroomId !== request.classroomId) throw new ClassroomAccessError()
   const classroomId = tenant.classroomId
   const attemptTime = now()
   if (!Number.isSafeInteger(attemptTime) || attemptTime < 1) {
@@ -167,7 +171,11 @@ export async function resetStudentPinV2(
   const query = credColRef.where('studentId', '==', validStudentId).limit(2)
 
   return await firestore.runTransaction(async (transaction) => {
-    // All reads precede the single write, as Firestore transactions require.
+    // Reauthorize after hashing on EVERY callback, including contention retries.
+    const current = await readTeacherClassroomAccess({ transaction, firestore, auth,
+      policy: { operation: 'mutate', protocolVersion: request.protocolVersion, controlGeneration: request.controlGeneration } })
+    if (current.classroomId !== classroomId) throw new ClassroomAccessError()
+    // All reads precede credential/PIN writes, as Firestore transactions require.
     const credQuerySnap = await transaction.get(query)
 
     if (credQuerySnap.empty || credQuerySnap.docs.length === 0) {
@@ -266,7 +274,7 @@ function externalCodeFor(error) {
     }
   }
 
-  if (error instanceof ResetStudentPinError) {
+  if (error instanceof ResetStudentPinError || error instanceof ClassroomAccessError) {
     return Object.prototype.hasOwnProperty.call(GENERIC_CLIENT_MESSAGES, error.code)
       ? error.code
       : 'internal'

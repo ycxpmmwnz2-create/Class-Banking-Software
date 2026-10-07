@@ -1472,6 +1472,7 @@
   <div id="stagingDeploymentBanner" class="staging-deployment-banner" role="status" hidden>
     TEST VERSION - USE FAKE DATA ONLY
   </div>
+  <div id="teacherMoneyRecovery" class="card soft-card" role="status" hidden></div>
   <div id="app"></div>
   <footer class="site-credit" aria-label="Site ownership">
     <span>&copy; 2026</span>
@@ -1496,13 +1497,14 @@ import { browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider,
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, runTransaction, setDoc } from "firebase/firestore/lite";
 import { httpsCallable } from "firebase/functions";
 import { TenantSession, SESSION_STATES, resetGlobalApplicationState } from "./src/phase2b/tenantSession.js";
-import { readTeacherCache, writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
-import { mapSafeClientError, orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherResolution, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateStudentPinDirectoryFetch, orchestrateStudentTransaction, orchestrateBulkOperation, orchestrateCreateStudent, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, reconcileStudentPinDirectory, safeExecuteWithEpochCheck, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
+import { writeTeacherCache, purgeTenantCache, purgeLegacyCache, MultiTabInvalidator, buildCacheKey } from "./src/phase2b/tenantCache.js";
+import { orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeacherOnboarding, handleAuthTransition, loadClassroomDataWithCacheFallback, orchestrateClassroomDataSave, orchestrateAuthLogsFetch, orchestrateStudentPinReset, orchestrateStudentPinDirectoryFetch, orchestrateStudentTransaction, orchestrateBulkOperation, orchestrateRemoveStudent, orchestrateTeacherInvitationAdmin, reconcileStudentPinDirectory, terminateDurableAuthSession } from "./src/phase2b/tenantClient.js";
 import { buildStudentAuthLogsCsv, formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
 import { sortStudentsByName } from "./src/phase2b/studentDisplay.js";
 import { DEFAULT_ADD_MONEY_CATEGORIES, effectiveAddMoneyCategories, sortTransactionCategories } from "./src/phase2b/transactionCategoryDisplay.js";
 import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
 import { MAX_RENT_AMOUNT, projectBackupExport } from "./src/phase3/tenantDataProjection.js";
+import { createTeacherMoneyClient, parseTeacherMoneyAmount, parseTeacherMoneyBalance, teacherMoneyBalanceCents } from "./src/phase3/teacherMoneyClient.js";
 import { applyRosterBalanceEdits } from "./src/teacher/rosterBalanceAdjustments.js";
 import { sanitizeLegacyBackup } from "./src/legacy/backupImport.js";
 import { buildInsightsDataSignature } from "./src/insights/classInsights.js";
@@ -1664,6 +1666,8 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
 
     let activeClassroomSaves = 0;
     let teacherMoneySaveOperation = null;
+    let rosterDrafts = {};
+    let v2TeacherMoneyClient = null;
     let approvalGeneration = 0;
     let approvalRefreshRequired = false;
     const approvalQueue = createApprovalQueue({
@@ -1683,6 +1687,12 @@ const IS_MULTI_TEACHER_V2_ENABLED = import.meta.env.VITE_MULTI_TEACHER_V2_ENABLE
     });
 
     function requireTeacher({ allowApprovalQueue = false, readOnly = false } = {}) {
+      if (!readOnly && IS_MULTI_TEACHER_V2_ENABLED && v2TeacherMoneyClient?.isBlocked()) {
+        showMessage(v2TeacherMoneyClient.getState().status === "committed"
+          ? "Acknowledge the server-confirmed money save before making more changes."
+          : "Money status must be confirmed before classroom changes can continue.");
+        return false;
+      }
       if (!readOnly && teacherMoneySaveOperation) {
         showMessage("Please wait for the transaction to finish saving.");
         return false;
@@ -2573,6 +2583,19 @@ function toggleStudentDropdown() {
       }
     }
 
+    async function readStudentPinMutationAccess(captured) {
+      const current = () => v2TenantSession.validateCapturedIdentity(captured) && auth.currentUser?.uid === captured.uid;
+      if (!current()) throw new Error("Refresh the classroom before changing a PIN.");
+      const response = await httpsCallable(functions, "getClassroomAccessV2")({});
+      if (!current()) throw new Error("Refresh the classroom before changing a PIN.");
+      const access = response?.data;
+      if (access?.protocolVersion !== 1 || access.mode !== "active" ||
+          !Number.isSafeInteger(access.generation) || access.generation < 1) {
+        throw new Error("PIN changes are unavailable. Refresh the classroom.");
+      }
+      return Object.freeze({ classroomId: captured.classroomId, protocolVersion: 1, controlGeneration: access.generation });
+    }
+
     async function resetProfileStudentPin() {
       if (!requireTeacher() || studentPinResetPending) return;
 
@@ -2601,8 +2624,10 @@ function toggleStudentDropdown() {
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         const captured = v2TenantSession.captureIdentity();
         const resetFn = async (p) => {
+          const access = await readStudentPinMutationAccess(captured);
+          if (!v2TenantSession.validateCapturedIdentity(captured) || auth.currentUser?.uid !== captured.uid) throw new Error("Session changed.");
           const resetStudentPin = httpsCallable(functions, "resetStudentPinV2");
-          return await resetStudentPin(p);
+          return await resetStudentPin({ ...p, ...access });
         };
         const payload = {
           studentId: String(student.id),
@@ -2681,20 +2706,6 @@ function toggleStudentDropdown() {
       } else {
         loginStudent();
       }
-    }
-
-    function recordStudentLoginAttempt(student, result, note) {
-      const entry = {
-        id: Date.now(),
-        date: new Date().toLocaleString(),
-        studentId: student ? student.id : null,
-        studentName: student ? student.name : "Unknown student",
-        result,
-        note
-      };
-
-      data.loginHistory = [entry].concat(data.loginHistory || []).slice(0, 500);
-      saveData();
     }
 
     function clearLoginHistory() {
@@ -3028,8 +3039,130 @@ function toggleStudentDropdown() {
       }
     }
 
+    function confirmTeacherMoneyPlan(preview) {
+      const action = preview.request.action;
+      const heading = action === "approve" || action === "deny"
+        ? `${action === "approve" ? "Approve" : "Deny"} these ${preview.request.transactionIds.length} pending requests?`
+        : action === "adjust" || action === "reset"
+          ? `Adjust these ${preview.selected.length} balances${action === "reset" ? " to $0" : ""}? Each change will be recorded in history.`
+          : `Apply ${action === "award" ? "+" : "-"}${dollars(preview.request.amountCents / 100)} to these ${preview.selected.length} students?`;
+      return confirm([
+        heading,
+        ...preview.selected.map(row => `${row.name}: ${dollars(row.balanceCents / 100)} → ${dollars(row.expectedBalanceCents / 100)}`),
+        action === "approve" && preview.request.allowNegative
+          ? "This confirmation also permits a negative balance for these pending requests." : "",
+        preview.notYetPlanned.length
+          ? `${preview.notYetPlanned.length} other selected students are not included: ${preview.notYetPlanned.map(id => data.students.find(student => student.id === id)?.name || "Student " + id).join(", ")}. They need a separate confirmation.` : "",
+      ].filter(Boolean).join("\n"));
+    }
+
+    async function saveTeacherMoneyIntent(intent, successMessage, onSuccess = () => {}) {
+      const captured = v2TenantSession.captureIdentity();
+      const operation = { generation: approvalGeneration, uid: auth.currentUser?.uid, tenant: captured,
+        before: data, beforeStamp: JSON.stringify(data) };
+      const current = () => operation.generation === approvalGeneration &&
+        operation.uid === auth.currentUser?.uid && v2TenantSession.validateCapturedIdentity(captured);
+      try {
+        teacherMoneySaveOperation = operation;
+        message = "Preparing transaction...";
+        render();
+        const result = await v2TeacherMoneyClient.run(intent);
+        if (!current()) return;
+        if (result.status === "committed") {
+          if (result.intentConfirmed && result.notYetPlanned.length) {
+            transactionTarget = "selected";
+            customTransactionDraft = { ...customTransactionDraft, studentIds: [...result.notYetPlanned] };
+            teacherStudentListExpanded = true;
+          } else if (result.refreshed && result.intentConfirmed) onSuccess();
+          approvalRefreshRequired = !result.refreshed;
+          const remaining = result.intentConfirmed ? result.notYetPlanned : [];
+          const groupMessage = result.intentConfirmed && remaining.length > 0
+            ? ` Saved for ${result.receipt.itemCount} students; ${remaining.length} selected students were not included: ${remaining.map(id => data.students.find(student => student.id === id)?.name || "Student " + id).join(", ")}. They remain selected; review and confirm a separate save.` : "";
+          message = !result.refreshed
+            ? "Saved; refresh to see the updated classroom. You can acknowledge the server-confirmed action above."
+            : result.intentConfirmed ? successMessage + " Acknowledge the saved action before the next one."
+              : "A saved action was recovered. This draft was kept. Review the updated classroom and acknowledge the saved action before submitting another transaction.";
+          message += groupMessage;
+        } else if (result.status === "cancelled") {
+          message = result.reason === "stale-plan"
+            ? "The preview changed or expired. This request was cancelled. Refresh and confirm again."
+            : "This request was cancelled without applying money. Refresh before preparing another save.";
+        } else if (result.status === "capacity") {
+          message = "The selected group cannot fit in one safe save. Choose a smaller group or get help with the account's history capacity.";
+        } else if (result.status === "declined") {
+          message = "Transaction cancelled before saving.";
+        } else if (result.status === "unavailable") {
+          message = "Could not prepare this transaction. Refresh and check the save status before trying again.";
+        } else {
+          approvalRefreshRequired = true;
+          message = (result.reason === "stale-plan" ? "The preview changed or expired. " : "") +
+            "The save is not confirmed. Check its status above before starting another money action.";
+        }
+      } catch {
+        if (current()) {
+          approvalRefreshRequired = true;
+          message = "The save could not be displayed. Check its status and refresh before making more changes.";
+        }
+      } finally {
+        if (teacherMoneySaveOperation === operation) teacherMoneySaveOperation = null;
+        if (current()) render();
+      }
+    }
+
+    function teacherMoneyControlsBlocked() {
+      return Boolean(teacherMoneySaveOperation || (IS_MULTI_TEACHER_V2_ENABLED && v2TeacherMoneyClient?.isBlocked()));
+    }
+
+    function renderTeacherMoneyRecovery() {
+      const panel = document.getElementById("teacherMoneyRecovery");
+      if (!panel) return;
+      panel.hidden = true;
+      panel.innerHTML = "";
+      if (!IS_MULTI_TEACHER_V2_ENABLED || !v2TeacherMoneyClient ||
+          v2TenantSession.role !== "teacher" || auth.currentUser?.uid !== v2TenantSession.uid) return;
+      const status = v2TeacherMoneyClient.getState();
+      if (status.status === "idle") return;
+      panel.hidden = false;
+      if (status.status === "committed") {
+        panel.innerHTML = `<p>${status.receipt.action === "createStudent"
+          ? `The server confirmed student creation. Login ID: ${escapeHtml(status.receipt.loginId)}.`
+          : `The server confirmed ${status.receipt.itemCount} student transaction(s).`} Saved at ${escapeHtml(status.receipt.serverTime)}.</p>
+          ${status.receipt.receiptCapacityWarning ? "<p>This classroom is approaching its saved-action limit. Ask for help before it fills.</p>" : ""}
+          ${status.refreshed ? "" : "<p>The classroom view could not refresh. You can still acknowledge this saved action.</p>"}
+          <button onclick="acknowledgeTeacherMoneySave()">Acknowledge saved action</button>
+          <button onclick="checkTeacherMoneySave()">Check save status</button>`;
+      } else if (["unchecked", "unresolved"].includes(status.status)) {
+        panel.innerHTML = (status.reason === "stale-plan" ? "<p>The preview changed or expired.</p>" : "") +
+          `<p>${status.status === "unchecked" ? "Money status has not been checked." : "Money status could not be checked."} Classroom changes stay locked until money status is confirmed. If you tried to save, a timeout does not mean it failed.</p><button onclick="checkTeacherMoneySave()">Check save status</button>`;
+      } else {
+        panel.textContent = status.status === "saving" ? "Saving transaction..." : "Preparing or checking the money save...";
+      }
+    }
+
+    async function checkTeacherMoneySave() {
+      if (!v2TeacherMoneyClient) return;
+      const captured = v2TenantSession.captureIdentity();
+      const result = await v2TeacherMoneyClient.check();
+      if (!v2TenantSession.validateCapturedIdentity(captured) || auth.currentUser?.uid !== captured.uid) return;
+      if (result.status === "unresolved") message = "Money status could not be checked. Classroom changes stay locked until it can be confirmed.";
+      render();
+    }
+
+    async function acknowledgeTeacherMoneySave() {
+      if (!v2TeacherMoneyClient) return;
+      const captured = v2TenantSession.captureIdentity();
+      const result = await v2TeacherMoneyClient.acknowledge();
+      if (!v2TenantSession.validateCapturedIdentity(captured) || auth.currentUser?.uid !== captured.uid) return;
+      if (result.status === "acknowledged") {
+        approvalRefreshRequired = !result.refreshed;
+        message = result.refreshed ? "Saved action acknowledged." : "Saved action acknowledged. Refresh the classroom before making more changes.";
+      } else message = "Acknowledgment is not confirmed. Check or acknowledge the same saved action again.";
+      render();
+    }
+
     async function quickCash(type, amount) {
       if (!canStartTeacherMoneySave()) return;
+      if (!["Add", "Subtract"].includes(type)) { showMessage("Choose Add Money or Subtract Money."); return; }
       const select = document.getElementById("quickStudent");
       if (!select) {
         showMessage("Choose a student first.");
@@ -3045,6 +3178,16 @@ function toggleStudentDropdown() {
       }
 
       quickCashStudentId = String(student.id);
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        let amountCents;
+        try { amountCents = parseTeacherMoneyAmount(String(amount)); }
+        catch (error) { showMessage(error.message); return; }
+        await saveTeacherMoneyIntent({ action: type === "Add" ? "award" : "deduct", studentIds: [student.id],
+          amountCents, reason: type === "Add" ? "Quick Cash" : "Classroom Expense",
+          category: "", memo: "$" + amount + " quick button" },
+          student.name + " " + (type === "Add" ? "received " : "paid ") + dollars(amount) + ".");
+        return;
+      }
       const candidate = JSON.parse(JSON.stringify(data));
       changeStudentBalance(student.id, type, amount, candidate);
 
@@ -3095,6 +3238,8 @@ function toggleStudentDropdown() {
       const teacherMemoInput = document.getElementById("teacherChoiceMemo");
       const teacherMemo = teacherMemoInput ? teacherMemoInput.value.trim() : "";
 
+      if (!["Add", "Subtract"].includes(type)) { showMessage("Choose Add Money or Subtract Money."); return; }
+
       if (!amount || amount <= 0) {
         showMessage("Enter an amount greater than 0.");
         return;
@@ -3114,6 +3259,20 @@ const targetStudents = transactionTarget === "whole"
 
       if (targetStudents.length === 0) {
         showMessage("Choose at least one student.");
+        return;
+      }
+
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        let amountCents;
+        try { amountCents = parseTeacherMoneyAmount(document.getElementById("transactionAmount").value); }
+        catch (error) { showMessage(error.message); return; }
+        if (targetStudents.length > 100) {
+          showMessage("Select at most 100 students for each separately confirmed save.");
+          return;
+        }
+        await saveTeacherMoneyIntent({ action: type === "Add" ? "award" : "deduct",
+          studentIds: targetStudents.map(student => student.id), amountCents,
+          reason, category: reason, memo: teacherMemo }, "Teacher transaction saved and approved.", resetCustomTransactionDraft);
         return;
       }
 
@@ -3140,121 +3299,6 @@ const targetStudents = transactionTarget === "whole"
         resetCustomTransactionDraft);
     }
 
-    function submitStudentRequest() {
-      const student = currentStudent();
-      if (!student) return;
-
-      if (student.frozen) {
-        showMessage("This account is frozen. Please see Mr. Morgan.");
-        return;
-      }
-
-      if (!data.settings.studentRequestsEnabled) {
-        showMessage("Student requests are currently turned off.");
-        return;
-      }
-
-      const type = document.getElementById("studentRequestType").value;
-      const amount = Number(document.getElementById("studentRequestAmount").value);
-      const reason = document.getElementById("studentRequestReason").value;
-
-      if (type === "Add" && !data.settings.studentAddRequestsEnabled) {
-        showMessage("Add-money requests are currently turned off.");
-        return;
-      }
-
-      if (type === "Subtract" && !data.settings.studentSubtractRequestsEnabled) {
-        showMessage("Spend-money requests are currently turned off.");
-        return;
-      }
-
-      if (!amount || amount <= 0) {
-        showMessage("Enter an amount greater than 0.");
-        return;
-      }
-
-      if (type === "Subtract" && amount > Number(student.balance)) {
-        showMessage("That payment is more than your approved balance.");
-        return;
-      }
-
-      const shouldBePending = type === "Add";
-
-      const newTransaction = {
-        id: Date.now(),
-        date: new Date().toLocaleString(),
-        studentId: student.id,
-        studentName: student.name,
-        type,
-        amount,
-        reason,
-        memo: "",
-        category: "",
-        status: shouldBePending ? "Pending" : "Approved",
-        source: "Student"
-      };
-
-      if (!shouldBePending) {
-        changeStudentBalance(student.id, type, amount);
-      }
-
-      data.transactions = [newTransaction].concat(data.transactions);
-      saveData();
-      message = shouldBePending
-        ? "Credit request submitted for teacher approval."
-        : "Payment submitted and approved.";
-      render();
-    }
-
-    function submitPurchaseRequest() {
-      const student = currentStudent();
-      if (!student) return;
-
-      if (student.frozen) {
-        showMessage("This account is frozen. Please see Mr. Morgan.");
-        return;
-      }
-
-      if (!data.settings.purchaseRequestsEnabled) {
-        showMessage("Purchase requests are currently turned off.");
-        return;
-      }
-
-      const category = document.getElementById("purchaseCategory").value;
-      const memo = document.getElementById("purchaseMemo").value.trim();
-      const amount = Number(document.getElementById("purchaseAmount").value);
-
-      if (!amount || amount <= 0) {
-        showMessage("Enter a purchase amount greater than 0.");
-        return;
-      }
-
-      if (amount > Number(student.balance)) {
-        showMessage("That purchase is more than your approved balance. Ask Mr. Morgan if you think that is wrong.");
-        return;
-      }
-
-      const newTransaction = {
-        id: Date.now(),
-        date: new Date().toLocaleString(),
-        studentId: student.id,
-        studentName: student.name,
-        type: "Subtract",
-        amount,
-        reason: "Purchase: " + category,
-        memo,
-        category,
-        status: "Approved",
-        source: "Student Purchase"
-      };
-
-      changeStudentBalance(student.id, "Subtract", amount);
-      data.transactions = [newTransaction].concat(data.transactions);
-      saveData();
-      message = "Purchase submitted and approved. Money has been subtracted.";
-      render();
-    }
-
     function queueApprovalDecision(ids, status) {
       if (!requireTeacher({ allowApprovalQueue: true })) return;
       if (approvalRefreshRequired) {
@@ -3271,29 +3315,44 @@ const targetStudents = transactionTarget === "whole"
         showMessage("Refresh the classroom before processing requests; there are unconfirmed local changes.");
         return;
       }
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        if (!canStartTeacherMoneySave()) return;
+        if (!ids.length || ids.length > 100) {
+          showMessage("Choose between 1 and 100 pending requests. No requests were processed.");
+          return;
+        }
+        // The server previews the entire explicit set. Nothing is silently filtered.
+        return saveTeacherMoneyIntent({ action: status === "Approved" ? "approve" : "deny",
+          transactionIds: [...ids], allowNegative: status === "Approved" },
+          status === "Approved" ? "Requests approved." : "Requests denied.");
+      }
       const available = ids.filter(id => !approvalQueue.has(id));
       const queued = approvalQueue.enqueue(available, snapshot => prepareApprovalDecision(snapshot, available, status,
         student => confirm("This approval would make " + student.name + "'s balance negative. Approve anyway?")));
       if (!queued && available.length) showMessage("A previous session save is finishing. Please try again shortly.");
     }
 
+    function isRemovedStudentRequest(transaction) {
+      return IS_MULTI_TEACHER_V2_ENABLED && !data.students.some(student => student.id === transaction.studentId);
+    }
+
     function approveAllCreditRequests() {
       if (!requireTeacher({ allowApprovalQueue: true })) return;
       const ids = data.transactions.filter(t => t.status === "Pending" && t.type === "Add" &&
-        !approvalQueue.has(t.id)).map(t => t.id);
+        !approvalQueue.has(t.id) && !isRemovedStudentRequest(t)).map(t => t.id);
       if (!ids.length) {
         showMessage("No pending credit requests to approve.");
         return;
       }
-      if (confirm("Approve all pending credit requests?")) queueApprovalDecision(ids, "Approved");
+      if (IS_MULTI_TEACHER_V2_ENABLED || confirm("Approve all pending credit requests?")) return queueApprovalDecision(ids, "Approved");
     }
 
     function approveTransaction(transactionId) {
-      queueApprovalDecision([transactionId], "Approved");
+      return queueApprovalDecision([transactionId], "Approved");
     }
 
     function denyTransaction(transactionId) {
-      queueApprovalDecision([transactionId], "Denied");
+      return queueApprovalDecision([transactionId], "Denied");
     }
 
     async function addStudent() {
@@ -3324,45 +3383,31 @@ const targetStudents = transactionTarget === "whole"
       }
 
       if (IS_MULTI_TEACHER_V2_ENABLED) {
-        if (!Number.isFinite(startingBalance)) {
-          showMessage("Enter a valid starting balance.");
-          return;
-        }
-        studentLifecyclePending = true;
-        message = `Adding ${name}...`;
-        render();
+        let startingBalanceCents;
+        try { startingBalanceCents = parseTeacherMoneyBalance(balanceInput === "" ? "0" : balanceInput); }
+        catch (error) { showMessage(error.message); return; }
         const captured = v2TenantSession.captureIdentity();
-        const callableAdapter = async (functionName, payload) => {
-          const callable = httpsCallable(functions, functionName);
-          return await callable(payload);
-        };
-        const result = await orchestrateCreateStudent(v2TenantSession, callableAdapter, {
-          name,
-          startingBalance,
-          pin
-        });
-        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
-        if (result.executed) {
-          // The callable intentionally returns only the four public fields.
-          // The aggregate/persisted student contract adds the required
-          // transaction mirror, which starts empty for a newly-created student.
-          data.students.push({ ...result.result.student, transactions: [] });
-          // The server just committed that exact body, so it belongs in the
-          // save baseline too — as its own object, never a shared reference.
-          // Without it the next save has no baseline entry for this student and
-          // compares the stored document against the body it is about to write,
-          // so adding a student and then giving them money before the next save
-          // aborts as a "concurrent" change that never happened.
-          if (v2LastPersistedData && Array.isArray(v2LastPersistedData.students)) {
-            v2LastPersistedData.students.push({ ...result.result.student, transactions: [] });
-          }
-          v2ActivatedStudentIds.add(String(result.result.student.id));
-          message = `${result.result.student.name} added. Login ID: ${result.result.loginId}.`;
-        } else {
-          message = result.error || "The student could not be added.";
+        const current = () => v2TenantSession.validateCapturedIdentity(captured) && auth.currentUser?.uid === captured.uid;
+        studentLifecyclePending = true;
+        try {
+          message = `Adding ${name}...`;
+          render();
+          const result = await v2TeacherMoneyClient.createStudent({ name, startingBalanceCents, pin });
+          if (!current()) return;
+          if (result.status === "committed") {
+            approvalRefreshRequired = !result.refreshed;
+            if (result.receipt.action === "createStudent") v2ActivatedStudentIds.add(String(result.receipt.studentId));
+            message = result.intentConfirmed
+              ? `Student added. Login ID: ${result.receipt.loginId}.${result.refreshed ? "" : " Refresh to see the updated roster."}`
+              : "The server confirmed an earlier saved action. Review and acknowledge it before adding another student.";
+          } else message = result.status === "cancelled"
+            ? "Student creation was cancelled without saving. You can enter the student again."
+            : "Student creation could not be confirmed. Check save status before trying again.";
+        } catch {
+          if (current()) message = "Student creation could not be confirmed. Check save status before trying again.";
+        } finally {
+          if (current()) { studentLifecyclePending = false; render(); }
         }
-        studentLifecyclePending = false;
-        render();
         return;
       }
 
@@ -3399,8 +3444,10 @@ const targetStudents = transactionTarget === "whole"
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         const captured = v2TenantSession.captureIdentity();
         const resetFn = async (p) => {
+          const access = await readStudentPinMutationAccess(captured);
+          if (!v2TenantSession.validateCapturedIdentity(captured) || auth.currentUser?.uid !== captured.uid) throw new Error("Session changed.");
           const resetStudentPin = httpsCallable(functions, "resetStudentPinV2");
-          return await resetStudentPin(p);
+          return await resetStudentPin({ ...p, ...access });
         };
         const payload = {
           studentId: String(student.id),
@@ -3465,18 +3512,22 @@ const targetStudents = transactionTarget === "whole"
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         const captured = v2TenantSession.captureIdentity();
         const bulkFn = async (p, cap) => {
+          // Capture once for the whole submitted group; never silently rebase
+          // remaining PIN changes onto a generation created by pause/resume.
+          const access = await readStudentPinMutationAccess(cap);
           const resetStudentPin = httpsCallable(functions, "resetStudentPinV2");
           const successfulStudentIds = [];
           let failCount = 0;
           for (const cb of p.checkboxes) {
-            if (!v2TenantSession.validateCapturedIdentity(cap)) break;
+            if (!v2TenantSession.validateCapturedIdentity(cap) || auth.currentUser?.uid !== cap.uid) break;
             const studentId = cb.value;
             const student = data.students.find(s => String(s.id) === studentId);
             if (student) {
               try {
                 await resetStudentPin({
                   studentId: String(student.id),
-                  newPin: p.newPin
+                  newPin: p.newPin,
+                  ...access
                 });
                 if (v2TenantSession.validateCapturedIdentity(cap)) {
                   successfulStudentIds.push(String(student.id));
@@ -3542,7 +3593,55 @@ const targetStudents = transactionTarget === "whole"
       render();
     }
 
+    function updateRosterDraft(studentId, field, value) {
+      if (!IS_MULTI_TEACHER_V2_ENABLED || teacherMoneyControlsBlocked() || !["name", "balance"].includes(field)) return;
+      rosterDrafts[studentId] = { ...rosterDrafts[studentId], [field]: value };
+    }
+
+    async function saveStudentName(studentId) {
+      if (!requireTeacher() || !canStartTeacherMoneySave()) return;
+      const student = data.students.find(row => row.id === studentId);
+      const name = document.getElementById("name-" + studentId)?.value.trim();
+      if (!student || !name || [...name].length > 120) { showMessage("Enter a student name of 1–120 characters."); return; }
+      const captured = v2TenantSession.captureIdentity();
+      const operation = { generation: approvalGeneration, uid: auth.currentUser?.uid, tenant: captured,
+        before: data, beforeStamp: JSON.stringify(data) };
+      const current = () => operation.generation === approvalGeneration && operation.uid === auth.currentUser?.uid &&
+        v2TenantSession.validateCapturedIdentity(captured);
+      try {
+        teacherMoneySaveOperation = operation;
+        message = "Saving name...";
+        render();
+        const result = await v2TeacherMoneyClient.rename({ studentId, expectedName: student.name, name });
+        if (!current()) return;
+        approvalRefreshRequired = result.status !== "saved" || !result.refreshed;
+        if (!approvalRefreshRequired && rosterDrafts[studentId]) delete rosterDrafts[studentId].name;
+        message = !approvalRefreshRequired ? "Name saved. Historical transactions keep their original names."
+          : "The name save could not be displayed or confirmed. Refresh the roster before making more changes.";
+      } catch {
+        if (current()) { approvalRefreshRequired = true; message = "Refresh the roster to check whether the name saved."; }
+      } finally {
+        if (teacherMoneySaveOperation === operation) teacherMoneySaveOperation = null;
+        if (current()) render();
+      }
+    }
+
+    async function adjustStudentBalance(studentId) {
+      if (!requireTeacher() || !canStartTeacherMoneySave()) return;
+      const student = data.students.find(row => row.id === studentId);
+      if (!student) return;
+      let expectedCents, targetCents;
+      try {
+        expectedCents = teacherMoneyBalanceCents(student.balance);
+        targetCents = parseTeacherMoneyBalance(document.getElementById("balance-" + studentId).value.trim());
+      } catch (error) { showMessage(error.message); return; }
+      if (targetCents === expectedCents) { showMessage("The balance is already at that amount."); return; }
+      return saveTeacherMoneyIntent({ action: "adjust", adjustments: [{ studentId, expectedCents, targetCents }] },
+        "Balance adjustment saved in transaction history.", () => { if (rosterDrafts[studentId]) delete rosterDrafts[studentId].balance; });
+    }
+
     async function updateStudent(studentId) {
+      if (IS_MULTI_TEACHER_V2_ENABLED) return saveStudentName(studentId);
       if (!requireTeacher()) return;
       if (rosterBalanceSaveOperation && (!IS_MULTI_TEACHER_V2_ENABLED ||
           v2TenantSession.validateCapturedIdentity(rosterBalanceSaveOperation))) return;
@@ -3601,27 +3700,37 @@ const targetStudents = transactionTarget === "whole"
       if (!confirmed) return;
 
       if (IS_MULTI_TEACHER_V2_ENABLED) {
-        studentLifecyclePending = true;
-        message = `Removing ${student.name}...`;
-        render();
         const captured = v2TenantSession.captureIdentity();
-        const callableAdapter = async (functionName, payload) => {
-          const callable = httpsCallable(functions, functionName);
-          return await callable(payload);
-        };
-        const result = await orchestrateRemoveStudent(v2TenantSession, callableAdapter, {
-          studentId: String(student.id)
-        });
-        if (!v2TenantSession.validateCapturedIdentity(captured)) return;
-        if (result.executed) {
-          data.students = data.students.filter(item => item.id !== studentId);
-          if (loggedInStudentId === studentId) loggedInStudentId = null;
-          message = student.name + " removed.";
-        } else {
-          message = result.error || "The student could not be removed.";
+        studentLifecyclePending = true;
+        try {
+          message = `Removing ${student.name}...`;
+          render();
+          const callableAdapter = async (functionName, payload) => {
+            const callable = httpsCallable(functions, functionName);
+            return await callable(payload);
+          };
+          const result = await orchestrateRemoveStudent(v2TenantSession, callableAdapter, {
+            studentId: String(student.id)
+          });
+          if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+          if (result.executed) {
+            const refreshed = await reloadV2ClassroomAfterSaveConflict();
+            if (!v2TenantSession.validateCapturedIdentity(captured)) return;
+            if (loggedInStudentId === studentId) loggedInStudentId = null;
+            approvalRefreshRequired = !refreshed;
+            message = refreshed ? student.name + " removed." : "Student removed. Refresh to load the current roster.";
+          } else {
+            if (result.reason !== "pending-requests") approvalRefreshRequired = true;
+            message = result.error || "The student could not be removed.";
+          }
+        } catch {
+          if (v2TenantSession.validateCapturedIdentity(captured)) {
+            approvalRefreshRequired = true;
+            message = "The removal could not be confirmed. Refresh the classroom before trying again.";
+          }
+        } finally {
+          if (v2TenantSession.validateCapturedIdentity(captured)) { studentLifecyclePending = false; render(); }
         }
-        studentLifecyclePending = false;
-        render();
         return;
       }
 
@@ -3760,6 +3869,17 @@ data.settings.subtractMoneyCategories = subtractMoneyText.split("\n").map(line =
       if (!requireTeacher()) return;
       if (rosterBalanceSaveOperation && (!IS_MULTI_TEACHER_V2_ENABLED ||
           v2TenantSession.validateCapturedIdentity(rosterBalanceSaveOperation))) return;
+      if (IS_MULTI_TEACHER_V2_ENABLED) {
+        if (!canStartTeacherMoneySave()) return;
+        let adjustments;
+        try { adjustments = data.students.map(student => ({ studentId: student.id,
+          expectedCents: teacherMoneyBalanceCents(student.balance), targetCents: 0 })).filter(row => row.expectedCents !== 0); }
+        catch (error) { showMessage(error.message); return; }
+        if (!adjustments.length) { showMessage("All displayed balances are already $0."); return; }
+        if (adjustments.length > 100) { showMessage("This group is too large for one reset. Adjust smaller selected groups separately."); return; }
+        return saveTeacherMoneyIntent({ action: "reset", adjustments }, "The confirmed balances were reset to $0 and recorded in history.",
+          () => { for (const row of adjustments) if (rosterDrafts[row.studentId]) delete rosterDrafts[row.studentId].balance; });
+      }
       const confirmed = confirm("Reset every student balance to $0? Each changed balance will be recorded as an adjustment in transaction history.");
       if (!confirmed) return;
       let candidate;
@@ -3878,17 +3998,6 @@ link.click();
       };
       reader.readAsText(file);
     }
-    function reasonOptions(selectedReason) {
-      return data.settings.reasons.map(reason =>
-        `<option value="${escapeHtml(reason)}" ${selectedReason === reason ? "selected" : ""}>${escapeHtml(reason)}</option>`
-      ).join("");
-    }
-    function purchaseCategoryOptions(selectedCategory) {
-      return data.settings.purchaseCategories.map(category =>
-        `<option value="${escapeHtml(category)}" ${selectedCategory === category ? "selected" : ""}>${escapeHtml(category)}</option>`
-      ).join("");
-    }
-
     function categoryOptions(categories, selectedCategory) {
       return sortTransactionCategories(categories).map(category =>
         `<option value="${escapeHtml(category)}" ${selectedCategory === category ? "selected" : ""}>${escapeHtml(category)}</option>`
@@ -3963,50 +4072,56 @@ link.click();
 
     async function submitStudentMoneyV2(type, amount, reason) {
       if (studentMoneySubmissionPending) return;
-      studentMoneySubmissionPending = true;
-      message = type === "Add" ? "Submitting Add Money request..." : "Submitting payment...";
-      render();
-
-      const callableAdapter = async (functionName, payload) => {
-        const callable = httpsCallable(functions, functionName);
-        return await callable(payload);
-      };
-      const retryPayload = studentMoneyRetryPayload;
-      const payload = retryPayload &&
-        retryPayload.type === type &&
-        retryPayload.amount === amount &&
-        retryPayload.reason === reason
-        ? retryPayload
-        : Object.freeze({ transactionId: Date.now(), type, amount, reason });
-      studentMoneyRetryPayload = payload;
-      const result = await orchestrateStudentTransaction(
-        v2TenantSession,
-        callableAdapter,
-        payload
-      );
-      if (result.reason === "stale-epoch-ignored") return;
-
-      studentMoneySubmissionPending = false;
-      if (!result.executed) {
-        // An ID collision is definitive, not an ambiguous network outcome.
-        // Discard it so the next otherwise-identical submission gets a fresh ID.
-        if (result.rawCode === "already-exists") studentMoneyRetryPayload = null;
-        message = result.error || "The transaction could not be completed.";
-        render();
+      const captured = v2TenantSession.captureIdentity();
+      const current = () => v2TenantSession.validateCapturedIdentity(captured);
+      const amountCents = amount * 100;
+      if (!Number.isSafeInteger(amount) || amount < 1 || !Number.isSafeInteger(amountCents) || amountCents > 100000000) {
+        showMessage("Enter a whole-dollar amount between $1 and $1,000,000.");
         return;
       }
-
-      studentMoneyRetryPayload = null;
-      applyConfirmedStudentTransaction(result.result);
-      if (type === "Add") {
-        const status = result.result.transaction.status;
-        message = status === "Pending"
-          ? "Add Money submitted for teacher approval."
-          : `This Add Money request is already ${status.toLowerCase()}.`;
-      } else {
-        message = "Subtract Money submitted. Money has been subtracted.";
+      studentMoneySubmissionPending = true;
+      try {
+        message = type === "Add" ? "Submitting Add Money request..." : "Submitting payment...";
+        render();
+        const callableAdapter = async (functionName, payload) => {
+          const callable = httpsCallable(functions, functionName);
+          return await callable(payload);
+        };
+        const retryPayload = studentMoneyRetryPayload;
+        let payload;
+        if (retryPayload && retryPayload.type === type && retryPayload.amountCents === amountCents && retryPayload.reason === reason) {
+          payload = retryPayload;
+        } else {
+          const response = await callableAdapter("getClassroomAccessV2", {});
+          if (!current()) return;
+          const access = response?.data || response;
+          if (access.protocolVersion !== 1 || access.mode !== "active" ||
+              !Number.isSafeInteger(access.generation) || access.generation < 1) {
+            throw new Error("Classroom unavailable");
+          }
+          payload = Object.freeze({ transactionId: Date.now(), protocolVersion: 1,
+            controlGeneration: access.generation, type, amountCents, reason });
+        }
+        studentMoneyRetryPayload = payload;
+        const result = await orchestrateStudentTransaction(v2TenantSession, callableAdapter, payload);
+        if (!current() || result.reason === "stale-epoch-ignored") return;
+        if (!result.executed) {
+          if (result.rawCode === "already-exists") studentMoneyRetryPayload = null;
+          message = result.error || "The transaction could not be completed.";
+          return;
+        }
+        studentMoneyRetryPayload = null;
+        applyConfirmedStudentTransaction(result.result);
+        if (type === "Add") {
+          const status = result.result.transaction.status;
+          message = status === "Pending" ? "Add Money submitted for teacher approval."
+            : `This Add Money request is already ${status.toLowerCase()}.`;
+        } else message = "Subtract Money submitted. Money has been subtracted.";
+      } catch {
+        if (current()) message = "The transaction could not be confirmed. Refresh before trying again.";
+      } finally {
+        if (current()) { studentMoneySubmissionPending = false; render(); }
       }
-      render();
     }
 
     async function submitStudentAddMoney() {
@@ -4148,7 +4263,7 @@ link.click();
           <td>${escapeHtml(transaction.status)}</td>
 <td>
           ${showActions && transaction.status === "Pending"
-    ? approvalQueue.has(transaction.id) ? '<span role="status">Saving…</span>' : '<button class="approve" onclick="approveTransaction(' + transaction.id + ')">Approve</button>' +
+    ? isRemovedStudentRequest(transaction) ? "Removed student — retained for review" : approvalQueue.has(transaction.id) ? '<span role="status">Saving…</span>' : '<button class="approve" onclick="approveTransaction(' + transaction.id + ')">Approve</button>' +
       '<button class="danger" onclick="denyTransaction(' + transaction.id + ')">Deny</button>'
     : "—"}
 </td>
@@ -4566,6 +4681,7 @@ link.click();
       if (screen !== "studentProfile" || !isTeacher) {
         clearTemporaryProfileStudentPin();
       }
+      renderTeacherMoneyRecovery();
       discardStaleProviderInsights();
       if (IS_MULTI_TEACHER_V2_ENABLED) {
         const state = v2TenantSession.getState();
@@ -4864,17 +4980,17 @@ link.click();
                     <div class="empty">Add students on the Roster page first.</div>
                   ` : `
                     <label for="quickStudent">Student</label>
-                    <select ${teacherMoneySaveOperation ? "disabled" : ""} id="quickStudent" onchange="setQuickCashStudent(this.value)">
+                    <select ${teacherMoneyControlsBlocked() ? "disabled" : ""} id="quickStudent" onchange="setQuickCashStudent(this.value)">
                       <option value="">Choose a student</option>
                       ${studentOptions}
                     </select>
                     <div class="dashboard-quick-cash-actions">
-                      <button ${teacherMoneySaveOperation ? "disabled" : ""} class="quick-btn" onclick="quickCash('Add', 1)">+$1</button>
-                      <button ${teacherMoneySaveOperation ? "disabled" : ""} class="quick-btn" onclick="quickCash('Add', 5)">+$5</button>
-                      <button ${teacherMoneySaveOperation ? "disabled" : ""} class="quick-btn" onclick="quickCash('Add', 10)">+$10</button>
-                      <button ${teacherMoneySaveOperation ? "disabled" : ""} class="quick-btn subtract" onclick="quickCash('Subtract', 1)">-$1</button>
-                      <button ${teacherMoneySaveOperation ? "disabled" : ""} class="quick-btn subtract" onclick="quickCash('Subtract', 5)">-$5</button>
-                      <button ${teacherMoneySaveOperation ? "disabled" : ""} class="quick-btn subtract" onclick="quickCash('Subtract', 10)">-$10</button>
+                      <button ${teacherMoneyControlsBlocked() ? "disabled" : ""} class="quick-btn" onclick="quickCash('Add', 1)">+$1</button>
+                      <button ${teacherMoneyControlsBlocked() ? "disabled" : ""} class="quick-btn" onclick="quickCash('Add', 5)">+$5</button>
+                      <button ${teacherMoneyControlsBlocked() ? "disabled" : ""} class="quick-btn" onclick="quickCash('Add', 10)">+$10</button>
+                      <button ${teacherMoneyControlsBlocked() ? "disabled" : ""} class="quick-btn subtract" onclick="quickCash('Subtract', 1)">-$1</button>
+                      <button ${teacherMoneyControlsBlocked() ? "disabled" : ""} class="quick-btn subtract" onclick="quickCash('Subtract', 5)">-$5</button>
+                      <button ${teacherMoneyControlsBlocked() ? "disabled" : ""} class="quick-btn subtract" onclick="quickCash('Subtract', 10)">-$10</button>
                     </div>
                   `}
                 </div>
@@ -4885,16 +5001,16 @@ link.click();
                     <div class="empty">Add students on the Roster page first.</div>
                   ` : `
                     <div class="transaction-form">
-                      <input ${teacherMoneySaveOperation ? "disabled" : ""} id="transactionType" type="hidden" value="${escapeHtml(customTransactionDraft.type)}" />
+                      <input ${teacherMoneyControlsBlocked() ? "disabled" : ""} id="transactionType" type="hidden" value="${escapeHtml(customTransactionDraft.type)}" />
 
                       <label>Transaction type</label>
                       <div class="segmented-control">
-                        <button ${teacherMoneySaveOperation ? "disabled" : ""} id="addModeButton" class="segment-button ${customTransactionDraft.type === "Add" ? "active" : ""}" onclick="setCustomTransactionMode('Add')">Add Money</button>
-                        <button ${teacherMoneySaveOperation ? "disabled" : ""} id="subtractModeButton" class="segment-button ${customTransactionDraft.type === "Subtract" ? "active" : ""}" onclick="setCustomTransactionMode('Subtract')">Subtract Money</button>
+                        <button ${teacherMoneyControlsBlocked() ? "disabled" : ""} id="addModeButton" class="segment-button ${customTransactionDraft.type === "Add" ? "active" : ""}" onclick="setCustomTransactionMode('Add')">Add Money</button>
+                        <button ${teacherMoneyControlsBlocked() ? "disabled" : ""} id="subtractModeButton" class="segment-button ${customTransactionDraft.type === "Subtract" ? "active" : ""}" onclick="setCustomTransactionMode('Subtract')">Subtract Money</button>
                       </div>
 
                       <label for="transactionTarget">Who gets this transaction?</label>
-                      <select ${teacherMoneySaveOperation ? "disabled" : ""} id="transactionTarget" onchange="setTransactionTarget(this.value)">
+                      <select ${teacherMoneyControlsBlocked() ? "disabled" : ""} id="transactionTarget" onchange="setTransactionTarget(this.value)">
                         <option value="selected" ${transactionTarget === "selected" ? "selected" : ""}>Selected Students</option>
                         <option value="whole" ${transactionTarget === "whole" ? "selected" : ""}>Whole Class</option>
                       </select>
@@ -4912,7 +5028,7 @@ link.click();
                           <div class="student-check-list" style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
                             ${sortStudentsByName(data.students).map(student => `
                               <label class="student-check-item" style="display: flex; align-items: center; gap: 10px; width: 100%;">
-                                <input ${teacherMoneySaveOperation ? "disabled" : ""}
+                                <input ${teacherMoneyControlsBlocked() ? "disabled" : ""}
                                   type="checkbox"
                                   class="student-check"
                                   value="${student.id}"
@@ -4927,20 +5043,20 @@ link.click();
                       ` : ""}
 
                       <label for="transactionAmount">Amount</label>
-                      <input ${teacherMoneySaveOperation ? "disabled" : ""} id="transactionAmount" type="number" min="1" value="${escapeHtml(customTransactionDraft.amount)}" oninput="updateCustomTransactionDraft()" />
+                      <input ${teacherMoneyControlsBlocked() ? "disabled" : ""} id="transactionAmount" type="number" min="0.01" step="0.01" value="${escapeHtml(customTransactionDraft.amount)}" oninput="updateCustomTransactionDraft()" />
 
                       <label for="transactionReason">Category</label>
-                      <select ${teacherMoneySaveOperation ? "disabled" : ""} id="transactionReason" onchange="toggleTeacherChoiceMemo()">
+                      <select ${teacherMoneyControlsBlocked() ? "disabled" : ""} id="transactionReason" onchange="toggleTeacherChoiceMemo()">
                         <option value="">Choose a category</option>
                         ${categoryOptions(customTransactionCategories, customTransactionDraft.reason)}
                       </select>
 
                       <div id="teacherChoiceMemoWrap" class="teacher-choice-memo full-row ${customTransactionDraft.reason === "Teacher's Choice" ? "visible" : ""}">
                         <label for="teacherChoiceMemo">Teacher’s Choice memo</label>
-                        <input ${teacherMoneySaveOperation ? "disabled" : ""} id="teacherChoiceMemo" placeholder="Optional reason or memo" value="${escapeHtml(customTransactionDraft.memo)}" oninput="updateCustomTransactionDraft()" />
+                        <input ${teacherMoneyControlsBlocked() ? "disabled" : ""} id="teacherChoiceMemo" placeholder="Optional reason or memo" value="${escapeHtml(customTransactionDraft.memo)}" oninput="updateCustomTransactionDraft()" />
                       </div>
 
-                      <button ${teacherMoneySaveOperation ? "disabled" : ""} id="customTransactionButton" class="primary full-row" onclick="saveTeacherTransaction()">${customTransactionDraft.type === "Add" ? "Add Money" : "Subtract Money"}</button>
+                      <button ${teacherMoneyControlsBlocked() ? "disabled" : ""} id="customTransactionButton" class="primary full-row" onclick="saveTeacherTransaction()">${customTransactionDraft.type === "Add" ? "Add Money" : "Subtract Money"}</button>
                     </div>
                   `}
                 </div>
@@ -5083,8 +5199,10 @@ link.click();
 
       if (screen === "approvals" && isTeacher) {
         const pendingCredits = data.transactions.filter(transaction =>
-          transaction.status === "Pending" && transaction.type === "Add"
+          transaction.status === "Pending" && transaction.type === "Add" && !isRemovedStudentRequest(transaction)
         );
+        const removedPending = data.transactions.filter(transaction =>
+          transaction.status === "Pending" && isRemovedStudentRequest(transaction));
 
         html += `
           <div class="card">
@@ -5093,6 +5211,9 @@ link.click();
             ${pendingCredits.length > 0 ? `<button class="primary" onclick="approveAllCreditRequests()">Approve All Credits</button>` : ""}
             <div style="margin-top: 14px;">
               ${transactionTable(pendingCredits, true)}
+              ${removedPending.length ? `<h3>Pending records for removed students</h3>
+                <p>These ${removedPending.length} records are preserved for review and are not included in Approve All Credits. No balances or history have been changed.</p>
+                ${transactionTable(removedPending, false)}` : ""}
             </div>
           </div>
         `;
@@ -5160,7 +5281,7 @@ link.click();
                 <div class="roster-row${IS_MULTI_TEACHER_V2_ENABLED ? " v2-roster-row" : ""}" data-roster-student-name="${escapeHtml(student.name.toLowerCase())}">
                   <div>
                     <label for="name-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Student Name</label>
-                    <input id="name-${student.id}" value="${escapeHtml(student.name)}" />
+                    <input id="name-${student.id}" value="${escapeHtml(IS_MULTI_TEACHER_V2_ENABLED ? rosterDrafts[student.id]?.name ?? student.name : student.name)}" oninput="updateRosterDraft(${student.id}, 'name', this.value)" ${teacherMoneyControlsBlocked() ? "disabled" : ""} />
                   </div>
                   ${IS_MULTI_TEACHER_V2_ENABLED ? "" : `
                   <div>
@@ -5170,14 +5291,17 @@ link.click();
                   `}
                   <div>
                     <label for="balance-${student.id}" style="font-size: 12px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Balance</label>
-                    <input id="balance-${student.id}" type="number" value="${student.balance}" />
+                    <input id="balance-${student.id}" type="number" step="0.01" value="${escapeHtml(IS_MULTI_TEACHER_V2_ENABLED ? rosterDrafts[student.id]?.balance ?? student.balance : student.balance)}" oninput="updateRosterDraft(${student.id}, 'balance', this.value)" ${teacherMoneyControlsBlocked() ? "disabled" : ""} />
                   </div>
                   <div class="no-print">
                     <div class="small-note" style="margin-bottom: 8px; font-weight: 900;">
                       Status: ${student.frozen ? "Frozen" : "Active"}
                     </div>
                     <button onclick="viewStudentProfile(${student.id})">View</button>
-                                    <button onclick="updateStudent(${student.id})">Save</button>
+                    ${IS_MULTI_TEACHER_V2_ENABLED ? `
+                    <button onclick="saveStudentName(${student.id})" ${teacherMoneyControlsBlocked() ? "disabled" : ""}>Save name</button>
+                    <button onclick="adjustStudentBalance(${student.id})" ${teacherMoneyControlsBlocked() ? "disabled" : ""}>Adjust balance</button>
+                    ` : `<button onclick="updateStudent(${student.id})">Save</button>`}
 <button onclick="toggleFreezeStudent(${student.id})">${student.frozen ? "Unfreeze" : "Freeze"}</button>
 <button class="danger" onclick="removeStudent(${student.id})">Remove</button>
                   </div>
@@ -5683,6 +5807,8 @@ if (screen === "editSettingsLists" && isTeacher) {
       approvalGeneration++;
       approvalRefreshRequired = false;
       teacherMoneySaveOperation = null;
+      rosterDrafts = {};
+      v2TeacherMoneyClient?.reset();
       resetGlobalApplicationState(windowAppGlobals, cloneDefault);
       // The remembered login locator is intentionally separate from tenant data.
       // Rehydrate it after the shared reset so an ordinary logout keeps the next
@@ -5771,6 +5897,7 @@ if (screen === "editSettingsLists" && isTeacher) {
       if (message === "Creating classroom...") {
         message = res.error || "Classroom setup did not complete. Please try again.";
       }
+      if (v2TenantSession.role === "teacher" && v2TenantSession.classroomId) await checkTeacherMoneySave();
       render();
     }
 
@@ -5944,6 +6071,7 @@ if (screen === "editSettingsLists" && isTeacher) {
 
     const v2LoadStudentData = createStudentDataLoader({
       db,
+      loadSettings: async () => (await httpsCallable(functions, "getStudentSettingsV2")({})).data,
       session: v2TenantSession,
       firestore: V2_FIRESTORE_ADAPTERS,
       defaultSettings
@@ -5955,6 +6083,27 @@ if (screen === "editSettingsLists" && isTeacher) {
       firestore: V2_FIRESTORE_ADAPTERS,
       previousRef: () => v2LastPersistedData
     });
+
+    if (IS_MULTI_TEACHER_V2_ENABLED) {
+      v2TeacherMoneyClient = createTeacherMoneyClient({
+        session: v2TenantSession, currentUid: () => auth.currentUser?.uid,
+        storage: localStorage,
+        call: async (name, payload) => (await httpsCallable(functions, name)(payload)).data,
+        reload: async captured => {
+          const loaded = await v2LoadTenantData({ uid: captured.uid, classroomId: captured.classroomId });
+          if (!v2TenantSession.validateCapturedIdentity(captured) || auth.currentUser?.uid !== captured.uid) return false;
+          if (teacherMoneySaveOperation && (data !== teacherMoneySaveOperation.before ||
+              JSON.stringify(data) !== teacherMoneySaveOperation.beforeStamp)) return false;
+          data = loaded;
+          v2LastPersistedData = JSON.parse(JSON.stringify(loaded));
+          v2IsOffline = false;
+          writeTeacherCache(localStorage, v2TenantSession, v2TenantSession.projectId, loaded, captured);
+          return true;
+        },
+        confirmPlan: confirmTeacherMoneyPlan,
+        notify: () => render(),
+      });
+    }
 
     // Keep the default-off build inert: constructing MultiTabInvalidator would
     // open a real BroadcastChannel even before start() installs listeners.
@@ -6066,6 +6215,7 @@ if (screen === "editSettingsLists" && isTeacher) {
           data = res.data;
           v2IsOffline = Boolean(res.isOffline);
         }
+        if (v2TenantSession.role === "teacher" && v2TenantSession.classroomId) await checkTeacherMoneySave();
         render();
         return;
       }
@@ -6177,6 +6327,8 @@ window.updateCustomTransactionDraft = updateCustomTransactionDraft;
 window.setTeacherTransactionFilter = setTeacherTransactionFilter;
 window.exportTransactionsCsv = exportTransactionsCsv;
 window.quickCash = quickCash;
+window.checkTeacherMoneySave = checkTeacherMoneySave;
+window.acknowledgeTeacherMoneySave = acknowledgeTeacherMoneySave;
 window.logout = logout;
 window.setLoginTab = setLoginTab;
 window.toggleTeacherPasswordLogin = toggleTeacherPasswordLogin;
@@ -6186,6 +6338,9 @@ window.approveAllCreditRequests = approveAllCreditRequests;
 window.approveTransaction = approveTransaction;
 window.denyTransaction = denyTransaction;
 window.updateStudent = updateStudent;
+window.saveStudentName = saveStudentName;
+window.updateRosterDraft = updateRosterDraft;
+window.adjustStudentBalance = adjustStudentBalance;
 window.updateLoginHistoryView = updateLoginHistoryView;
 window.clearLoginHistory = clearLoginHistory;
 window.clearTransactions = clearTransactions;

@@ -1,4 +1,6 @@
 import { HttpsError } from 'firebase-functions/v2/https'
+import { ClassroomAccessError, hasExactDataKeys, isControlGeneration, requireClassroomAccess } from './classroomAccess.js'
+import { storedMoneyToCents, requirePositiveMoneyCents, applyMoneyDelta, TeacherMoneyContractError } from './teacherMoneyContract.js'
 
 import { FIRESTORE_COLLECTIONS, TEACHER_STATUS } from '../phase1/firestoreSchema.js'
 import {
@@ -166,8 +168,8 @@ function validateStudentAuth(auth) {
 }
 
 function validateRequest(request) {
-  const expected = ['amount', 'reason', 'transactionId', 'type']
-  if (!hasExactKeys(request, expected)) {
+  const expected = ['protocolVersion', 'controlGeneration', 'amountCents', 'reason', 'transactionId', 'type']
+  if (!hasExactDataKeys(request, expected) || request.protocolVersion !== 1 || !isControlGeneration(request.controlGeneration)) {
     throw new StudentMoneyError(
       'invalid-argument',
       'Request fields do not match the student transaction contract.',
@@ -177,14 +179,19 @@ function validateRequest(request) {
   if (request.type !== 'Add' && request.type !== 'Subtract') {
     throw new StudentMoneyError('invalid-argument', 'Transaction type is unsupported.')
   }
-  const amount = requirePositiveSafeInteger(request.amount, 'amount')
+  let amountCents
+  try { amountCents = requirePositiveMoneyCents(request.amountCents) }
+  catch { throw new StudentMoneyError('invalid-argument', 'Amount is outside the supported cents domain.') }
   if (typeof request.reason !== 'string' || !request.reason) {
     throw new StudentMoneyError('invalid-argument', 'Transaction reason is invalid.')
   }
   return Object.freeze({
     transactionId,
     type: request.type,
-    amount,
+    amountCents,
+    amount: amountCents / 100,
+    protocolVersion: request.protocolVersion,
+    controlGeneration: request.controlGeneration,
     reason: request.reason,
   })
 }
@@ -227,12 +234,12 @@ function requireStudentDocument(snapshot, identity) {
     )
   }
 
+  storedMoneyToCents(student.balance)
   const seen = new Set()
   const transactions = student.transactions.map((transaction, index) => {
     const valid = validateStoredTransaction(
       transaction,
       numericStudentId,
-      student.name,
       `student.transactions[${index}]`,
     )
     if (seen.has(valid.id)) {
@@ -248,13 +255,13 @@ function requireStudentDocument(snapshot, identity) {
   return Object.freeze({ ...student, transactions })
 }
 
-function validateStoredTransaction(transaction, studentId, studentName, label) {
+function validateStoredTransaction(transaction, studentId, label) {
   if (
     !hasExactKeys(transaction, TRANSACTION_KEYS) ||
     !Number.isSafeInteger(transaction.id) ||
     transaction.id < 1 ||
     transaction.studentId !== studentId ||
-    transaction.studentName !== studentName ||
+    typeof transaction.studentName !== 'string' || !transaction.studentName.trim() ||
     typeof transaction.date !== 'string' ||
     !transaction.date ||
     (transaction.type !== 'Add' && transaction.type !== 'Subtract') ||
@@ -272,6 +279,7 @@ function validateStoredTransaction(transaction, studentId, studentName, label) {
       `${label} does not match the transaction contract.`,
     )
   }
+  requirePositiveMoneyCents(storedMoneyToCents(transaction.amount))
   return Object.freeze({ ...transaction })
 }
 
@@ -293,7 +301,7 @@ function requireFoundation(classroomSnapshot, teacherSnapshot, identity) {
   return classroom
 }
 
-function normalizedStudentMoneySettings(classroom) {
+export function normalizedStudentMoneySettings(classroom) {
   const raw = classroom.settings ?? {}
   if (!isPlainObject(raw)) {
     throw new StudentMoneyError('failed-precondition', 'Classroom settings are malformed.')
@@ -357,7 +365,6 @@ function matchesReplay(transaction, request, student) {
     : transaction.status === 'Approved'
   return transaction.id === request.transactionId &&
     transaction.studentId === student.id &&
-    transaction.studentName === student.name &&
     transaction.type === request.type &&
     transaction.amount === request.amount &&
     transaction.reason === request.reason &&
@@ -503,6 +510,7 @@ export async function submitStudentTransactionV2Service(
     }
 
     const classroom = requireFoundation(classroomSnapshot, teacherSnapshot, identity)
+    requireClassroomAccess(classroom.accessControl, { operation: 'mutate', ...validated })
     const student = requireStudentDocument(studentSnapshot, identity)
     const mirror = student.transactions.find(item => item.id === validated.transactionId)
 
@@ -510,7 +518,6 @@ export async function submitStudentTransactionV2Service(
       const existing = validateStoredTransaction(
         existingTransactionSnapshot.data?.(),
         student.id,
-        student.name,
         'existing transaction',
       )
       if (!matchesReplay(existing, validated, student) || !mirror || !sameTransaction(existing, mirror)) {
@@ -535,7 +542,7 @@ export async function submitStudentTransactionV2Service(
       )
     }
     requireTransactionEnabled(classroom, student, validated)
-    if (validated.type === 'Subtract' && validated.amount > student.balance) {
+    if (validated.type === 'Subtract' && validated.amountCents > storedMoneyToCents(student.balance)) {
       throw new StudentMoneyError('failed-precondition', 'Student balance is insufficient.')
     }
 
@@ -550,7 +557,7 @@ export async function submitStudentTransactionV2Service(
 
     const newTransaction = buildTransaction(validated, student, currentSubmissionTime)
     const balance = validated.type === 'Subtract'
-      ? student.balance - validated.amount
+      ? applyMoneyDelta(storedMoneyToCents(student.balance), -validated.amountCents) / 100
       : student.balance
     if (!Number.isFinite(balance)) {
       throw new StudentMoneyError('resource-exhausted', 'Student balance cannot be represented.')
@@ -570,6 +577,8 @@ export async function submitStudentTransactionV2Service(
 }
 
 function externalCodeFor(error) {
+  if (error instanceof ClassroomAccessError) return error.code
+  if (error instanceof TeacherMoneyContractError) return 'failed-precondition'
   if (
     error instanceof StudentMoneyError &&
     Object.prototype.hasOwnProperty.call(GENERIC_CLIENT_MESSAGES, error.code)

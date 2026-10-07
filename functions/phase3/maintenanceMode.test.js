@@ -15,9 +15,11 @@ import { makeBalanceWitness, recordBalanceWitness } from '../insights/balanceHis
 import { control } from '../../tests/phase3/classroomAccess.fixture.js'
 
 const reads = ['getClassroomAccessV2', 'resolveTeacherTenantV2']
-const blocked = ['onboardTeacherClassroomV2', 'createTeacherInvitationV2', 'revokeTeacherInvitationV2',
+const blocked = ['getStudentSettingsV2', 'onboardTeacherClassroomV2', 'createTeacherInvitationV2', 'revokeTeacherInvitationV2',
   'studentPinLoginV2', 'resetStudentPinV2', 'createStudentV2', 'removeStudentV2', 'listStudentPinsV2',
-  'submitStudentTransactionV2', 'analyzeTeacherInsightsV3', 'syncStudentProfilesV2']
+  'submitStudentTransactionV2', 'analyzeTeacherInsightsV3', 'syncStudentProfilesV2',
+  'planTeacherMoneyV2', 'executeTeacherMoneyV2', 'getTeacherMoneyStatusV2',
+  'acknowledgeTeacherMoneyV2', 'cancelTeacherMoneyV2', 'editStudentProfileV2']
 const auditOperation = 'recordStudentBalanceHistoryV3'
 const operations = [...reads, ...blocked, auditOperation]
 const source = readFileSync(new URL('../index.js', import.meta.url), 'utf8')

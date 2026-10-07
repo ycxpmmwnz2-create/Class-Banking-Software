@@ -1,3 +1,4 @@
+import { ClassroomAccessError, requireClassroomAccess } from '../phase3/classroomAccess.js'
 import bcrypt from 'bcryptjs'
 import { HttpsError } from 'firebase-functions/v2/https'
 import {
@@ -159,7 +160,14 @@ async function resolveClassroomFromCode(transaction, firestore, canonicalCode) {
     teacherData.uid === ownerUid &&
     teacherData.classroomId === indexedClassroomId
 
-  return foundationValid ? { classroomId: indexedClassroomId } : null
+  if (!foundationValid) return null
+  try {
+    const control = requireClassroomAccess(classroomData.accessControl, { operation: 'read' })
+    return { classroomId: indexedClassroomId, teacherUid: ownerUid, control }
+  } catch (error) {
+    if (error instanceof ClassroomAccessError) return null
+    throw error
+  }
 }
 
 function isCredentialIdentityValid({
@@ -458,6 +466,8 @@ export async function verifyStudentCredentialV2(
       success: true,
       outcome,
       authUid: deriveDeterministicStudentAuthUid(classroomId, studentId),
+      teacherUid: resolved.teacherUid,
+      control: resolved.control,
       claims: Object.freeze({
         role: 'student',
         classroomId,
@@ -475,6 +485,23 @@ export async function verifyStudentCredentialV2(
     throw new StudentVerifierError()
   }
 
+  // Fresh, read-only authorization immediately before the external mint. The
+  // verifier transaction may have committed before a pause, transfer or reset.
+  // A pause after this check still fences the token at current rules/callables.
+  const currentControl = await firestore.runTransaction(async transaction => {
+    const current = await resolveClassroomFromCode(transaction, firestore, canonicalCode)
+    if (!current || current.classroomId !== result.claims.classroomId ||
+        current.teacherUid !== result.teacherUid || current.control.generation !== result.control.generation) {
+      throw new StudentVerifierError()
+    }
+    const snap = await transaction.get(firestore.doc(studentCredentialPath(current.classroomId, canonicalLoginId)))
+    const data = snap.exists ? snap.data() : {}
+    if (!snap.exists || data.studentId !== result.claims.studentId ||
+        !isCredentialIdentityValid({ credSnap: snap, credData: data, classroomId: current.classroomId,
+          canonicalLoginId, studentId: result.claims.studentId }) ||
+        credentialVersionMillis(data.pinUpdatedAt) !== result.claims.credentialVersion) throw new StudentVerifierError()
+    return current.control
+  }, { readOnly: true })
   const token = await tokenFactory(result.authUid, result.claims)
 
   return Object.freeze({
@@ -482,6 +509,7 @@ export async function verifyStudentCredentialV2(
     authUid: result.authUid,
     claims: result.claims,
     token,
+    access: Object.freeze({ protocolVersion: 1, mode: currentControl.mode, generation: currentControl.generation }),
   })
 }
 
@@ -499,7 +527,7 @@ export async function studentPinLoginV2CallableHandler(
 ) {
   try {
     const result = await verifyStudentCredentialV2(data, dependencies)
-    return { token: result.token }
+    return { token: result.token, access: result.access }
   } catch (error) {
     if (error instanceof StudentVerifierError) {
       throw new HttpsError('unauthenticated', GENERIC_STUDENT_LOGIN_MESSAGE)

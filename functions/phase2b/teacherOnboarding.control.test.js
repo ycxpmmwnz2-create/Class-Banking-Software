@@ -8,6 +8,8 @@ import { hashEmailDigest } from './identityNormalization.js'
 import { control } from '../../tests/phase3/classroomAccess.fixture.js'
 import { TenantSession, SESSION_STATES } from '../../src/phase2b/tenantSession.js'
 import { orchestrateTeacherOnboarding } from '../../src/phase2b/tenantClient.js'
+import { teacherAwardPaths } from '../phase3/teacherAwardService.js'
+import { DEFAULT_ADD_MONEY_CATEGORIES } from '../../src/phase2b/transactionCategoryDisplay.js'
 
 const auth = { uid: 'teacher-a', token: { email: 'fictional@example.com', email_verified: true,
   name: 'Teacher A', firebase: { sign_in_provider: 'google.com' } } }
@@ -42,6 +44,7 @@ function database(documents = initial(), hooks = {}) {
         return doc(`${name}/${id}`)
       },
       where: (field, operator, value) => ({ limit: count => ({ query: { name, field, operator, value, count } }) }),
+      limit: count => ({ query: { name, count } }),
     }),
     async runTransaction(callback, settings) {
       const call = ++calls
@@ -58,10 +61,10 @@ function database(documents = initial(), hooks = {}) {
           assert.equal(pending.length, 0, 'all reads precede writes')
           if (ref.query) {
             const { name, field, operator, value, count } = ref.query
-            assert.equal(operator, '==')
+            if (field) assert.equal(operator, '==')
             reads.push({ call, query: name, field, value })
             const docs = Object.keys(view).filter(path => path.startsWith(`${name}/`) &&
-              path.split('/').length === name.split('/').length + 1 && view[path][field] === value)
+              path.split('/').length === name.split('/').length + 1 && (!field || view[path][field] === value))
               .slice(0, count).map(path => snapshot(path, view))
             return { docs, empty: docs.length === 0, size: docs.length }
           }
@@ -103,15 +106,19 @@ test('onboarding creates exact generation-one control and private audit atomical
   const db = database(initial(), { newId: () => 'class-a' })
   const result = await onboard(db)
   const expected = { schemaVersion: 1, mode: 'active', generation: 1, changedAt: instant, auditId: 'onboarding' }
+  const money = teacherAwardPaths('class-a', auth.uid, '0'.repeat(32))
   assert.deepEqual(db.store[classroom].accessControl, expected)
   assert.deepEqual(db.store[audit], { schemaVersion: 1, kind: 'onboarding', generation: 1, mode: 'active', changedAt: instant })
   assert.deepEqual(db.committed.map(({ op, path }) => ({ op, path })).sort((a, b) => a.path.localeCompare(b.path)), [
     { op: 'create', path: 'classroomLoginCodes/23456789' }, { op: 'create', path: classroom },
     { op: 'create', path: audit }, { op: 'create', path: teacher }, { op: 'update', path: invite },
+    { op: 'create', path: money.actor }, { op: 'create', path: money.quota },
   ].sort((a, b) => a.path.localeCompare(b.path)))
   assert.equal(db.store[classroom].nextStudentNumber, 1)
   assert.equal(db.store[invite].status, 'consumed')
   assert.equal(db.store[teacher].classroomId, result.classroom.id)
+  assert.deepEqual(db.store[money.actor], { version: 1, actorUid: auth.uid, unacknowledgedRequestId: null })
+  assert.deepEqual(db.store[money.quota], { version: 1, count: 0 })
   assert.deepEqual(Object.keys(result).sort(), ['classroom', 'created', 'teacher'])
   assert.equal(JSON.stringify(result).includes('auditId'), false)
 })
@@ -131,6 +138,26 @@ test('real client onboarding orchestration reaches active resolution with the ne
   assert.equal(session.getState(), SESSION_STATES.ACTIVE)
   assert.deepEqual(calls, ['onboardTeacherClassroomV2', 'resolveTeacherTenantV2'])
   assert.equal(db.store[`classrooms/${result.classroom.id}`].accessControl.generation, 1)
+})
+
+test('new classroom money categories match the actual browser defaults, while replay preserves or leaves missing metadata alone', async () => {
+  const source = readFileSync(new URL('../../index.html', import.meta.url), 'utf8')
+  const start = source.indexOf('    const defaultSettings = {')
+  const end = source.indexOf('\n    };', start)
+  assert.ok(start > 0 && end > start)
+  const settings = JSON.parse(JSON.stringify(vm.runInNewContext(source.slice(start, end + 7) + '\ndefaultSettings', { DEFAULT_ADD_MONEY_CATEGORIES })))
+  const fresh = database(initial(), { newId: () => 'class-a' })
+  await onboard(fresh)
+  for (const key of ['addMoneyCategories', 'subtractMoneyCategories']) assert.deepEqual(fresh.store[classroom].settings[key], settings[key])
+  const paths = teacherAwardPaths('class-a', auth.uid, 'a'.repeat(32))
+  for (const withMetadata of [false, true]) {
+    const docs = existing()
+    if (withMetadata) Object.assign(docs, { [paths.quota]: { version: 1, count: 37 },
+      [paths.actor]: { version: 1, actorUid: auth.uid, unacknowledgedRequestId: 'a'.repeat(32) } })
+    const db = database(docs), before = clone(db.store)
+    assert.equal((await onboard(db)).created, false)
+    assert.deepEqual(db.store, before); assert.deepEqual(db.committed, [])
+  }
 })
 
 test('explicit teacher role and readable Date or Timestamp clocks produce canonical control time', async () => {
@@ -273,7 +300,7 @@ test('simultaneous onboarding attempts commit one foundation, one audit and one 
   const results = await Promise.all([onboard(db), onboard(db)])
   assert.deepEqual(results.map(row => row.created).sort(), [false, true])
   assert.equal(results[0].classroom.id, results[1].classroom.id)
-  assert.equal(db.committed.length, 5)
+  assert.equal(db.committed.length, 7)
   assert.equal(db.committed.filter(row => row.path.includes('/accessControlAudits/')).length, 1)
 })
 

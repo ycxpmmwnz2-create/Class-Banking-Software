@@ -1,3 +1,4 @@
+import { getClassroomAccessService } from '../phase3/classroomAccess.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -138,6 +139,7 @@ function classroomFixture(classroomId, teacherUid, code) {
     [`classroomLoginCodes/${code}`]: { status: 'active', classroomId },
     [`classrooms/${classroomId}`]: {
       ownerUid: teacherUid,
+      accessControl: { schemaVersion: 1, mode: 'active', generation: 1, changedAt: '2026-10-05T00:00:00.000Z', auditId: 'fictional' },
       studentLoginCode: formatClassroomCode(code),
     },
     [`teachers/${teacherUid}`]: {
@@ -202,7 +204,7 @@ test('successful student verification: exact claims, authUid, and token output',
   assert.equal(result.token, `token_for_${authUidA}_stu123`)
   assert.equal(factory.calls.length, 1)
 
-  // Verify callable adapter returns only { token }
+  // Callable returns the token and minimal current access descriptor.
   const callableResult = await studentPinLoginV2CallableHandler(
     { classroomCode: '2345-6789', loginId: 'alex-smith', pin: '1234' },
     {},
@@ -213,7 +215,7 @@ test('successful student verification: exact claims, authUid, and token output',
     },
   )
 
-  assert.deepEqual(callableResult, { token: `token_for_${authUidA}_stu123` })
+  assert.deepEqual(callableResult, { token: `token_for_${authUidA}_stu123`, access: {protocolVersion:1,mode:'active',generation:1} })
 })
 
 test('same login ID succeeds independently in A and B only with matching code', async () => {
@@ -331,7 +333,7 @@ test('custom token is created once after commit, never inside a retried transact
     },
   )
 
-  assert.equal(firestore.transactionAttempts, 3)
+  assert.equal(firestore.transactionAttempts, 4)
   assert.equal(factory.calls.length, 1)
   assert.equal(result.token, `token_for_${result.authUid}_stu1`)
 
@@ -996,4 +998,59 @@ test('missing custom-token factory fails fast before any Firestore access', asyn
     TypeError,
   )
   assert.equal(firestore.transactionAttempts, 0)
+})
+
+const stage5LoginRequest = { classroomCode: CLASS_A_CODE, loginId: 'fictional', pin: '0427' }
+function loginControlFixture() {
+  return createMockFirestore({ ...classroomFixture('classA','teacherA',CLASS_A_CODE),
+    ...credentialFixture('classA','fictional','1') })
+}
+for (const mode of ['active','readOnly','suspended','malformed','missing']) test(`Stage 5 login control ${mode}`, async () => {
+  const firestore = loginControlFixture(), factory = tokenFactory()
+  const room = firestore.store.get('classrooms/classA')
+  if (mode === 'missing') delete room.accessControl
+  else room.accessControl.mode = mode
+  const run = () => verifyStudentCredentialV2(stage5LoginRequest,{firestore,verifyPin:async()=>true,createCustomToken:factory.createCustomToken})
+  if (['active','readOnly'].includes(mode)) {
+    const result = await run();assert.deepEqual(result.access,{protocolVersion:1,mode,generation:1});assert.equal(factory.calls.length,1)
+  } else { await assert.rejects(run,StudentVerifierError);assert.equal(factory.calls.length,0) }
+})
+for (const change of ['suspended','resume','disabled','transfer','reset','removed','code-disabled']) test(`Stage 5 login rechecks ${change} before mint`, async () => {
+  const firestore = loginControlFixture(), factory = tokenFactory()
+  const original = firestore.runTransaction.bind(firestore)
+  let transactions = 0
+  firestore.runTransaction = async callback => {
+    const result = await original(callback)
+    if (++transactions === 1) {
+      const room = firestore.store.get('classrooms/classA')
+      if (change === 'suspended') room.accessControl.mode = 'suspended'
+      if (change === 'resume') room.accessControl.generation++
+      if (change === 'disabled') firestore.store.get('teachers/teacherA').status = 'disabled'
+      if (change === 'transfer') room.ownerUid = 'teacherB'
+      if (change === 'reset') firestore.store.get('classrooms/classA/studentCredentials/fictional').pinUpdatedAt++
+      if (change === 'removed') firestore.store.get('classrooms/classA/studentCredentials/fictional').active = false
+      if (change === 'code-disabled') firestore.store.get(`classroomLoginCodes/${CLASS_A_CODE}`).status = 'disabled'
+    }
+    return result
+  }
+  await assert.rejects(() => verifyStudentCredentialV2(stage5LoginRequest,{firestore,verifyPin:async()=>true,createCustomToken:factory.createCustomToken}),StudentVerifierError)
+  assert.equal(factory.calls.length,0)
+})
+test('Stage 5 verifier callback retry observes pause during PIN comparison', async () => {
+  const docs = { ...classroomFixture('classA','teacherA',CLASS_A_CODE), ...credentialFixture('classA','fictional','1') }
+  const firestore = createMockFirestore(docs,{abortAttempts:1}), factory=tokenFactory()
+  await assert.rejects(() => verifyStudentCredentialV2(stage5LoginRequest,{firestore,
+    verifyPin:async()=>{firestore.store.get('classrooms/classA').accessControl.mode='suspended';return true},
+    createCustomToken:factory.createCustomToken}),StudentVerifierError)
+  assert.equal(factory.calls.length,0)
+  assert.equal(logEntries(firestore,'studentAuthLogs/classA/logs/').some(r=>r.data.success),false)
+  assert.deepEqual(firestore.store.get('classrooms/classA/studentCredentials/fictional'),docs['classrooms/classA/studentCredentials/fictional'])
+})
+
+test('Stage 5 late minted token still cannot read a suspended classroom',async()=>{
+  const firestore=loginControlFixture()
+  let tokenAuth
+  await verifyStudentCredentialV2(stage5LoginRequest,{firestore,verifyPin:async()=>true,
+    createCustomToken:async(uid,claims)=>{tokenAuth={uid,token:claims};firestore.store.get('classrooms/classA').accessControl.mode='suspended';return 'fictional-token'}})
+  await assert.rejects(()=>getClassroomAccessService({firestore,auth:tokenAuth,data:{}}),{code:'permission-denied'})
 })

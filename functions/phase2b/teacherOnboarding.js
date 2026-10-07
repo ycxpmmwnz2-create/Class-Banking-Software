@@ -27,6 +27,7 @@ import {
   validateCanonicalDocumentId,
 } from './teacherTenantResolver.js'
 import { ClassroomAccessError, requireClassroomAccess } from '../phase3/classroomAccess.js'
+import { teacherAwardPaths } from '../phase3/teacherAwardService.js'
 
 export class TeacherOnboardingError extends Error {
   constructor(code, message) {
@@ -525,6 +526,12 @@ export async function onboardTeacherClassroomService({
       .collection(FIRESTORE_COLLECTIONS.CLASSROOMS)
       .doc()
     const generatedClassroomId = generatedClassroomRef.id
+    // A random unused root alone does not prove an empty money namespace: reject
+    // orphan descendants before initializing counters. All probes are bounded.
+    for (const collectionName of ['students', 'transactions', 'teacherMoneyReceipts', 'teacherMoneyActors', 'teacherMoneyMetadata']) {
+      const prior = await transaction.get(firestore.collection(`classrooms/${generatedClassroomId}/${collectionName}`).limit(1))
+      if (prior.empty !== true) throw new TeacherOnboardingError('failed-precondition', 'Classroom money initialization is unavailable.')
+    }
     const timestamp = serverTimestamp()
     const accessControl = initialClassroomControl(now)
     const accessAuditRef = firestore
@@ -545,6 +552,12 @@ export async function onboardTeacherClassroomService({
       }),
       nextStudentNumber: 1,
       accessControl,
+      settings: {
+        addMoneyCategories: ['Class Job', 'Earned Class Cash in Specials', 'Going Above and Beyond', 'Homework',
+          'Positive Consequence', 'Showing Work', "Teacher's Choice", 'Technology'],
+        subtractMoneyCategories: ['Rent', 'Restroom', 'Class Store Purchase', 'Roadrunner Ticket Purchase',
+          'Negative Consequence', 'Bad Language (Swearing, Racial Slurs, Etc...)', "Teacher's Choice"],
+      },
     }
 
     const teacherDocument = buildTeacherDocument({
@@ -570,6 +583,15 @@ export async function onboardTeacherClassroomService({
       changedAt: accessControl.changedAt,
     })
     transaction.create(teacherRef, teacherDocument)
+    // Only a brand-new classroom has a proven empty receipt namespace. Existing
+    // classrooms/replays never infer a zero counter or repair missing metadata.
+    const moneyPaths = teacherAwardPaths(generatedClassroomId, uid, '0'.repeat(32))
+    transaction.create(firestore.collection(`classrooms/${generatedClassroomId}/teacherMoneyActors`)
+      .doc(moneyPaths.actor.split('/').at(-1)), {
+      version: 1, actorUid: uid, unacknowledgedRequestId: null,
+    })
+    transaction.create(firestore.collection(`classrooms/${generatedClassroomId}/teacherMoneyMetadata`)
+      .doc('receiptQuota'), { version: 1, count: 0 })
     transaction.update(invRef, {
       status: INVITATION_STATUS.CONSUMED,
       consumedAt: timestamp,

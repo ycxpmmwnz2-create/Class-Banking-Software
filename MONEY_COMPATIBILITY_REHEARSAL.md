@@ -123,7 +123,9 @@ out of the deployed Functions import graph.
 
 This stage also corrects the earlier initialization document's endpoint/clock
 wording (Stage8 L3) and adds its missing graph assertion (L1). Stage8 L2, foreign
-empty-run ownership, remains deferred to operator/recovery design; no initialization
+empty-run ownership, is addressed by the later singleton-ownership correction in
+`CLASSROOM_INITIALIZATION_REHEARSAL.md`; that correction covers the demo initializer
+only and does not establish production operator recovery. No initialization
 behavior is changed. Pending decisions' eventual balance effects must still be
 rechecked by the future money service. No transaction/money correction, operator
 audit, client/rules deployment, final scan, maintenance-window claim or release is

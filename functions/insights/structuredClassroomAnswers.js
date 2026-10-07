@@ -187,7 +187,8 @@ function renderEarnings({ args, result, context }) {
     summary,
     `${result.windowStartDate} through ${result.windowEndDate} (${context.timeZone}).`,
     `Current classroom roster: ${result.currentStudentCount} students, including students with no approved money added.`,
-    'Approved money added (USD), for any purpose. Subtractions are not deducted from these totals.',
+    'Recorded approved earnings (USD), excluding opening balances and balance adjustments. Subtractions are not deducted from these totals. Missing legacy history cannot establish lifetime earnings.',
+    `Separate signed adjustments in this period: opening balances ${money(result.adjustmentTotals.opening)}; other adjustments ${money(result.adjustmentTotals.adjustment)}.`,
     ...(result.rollingStart ? [`Exact rolling period begins at ${result.rollingStart}.`] : []),
     ...(result.throughSnapshot ? [`The last date is covered only through the snapshot on ${context.classroomDate}.`] : []),
     ...(!result.complete ? [`Retained history begins at ${context.retainedFrom}; full-period totals and rankings are unavailable.`] : []),
@@ -424,7 +425,7 @@ function studentScope(args, context, currentOnly) {
 function transactionScope(args) {
   const status = enumText(args.status, { any: 'any status (Approved, Pending, Denied)', Approved: 'Approved', Pending: 'Pending', Denied: 'Denied' })
   const type = enumText(args.transactionType, { any: 'adds and subtracts', Add: 'adds', Subtract: 'subtracts' })
-  const purpose = enumText(args.purpose, { any: 'any purpose', rent: 'rent', other: 'other purposes' })
+  const purpose = enumText(args.purpose, { any: 'any purpose, including adjustments', rent: 'rent', other: 'other purposes', opening: 'opening balances', adjustment: 'balance adjustments', activity: 'recorded activity excluding opening balances and adjustments' })
   const parts = [`Filters: ${status}; ${type}; ${purpose}`]
   if (args.categoryContains !== null) parts.push(`category contains ${label(args.categoryContains)} (case-insensitive)`)
   if (args.minimumAmount !== null) parts.push(`amount at least ${money(args.minimumAmount)}`)

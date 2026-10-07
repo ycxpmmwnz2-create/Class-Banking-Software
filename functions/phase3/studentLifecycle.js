@@ -1,4 +1,10 @@
+import { Buffer } from 'node:buffer'
+import { teacherAwardPaths, actorState, receiptCount, moneyReceiptReply } from './teacherAwardService.js'
+import { creationBinding, matchingCreationBinding, readCreationReceipt } from './studentCreationReceipt.js'
+import { TEACHER_MONEY_LIMITS, deriveMoneyLedgerIds, requireMoneyCents } from './teacherMoneyContract.js'
+import { estimateMoneyDocumentBytes } from './moneyDocumentSize.js'
 import bcrypt from 'bcryptjs'
+import { ClassroomAccessError, requireClassroomAccess, hasExactDataKeys, isControlGeneration } from './classroomAccess.js'
 import { HttpsError } from 'firebase-functions/v2/https'
 
 import { FIRESTORE_COLLECTIONS, TEACHER_STATUS } from '../phase1/firestoreSchema.js'
@@ -26,7 +32,6 @@ import {
 
 const ASCII_FOUR_DIGITS_REGEX = /^[0-9]{4}$/
 const MAX_LOGIN_ID_CANDIDATES = 200
-const MAX_STARTING_BALANCE = Number.MAX_SAFE_INTEGER
 const STUDENT_PIN_BCRYPT_COST = 12
 
 const GENERIC_CLIENT_MESSAGES = Object.freeze({
@@ -54,50 +59,30 @@ export async function defaultHashStudentPin(pin) {
   return await bcrypt.hash(pin, STUDENT_PIN_BCRYPT_COST)
 }
 
-function requireExactRequestKeys(request, allowedKeys) {
-  if (typeof request !== 'object' || request === null || Array.isArray(request)) {
-    throw new StudentLifecycleError('invalid-argument', 'Request must be a plain object.')
-  }
-  const keys = Object.keys(request)
-  if (keys.length !== allowedKeys.length || keys.some(key => !allowedKeys.includes(key))) {
-    throw new StudentLifecycleError(
-      'invalid-argument',
-      'Request fields do not match the lifecycle contract.',
-    )
-  }
-}
-
 function validateCreateRequest(request) {
-  requireExactRequestKeys(request, ['name', 'startingBalance', 'pin'])
-
+  if (!hasExactDataKeys(request, ['name', 'startingBalanceCents', 'pin', 'requestId', 'classroomId', 'protocolVersion', 'controlGeneration']) ||
+      request.protocolVersion !== 1 || !isControlGeneration(request.controlGeneration) ||
+      typeof request.requestId !== 'string' || !/^[a-f0-9]{32}$/.test(request.requestId)) {
+    throw new StudentLifecycleError('invalid-argument', 'Refresh before creating a student.')
+  }
   let name
   try {
     name = normalizeDisplayName(request.name)
-  } catch {
-    throw new StudentLifecycleError('invalid-argument', 'Student name is malformed.')
+    validateCanonicalDocumentId(request.classroomId)
+    requireMoneyCents(request.startingBalanceCents)
+  } catch { throw new StudentLifecycleError('invalid-argument', 'Invalid student request.') }
+  if (!name || name.length > 120 || typeof request.pin !== 'string' || !ASCII_FOUR_DIGITS_REGEX.test(request.pin) ||
+      Buffer.byteLength(JSON.stringify(request), 'utf8') > TEACHER_MONEY_LIMITS.requestBytes) {
+    throw new StudentLifecycleError('invalid-argument', 'Invalid student request.')
   }
-  if (!name) {
-    throw new StudentLifecycleError('invalid-argument', 'Student name must not be empty.')
-  }
-
-  const startingBalance = request.startingBalance
-  if (
-    typeof startingBalance !== 'number' ||
-    !Number.isFinite(startingBalance) ||
-    Math.abs(startingBalance) > MAX_STARTING_BALANCE
-  ) {
-    throw new StudentLifecycleError('invalid-argument', 'Starting balance is invalid.')
-  }
-
-  if (typeof request.pin !== 'string' || !ASCII_FOUR_DIGITS_REGEX.test(request.pin)) {
-    throw new StudentLifecycleError('invalid-argument', 'PIN must be exactly four ASCII digits.')
-  }
-
-  return Object.freeze({ name, startingBalance, pin: request.pin })
+  return Object.freeze({ ...request, name })
 }
 
 function validateRemoveRequest(request) {
-  requireExactRequestKeys(request, ['studentId'])
+  if (!hasExactDataKeys(request, ['studentId', 'classroomId', 'protocolVersion', 'controlGeneration']) ||
+      request.protocolVersion !== 1 || !isControlGeneration(request.controlGeneration)) {
+    throw new StudentLifecycleError('invalid-argument', 'Refresh before removing a student.')
+  }
   let studentId
   try {
     studentId = validateCanonicalDocumentId(request.studentId, 'studentId')
@@ -173,13 +158,19 @@ function studentCollection(firestore, classroomId) {
 
 export async function createStudentV2Service(
   request,
-  { firestore, auth, hashPin = defaultHashStudentPin, now = Date.now } = {},
+  { firestore, auth, projectId, keyRing, hashPin = defaultHashStudentPin, now = Date.now } = {},
 ) {
   if (!firestore || typeof firestore.runTransaction !== 'function') {
     throw new TypeError('firestore with runTransaction method is required.')
   }
   const validated = validateCreateRequest(request)
+  validateCanonicalDocumentId(projectId)
   const tenant = await resolveActiveTeacherTenant({ firestore, auth })
+  if (validated.classroomId !== tenant.classroomId) throw new StudentLifecycleError('permission-denied', 'Classroom changed.')
+  const identity = { projectId, classroomId: tenant.classroomId, teacherUid: tenant.teacherUid }
+  const paths = teacherAwardPaths(tenant.classroomId, tenant.teacherUid, validated.requestId)
+  // Keep one private key-ring snapshot across transaction retries. It is never logged or returned.
+  const keys = JSON.parse(JSON.stringify(typeof keyRing === 'function' ? keyRing() : keyRing ?? null))
 
   // This expensive secret-bearing work happens once, before Firestore may
   // retry the transaction callback. Neither the PIN nor its hash is returned.
@@ -188,15 +179,56 @@ export async function createStudentV2Service(
     throw new StudentLifecycleError('internal', 'PIN hash dependency failed.')
   }
   const timestamp = now()
+  if (!Number.isSafeInteger(timestamp) || timestamp < 0 || !/^\d{4}-/.test(new Date(timestamp).toISOString())) {
+    throw new StudentLifecycleError('failed-precondition', 'Invalid clock.')
+  }
+  const serverTime = new Date(timestamp).toISOString()
   const students = studentCollection(firestore, tenant.classroomId)
   const credentials = credentialCollection(firestore, tenant.classroomId)
 
-  return await firestore.runTransaction(async transaction => {
+  return await firestore.runTransaction(async rawTransaction => {
+    let readBytes = 0
+    const bound = 1024 * 1024 + 32 * 1024
+    const transaction = {
+      create: (...args) => rawTransaction.create(...args),
+      update: (...args) => rawTransaction.update(...args),
+      async get(ref) {
+        // A query is limited to two credentials; reserve their maximum size before I/O.
+        const reserved = typeof ref.path === 'string' && !ref.limit ? bound : 2 * bound
+        if (readBytes + reserved > TEACHER_MONEY_LIMITS.transactionBytes) throw new StudentLifecycleError('resource-exhausted', 'Read capacity exceeded.')
+        const snap = await rawTransaction.get(ref)
+        if (snap.docs) readBytes += snap.docs.reduce((sum, row) => sum + estimateMoneyDocumentBytes(row.ref.path, row.data()), 0)
+        else if (ref.path === `teachers/${tenant.teacherUid}` || ref.path === `classrooms/${tenant.classroomId}`) readBytes += bound
+        else readBytes += estimateMoneyDocumentBytes(ref.path, snap.exists ? snap.data() : null)
+        if (readBytes > TEACHER_MONEY_LIMITS.transactionBytes) throw new StudentLifecycleError('resource-exhausted', 'Read capacity exceeded.')
+        return snap
+      },
+    }
     const { classroomRef, classroom } = await revalidateResolvedFoundation(
       transaction,
       firestore,
       tenant,
     )
+    requireClassroomAccess(classroom.accessControl, { operation: 'recovery' })
+    const receiptSnap = await transaction.get(firestore.doc(paths.receipt))
+    const actor = actorState((await transaction.get(firestore.doc(paths.actor))).data(), tenant.teacherUid)
+    const count = receiptCount((await transaction.get(firestore.doc(paths.quota))).data())
+    if (receiptSnap.exists) {
+      if (receiptSnap.data()?.status === 'cancelled') throw new StudentLifecycleError('failed-precondition', 'Request cancelled.')
+      const receipt = readCreationReceipt(receiptSnap.data(), identity, validated.requestId)
+      const binding = creationBinding(validated, identity, keys, receipt.keyVersion)
+      if (!matchingCreationBinding(receipt.intentHmac, binding.intentHmac) || receipt.generation !== validated.controlGeneration) {
+        throw new StudentLifecycleError('already-exists', 'Request conflict.')
+      }
+      if (count < 1 || (!receipt.acknowledged && actor.unacknowledgedRequestId !== validated.requestId) ||
+          (receipt.acknowledged && actor.unacknowledgedRequestId === validated.requestId)) throw new StudentLifecycleError('failed-precondition', 'Invalid receipt state.')
+      return moneyReceiptReply(receipt, count)
+    }
+    requireClassroomAccess(classroom.accessControl, { operation: 'mutate', ...validated })
+    if (actor.unacknowledgedRequestId !== null || count >= TEACHER_MONEY_LIMITS.receipts) {
+      throw new StudentLifecycleError('failed-precondition', 'Resolve the prior save or receipt capacity.')
+    }
+    const binding = creationBinding(validated, identity, keys)
     const studentNumber = requireCounter(classroom)
     const studentId = String(studentNumber)
     const studentRef = students.doc(studentId)
@@ -234,7 +266,7 @@ export async function createStudentV2Service(
     const studentDocument = Object.freeze({
       id: studentNumber,
       name: validated.name,
-      balance: validated.startingBalance,
+      balance: validated.startingBalanceCents / 100,
       frozen: false,
       transactions: [],
     })
@@ -255,21 +287,43 @@ export async function createStudentV2Service(
       timestamp,
     })
 
+    const ledgerId = deriveMoneyLedgerIds({ ...identity, protocolVersion: 1,
+      requestId: validated.requestId, action: 'createStudent' }, [studentNumber])[0].ledgerId
+    const ledgerRef = firestore.doc(`classrooms/${tenant.classroomId}/transactions/${ledgerId}`)
+    const opening = validated.startingBalanceCents === 0 ? null : {
+      id: ledgerId, studentId: studentNumber, studentName: validated.name, date: serverTime,
+      type: validated.startingBalanceCents > 0 ? 'Add' : 'Subtract',
+      amount: Math.abs(validated.startingBalanceCents) / 100, status: 'Approved',
+      source: 'Opening Balance', category: 'Balance adjustment', reason: 'Opening balance',
+      memo: 'Starting balance recorded when this account was created.',
+    }
+    if (opening && (await transaction.get(ledgerRef)).exists) throw new StudentLifecycleError('already-exists', 'Opening ledger collision.')
+    if ((await transaction.get(pinRef)).exists) throw new StudentLifecycleError('already-exists', 'PIN identity collision.')
+    const studentWithHistory = { ...studentDocument, transactions: opening ? [opening] : [] }
+    const receipt = { version: 4, actorUid: tenant.teacherUid, requestId: validated.requestId,
+      generation: validated.controlGeneration, status: 'committed', serverTime,
+      action: 'createStudent', itemCount: 1, ledgerIds: opening ? [ledgerId] : [],
+      acknowledged: false, studentId: studentNumber, loginId, ...binding }
+    if (estimateMoneyDocumentBytes(paths.receipt, receipt) > TEACHER_MONEY_LIMITS.receiptBytes ||
+        estimateMoneyDocumentBytes(studentRef.path, studentWithHistory) > TEACHER_MONEY_LIMITS.studentBytes) {
+      throw new StudentLifecycleError('resource-exhausted', 'Creation exceeds capacity.')
+    }
+    const mutationBytes = [[studentRef.path, studentWithHistory], [credentialRef.path, credentialDocument],
+      [pinRef.path, pinDocument], [paths.receipt, receipt], [paths.actor, actor],
+      [paths.quota, {version: 1, count: count + 1}], [classroomRef.path, {nextStudentNumber: studentNumber + 1}],
+      ...(opening ? [[ledgerRef.path, opening]] : [])].reduce((sum, [path, body]) => sum + estimateMoneyDocumentBytes(path, body), 0)
+    if (readBytes + mutationBytes > TEACHER_MONEY_LIMITS.transactionBytes) throw new StudentLifecycleError('resource-exhausted', 'Creation capacity exceeded.')
     // Every transaction read is complete before this first write.
     transaction.update(classroomRef, { nextStudentNumber: studentNumber + 1 })
-    transaction.create(studentRef, studentDocument)
+    transaction.create(studentRef, studentWithHistory)
     transaction.create(credentialRef, credentialDocument)
     transaction.create(pinRef, pinDocument)
 
-    return Object.freeze({
-      student: Object.freeze({
-        id: studentDocument.id,
-        name: studentDocument.name,
-        balance: studentDocument.balance,
-        frozen: studentDocument.frozen,
-      }),
-      loginId,
-    })
+    if (opening) transaction.create(ledgerRef, opening)
+    transaction.create(firestore.doc(paths.receipt), receipt)
+    transaction.update(firestore.doc(paths.actor), { ...actor, unacknowledgedRequestId: validated.requestId })
+    transaction.update(firestore.doc(paths.quota), { version: 1, count: count + 1 })
+    return moneyReceiptReply(receipt, count + 1)
   })
 }
 
@@ -301,13 +355,16 @@ export async function removeStudentV2Service(
     throw new TypeError('firestore with runTransaction method is required.')
   }
   const studentId = validateRemoveRequest(request)
+  const capturedRequest = Object.freeze({ ...request })
   const tenant = await resolveActiveTeacherTenant({ firestore, auth })
   const timestamp = now()
   const students = studentCollection(firestore, tenant.classroomId)
   const credentials = credentialCollection(firestore, tenant.classroomId)
 
   return await firestore.runTransaction(async transaction => {
-    await revalidateResolvedFoundation(transaction, firestore, tenant)
+    const { classroom } = await revalidateResolvedFoundation(transaction, firestore, tenant)
+    requireClassroomAccess(classroom.accessControl, { operation: 'mutate', ...capturedRequest })
+    if (capturedRequest.classroomId !== tenant.classroomId) throw new StudentLifecycleError('permission-denied', 'Classroom changed.')
     const studentRef = students.doc(studentId)
     const studentSnap = await transaction.get(studentRef)
     const credentialQuery = credentials.where('studentId', '==', studentId).limit(2)
@@ -317,6 +374,17 @@ export async function removeStudentV2Service(
       throw new StudentLifecycleError('not-found', 'Student document was not found.')
     }
     assertStudentIdentity(studentSnap.data() ?? {}, studentId)
+    // Refuse before deletion, including a ledger-only pending record. The query
+    // participates in this transaction, so a concurrent submission must retry.
+    const pending = await transaction.get(firestore.collection('classrooms').doc(tenant.classroomId)
+      .collection('transactions').where('studentId', '==', Number(studentId))
+      .where('status', '==', 'Pending').limit(1))
+    const history = studentSnap.data().transactions
+    if (!Array.isArray(history)) throw new StudentLifecycleError('failed-precondition', 'Malformed history.')
+    if (pending.docs.length || history.some(entry => entry?.status === 'Pending')) {
+      throw new HttpsError('failed-precondition', 'Decide this student’s pending requests before removing them.',
+        { reason: 'pending-requests', wroteNothing: true })
+    }
 
     const credentialDocs = credentialQuerySnap.docs ?? []
     if (credentialDocs.length !== 1) {
@@ -360,6 +428,7 @@ export async function removeStudentV2Service(
 }
 
 function externalCodeFor(error) {
+  if (error instanceof ClassroomAccessError) return error.code
   if (error instanceof TeacherTenantResolverError) {
     switch (error.code) {
       case 'unauthenticated':
@@ -387,6 +456,7 @@ async function lifecycleCallable(service, data, context, dependencies) {
   try {
     return await service(data, { ...dependencies, auth: context?.auth })
   } catch (error) {
+    if (error instanceof HttpsError && error.details?.reason === 'pending-requests') throw error
     const code = externalCodeFor(error)
     throw new HttpsError(code, GENERIC_CLIENT_MESSAGES[code])
   }

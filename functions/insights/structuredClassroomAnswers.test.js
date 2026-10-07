@@ -392,3 +392,14 @@ test('impossible calendar dates do not silently normalize to another date', () =
   assert.equal(call.output.ok, false)
   assert.throws(() => registry.render(selection(call)), StructuredClassroomAnswerError)
 })
+
+test('earnings rendering visibly separates opening balances and adjustments from recorded earnings', () => {
+  const data=fixture()
+  data.transactions[0].purpose='opening';data.transactions[1].purpose='adjustment'
+  const {registry}=setup(data)
+  const call=registry.execute('compare_student_earnings',{window:'selected-period'})
+  const answer=registry.render(selection(call)).answer
+  assert.match(answer,/excluding opening balances and balance adjustments/)
+  assert.match(answer,/opening balances \$5/)
+  assert.match(answer,/Missing legacy history cannot establish lifetime earnings/)
+})

@@ -36,8 +36,8 @@ IDs/versions and incomplete or inconsistent enumeration fail; no subset is
 silently selected. UTF-8 ordering matches Firestore document names.
 
 Every root must name an active, reciprocal teacher foundation. Every accessControl
-must be absent, its entire audit collection empty, and the operation's run record
-must not already exist. Retained audit history blocks reinitialization even if a
+must be absent, its entire audit collection empty, and all initialization run
+records and the singleton ownership record must be absent. Retained audit history blocks reinitialization even if a
 control was removed; the rehearsal provides no deletion or reset operation.
 Already-controlled classrooms—including active onboarding classrooms—are rejected,
 never reset or silently skipped. A future production transition must explicitly
@@ -59,14 +59,23 @@ compatibility scan remains mandatory before any production initialization.
 
 ## Atomic initialization and durable recovery
 
+The server-only `classroomInitializationState/ownership` singleton permanently
+binds the operation, digest, timestamp, project and classroom count. A new run and
+its ownership are created atomically. Concurrent different operation IDs contend
+on this same document; checking only each operation's separate run is insufficient.
+There is no expiry, takeover, deletion or automatic abandoned-run cleanup.
+
 The server-only `classroomInitializationRuns/{operationId}` document binds the
 operation, digest, timestamp, project, total count and completed count. Each room
 gets `classrooms/{classroomId}/accessControlAudits/{operationId}`. Both paths are
-client-denied by the current final and maintenance rules' explicit allowlists.
+client-denied by the current final and maintenance rules' explicit allowlists,
+as is the singleton ownership path.
 They are new rehearsal journal paths, not enrolled production operator tooling.
 
 Before creating the run record, and before each classroom write transaction, the
-executor reads the complete root query, all owner foundations, this run record and
+executor reads the complete root query, all owner foundations, the singleton,
+a run query capped at two records (a second record or any foreign operation is a
+conflict), and
 every audit collection (empty or exactly the expected witness). Unfinished roots and owners must match the saved versions.
 It then atomically updates only the root's accessControl to schema1/readOnly/
 generation1, creates its audit and increments the run count. All other root fields,
@@ -88,6 +97,17 @@ with the same saved plan is required, not a fresh operation or success claim. A 
 commit resumes from server readback using the original saved plan; already
 completed pairs receive no writes. Fresh planning after partial initialization
 is intentionally rejected. A new operation ID cannot overwrite prior controls.
+
+This closes the deferred Stage8 L2 empty-run gap in the rehearsal: even a run
+that committed only its zero-count journal blocks fresh planning and a competing
+saved plan. Only the original exact saved plan may resume. A pre-correction run
+without the singleton may acquire it after the entire existing journal,
+foundations and completed pairs pass inspection; malformed or foreign journals
+block acquisition. This compatibility rule also allows the exact run to restore
+a missing singleton; it never admits a different operation. No adoption is based
+on age or count alone. The singleton serializes cooperating corrected executors,
+not arbitrary Admin SDK writers or an older executable that ignores it. Excluding
+those writers still requires the external fence described below.
 
 Final readback validates all rooms and counts in a read-only transaction plus
 namespace checks. The only public success result is counts, readOnly mode and
@@ -114,5 +134,6 @@ Still unfinished: full compatibility scanning, production operator authorization
 and CLI, local artifact persistence, live project/rules/inventory binding,
 existing-control transitions, real drain proof, strict final rules, compatible
 client/services, complete release rehearsal and verified deployment. This stage
-adds a local foundation rehearsal and tests only. Node22 and production behavior
-are not established by Node24 emulator evidence.
+adds a local foundation rehearsal and tests only. The L2 correction is tested
+under Node22, including real SDK competing-operation and lost-response tests;
+production behavior remains unverified.

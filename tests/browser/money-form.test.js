@@ -1,11 +1,13 @@
 // Offline DOM regression tests: actual application rendering/event handlers,
-// fictional ready teacher sessions, and an in-memory save boundary. No Firebase
-// startup or network access. These prove form behavior and attempted payloads,
-// not server persistence (covered by the existing tenant/emulator suites).
+// fictional ready teacher sessions, the actual money client/server services,
+// and optimistic in-memory storage. No Firebase startup or external network.
+// These prove DOM-to-service behavior, separately from Firestore SDK/emulator
+// persistence and callable HTTP/Auth checks.
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { chromium, webkit } from '@playwright/test';
+import { attachTeacherMoneyHarness } from './teacherMoneyHarness.js';
 
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
 const source = read('../../index.html');
@@ -34,7 +36,9 @@ const handlerNames = [
   'setDashboardMoneyTool', 'setDashboardSectionExpanded', 'setQuickCashStudent',
   'quickCash', 'setCustomTransactionMode', 'toggleTeacherChoiceMemo',
   'updateCustomTransactionDraft', 'setTransactionTarget', 'saveTeacherTransaction',
-  'setScreen', 'saveSettingsLists', 'removeStudent', 'addStudent', 'importBackup'
+  'setScreen', 'saveSettingsLists', 'removeStudent', 'addStudent', 'importBackup',
+  'checkTeacherMoneySave', 'acknowledgeTeacherMoneySave', 'saveStudentName', 'adjustStudentBalance',
+  'updateRosterDraft', 'resetBalancesToZero', 'approveTransaction', 'denyTransaction', 'approveAllCreditRequests'
 ];
 const handlerExports = source.split('\n').filter(line =>
   handlerNames.some(name => line === `window.${name} = ${name};`)).join('\n');
@@ -45,6 +49,9 @@ const helpers = [
   '../../src/phase2b/transactionCategoryDisplay.js',
   '../../src/legacy/backupImport.js'
 ].map(path => read(path).replace(/^export /gm, '')).join('\n');
+const moneyHelpers = 'const {createTeacherMoneyClient, parseTeacherMoneyAmount, parseTeacherMoneyBalance, teacherMoneyBalanceCents} = (() => {\n' +
+  read('../../src/phase3/teacherMoneyClient.js').replace(/^export /gm, '') +
+  '\nreturn {createTeacherMoneyClient, parseTeacherMoneyAmount, parseTeacherMoneyBalance, teacherMoneyBalanceCents}; })();';
 
 const setup = `
 const IS_MULTI_TEACHER_V2_ENABLED = true;
@@ -63,9 +70,10 @@ const savedSnapshots = [];
 let saveGate = null;
 let releaseSave;
 let rejectSave = false;
+let rejectReload = false;
 let sessionNumber = 0;
 window.moneyFormTest = {
-  newSession() {
+  async newSession() {
     sessionNumber += 1;
     const uid = IS_MULTI_TEACHER_V2_ENABLED ? 'fictional-teacher-' + sessionNumber : TEACHER_UID;
     auth.currentUser = { uid };
@@ -85,17 +93,73 @@ window.moneyFormTest = {
     screen = 'teacher';
     isTeacher = true;
     savedSnapshots.length = 0;
+    rejectReload = false;
+    if (IS_MULTI_TEACHER_V2_ENABLED) {
+      const stored = new Map();
+      v2TeacherMoneyClient = createTeacherMoneyClient({ session: v2TenantSession,
+        currentUid: () => auth.currentUser?.uid,
+        storage: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key) },
+        call: async (name, payload) => {
+          const captured = v2TenantSession.captureIdentity();
+          if (name === 'executeTeacherMoneyV2') {
+            savedSnapshots.push({ pending: true });
+            if (saveGate) await saveGate;
+            if (rejectSave) throw new Error('fictional transport failure');
+          }
+          return window.__moneyTestServer({ name, data: payload, uid: captured.uid, classroomId: captured.classroomId });
+        },
+        reload: async captured => {
+          if (rejectReload) throw new Error('fictional classroom refresh failure');
+          const loaded = await window.__moneyTestServer({ name: 'load', uid: captured.uid, classroomId: captured.classroomId });
+          if (!v2TenantSession.validateCapturedIdentity(captured)) return false;
+          data = { ...data, ...loaded };
+          v2LastPersistedData = JSON.parse(JSON.stringify(data));
+          if (savedSnapshots.length) savedSnapshots[savedSnapshots.length - 1] = JSON.parse(JSON.stringify(data));
+          return true;
+        },
+        confirmPlan: preview => { window.lastMoneyPreview = preview; return confirmTeacherMoneyPlan(preview); }, notify: () => render()
+      });
+      await v2TeacherMoneyClient.check();
+    }
     render();
   },
   holdSave(fail = false) { rejectSave = fail; saveGate = new Promise(resolve => { releaseSave = resolve; }); },
+  failReload(fail = true) { rejectReload = fail; },
   releaseSave() { releaseSave(); saveGate = null; },
   balances() { return data.students.map(student => student.balance); },
-  removeStudent(id) { data.students = data.students.filter(s => s.id !== id); v2LastPersistedData = JSON.parse(JSON.stringify(data)); render(); },
+  async pendingRequests() {
+    const identity = { uid: v2TenantSession.uid, classroomId: v2TenantSession.classroomId };
+    await window.__moneyTestServer({ name: 'seedPending', ...identity });
+    data = { ...data, ...await window.__moneyTestServer({ name: 'load', ...identity }) };
+    v2LastPersistedData = JSON.parse(JSON.stringify(data)); render();
+  },
+  async heavyClass() {
+    const identity = { uid: v2TenantSession.uid, classroomId: v2TenantSession.classroomId };
+    await window.__moneyTestServer({ name: 'heavyClass', ...identity });
+    data = { ...data, ...await window.__moneyTestServer({ name: 'load', ...identity }) };
+    v2LastPersistedData = JSON.parse(JSON.stringify(data)); render();
+  },
+  async withoutMoneyMetadata() {
+    await window.__moneyTestServer({ name: 'removeMoneyMetadata',
+      uid: v2TenantSession.uid, classroomId: v2TenantSession.classroomId });
+    v2TeacherMoneyClient.reset();
+    await checkTeacherMoneySave();
+    render();
+  },
+  async removeStudent(id) {
+    await window.__moneyTestServer({ name: 'remove', data: { studentId: id }, uid: v2TenantSession.uid, classroomId: v2TenantSession.classroomId });
+    data.students = data.students.filter(s => s.id !== id); v2LastPersistedData = JSON.parse(JSON.stringify(data)); render();
+  },
+  state() { return { ...(v2TeacherMoneyClient?.getState() || { status: 'legacy' }), operationBusy: Boolean(teacherMoneySaveOperation) }; },
+  async settle() {
+    if (v2TeacherMoneyClient?.getState().status === 'committed') await acknowledgeTeacherMoneySave();
+    render();
+  },
   identity() { return v2TenantSession.captureIdentity(); },
   snapshots() { return JSON.parse(JSON.stringify(savedSnapshots)); },
   redraw() { render(); }
 };
-window.moneyFormTest.newSession();
+await window.moneyFormTest.newSession();
 `;
 
 for (const engine of [chromium, webkit]) {
@@ -104,8 +168,13 @@ for (const engine of [chromium, webkit]) {
     before(async () => { browser = await engine.launch({ headless: true }); });
     after(async () => { await browser?.close(); });
 
-    async function openForm(t, { legacy = false } = {}) {
+    async function openForm(t, { legacy = false, confirmMoney = true } = {}) {
       const page = await browser.newPage();
+      page.moneyConfirmations = [];
+      page.on('dialog', async dialog => {
+        if (dialog.message().startsWith('Apply ')) page.moneyConfirmations.push(dialog.message());
+        if (confirmMoney) await dialog.accept(); else await dialog.dismiss();
+      });
       page.setDefaultTimeout(5000);
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
@@ -114,11 +183,13 @@ for (const engine of [chromium, webkit]) {
         assert.deepEqual(errors, [], 'no browser JavaScript errors');
       });
       await page.route('**/*', route => route.abort());
-      await page.setContent('<div id="app"></div>');
+      await attachTeacherMoneyHarness(page);
+      await page.setContent('<div id="teacherMoneyRecovery" hidden></div><div id="app"></div>');
       const configuredSetup = legacy
         ? setup.replace('const IS_MULTI_TEACHER_V2_ENABLED = true;', 'const IS_MULTI_TEACHER_V2_ENABLED = false;')
         : setup;
-      await page.addScriptTag({ type: 'module', content: helpers + configuredSetup + isolatedAppSource + handlerExports + '\n' + probe });
+      await page.addScriptTag({ type: 'module', content: helpers + moneyHelpers + configuredSetup + isolatedAppSource + handlerExports + '\n' + probe });
+      await page.waitForFunction(() => window.moneyFormTest && !document.querySelector('#customTransactionButton, .quick-btn')?.disabled);
       assert.deepEqual(errors, [], 'application initialized without JavaScript errors');
       return page;
     }
@@ -126,6 +197,83 @@ for (const engine of [chromium, webkit]) {
     async function customForm(page) {
       await page.getByRole('tab', { name: 'Custom Transaction' }).click();
     }
+
+    async function finishMoneySave(page) {
+      await page.waitForFunction(() => ['committed', 'idle', 'legacy'].includes(window.moneyFormTest.state().status)
+        && !window.moneyFormTest.state().operationBusy);
+      await page.evaluate(() => window.moneyFormTest.settle());
+    }
+
+    test('V2 actual approval and denial buttons save server decisions and matching balances', async t => {
+      const page = await openForm(t);
+      await page.evaluate(() => window.moneyFormTest.pendingRequests());
+      await page.locator('details').filter({ has: page.locator('button[onclick="approveTransaction(11)"]') }).locator('summary').click();
+      await page.locator('button[onclick="approveTransaction(11)"]').first().click();
+      await finishMoneySave(page);
+      assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [23, 20]);
+      await page.locator('button[onclick="denyTransaction(12)"]').first().click();
+      await finishMoneySave(page);
+      const identity = await page.evaluate(() => window.moneyFormTest.identity());
+      const stored = await page.evaluate(identity => window.__moneyTestServer({ name: 'load', ...identity }), identity);
+      assert.deepEqual(stored.transactions.map(row => row.status), ['Approved', 'Denied']);
+      for (const student of stored.students) assert.deepEqual(student.transactions[0], stored.transactions.find(row => row.studentId === student.id));
+    });
+
+    test('removed-student pending records stay visible and outside the explicit current-roster approval group', async t => {
+      const page = await openForm(t);
+      await page.evaluate(() => window.moneyFormTest.pendingRequests());
+      // Fictional legacy orphan: no new removal operation is claimed here.
+      await page.evaluate(() => window.moneyFormTest.removeStudent(2));
+      await page.evaluate(() => window.setScreen('approvals'));
+      assert.equal(await page.getByRole('heading', {name:'Pending records for removed students'}).count(), 1);
+      assert.equal(await page.locator('button[onclick="approveTransaction(12)"]').count(), 0);
+      await page.getByRole('button', {name:'Approve All Credits', exact:true}).click();
+      await finishMoneySave(page);
+      const identity = await page.evaluate(() => window.moneyFormTest.identity());
+      const stored = await page.evaluate(identity => window.__moneyTestServer({name:'load', ...identity}), identity);
+      assert.equal(stored.transactions.find(row => row.id === 11).status, 'Approved');
+      assert.equal(stored.transactions.find(row => row.id === 12).status, 'Pending');
+      assert.deepEqual(await page.evaluate(() => window.lastMoneyPreview.request.transactionIds), [11]);
+    });
+
+    test('V2 failed adjustment keeps its typed draft, then clears it on a new tenant session', async t => {
+      const page = await openForm(t);
+      await page.evaluate(() => window.setScreen('roster'));
+      await page.locator('#balance-1').fill('12.34');
+      await page.evaluate(() => window.moneyFormTest.holdSave(true));
+      await page.locator('button[onclick="adjustStudentBalance(1)"]').click();
+      assert.equal(await page.locator('#balance-1').inputValue(), '12.34');
+      await page.evaluate(() => window.moneyFormTest.releaseSave());
+      await finishMoneySave(page);
+      assert.equal(await page.locator('#balance-1').inputValue(), '12.34');
+      assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [20, 20]);
+      await page.evaluate(() => window.moneyFormTest.newSession());
+      await page.evaluate(() => window.setScreen('roster'));
+      assert.equal(await page.locator('#balance-1').inputValue(), '20');
+    });
+
+    test('V2 roster buttons separate name from balance; reset records each confirmed adjustment', async t => {
+      const page = await openForm(t);
+      await page.evaluate(() => window.moneyFormTest.pendingRequests());
+      await page.evaluate(() => window.setScreen('roster'));
+      await page.locator('#name-1').fill('Fictional Renamed');
+      await page.locator('#balance-1').fill('99');
+      await page.locator('button[onclick="saveStudentName(1)"]').click();
+      await page.waitForFunction(() => !window.moneyFormTest.state().operationBusy && document.querySelector('#name-1')?.value === 'Fictional Renamed');
+      assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [20, 20]);
+      await page.locator('#balance-1').fill('-1.25');
+      await page.locator('button[onclick="adjustStudentBalance(1)"]').click();
+      await finishMoneySave(page);
+      assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [-1.25, 20]);
+      await page.evaluate(() => window.setScreen('settings'));
+      await page.getByRole('button', { name: 'Reset All Balances to $0', exact: true }).click();
+      await finishMoneySave(page);
+      assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [0, 0]);
+      const identity = await page.evaluate(() => window.moneyFormTest.identity());
+      const stored = await page.evaluate(identity => window.__moneyTestServer({ name: 'load', ...identity }), identity);
+      assert.equal(stored.transactions.find(row => row.id === 11).studentName, 'Fictional Avery');
+      assert.equal(stored.transactions.filter(row => row.category === 'Balance adjustment').length, 3);
+    });
 
     async function enterDebit(page) {
       await customForm(page);
@@ -176,6 +324,7 @@ for (const engine of [chromium, webkit]) {
               ? page.locator('#customTransactionButton')
               : page.getByRole('button', { name: '-$1', exact: true });
             await button.click();
+            await page.waitForFunction(() => window.moneyFormTest.snapshots().length === 1);
             assert.equal(await button.isDisabled(), true);
             assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [20, 20]);
             assert.match(await page.locator('body').innerText(), /Saving transaction/);
@@ -191,19 +340,28 @@ for (const engine of [chromium, webkit]) {
               await assertDebitDraft(page);
             }
             await page.evaluate(() => window.moneyFormTest.releaseSave());
+            if (!fail && !legacy) {
+              await page.waitForFunction(() => window.moneyFormTest.state().status === 'committed' && !window.moneyFormTest.state().operationBusy);
+              assert.match(await page.locator('body').innerText(), tool === 'custom' ? /saved and approved/ : /paid/);
+              assert.equal(await button.isDisabled(), true, 'receipt acknowledgment blocks the next money action');
+              assert.equal(await page.getByRole('button', { name: 'Acknowledge saved action', exact: true }).count(), 1);
+            }
+            await finishMoneySave(page);
             await page.waitForFunction(() => !document.querySelector('#customTransactionButton, .quick-btn')?.disabled);
             if (fail) {
-              assert.match(await page.locator('body').innerText(), /could not be confirmed.*Refresh/);
+              assert.match(await page.locator('body').innerText(), legacy ? /could not be confirmed.*Refresh/ : /cancelled without applying money.*Refresh/);
               assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [20, 20]);
               if (tool === 'custom') {
                 await assertDebitDraft(page);
                 assert.equal(await page.locator('.student-check[value="2"]').isChecked(), true);
               }
-              await button.click();
-              assert.equal((await page.evaluate(() => window.moneyFormTest.snapshots())).length, 1);
+              if (legacy) {
+                await button.click();
+                assert.equal((await page.evaluate(() => window.moneyFormTest.snapshots())).length, 1);
+              }
             } else {
               assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [20, tool === 'custom' ? 13 : 19]);
-              assert.match(await page.locator('body').innerText(), tool === 'custom' ? /saved and approved/ : /paid/);
+              assert.match(await page.locator('body').innerText(), legacy ? (tool === 'custom' ? /saved and approved/ : /paid/) : /Saved action acknowledged/);
               if (tool === 'custom') {
                 assert.equal(await page.locator('#transactionAmount').inputValue(), '1');
                 assert.equal(await page.locator('.student-check[value="2"]').isChecked(), false);
@@ -214,14 +372,131 @@ for (const engine of [chromium, webkit]) {
       }
     }
 
+    test('the actual confirmation can decline a money action without dispatch or draft loss', async t => {
+      const page = await openForm(t, { confirmMoney: false });
+      await page.locator('#quickStudent').selectOption('2');
+      await page.getByRole('button', { name: '+$5', exact: true }).click();
+      assert.deepEqual(await page.evaluate(() => window.moneyFormTest.snapshots()), []);
+      assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [20, 20]);
+      assert.equal(await page.locator('#quickStudent').inputValue(), '2');
+      assert.match(page.moneyConfirmations[0], /Apply \+\$5 to these 1 students/);
+      assert.match(page.moneyConfirmations[0], /Fictional Blake: \$20 → \$25/);
+      assert.match(await page.locator('body').innerText(), /cancelled before saving/);
+    });
+
+    for (const type of ['Add', 'Subtract']) test('history-heavy Whole Class ' + type + ' keeps the exact unpaid remainder for separately confirmed saves', async t => {
+      const page = await openForm(t);
+      await page.evaluate(() => window.moneyFormTest.heavyClass());
+      await customForm(page);
+      if (type === 'Subtract') {
+        await page.locator('#subtractModeButton').click();
+        await page.locator('#transactionReason').selectOption('Rent');
+      }
+      await page.locator('#transactionTarget').selectOption('whole');
+      await page.locator('#customTransactionButton').click();
+      await page.waitForFunction(() => window.moneyFormTest.state().status === 'committed' && !window.moneyFormTest.state().operationBusy);
+      const preview = await page.evaluate(() => window.lastMoneyPreview);
+      assert.ok(preview.selected.length > 0 && preview.selected.length < 30);
+      assert.equal(preview.selected.length + preview.notYetPlanned.length, 30);
+      assert.match(page.moneyConfirmations[0], new RegExp(`${preview.notYetPlanned.length} other selected students are not included`));
+      assert.match(await page.locator('body').innerText(), new RegExp(`${preview.notYetPlanned.length} selected students were not included`));
+      for (const id of preview.notYetPlanned) {
+        assert.ok(page.moneyConfirmations[0].includes('Fictional student ' + id), 'confirmation names every excluded student');
+        assert.ok((await page.locator('body').innerText()).includes('Fictional student ' + id), 'result names every remaining student');
+      }
+      assert.equal(await page.locator('#transactionTarget').inputValue(), 'selected');
+      assert.deepEqual(await page.locator('.student-check:checked').evaluateAll(inputs => inputs.map(input => Number(input.value)).sort((a, b) => a - b)), preview.notYetPlanned);
+      assert.equal(await page.locator('#transactionType').inputValue(), type);
+      const balances = await page.evaluate(() => window.moneyFormTest.balances());
+      const paidBalance = type === 'Add' ? 21 : 19;
+      assert.deepEqual(balances, balances.map((_, i) => i < preview.selected.length ? paidBalance : 20));
+      assert.equal((await page.evaluate(() => window.moneyFormTest.snapshots())).length, 1);
+      await finishMoneySave(page);
+      assert.equal((await page.evaluate(() => window.moneyFormTest.snapshots())).length, 1);
+      assert.equal(page.moneyConfirmations.length, 1);
+      let remainder = preview.notYetPlanned;
+      const paid = new Set(preview.selected.map(row => row.studentId));
+      let saves = 1;
+      while (remainder.length) {
+        assert.deepEqual(await page.locator('.student-check:checked').evaluateAll(inputs => inputs.map(input => Number(input.value)).sort((a, b) => a - b)), remainder);
+        await page.locator('#customTransactionButton').click();
+        await page.waitForFunction(() => window.moneyFormTest.state().status === 'committed' && !window.moneyFormTest.state().operationBusy);
+        const next = await page.evaluate(() => window.lastMoneyPreview);
+        assert.deepEqual([...next.selected.map(row => row.studentId), ...next.notYetPlanned], remainder, 'fresh preview covers only the prior unpaid IDs');
+        for (const row of next.selected) {
+          assert.equal(paid.has(row.studentId), false, 'a previously paid student is never selected again');
+          paid.add(row.studentId);
+        }
+        remainder = next.notYetPlanned;
+        saves++;
+        assert.equal(page.moneyConfirmations.length, saves, 'every group receives its own native confirmation');
+        await finishMoneySave(page);
+        assert.equal((await page.evaluate(() => window.moneyFormTest.snapshots())).length, saves, 'acknowledgment never submits another group');
+      }
+      const final = (await page.evaluate(() => window.moneyFormTest.snapshots())).at(-1);
+      assert.equal(paid.size, 30);
+      assert.deepEqual(final.students.map(s => s.balance), Array(30).fill(paidBalance));
+      assert.equal(final.transactions.length, 30);
+      for (const student of final.students) {
+        assert.equal(final.transactions.filter(tx => tx.studentId === student.id).length, 1);
+        assert.equal(student.transactions.length, 201, 'each student receives exactly one new mirror entry');
+      }
+      assert.equal(await page.locator('#transactionTarget').inputValue(), 'selected');
+      assert.equal(await page.locator('.student-check:checked').count(), 0);
+    });
+
+    test('a confirmed partial save keeps only the unpaid draft after failed refresh and status recovery', async t => {
+      const page = await openForm(t);
+      await page.evaluate(() => window.moneyFormTest.heavyClass());
+      await customForm(page);
+      await page.locator('#transactionTarget').selectOption('whole');
+      await page.evaluate(() => window.moneyFormTest.failReload());
+      await page.locator('#customTransactionButton').click();
+      await page.waitForFunction(() => window.moneyFormTest.state().status === 'committed' && !window.moneyFormTest.state().operationBusy);
+      const preview = await page.evaluate(() => window.lastMoneyPreview);
+      assert.ok(preview.notYetPlanned.length > 0);
+      assert.equal((await page.evaluate(() => window.moneyFormTest.state())).refreshed, false);
+      assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), Array(30).fill(20), 'no optimistic classroom money publication');
+      assert.equal(await page.locator('#transactionTarget').inputValue(), 'selected');
+      assert.deepEqual(await page.locator('.student-check:checked').evaluateAll(inputs => inputs.map(input => Number(input.value)).sort((a, b) => a - b)), preview.notYetPlanned);
+      assert.equal(await page.locator('#customTransactionButton').isDisabled(), true);
+      assert.equal(page.moneyConfirmations.length, 1);
+      await page.evaluate(async () => { window.moneyFormTest.failReload(false); await window.checkTeacherMoneySave(); });
+      assert.equal((await page.evaluate(() => window.moneyFormTest.state())).refreshed, true);
+      await finishMoneySave(page);
+      assert.deepEqual(await page.locator('.student-check:checked').evaluateAll(inputs => inputs.map(input => Number(input.value)).sort((a, b) => a - b)), preview.notYetPlanned);
+      assert.equal((await page.evaluate(() => window.moneyFormTest.snapshots())).length, 1);
+      assert.equal(page.moneyConfirmations.length, 1, 'refresh/status/acknowledgment never submits the next group');
+    });
+
+    test('missing money metadata locks money and classroom edits with an accurate status message', async t => {
+      const page = await openForm(t);
+      await page.evaluate(() => window.moneyFormTest.withoutMoneyMetadata());
+      assert.equal((await page.evaluate(() => window.moneyFormTest.state())).status, 'unresolved');
+      assert.match(await page.locator('#teacherMoneyRecovery').innerText(), /Money status could not be checked/);
+      assert.match(await page.locator('#teacherMoneyRecovery').innerText(), /Classroom changes stay locked/);
+      assert.doesNotMatch(await page.locator('#teacherMoneyRecovery').innerText(), /Check the previous money save/);
+      assert.doesNotMatch(await page.locator('body').innerText(), /The save is still not confirmed/);
+      assert.equal(await page.getByRole('button', { name: '+$5', exact: true }).isDisabled(), true);
+      await page.getByRole('button', { name: 'Roster', exact: true }).click();
+      await page.locator('#newStudentName').fill('Fictional Casey');
+      await page.getByRole('button', { name: 'Add Student', exact: true }).click();
+      assert.match(await page.locator('body').innerText(), /Money status must be confirmed before classroom changes can continue/);
+      assert.deepEqual(await page.evaluate(() => window.moneyFormTest.snapshots()), []);
+      assert.deepEqual(await page.evaluate(() => window.moneyFormTest.balances()), [20, 20]);
+      assert.equal(page.moneyConfirmations.length, 0);
+    });
+
     test('Quick Cash keeps the chosen recipient through repeated clicks and unrelated redraws', async t => {
       const page = await openForm(t);
       await page.locator('#quickStudent').selectOption('2');
       await page.evaluate(() => window.moneyFormTest.redraw());
       assert.equal(await page.locator('#quickStudent').inputValue(), '2');
       await page.getByRole('button', { name: '+$5', exact: true }).click();
+      await finishMoneySave(page);
       assert.equal(await page.locator('#quickStudent').inputValue(), '2');
       await page.getByRole('button', { name: '-$1', exact: true }).click();
+      await finishMoneySave(page);
       const snapshots = await page.evaluate(() => window.moneyFormTest.snapshots());
       assert.equal(snapshots.length, 2);
       assert.deepEqual(snapshots[1].students.map(s => s.balance), [20, 24]);
@@ -234,6 +509,7 @@ for (const engine of [chromium, webkit]) {
       await page.locator('#transactionTarget').selectOption('whole');
       await assertDebitDraft(page);
       await page.locator('#customTransactionButton').click();
+      await finishMoneySave(page);
       const snapshots = await page.evaluate(() => window.moneyFormTest.snapshots());
       assert.equal(snapshots.length, 1);
       assert.deepEqual(snapshots[0].students.map(s => s.balance), [13, 13]);
@@ -265,6 +541,7 @@ for (const engine of [chromium, webkit]) {
       assert.equal(await page.locator('.student-check[value="2"]').isChecked(), true);
       assert.equal(await page.locator('.student-check[value="1"]').isChecked(), false);
       await page.locator('#customTransactionButton').click();
+      await finishMoneySave(page);
       const snapshots = await page.evaluate(() => window.moneyFormTest.snapshots());
       assert.equal(snapshots.length, 1);
       assert.deepEqual(snapshots[0].students.map(s => s.balance), [20, 13]);
@@ -290,6 +567,7 @@ for (const engine of [chromium, webkit]) {
       assert.equal((await page.evaluate(() => window.moneyFormTest.snapshots())).length, 0);
       await page.locator('#quickStudent').selectOption('1');
       await page.getByRole('button', { name: '+$5', exact: true }).click();
+      await finishMoneySave(page);
       const snapshots = await page.evaluate(() => window.moneyFormTest.snapshots());
       assert.equal(snapshots.length, 1);
       assert.deepEqual(snapshots[0].students.map(s => s.balance), [25]);
@@ -328,6 +606,7 @@ for (const engine of [chromium, webkit]) {
           await page.locator('#transactionTarget').selectOption('whole');
         }
         await page.locator('#customTransactionButton').click();
+        await finishMoneySave(page);
         await page.locator('#customTransactionButton').click();
         const snapshots = await page.evaluate(() => window.moneyFormTest.snapshots());
         assert.equal(snapshots.length, 1, `${scope}: second press must not submit another transaction`);
@@ -366,6 +645,7 @@ for (const engine of [chromium, webkit]) {
       assert.equal((await page.evaluate(() => window.moneyFormTest.snapshots())).length, before);
       await page.locator('#transactionReason').selectOption('Homework');
       await page.locator('#customTransactionButton').click();
+      await finishMoneySave(page);
       const snapshots = await page.evaluate(() => window.moneyFormTest.snapshots());
       assert.equal(snapshots.length, before + 1);
       assert.ok(snapshots.at(-1).transactions.every(tx => tx.reason === 'Homework' && tx.memo === ''));
@@ -373,7 +653,6 @@ for (const engine of [chromium, webkit]) {
 
     test('legacy removal and max-ID allocation do not transfer the Quick Cash selection to a replacement student', async t => {
       const page = await openForm(t, { legacy: true });
-      page.on('dialog', dialog => dialog.accept());
       await page.locator('#quickStudent').selectOption('2');
       await page.getByRole('button', { name: 'Roster', exact: true }).click();
       await page.evaluate(() => window.removeStudent(2));

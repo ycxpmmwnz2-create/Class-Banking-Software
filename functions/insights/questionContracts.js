@@ -64,7 +64,7 @@ const TRANSACTION_STATUSES = Object.freeze(['Approved', 'Pending', 'Denied', 'an
 const TIME_BUCKETS = Object.freeze(['morning', 'afternoon', 'evening', 'night'])
 const STUDENT_STATES = Object.freeze(['active', 'frozen', 'any'])
 const BALANCE_CONDITIONS = Object.freeze(['any', 'negative', 'zero', 'positive', 'nonpositive'])
-const TRANSACTION_PURPOSES = Object.freeze(['any', 'rent', 'other'])
+const TRANSACTION_PURPOSES = Object.freeze(['any', 'rent', 'other', 'opening', 'adjustment', 'activity'])
 const DATE_SCOPES = Object.freeze([
   'period',
   'today',

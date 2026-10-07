@@ -801,19 +801,21 @@ function validateStudentTransactionResponse(response, captured, payload) {
   if (
     !Number.isSafeInteger(payload?.transactionId) || payload.transactionId < 1 ||
     (payload.type !== "Add" && payload.type !== "Subtract") ||
-    !Number.isSafeInteger(payload.amount) || payload.amount < 1 ||
+    payload.protocolVersion !== 1 || !Number.isSafeInteger(payload.controlGeneration) || payload.controlGeneration < 1 ||
+    !Number.isSafeInteger(payload.amountCents) || payload.amountCents < 1 || payload.amountCents > 100000000 ||
     typeof payload.reason !== "string" || !payload.reason ||
     transaction.id !== payload.transactionId ||
     transaction.studentId !== expectedStudentId ||
     typeof transaction.studentName !== "string" || !transaction.studentName ||
     transaction.type !== payload.type ||
-    transaction.amount !== payload.amount ||
+    transaction.amount !== payload.amountCents / 100 ||
     transaction.reason !== payload.reason ||
     transaction.memo !== "" || transaction.category !== "" ||
     transaction.source !== "Student" || !validStatus ||
     typeof transaction.date !== "string" ||
     Number.isNaN(new Date(transaction.date).getTime()) ||
-    typeof result.balance !== "number" || !Number.isFinite(result.balance)
+    typeof result.balance !== "number" || !Number.isFinite(result.balance) ||
+    Math.abs(result.balance) > 1000000 || Math.abs(result.balance * 100 - Math.round(result.balance * 100)) > 0.0000001
   ) return null;
   return result;
 }
@@ -922,16 +924,34 @@ export async function orchestrateCreateStudent(session, callableAdapter, payload
 }
 
 export async function orchestrateRemoveStudent(session, callableAdapter, payload) {
-  return orchestrateLifecycleCall(
-    session,
-    callableAdapter,
-    "removeStudentV2",
-    payload,
-    response => {
-      const result = response?.data || response;
-      return exactObject(result, ["success"]) && result.success === true ? result : null;
+  const captured = session.captureIdentity();
+  if (session.getState() !== SESSION_STATES.READY || captured.role !== "teacher") {
+    return { executed: false, error: "Teacher sign-in is required." };
+  }
+  try {
+    const response = await callableAdapter("getClassroomAccessV2", {});
+    if (!session.validateCapturedIdentity(captured)) return { executed: false, reason: "stale-epoch-ignored" };
+    const access = response?.data || response;
+    if (access.protocolVersion !== 1 || access.mode !== "active" ||
+        !Number.isSafeInteger(access.generation) || access.generation < 1) {
+      return { executed: false, error: "Refresh the classroom before removing a student." };
     }
-  );
+    // Capture once for this explicit attempt; never refresh a generation on retry.
+    const result = await callableAdapter("removeStudentV2", { ...payload,
+      classroomId: captured.classroomId, protocolVersion: 1, controlGeneration: access.generation });
+    if (!session.validateCapturedIdentity(captured)) return { executed: false, reason: "stale-epoch-ignored" };
+    const value = result?.data || result;
+    return exactObject(value, ["success"]) && value.success === true
+      ? { executed: true, result: value }
+      : { executed: false, error: "Refresh to check whether the student was removed." };
+  } catch (error) {
+    if (!session.validateCapturedIdentity(captured)) return { executed: false, reason: "stale-epoch-ignored" };
+    const pending = normalizeFirebaseErrorCode(error) === "failed-precondition" && error?.details?.reason === "pending-requests";
+    return { executed: false, reason: pending ? "pending-requests" : "lifecycle-call-failed", error:
+      pending
+        ? "Approve or deny this student's pending requests before removing them."
+        : "The removal could not be confirmed. Refresh the classroom before trying again." };
+  }
 }
 
 export async function orchestrateBulkOperation(session, bulkFn, payload) {

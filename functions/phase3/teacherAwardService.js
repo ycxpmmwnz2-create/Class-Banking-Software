@@ -1,7 +1,9 @@
+import { readCreationReceipt } from './studentCreationReceipt.js'
 import { createHash } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import { hasExactDataKeys, isControlGeneration, readTeacherClassroomAccess, requireClassroomAccess } from './classroomAccess.js'
-import { bindTeacherAwardIntent, buildTeacherAwardChanges } from './teacherAwardChanges.js'
+import { buildTeacherAwardChanges } from './teacherAwardChanges.js'
+import { bindTeacherMoneyIntent, isDecision, isRosterMoney, readRosterMoneyChanges } from './teacherRosterChanges.js'
 import { estimateMoneyDocumentBytes } from './moneyDocumentSize.js'
 import { createPlannerReadBudget } from './plannerReadBudget.js'
 import { TEACHER_MONEY_LIMITS as LIMITS, deriveMoneyLedgerIds, storedMoneyToCents } from './teacherMoneyContract.js'
@@ -30,12 +32,12 @@ export function teacherAwardPaths(classroomId, teacherUid, id) {
   })
 }
 
-function actorState(data, uid) {
+export function actorState(data, uid) {
   if (!hasExactDataKeys(data, ['version', 'actorUid', 'unacknowledgedRequestId']) || data.version !== 1 ||
       data.actorUid !== uid || (data.unacknowledgedRequestId !== null && !requestId(data.unacknowledgedRequestId))) fail('invalid-actor-state')
   return data
 }
-function receiptCount(data) {
+export function receiptCount(data) {
   if (!hasExactDataKeys(data, ['version', 'count']) || data.version !== 1 ||
       !Number.isSafeInteger(data.count) || data.count < 0 || data.count > LIMITS.receipts) fail('invalid-quota')
   return data.count
@@ -50,13 +52,14 @@ function storedReceipt(data, bound, uid) {
   const common = ['version', 'actorUid', 'requestId', 'generation', 'status', 'serverTime']
   const keys = data?.status === 'cancelled' ? common : [...common, 'digest', 'action', 'itemCount', 'ledgerIds', 'acknowledged']
   if (!hasExactDataKeys(data, keys) ||
-      (data.version !== 1 && !(data.version === 2 && data.status === 'committed')) || data.actorUid !== uid ||
+      (data.version !== 1 && !([2, 3].includes(data.version) && data.status === 'committed')) || data.actorUid !== uid ||
       data.requestId !== bound.intent.requestId || !isControlGeneration(data.generation) || !validTime(data.serverTime)) fail('invalid-receipt')
   if (data.status === 'cancelled') fail('request-cancelled')
   if (data.status !== 'committed' || typeof data.acknowledged !== 'boolean' ||
       typeof data.digest !== 'string' || !/^[a-f0-9]{64}$/.test(data.digest)) fail('invalid-receipt')
+  if (isRosterMoney(bound.intent.action) !== (data.version === 3)) fail('invalid-receipt')
   if (data.digest !== bound.digest) fail('request-conflict')
-  const mappingMatches = data.version === 2 ? data.ledgerIds === compactLedgerMapping(bound.ledgerIds) :
+  const mappingMatches = [2, 3].includes(data.version) ? data.ledgerIds === compactLedgerMapping(bound.ledgerIds) :
     Array.isArray(data.ledgerIds) && data.ledgerIds.length === bound.ledgerIds.length &&
     bound.ledgerIds.every((expected, i) =>
         hasExactDataKeys(data.ledgerIds[i], ['targetId', 'ledgerId']) &&
@@ -65,21 +68,22 @@ function storedReceipt(data, bound, uid) {
       data.itemCount !== bound.ledgerIds.length || !mappingMatches) fail('invalid-receipt')
   return data
 }
-function reply(receipt, count) {
+export function moneyReceiptReply(receipt, count) {
   return Object.freeze({ protocolVersion: 1, requestId: receipt.requestId, status: 'committed',
     action: receipt.action, itemCount: receipt.itemCount, serverTime: receipt.serverTime,
     requiresRefresh: true, acknowledged: receipt.acknowledged,
+    ...(receipt.action === 'createStudent' ? { studentId: receipt.studentId, loginId: receipt.loginId } : {}),
     receiptCapacityWarning: count >= 95000 ? '95-percent' : count >= 80000 ? '80-percent' : null })
 }
 
-// Dormant service, no callable or SDK creation. Only an authenticated server
-// caller may supply these dependencies. Metadata must be initialized by a future
-// reviewed initializer; missing counters/actor state NEVER silently reset to zero.
+// Dependency-injected service, no SDK creation. The planned path is exposed by
+// teacherMoneyCallables; the unplanned executor remains internal. Metadata must
+// already exist; missing counters/actor state NEVER silently reset to zero.
 async function runAward(request, { firestore, auth, projectId, now = () => new Date().toISOString() } = {}, mode = 'execute', plan = null) {
   validateCanonicalDocumentId(projectId)
   // Snapshot plain wire input before the asynchronous callback/retries. Validate
   // with a placeholder canonical classroom; final binding uses current ownership.
-  const initial = bindTeacherAwardIntent(request, { projectId, teacherUid: auth?.uid, classroomId: 'validation-only' })
+  const initial = bindTeacherMoneyIntent(request, { projectId, teacherUid: auth?.uid, classroomId: 'validation-only' })
   const wire = initial.intent
   return firestore.runTransaction(async transaction => {
     let bytes = 0
@@ -110,7 +114,7 @@ async function runAward(request, { firestore, auth, projectId, now = () => new D
       transaction: { get: ref => get(ref, true) }, firestore, auth, policy: { operation: 'recovery' },
     })
     const identity = { projectId, classroomId: foundation.classroomId, teacherUid: foundation.teacherUid }
-    const bound = bindTeacherAwardIntent(wire, identity)
+    const bound = bindTeacherMoneyIntent(wire, identity)
     if (plan && (plan.projectId !== projectId || plan.classroomId !== identity.classroomId ||
         plan.teacherUid !== identity.teacherUid || plan.digest !== bound.digest)) fail('stale-plan')
     const paths = teacherAwardPaths(identity.classroomId, identity.teacherUid, wire.requestId)
@@ -125,11 +129,37 @@ async function runAward(request, { firestore, auth, projectId, now = () => new D
       if (estimateMoneyDocumentBytes(paths.receipt, receipt) > LIMITS.receiptBytes || count < 1 ||
           (!receipt.acknowledged && actor.unacknowledgedRequestId !== wire.requestId) ||
           (receipt.acknowledged && actor.unacknowledgedRequestId === wire.requestId)) fail('invalid-receipt-state')
-      return reply(receipt, count)
+      return moneyReceiptReply(receipt, count)
     }
     requireClassroomAccess(foundation.control, { operation: 'mutate', protocolVersion: wire.protocolVersion, controlGeneration: wire.controlGeneration })
     if (actor.unacknowledgedRequestId !== null) fail('acknowledgment-required')
     if (count >= LIMITS.receipts) fail('receipt-quota-exhausted')
+    if (isRosterMoney(wire.action)) {
+      const serverTime = now()
+      if (!validTime(serverTime)) fail('invalid-clock')
+      const calculated = await readRosterMoneyChanges(bound, { identity, serverTime,
+        get: path => get(firestore.doc(path)) })
+      const { receipt, nextActor, nextQuota } = moneyMutation(wire, { identity, serverTime }, paths, actor, count, bytes, calculated)
+      const versions = snapshotVersions([...snapshots.keys()], snapshots)
+      if (planning) {
+        const createdAt = Date.parse(serverTime)
+        const result = { plan: { protocolVersion: 1, ...identity, digest: bound.digest,
+          createdAt, expiresAt: createdAt + 60000, versions }, request: wire,
+          selected: calculated.selected, notYetPlanned: [], reason: null }
+        if (Buffer.byteLength(JSON.stringify(result), 'utf8') > LIMITS.replyBytes) fail('reply-size-limit')
+        return result
+      }
+      if (plan) {
+        const currentTime = now()
+        if (!validTime(currentTime) || Date.parse(currentTime) < plan.createdAt || Date.parse(currentTime) >= plan.expiresAt ||
+            JSON.stringify(plan.versions) !== JSON.stringify(versions)) fail('stale-plan')
+      }
+      for (const write of calculated.writes) transaction[write.kind](firestore.doc(write.path), write.value)
+      transaction.create(firestore.doc(paths.receipt), receipt)
+      transaction.update(firestore.doc(paths.actor), nextActor)
+      transaction.update(firestore.doc(paths.quota), nextQuota)
+      return moneyReceiptReply(receipt, count + 1)
+    }
     const classroom = snapshots.get(`classrooms/${identity.classroomId}`).data()
     const categories = classroom.settings?.[wire.action === 'award' ? 'addMoneyCategories' : 'subtractMoneyCategories']
     if (!Array.isArray(categories) || categories.some(value => typeof value !== 'string')) fail('invalid-reason-policy')
@@ -197,14 +227,18 @@ async function runAward(request, { firestore, auth, projectId, now = () => new D
     transaction.create(firestore.doc(paths.receipt), receipt)
     transaction.update(firestore.doc(paths.actor), nextActor)
     transaction.update(firestore.doc(paths.quota), nextQuota)
-    return reply(receipt, count + 1)
+    return moneyReceiptReply(receipt, count + 1)
   })
 }
 
 
 function awardMutation(wire, inputs, paths, actor, count, readBytes) {
   const calculated = buildTeacherAwardChanges(wire, inputs)
-  const receipt = { version: 2, actorUid: inputs.identity.teacherUid, requestId: wire.requestId,
+  return moneyMutation(wire, inputs, paths, actor, count, readBytes, calculated)
+}
+
+function moneyMutation(wire, inputs, paths, actor, count, readBytes, calculated) {
+  const receipt = { version: isRosterMoney(wire.action) ? 3 : 2, actorUid: inputs.identity.teacherUid, requestId: wire.requestId,
     generation: wire.controlGeneration, status: 'committed', serverTime: inputs.serverTime,
     digest: calculated.digest, action: wire.action, itemCount: calculated.ledgerIds.length,
     ledgerIds: compactLedgerMapping(calculated.ledgerIds), acknowledged: false }
@@ -245,6 +279,9 @@ export function executePlannedTeacherAwardService(envelope, dependencies) {
 }
 
 function recoveryReceipt(data, identity, id) {
+  if (data?.version === 4) {
+    try { return readCreationReceipt(data, identity, id) } catch { fail('invalid-receipt') }
+  }
   const common = ['version', 'actorUid', 'requestId', 'generation', 'status', 'serverTime']
   const keys = data?.status === 'cancelled' ? common : [...common, 'digest', 'action', 'itemCount', 'ledgerIds', 'acknowledged']
   if (!hasExactDataKeys(data, keys) || data.actorUid !== identity.teacherUid || data.requestId !== id ||
@@ -253,11 +290,11 @@ function recoveryReceipt(data, identity, id) {
     if (data.version !== 1) fail('invalid-receipt')
     return data
   }
-  if (data.status !== 'committed' || ![1, 2].includes(data.version) || !['award', 'deduct'].includes(data.action) ||
+  if (data.status !== 'committed' || ![1, 2, 3].includes(data.version) || !['award', 'deduct', 'approve', 'deny', 'adjust', 'reset'].includes(data.action) ||
       typeof data.acknowledged !== 'boolean' || typeof data.digest !== 'string' || !/^[a-f0-9]{64}$/.test(data.digest) ||
       !Number.isInteger(data.itemCount) || data.itemCount < 1 || data.itemCount > LIMITS.targets) fail('invalid-receipt')
   let mapping = data.ledgerIds
-  if (data.version === 2) {
+  if (data.version === 2 || data.version === 3) {
     if (typeof mapping !== 'string' || !mapping.startsWith('b36:1:') || mapping.length > 2405) fail('invalid-receipt')
     mapping = mapping.slice(6).split(',').map(pair => {
       const words = pair.split(':')
@@ -273,7 +310,9 @@ function recoveryReceipt(data, identity, id) {
   if (!Array.isArray(mapping) || mapping.length !== data.itemCount || mapping.some((row, index) =>
     !hasExactDataKeys(row, ['targetId', 'ledgerId']) || !Number.isSafeInteger(row.targetId) || row.targetId <= 0 ||
     !Number.isSafeInteger(row.ledgerId) || row.ledgerId <= 0 || (index > 0 && mapping[index - 1].targetId >= row.targetId))) fail('invalid-receipt')
-  const expected = deriveMoneyLedgerIds({ ...identity, protocolVersion: 1, requestId: id, action: data.action }, mapping.map(row => row.targetId))
+  if (isRosterMoney(data.action) !== (data.version === 3)) fail('invalid-receipt')
+  const expected = isDecision(data.action) ? mapping.map(row => ({ ...row, ledgerId: row.targetId })) :
+    deriveMoneyLedgerIds({ ...identity, protocolVersion: 1, requestId: id, action: data.action }, mapping.map(row => row.targetId))
   if (!expected.every((row, index) => row.ledgerId === mapping[index].ledgerId)) fail('invalid-receipt')
   return data
 }
@@ -311,9 +350,9 @@ export async function recoverTeacherAwardService(input, { firestore, auth, proje
       if (wire.operation === 'acknowledge' && !receipt.acknowledged) {
         transaction.update(firestore.doc(paths.receipt), { ...receipt, acknowledged: true })
         transaction.update(firestore.doc(paths.actor), { ...actor, unacknowledgedRequestId: null })
-        return reply({ ...receipt, acknowledged: true }, count)
+        return moneyReceiptReply({ ...receipt, acknowledged: true }, count)
       }
-      return reply(receipt, count)
+      return moneyReceiptReply(receipt, count)
     }
     if (actor.unacknowledgedRequestId === id) fail('invalid-receipt-state')
     if (wire.operation === 'status') return unconfirmed

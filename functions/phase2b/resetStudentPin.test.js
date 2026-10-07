@@ -3,13 +3,21 @@ import assert from 'node:assert/strict'
 import bcrypt from 'bcryptjs'
 import {
   defaultHashPin,
-  resetStudentPinV2,
-  resetStudentPinV2CallableHandler,
+  resetStudentPinV2 as rawResetStudentPinV2,
+  resetStudentPinV2CallableHandler as rawResetCallable,
   ResetStudentPinError,
   STUDENT_PIN_BCRYPT_COST,
 } from './resetStudentPin.js'
 import { TeacherTenantResolverError } from './teacherTenantResolver.js'
 import { deriveDeterministicStudentAuthUid } from './scopedCredentialProjection.js'
+
+const control = (mode = 'active', generation = 1) => ({ schemaVersion: 1, mode, generation,
+  changedAt: '2026-10-05T00:00:00.000Z', auditId: 'fictional' })
+// Existing cases now exercise the current wire. Raw handlers remain available
+// below for explicit old-wire refusal and transaction-race regressions.
+const wire = (request, auth) => ({ classroomId: auth?.uid === 'teacherB' ? 'classB' : 'classA', protocolVersion: 1, controlGeneration: 1, ...request })
+const resetStudentPinV2 = (request, deps) => rawResetStudentPinV2(wire(request, deps?.auth), deps)
+const resetStudentPinV2CallableHandler = (request, context, deps) => rawResetCallable(wire(request, context?.auth), context, deps)
 
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
@@ -20,7 +28,7 @@ function clone(value) {
  * precede every write, buffered writes are invisible until commit, an aborted
  * attempt discards its writes, and `update` on a missing document fails.
  */
-function createMockFirestore(initialDocs = {}, { abortAttempts = 0 } = {}) {
+function createMockFirestore(initialDocs = {}, { abortAttempts = 0, onAttempt = () => {} } = {}) {
   const store = new Map()
   for (const [path, data] of Object.entries(initialDocs)) {
     store.set(path, clone(data))
@@ -92,6 +100,7 @@ function createMockFirestore(initialDocs = {}, { abortAttempts = 0 } = {}) {
     async runTransaction(updateFunction) {
       for (;;) {
         transactionAttempts += 1
+        onAttempt(store, transactionAttempts)
         const operations = []
         const writes = []
         let hasWritten = false
@@ -188,7 +197,7 @@ const mockHashPin = async (pin) => `hashed_${pin}`
 test('Teacher A and B reset only their resolved tenant with bidirectional isolation', async () => {
   const initialDocs = {
     'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
+    'classrooms/classA': { ownerUid: 'teacherA', accessControl: control() },
     'classrooms/classA/students/stu1': { name: 'Alex' },
     'classrooms/classA/studentCredentials/alex-smith': scopedCredential(
       'classA',
@@ -202,7 +211,7 @@ test('Teacher A and B reset only their resolved tenant with bidirectional isolat
       },
     ),
     'teachers/teacherB': { uid: 'teacherB', classroomId: 'classB', status: 'active' },
-    'classrooms/classB': { ownerUid: 'teacherB' },
+    'classrooms/classB': { ownerUid: 'teacherB', accessControl: control() },
     'classrooms/classB/students/stu2': { name: 'Bob' },
     'classrooms/classB/studentCredentials/bob-jones': scopedCredential(
       'classB',
@@ -305,7 +314,7 @@ test('Teacher A and B reset only their resolved tenant with bidirectional isolat
 test('PIN reset advances the credential version even when the clock millisecond repeats', async () => {
   const firestore = createMockFirestore({
     'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
+    'classrooms/classA': { ownerUid: 'teacherA', accessControl: control() },
     'classrooms/classA/students/stu1': { name: 'Alex' },
     'classrooms/classA/studentCredentials/alex-smith': scopedCredential(
       'classA',
@@ -347,7 +356,7 @@ test('production default hash uses bcrypt cost 12 and verifies the PIN', async (
   // cost-12 hash that is written to the credential.
   const firestore = createMockFirestore({
     'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
+    'classrooms/classA': { ownerUid: 'teacherA', accessControl: control() },
     'classrooms/classA/students/stu1': { name: 'Alex' },
     'classrooms/classA/studentCredentials/alex-smith': scopedCredential('classA', 'alex-smith', 'stu1'),
   })
@@ -368,7 +377,7 @@ test('rejection of unknown fields including classroomId', async () => {
   await assert.rejects(
     () =>
       resetStudentPinV2(
-        { studentId: 'stu1', newPin: '1234', classroomId: 'classA' },
+        { studentId: 'stu1', newPin: '1234', unauthorized: 'classA' },
         { firestore, auth: { uid: 'teacherA' } },
       ),
     (err) => err instanceof ResetStudentPinError && err.code === 'invalid-argument',
@@ -426,7 +435,7 @@ test('unauthenticated, disabled, missing, and owner-mismatch teacher foundation 
       auth: { uid: 'teacherA' },
       docs: {
         'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'disabled' },
-        'classrooms/classA': { ownerUid: 'teacherA' },
+        'classrooms/classA': { ownerUid: 'teacherA', accessControl: control() },
       },
       code: 'teacher-disabled',
     },
@@ -435,7 +444,7 @@ test('unauthenticated, disabled, missing, and owner-mismatch teacher foundation 
       auth: { uid: 'teacherA' },
       docs: {
         'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'pending' },
-        'classrooms/classA': { ownerUid: 'teacherA' },
+        'classrooms/classA': { ownerUid: 'teacherA', accessControl: control() },
       },
       code: 'invalid-teacher-status',
     },
@@ -444,7 +453,7 @@ test('unauthenticated, disabled, missing, and owner-mismatch teacher foundation 
       auth: { uid: 'teacherA' },
       docs: {
         'teachers/teacherA': { uid: 'teacherZ', classroomId: 'classA', status: 'active' },
-        'classrooms/classA': { ownerUid: 'teacherA' },
+        'classrooms/classA': { ownerUid: 'teacherA', accessControl: control() },
       },
       code: 'teacher-uid-mismatch',
     },
@@ -469,7 +478,7 @@ test('unauthenticated, disabled, missing, and owner-mismatch teacher foundation 
       auth: { uid: 'teacherA' },
       docs: {
         'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-        'classrooms/classA': { ownerUid: 'teacherB' },
+        'classrooms/classA': { ownerUid: 'teacherB', accessControl: control() },
       },
       code: 'classroom-owner-mismatch',
     },
@@ -498,7 +507,7 @@ test('unauthenticated, disabled, missing, and owner-mismatch teacher foundation 
 test('zero and two credential matches handling', async () => {
   const baseDocs = {
     'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
+    'classrooms/classA': { ownerUid: 'teacherA', accessControl: control() },
     'classrooms/classA/students/stu1': { name: 'Alex' },
   }
 
@@ -532,7 +541,7 @@ test('zero and two credential matches handling', async () => {
 test('missing student document in classroom fails reset', async () => {
   const initialDocs = {
     'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
+    'classrooms/classA': { ownerUid: 'teacherA', accessControl: control() },
     // Student credential exists, but student document missing!
     'classrooms/classA/studentCredentials/alex-smith': scopedCredential('classA', 'alex-smith', 'stu1'),
   }
@@ -551,7 +560,7 @@ test('missing student document in classroom fails reset', async () => {
 test('malformed or forged scoped credential identity fails closed before mutation', async () => {
   const baseDocs = {
     'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
+    'classrooms/classA': { ownerUid: 'teacherA', accessControl: control() },
     'classrooms/classA/students/stu1': { name: 'Alex' },
   }
 
@@ -631,7 +640,7 @@ test('malformed or forged scoped credential identity fails closed before mutatio
 test('retry and contention keep the reset identity-stable and allowlisted', async () => {
   const initialDocs = {
     'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
+    'classrooms/classA': { ownerUid: 'teacherA', accessControl: control() },
     'classrooms/classA/students/stu1': { name: 'Alex' },
     'classrooms/classA/studentCredentials/alex-smith': scopedCredential('classA', 'alex-smith', 'stu1', {
       createdAt: 100,
@@ -680,7 +689,7 @@ test('retry and contention keep the reset identity-stable and allowlisted', asyn
 test('callable adapter maps every error category to a generic HttpsError', async () => {
   const validDocs = {
     'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
-    'classrooms/classA': { ownerUid: 'teacherA' },
+    'classrooms/classA': { ownerUid: 'teacherA', accessControl: control() },
     'classrooms/classA/students/stu1': { name: 'Alex' },
     'classrooms/classA/studentCredentials/alex-smith': scopedCredential('classA', 'alex-smith', 'stu1'),
   }
@@ -720,7 +729,7 @@ test('callable adapter maps every error category to a generic HttpsError', async
   const cases = [
     {
       desc: 'unknown field',
-      data: { studentId: 'stu1', newPin: '1234', classroomId: 'classA' },
+      data: { studentId: 'stu1', newPin: '1234', unauthorized: 'classA' },
       context: { auth: { uid: 'teacherA' } },
       docs: validDocs,
       code: 'invalid-argument',
@@ -790,7 +799,7 @@ test('callable adapter maps every error category to a generic HttpsError', async
       desc: 'classroom owner mismatch',
       data: { studentId: 'stu1', newPin: '1234' },
       context: { auth: { uid: 'teacherA' } },
-      docs: { ...validDocs, 'classrooms/classA': { ownerUid: 'teacherB' } },
+      docs: { ...validDocs, 'classrooms/classA': { ownerUid: 'teacherB', accessControl: control() } },
       code: 'failed-precondition',
     },
     {
@@ -865,4 +874,52 @@ test('callable adapter maps every error category to a generic HttpsError', async
       return true
     },
   )
+})
+
+test('Stage 5 reset rejects old wire before hashing or writing', async () => {
+  let hashes = 0
+  await assert.rejects(() => rawResetStudentPinV2({ studentId: 'stu1', newPin: '1234' }, {
+    hashPin: async () => { hashes++; return 'hash' },
+  }), { code: 'invalid-argument' })
+  assert.equal(hashes, 0)
+})
+
+const resetRaceDocs = () => ({
+  'teachers/teacherA': { uid: 'teacherA', classroomId: 'classA', status: 'active' },
+  'classrooms/classA': { ownerUid: 'teacherA', accessControl: control() },
+  'classrooms/classA/students/stu1': { name: 'Fictional' },
+  'classrooms/classA/studentCredentials/fictional': scopedCredential('classA', 'fictional', 'stu1'),
+})
+for (const change of ['readOnly', 'suspended', 'resume', 'disabled', 'transfer', 'missing-control']) {
+  for (const duringRetry of [false, true]) test(`Stage 5 reset refuses ${change} after hash / retry=${duringRetry}`, async () => {
+    const mutate = store => {
+      const room = store.get('classrooms/classA')
+      if (change === 'disabled') store.get('teachers/teacherA').status = 'disabled'
+      else if (change === 'transfer') room.ownerUid = 'teacherB'
+      else if (change === 'missing-control') delete room.accessControl
+      else room.accessControl = control(change === 'resume' ? 'active' : change, change === 'resume' ? 2 : 1)
+    }
+    const firestore = createMockFirestore(resetRaceDocs(), { abortAttempts: duringRetry ? 1 : 0,
+      onAttempt: (store, n) => { if (duringRetry && n === 2) mutate(store) } })
+    const before = clone(firestore.store.get('classrooms/classA/studentCredentials/fictional'))
+    let hashes = 0, revocations = 0
+    await assert.rejects(() => rawResetCallable(wire({studentId:'stu1',newPin:'0427'}, {uid:'teacherA'}), {auth:{uid:'teacherA'}}, {
+      firestore, hashPin: async () => { hashes++; if (!duringRetry) mutate(firestore.store); return 'fictional-new' },
+      adminAuth: { revokeRefreshTokens: async () => { revocations++ } },
+    }))
+    assert.equal(hashes, 1); assert.equal(revocations, 0)
+    assert.deepEqual(firestore.store.get('classrooms/classA/studentCredentials/fictional'), before)
+    assert.equal(firestore.store.has('classrooms/classA/studentPins/stu1'), false)
+  })
+}
+
+test('Stage 5 committed reset may finish access-narrowing revocation after pause', async () => {
+  const firestore = createMockFirestore(resetRaceDocs())
+  let revoked = 0
+  const result = await rawResetCallable(wire({studentId:'stu1',newPin:'0427'}, {uid:'teacherA'}), {auth:{uid:'teacherA'}}, {
+    firestore, now: () => 2000, hashPin: async () => 'fictional-new',
+    adminAuth: { revokeRefreshTokens: async () => { firestore.store.get('classrooms/classA').accessControl = control('suspended',2); revoked++ } },
+  })
+  assert.deepEqual(result,{success:true});assert.equal(revoked,1)
+  assert.equal(firestore.store.get('classrooms/classA/studentPins/stu1').pin,'0427')
 })

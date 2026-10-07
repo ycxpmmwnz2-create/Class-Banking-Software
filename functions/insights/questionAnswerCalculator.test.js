@@ -96,8 +96,8 @@ test('answers restroom visits by approved transaction count rather than dollars 
   assert.match(result.answer, /Genesis.*highest.*transaction count: 3 transactions/)
   assert.doesNotMatch(result.answer, /Sofia.*highest/)
   assert.match(result.evidence[0], /Genesis: 3 transactions/)
-  assert.doesNotMatch(result.answer, /approved spending \(Subtract\) transactions/)
-  assert.match(result.evidence.join(' '), /approved spending \(Subtract\) transactions/)
+  assert.doesNotMatch(result.answer, /approved Subtract transactions/)
+  assert.match(result.evidence.join(' '), /approved Subtract transactions/)
 })
 
 test('compares submitted transactions across today and yesterday in the classroom time zone', () => {
@@ -214,7 +214,7 @@ test('answers approved today-and-yesterday payments in direct teacher-friendly l
     'Genesis had 2 approved Technology credits yesterday and 2 approved Technology credits today.',
   )
   assert.doesNotMatch(result.answer, /Chronological|Included records|America\/Denver|2026/)
-  assert.match(result.evidence.join(' '), /approved earning \(Add\) transactions/)
+  assert.match(result.evidence.join(' '), /approved Add transactions/)
 })
 
 test('answers all elapsed days this week from server dates and includes zero-count days', () => {
@@ -696,9 +696,9 @@ test('lists current students without an approved exact rent payment today', () =
   assert.match(result.answer, /^Yes\. 3 of 4 current students/)
   assert.match(result.answer, /Ava.*Mateo.*Sofia/)
   assert.doesNotMatch(result.answer, /Genesis.*no matching/)
-  assert.doesNotMatch(result.answer, /approved spending \(Subtract\) transactions|America\/Denver/)
+  assert.doesNotMatch(result.answer, /approved Subtract transactions|America\/Denver/)
   const details = result.evidence.join(' ')
-  assert.match(details, /approved spending \(Subtract\) transactions/)
+  assert.match(details, /approved Subtract transactions/)
   assert.match(details, /rent payments/)
   assert.match(details, /exactly \$10\.00/)
   assert.match(details, /today \(2026-08-20 in America\/Denver\)/)
@@ -1089,9 +1089,9 @@ test('keeps status, type, time, and current-student filters in details instead o
     }),
     evidence,
   })
-  assert.doesNotMatch(result.answer, /pending spending \(Subtract\) transactions|afternoon|current frozen students/)
+  assert.doesNotMatch(result.answer, /pending Subtract transactions|afternoon|current frozen students/)
   const details = result.evidence.join(' ')
-  assert.match(details, /pending spending \(Subtract\) transactions/)
+  assert.match(details, /pending Subtract transactions/)
   assert.match(details, /afternoon \(12:00 PM–4:59 PM\)/)
   assert.match(details, /current frozen students/)
   assert.equal(result.answer.match(/last 30 days/g)?.length, 1)
@@ -1299,9 +1299,9 @@ test('dynamically fits ranked, aggregate, and empty results with every disclosur
     assert.ok(result.answer.length <= 800)
     assert.ok(result.evidence.every(line => line.length <= 320))
     assert.match([result.answer, ...result.evidence].join(' '), /…/)
-    assert.doesNotMatch(result.answer, /earning \(Add\) and spending \(Subtract\)|all approval statuses|afternoon|current frozen students/)
+    assert.doesNotMatch(result.answer, /Add and Subtract|all approval statuses|afternoon|current frozen students/)
     const details = result.evidence.join(' ')
-    assert.match(details, /earning \(Add\) and spending \(Subtract\)/)
+    assert.match(details, /Add and Subtract/)
     assert.match(details, /all approval statuses/)
     assert.match(details, /afternoon \(12:00 PM–4:59 PM\)/)
     assert.match(details, /current frozen students/)
@@ -1522,8 +1522,8 @@ test('combines unrelated calculations for compound questions without broadening 
   })
   assert.match(result.answer, /^The total amount is \$35\.00.*The total amount is \$203\.00/)
   assert.doesNotMatch(result.answer, /Calculation/)
-  assert.match(result.evidence.join(' '), /approved earning.*last 10 days/i)
-  assert.match(result.evidence.join(' '), /approved spending.*last 10 days/i)
+  assert.match(result.evidence.join(' '), /approved Add.*last 10 days/i)
+  assert.match(result.evidence.join(' '), /approved Subtract.*last 10 days/i)
 })
 
 test('answers broad multi-field repeated-record and threshold questions', () => {
@@ -1678,4 +1678,15 @@ test('discloses ties omitted at a non-leading cutoff', () => {
   })
   assert.match(result.answer, /And 2 more are tied at the cutoff/)
   assert.equal(result.evidence.length, 8)
+})
+
+test('recorded activity excludes classified openings and adjustments while raw cash retains them', () => {
+  const rows=[...evidence.transactions,
+    {...evidence.transactions[5],id:100,amount:1000,purpose:'opening'},
+    {...evidence.transactions[5],id:101,amount:100,purpose:'adjustment'}]
+  const activity=calculateQuestionAnswer({kind:'query',plan:plan({filters:{...filters,transactionType:'Add',purpose:'activity'}}),evidence:{...evidence,transactions:rows}})
+  const raw=calculateQuestionAnswer({kind:'query',plan:plan({filters:{...filters,transactionType:'Add',purpose:'any'}}),evidence:{...evidence,transactions:rows}})
+  assert.match(activity.answer,/\$35\.00/)
+  assert.match(raw.answer,/\$1,135\.00/)
+  assert.match(activity.evidence.join(' '),/excluding opening balances and adjustments/)
 })

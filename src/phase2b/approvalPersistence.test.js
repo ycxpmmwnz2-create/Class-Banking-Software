@@ -8,6 +8,10 @@ import { orchestrateClassroomDataSave } from './tenantClient.js';
 import { writeTeacherCache } from './tenantCache.js';
 import { TenantSession, SESSION_STATES } from './tenantSession.js';
 import { createTenantDataSaver, createTenantDataLoader } from '../phase3/tenantDataService.js';
+import { createTeacherMoneyClient, parseTeacherMoneyAmount } from '../phase3/teacherMoneyClient.js';
+import { teacherAwardFixture } from '../../tests/phase3/teacherAward.fixture.js';
+import { getClassroomAccessService } from '../../functions/phase3/classroomAccess.js';
+import { executeTeacherMoneyCallable, planTeacherMoneyCallable, recoverTeacherMoneyCallable } from '../../functions/phase3/teacherMoneyCallables.js';
 
 const source = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
 function section(start, end) {
@@ -85,10 +89,20 @@ async function fixture({ fail = false, failReload = false, persisted = null, onC
   };
   vm.runInContext(section('    let activeClassroomSaves =', '    // Phase 1B:') +
     section('    async function saveData()', '    function dollars(') +
-    section('    function changeStudentBalance(', '    function submitStudentRequest()') +
+    section('    function changeStudentBalance(', '    function queueApprovalDecision(') +
     section('    function queueApprovalDecision(', '    async function addStudent()') +
     section('    function transactionTable(', '    function studentTransactionList(') +
     section('function exportTransactionsCsv(', '    async function openStudentAuthLogs('), ctx);
+  // This exercises the retained generic saver/queue as components. V2 UI
+  // approvals below and in browser tests now exercise the server-intent route.
+  const enqueueGenericDecision = (ids, status = 'Approved') => {
+    if (!ctx.requireTeacher({ allowApprovalQueue: true })) return;
+    ctx.genericIds = ids; ctx.genericStatus = status;
+    vm.runInContext(`{
+      const available = genericIds.filter(id => !approvalQueue.has(id)), decision = genericStatus;
+      if (!approvalRefreshRequired) approvalQueue.enqueue(available, snapshot => prepareApprovalDecision(snapshot, available, decision, () => true));
+    }`, ctx);
+  };
   async function finish() {
     unlock(); for (let i = 0; i < 40; i++) { await new Promise(resolve => setImmediate(resolve)); if (!vm.runInContext('approvalQueue.busy || activeClassroomSaves > 0', ctx)) return; }
     assert.fail('queue did not finish');
@@ -97,12 +111,12 @@ async function fixture({ fail = false, failReload = false, persisted = null, onC
     ctx.data = await loader({ uid: 'teacher-test', classroomId: 'test-room' });
     ctx.v2LastPersistedData = JSON.parse(JSON.stringify(ctx.data));
   }
-  return { ctx, store, finish, interactions, form, get commits() { return commits; }, get draftResets() { return draftResets; },
+  return { ctx, store, finish, enqueueGenericDecision, interactions, form, get commits() { return commits; }, get draftResets() { return draftResets; },
     reload: () => fixture({ persisted: store }) };
 }
 
-test('actual UI handlers and tenant saver persist rapid approvals exactly once', async () => {
-  const h = await fixture(); h.ctx.approveTransaction(1);h.ctx.approveTransaction(2);h.ctx.approveTransaction(1);
+test('retained approval queue and tenant saver persist rapid approvals exactly once', async () => {
+  const h = await fixture(); h.enqueueGenericDecision([1]);h.enqueueGenericDecision([2]);h.enqueueGenericDecision([1]);
   assert.equal(h.ctx.data.students[0].balance, 10, 'no optimistic credit');
   assert.equal(h.ctx.message, '', 'no unconfirmed success');
   const pendingRow = h.ctx.transactionTable([h.ctx.data.transactions[0]], true);
@@ -117,7 +131,7 @@ test('actual UI handlers and tenant saver persist rapid approvals exactly once',
   assert.equal(h.store.get('classrooms/test-room/transactions/2').status, 'Approved');
   assert.equal(h.ctx.requireTeacher(), true);
   assert.doesNotMatch(h.ctx.transactionTable([h.ctx.data.transactions[0]], true), /Saving|<button/);
-  h.ctx.approveTransaction(3); await h.finish();
+  h.enqueueGenericDecision([3]); await h.finish();
   assert.equal(h.commits, 3, 'a new drain accepts subsequent approvals');
   assert.equal(h.store.get('classrooms/test-room/students/1').balance, 25);
   assert.equal(h.store.get('classrooms/test-room/transactions/3').status, 'Approved');
@@ -141,8 +155,8 @@ test('legacy cache only advances after confirmed persistence', async () => {
   }
 });
 
-test('actual Approve All shares queued IDs and deny leaves balances alone', async () => {
-  const h = await fixture();h.ctx.approveTransaction(1);h.ctx.denyTransaction(2);h.ctx.approveAllCreditRequests();
+test('retained generic queue shares IDs and denial leaves balances alone', async () => {
+  const h = await fixture();h.enqueueGenericDecision([1]);h.enqueueGenericDecision([2], 'Denied');h.enqueueGenericDecision([1, 2, 3]);
   await h.finish();assert.equal(h.commits, 3);
   assert.equal(h.store.get('classrooms/test-room/students/1').balance, 20);
   assert.equal(h.store.get('classrooms/test-room/transactions/2').status, 'Denied');
@@ -150,15 +164,15 @@ test('actual Approve All shares queued IDs and deny leaves balances alone', asyn
 });
 
 test('actual failed save retains pending records and requires refresh before any later mutation', async () => {
-  const h = await fixture({ fail: true });h.ctx.approveTransaction(1);h.ctx.denyTransaction(2);await h.finish();
+  const h = await fixture({ fail: true });h.enqueueGenericDecision([1]);h.enqueueGenericDecision([2], 'Denied');await h.finish();
   assert.equal(h.commits, 0);assert.equal(h.ctx.data.students[0].balance, 10);
   assert.equal(h.store.get('classrooms/test-room/transactions/1').status, 'Pending');
   assert.equal(h.ctx.requireTeacher(), false);assert.match(h.ctx.message, /Refresh/);
-  h.ctx.approveTransaction(3);assert.equal(vm.runInContext('approvalQueue.busy', h.ctx), false);
+  h.enqueueGenericDecision([3]);assert.equal(vm.runInContext('approvalQueue.busy', h.ctx), false);
 });
 
 test('real saver still rejects a concurrent server change instead of overwriting its balance', async () => {
-  const h = await fixture();h.ctx.approveTransaction(1);h.ctx.approveTransaction(2);
+  const h = await fixture();h.enqueueGenericDecision([1]);h.enqueueGenericDecision([2]);
   h.store.get('classrooms/test-room/students/1').balance = 50;
   await h.finish();assert.equal(h.commits, 0);
   assert.equal(h.store.get('classrooms/test-room/students/1').balance, 50);
@@ -168,13 +182,13 @@ test('real saver still rejects a concurrent server change instead of overwriting
 
 
 test('successful conflict reload stops the queue but allows a deliberate new decision', async () => {
-  const h = await fixture();h.ctx.approveTransaction(1);h.ctx.approveTransaction(2);
+  const h = await fixture();h.enqueueGenericDecision([1]);h.enqueueGenericDecision([2]);
   h.store.get('classrooms/test-room/students/1').balance = 50;
   await h.finish();
   assert.equal(h.commits, 0);
   assert.equal(h.ctx.requireTeacher(), true, 'healed conflict must not latch');
   assert.match(h.ctx.message, /reloaded/);
-  h.ctx.approveTransaction(3);await h.finish();
+  h.enqueueGenericDecision([3]);await h.finish();
   assert.equal(h.commits, 1);
   assert.equal(h.store.get('classrooms/test-room/students/1').balance, 55);
   assert.equal(h.store.get('classrooms/test-room/transactions/1').status, 'Pending');
@@ -182,7 +196,7 @@ test('successful conflict reload stops the queue but allows a deliberate new dec
 });
 
 test('failed conflict reload still blocks mutations while read-only access keeps auth checks', async () => {
-  const h = await fixture({ failReload: true });h.ctx.approveTransaction(1);
+  const h = await fixture({ failReload: true });h.enqueueGenericDecision([1]);
   assert.equal(h.ctx.requireTeacher({ readOnly: true }), true, 'reading allowed during save');
   h.store.get('classrooms/test-room/students/1').balance = 50;
   await h.finish();
@@ -200,7 +214,7 @@ test('empty Approve All explains there are no pending credits', async () => {
 
 
 test('actual dropdown and CSV remain usable during saving and after ambiguous failure', async () => {
-  const h = await fixture({ fail: true });h.ctx.approveTransaction(1);
+  const h = await fixture({ fail: true });h.enqueueGenericDecision([1]);
   h.ctx.toggleStudentDropdown();h.ctx.exportTransactionsCsv('all');
   assert.deepEqual(h.interactions, { dropdown: 1, exports: 1 });
   await h.finish();
@@ -221,211 +235,165 @@ test('refresh latch follows explicit metadata, independently of user-facing word
   assert.equal(h.ctx.requireTeacher({ readOnly: true }), true);
 });
 
+// The old V2 handlers calculated replacement balances in the browser. Their
+// persistence cases now use the actual intent handlers, client controller and
+// server services. Generic saver/queue component coverage above remains independent of V2 routing.
+async function moneyFixture({ fail = false, failReload = false, onCommitted = () => {} } = {}) {
+  const h = await fixture({ failReload });
+  const f = teacherAwardFixture({ uid: 'teacher-test', classroomId: 'test-room', count: 1, store: h.store });
+  f.dependencies.projectId = h.ctx.v2TenantSession.projectId;
+  h.store.set('classrooms/test-room', { ...h.store.get('classrooms/test-room'), ownerUid: f.uid,
+    accessControl: { schemaVersion: 1, mode: 'active', generation: 7, changedAt: f.time, auditId: 'fictional-audit' },
+    settings: { ...h.store.get('classrooms/test-room').settings, addMoneyCategories: ['Homework'], subtractMoneyCategories: ['Rent'] } });
+  let unlock;
+  const gate = new Promise(resolve => { unlock = resolve; });
+  const values = new Map(), calls = [], caches = new Map();
+  h.ctx.localStorage = { setItem: (key, value) => caches.set(key, JSON.parse(value)) };
+  const reloadStart = source.indexOf('        reload: async captured => {', source.indexOf('      v2TeacherMoneyClient = createTeacherMoneyClient'));
+  const reloadEnd = source.indexOf('        confirmPlan:', reloadStart);
+  assert.ok(reloadStart > 0 && reloadEnd > reloadStart);
+  const reload = vm.runInContext('(' + source.slice(reloadStart, reloadEnd).trim().replace(/^reload: /, '').replace(/,$/, '') + ')', h.ctx);
+  const count = () => f.commits.filter(writes => writes.some(([, path]) => /\/students\/|\/transactions\//.test(path))).length;
+  let requestSequence = 0;
+  const client = createTeacherMoneyClient({ session: h.ctx.v2TenantSession, currentUid: () => h.ctx.auth.currentUser?.uid,
+    storage: { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) },
+    random: { getRandomValues: bytes => { bytes.fill(++requestSequence); return bytes; } }, confirmPlan: () => true,
+    notify: () => h.ctx.render(),
+    reload,
+    call: async (name, data) => {
+      calls.push(name);
+      const request = { auth: f.dependencies.auth, data };
+      if (name === 'getClassroomAccessV2') return getClassroomAccessService({ ...f.dependencies, data });
+      if (name === 'planTeacherMoneyV2') return planTeacherMoneyCallable(request, f.dependencies);
+      if (name === 'executeTeacherMoneyV2') {
+        await gate;
+        if (fail === true) throw new Error('fictional transport unavailable');
+        f.loseResponse = fail === 'afterCommit';
+        const before = count();
+        try { return await executeTeacherMoneyCallable(request, f.dependencies); }
+        finally { if (count() !== before) onCommitted(); }
+      }
+      return recoverTeacherMoneyCallable(request, f.dependencies,
+        { getTeacherMoneyStatusV2: 'status', cancelTeacherMoneyV2: 'cancel', acknowledgeTeacherMoneyV2: 'acknowledge' }[name]);
+    },
+  });
+  h.ctx.parseTeacherMoneyAmount = parseTeacherMoneyAmount;
+  h.ctx.moneyClient = client;
+  vm.runInContext('v2TeacherMoneyClient = moneyClient;', h.ctx);
+  assert.equal((await client.check()).status, 'idle');
+  return { ...h, f, client, values, calls, count, caches,
+    get draftResets() { return h.draftResets; },
+    async finishMoney() { unlock(); for (let n = 0; n < 20; n++) await new Promise(resolve => setImmediate(resolve)); },
+  };
+}
 
 for (const mode of ['quick', 'custom']) {
   const submit = h => mode === 'quick' ? h.ctx.quickCash('Subtract', 4) : h.ctx.saveTeacherTransaction();
 
-  test(`${mode} teacher debit publishes success only after balance and ledger persist`, async () => {
-    const h = await fixture();
+  test(`${mode} V2 intent confirms one server debit and blocks competing mutations until acknowledgment`, async () => {
+    const h = await moneyFixture();
     const pending = submit(h);
-    assert.equal(h.ctx.data.students[0].balance, 10, 'no optimistic debit');
-    assert.equal(h.ctx.data.transactions.length, 3, 'no unconfirmed ledger entry');
-    assert.doesNotMatch(h.ctx.message, /paid|saved and approved/);
-    assert.equal(h.ctx.requireTeacher(), false, 'competing mutation blocked');
-    submit(h); h.ctx.approveTransaction(1);
-    await h.finish(); await pending;
-    assert.equal(h.commits, 1, 'duplicate submit and competing approval do not write');
+    assert.equal(h.ctx.data.students[0].balance, 10);
+    assert.equal(h.ctx.data.transactions.length, 3);
+    assert.equal(h.ctx.requireTeacher(), false);
+    await submit(h); h.ctx.approveTransaction(1);
+    await h.finishMoney(); await pending;
+    assert.equal(h.count(), 1); assert.equal(h.f.student(1).balance, 6);
     assert.equal(h.ctx.data.students[0].balance, 6);
-    assert.equal(h.store.get('classrooms/test-room/students/1').balance, 6);
-    const fresh = await h.reload();
-    assert.equal(fresh.ctx.data.students[0].balance, 6);
-    assert.equal(fresh.ctx.data.transactions.filter(t => t.type === 'Subtract').length, 1);
-    fresh.ctx.approveTransaction(1); await fresh.finish();
-    assert.equal(fresh.store.get('classrooms/test-room/students/1').balance, 11);
-    const reloaded = await fresh.reload();
-    assert.equal(reloaded.ctx.data.students[0].balance, 11);
-    assert.equal(reloaded.ctx.data.transactions.find(t => t.id === 1).status, 'Approved');
+    assert.equal(h.client.getState().status, 'committed');
+    assert.equal(h.caches.size, 1, 'the actual reload callback writes a confirmed cache with captured identity');
+    const cached = [...h.caches.values()][0];
+    assert.equal(cached.projectId, 'demo-approval');
+    assert.equal(cached.data.students[0].balance, 6);
+    assert.equal(h.ctx.requireTeacher(), false);
+    await h.ctx.acknowledgeTeacherMoneySave();
+    assert.equal(h.values.size, 0); assert.equal(h.ctx.requireTeacher(), true);
+    await h.ctx.approveTransaction(1);
+    assert.equal(h.store.get('classrooms/test-room/students/1').balance, 11);
+    assert.equal(h.store.get('classrooms/test-room/transactions/1').status, 'Approved');
     if (mode === 'custom') assert.equal(h.draftResets, 1);
   });
 
-  test(`${mode} rejected teacher debit retains confirmed state and gives refresh guidance`, async () => {
-    const h = await fixture({ fail: true });
-    const pending = submit(h); await h.finish(); await pending;
-    assert.equal(h.commits, 0);
-    assert.equal(h.ctx.data.students[0].balance, 10, 'failed debit never enters displayed data');
-    assert.equal(h.ctx.data.transactions.length, 3);
-    assert.match(h.ctx.message, /could not be confirmed.*Refresh/i);
-    assert.doesNotMatch(h.ctx.message, /saved and approved/);
-    assert.equal(h.ctx.requireTeacher(), false, 'ambiguous failures require fresh server state');
-    h.ctx.approveTransaction(1); await h.finish();
-    assert.equal(h.commits, 0);
-    if (mode === 'custom') assert.equal(h.draftResets, 0, 'keep unsuccessful draft');
-    const fresh = await h.reload();
-    assert.equal(fresh.ctx.data.students[0].balance, 10);
-    assert.equal(fresh.ctx.data.transactions.filter(t => t.type === 'Subtract').length, 0);
-    fresh.ctx.approveTransaction(1); await fresh.finish();
-    assert.equal(fresh.store.get('classrooms/test-room/students/1').balance, 15);
+  test(`${mode} lost response recovers one debit, while an uncommitted request is cancelled without money`, async () => {
+    for (const fail of [true, 'afterCommit']) {
+      const h = await moneyFixture({ fail });
+      const pending = submit(h); await h.finishMoney(); await pending;
+      assert.equal(h.count(), fail === true ? 0 : 1);
+      assert.equal(h.ctx.data.students[0].balance, fail === true ? 10 : 6);
+      assert.equal(h.calls.filter(name => name === 'executeTeacherMoneyV2').length, 1);
+      assert.equal(h.client.getState().status, fail === true ? 'idle' : 'committed');
+      if (mode === 'custom') assert.equal(h.draftResets, 0, 'a minimal recovered receipt does not prove the current draft');
+    }
   });
 
-  test(`${mode} lost save acknowledgment reloads one debit without automatic replay`, async () => {
-    const h = await fixture({ fail: 'afterCommit' });
-    const pending = submit(h); await h.finish(); await pending;
-    assert.equal(h.commits, 1);
-    assert.equal(h.ctx.data.students[0].balance, 10, 'do not present unconfirmed outcome');
-    assert.match(h.ctx.message, /could not be confirmed.*Refresh/i);
-    submit(h); await h.finish();
-    assert.equal(h.commits, 1, 'no automatic or duplicate retry while outcome is unknown');
-    const fresh = await h.reload();
-    assert.equal(fresh.ctx.data.students[0].balance, 6);
-    assert.equal(fresh.ctx.data.transactions.filter(t => t.type === 'Subtract').length, 1);
-    fresh.ctx.approveTransaction(1); await fresh.finish();
-    const reloaded = await fresh.reload();
-    assert.equal(reloaded.ctx.data.students[0].balance, 11);
-    assert.equal(reloaded.ctx.data.transactions.filter(t => t.type === 'Subtract').length, 1);
-  });
-}
-
-for (const mode of ['quick', 'custom']) {
-  const submit = h => mode === 'quick' ? h.ctx.quickCash('Subtract', 4) : h.ctx.saveTeacherTransaction();
-
-  test(`${mode} conflict reload permits deliberate retry from the newer balance`, async () => {
-    const h = await fixture();
-    const pending = submit(h);
-    h.store.get('classrooms/test-room/students/1').balance = 50;
-    await h.finish(); await pending;
-    assert.equal(h.commits, 0);
-    assert.equal(h.ctx.data.students[0].balance, 50);
-    assert.match(h.ctx.message, /reloaded/);
-    assert.equal(h.ctx.requireTeacher(), true);
-    if (mode === 'custom') assert.equal(h.draftResets, 0);
+  test(`${mode} another device's pending receipt cannot claim the new draft was saved or clear it`, async () => {
+    const h = await moneyFixture();
+    const auth = h.f.dependencies.auth;
+    const preview = await planTeacherMoneyCallable({ auth, data: h.f.request() }, h.f.dependencies);
+    await executeTeacherMoneyCallable({ auth, data: { request: preview.request, plan: preview.plan } }, h.f.dependencies);
     await submit(h);
-    assert.equal(h.commits, 1);
-    assert.equal((await h.reload()).ctx.data.students[0].balance, 46);
+    assert.equal(h.count(), 1); assert.equal(h.ctx.data.students[0].balance, 11);
+    assert.equal(h.calls.filter(name => name === 'executeTeacherMoneyV2').length, 0);
+    assert.equal(h.draftResets, 0);
+    assert.match(h.ctx.message, /saved action was recovered.*draft was kept/);
+    assert.doesNotMatch(h.ctx.message, /paid|saved and approved/);
+    assert.equal(h.ctx.requireTeacher(), false);
   });
 
-  test(`${mode} conflict with failed reload requires refresh and keeps the draft`, async () => {
-    const h = await fixture({ failReload: true });
-    const pending = submit(h);
-    h.store.get('classrooms/test-room/students/1').balance = 50;
-    await h.finish(); await pending;
-    assert.equal(h.commits, 0);
+  test(`${mode} receipt-only acknowledgment survives failed reload and retains the refresh block`, async () => {
+    const h = await moneyFixture({ failReload: true });
+    const pending = submit(h); await h.finishMoney(); await pending;
+    assert.equal(h.count(), 1); assert.equal(h.f.student(1).balance, 6);
     assert.equal(h.ctx.data.students[0].balance, 10);
-    assert.match(h.ctx.message, /could not be confirmed.*Refresh/);
-    assert.equal(h.ctx.requireTeacher(), false);
+    assert.match(h.ctx.message, /Saved; refresh/);
+    await h.ctx.acknowledgeTeacherMoneySave();
+    assert.equal(h.values.size, 0); assert.equal(h.ctx.requireTeacher(), false);
     assert.equal(h.draftResets, 0);
   });
 
-  for (const fail of [false, true]) {
-    test(`${mode} stale ${fail ? 'failure' : 'completion'} cannot publish into another classroom`, async () => {
-      const h = await fixture({ fail });
-      const pending = submit(h);
-      h.ctx.v2TenantSession.invalidate('test-classroom-switch');
+  test(`${mode} stale session completion preserves the outgoing marker without publishing or clearing drafts`, async () => {
+    let h;
+    h = await moneyFixture({ onCommitted: () => {
+      h.ctx.v2TenantSession.invalidate('fictional-classroom-switch');
       h.ctx.data = { students: [{ id: 1, balance: 99 }], transactions: [] };
-      h.ctx.v2LastPersistedData = structuredClone(h.ctx.data);
-      h.ctx.message = 'New classroom';
-      await h.finish(); await pending;
-      assert.equal(h.ctx.data.students[0].balance, 99);
-      assert.equal(h.ctx.v2LastPersistedData.students[0].balance, 99);
-      assert.equal(h.ctx.message, 'New classroom');
-      assert.equal(h.draftResets, 0);
-      assert.equal(vm.runInContext('approvalRefreshRequired', h.ctx), false);
-    });
-  }
-
-  test(`${mode} confirmed save with local interference requests refresh without overwriting it`, async () => {
-    const h = await fixture();
-    const pending = submit(h);
-    h.ctx.data = structuredClone(h.ctx.data);
-    h.ctx.data.students[0].balance = 99;
-    await h.finish(); await pending;
-    assert.equal(h.commits, 1);
-    assert.equal(h.ctx.data.students[0].balance, 99);
-    assert.equal(h.store.get('classrooms/test-room/students/1').balance, 6);
-    assert.match(h.ctx.message, /was saved.*Refresh/);
-    assert.equal(h.ctx.requireTeacher(), false);
-    assert.equal(h.draftResets, 0);
+      h.ctx.v2LastPersistedData = structuredClone(h.ctx.data); h.ctx.message = 'Incoming classroom';
+    } });
+    const pending = submit(h); await h.finishMoney(); await pending;
+    assert.equal(h.count(), 1); assert.equal(h.f.student(1).balance, 6);
+    assert.equal(h.ctx.data.students[0].balance, 99); assert.equal(h.ctx.message, 'Incoming classroom');
+    assert.equal(h.values.size, 1); assert.equal(h.draftResets, 0);
   });
 
-  test(`${mode} cannot start alongside pending operations or an unconfirmed baseline`, async () => {
+  test(`${mode} local interference keeps the confirmed receipt but cannot overwrite an unconfirmed draft`, async () => {
+    const h = await moneyFixture();
+    const pending = submit(h);
+    h.ctx.data = structuredClone(h.ctx.data); h.ctx.data.students[0].balance = 99;
+    await h.finishMoney(); await pending;
+    assert.equal(h.count(), 1); assert.equal(h.f.student(1).balance, 6);
+    assert.equal(h.ctx.data.students[0].balance, 99); assert.equal(h.draftResets, 0);
+    assert.equal(h.ctx.requireTeacher(), false); assert.equal(h.client.getState().status, 'committed');
+  });
+
+  test(`${mode} initial render failure releases the operation lock without dispatch or writes`, async () => {
+    const h = await moneyFixture(); let renders = 0;
+    h.ctx.render = () => { if (++renders === 1) throw new Error('fictional initial render failure'); };
+    await submit(h);
+    assert.equal(vm.runInContext('teacherMoneySaveOperation', h.ctx), null);
+    assert.equal(h.calls.includes('executeTeacherMoneyV2'), false); assert.equal(h.count(), 0);
+    assert.equal(h.ctx.data.students[0].balance, 10); assert.equal(h.draftResets, 0);
+    assert.equal(h.ctx.requireTeacher(), false);
+  });
+
+  test(`${mode} pending operations, a dirty baseline and the approval queue still refuse a new server intent`, async () => {
     for (const flag of ['studentLifecyclePending', 'bulkOperationPending', 'studentPinResetPending',
       'rosterBalanceSaveOperation', 'rentUpdatePending', 'activeClassroomSaves']) {
-      const h = await fixture();
-      vm.runInContext(`${flag} = 1`, h.ctx);
-      await submit(h);
-      assert.match(h.ctx.message, /Another classroom change is saving/, flag);
-      assert.equal(h.ctx.data.students[0].balance, 10);
-      assert.equal(h.commits, 0);
+      const h = await moneyFixture(); vm.runInContext(`${flag} = 1`, h.ctx);
+      await submit(h); assert.equal(h.calls.includes('executeTeacherMoneyV2'), false);
+      assert.match(h.ctx.message, /Another classroom change is saving/);
     }
-    const h = await fixture();
-    h.ctx.data.students[0].balance = 11;
-    await submit(h);
-    assert.match(h.ctx.message, /unconfirmed local changes/);
-    assert.equal(h.commits, 0);
-    const queued = await fixture();
-    queued.ctx.approveTransaction(1);
-    await submit(queued);
-    await queued.finish();
-    assert.equal(queued.commits, 1, 'only the approval writes');
-    assert.equal(queued.ctx.data.students[0].balance, 15);
-    assert.equal(queued.ctx.data.transactions.filter(t => t.type === 'Subtract').length, 0);
-  });
-}
-
-for (const fail of [false, 'afterCommit']) {
-  test(`accepted outgoing debit with ${fail ? 'lost acknowledgement' : 'success'} cannot enter the incoming session`, async () => {
-    let h;
-    h = await fixture({ fail, onCommitted: () => {
-      h.ctx.v2TenantSession.invalidate('test-same-user-new-classroom');
-      h.ctx.data = { students: [{ id: 1, balance: 99 }], transactions: [] };
-      h.ctx.v2LastPersistedData = structuredClone(h.ctx.data);
-      h.ctx.message = 'Incoming classroom';
-    } });
-    const pending = h.ctx.saveTeacherTransaction();
-    await h.finish(); await pending;
-    assert.equal(h.commits, 1, 'outgoing write was accepted; client cancellation is not server rollback');
-    assert.equal(h.store.get('classrooms/test-room/students/1').balance, 6);
-    assert.equal(h.ctx.data.students[0].balance, 99);
-    assert.equal(h.ctx.v2LastPersistedData.students[0].balance, 99);
-    assert.equal(h.ctx.message, 'Incoming classroom');
-    assert.equal(h.draftResets, 0);
-  });
-}
-
-for (const mode of ['quick', 'custom']) {
-  test(`${mode} successful debit permits the next approval without refreshing`, async () => {
-    const h = await fixture();
-    const pending = mode === 'quick' ? h.ctx.quickCash('Subtract', 4) : h.ctx.saveTeacherTransaction();
-    await h.finish(); await pending;
-    h.ctx.approveTransaction(1); await h.finish();
-    assert.equal(h.commits, 2);
-    assert.equal(h.ctx.data.students[0].balance, 11);
-    const reloaded = await h.reload();
-    assert.equal(reloaded.ctx.data.students[0].balance, 11);
-    assert.equal(reloaded.ctx.data.transactions.find(t => t.id === 1).status, 'Approved');
-    assert.equal(reloaded.ctx.data.transactions.filter(t => t.type === 'Subtract').length, 1);
-  });
-}
-
-for (const mode of ['quick', 'custom']) {
-  test(`${mode} initial render failure releases the money-save lock without writing`, async () => {
-    const h = await fixture();
-    let renders = 0;
-    h.ctx.render = () => {
-      if (++renders === 1) throw new Error('synthetic initial render failure');
-    };
-    const pending = mode === 'quick' ? h.ctx.quickCash('Subtract', 4) : h.ctx.saveTeacherTransaction();
-    const error = await pending.then(() => null, failure => failure);
-    assert.equal(vm.runInContext('teacherMoneySaveOperation', h.ctx), null, 'saving lock always clears');
-    assert.equal(error, null, 'a one-time render failure is handled');
-    assert.equal(renders, 2, 'finally redraws the unlocked controls');
-    assert.equal(vm.runInContext('activeClassroomSaves', h.ctx), 0);
-    assert.equal(h.commits, 0);
-    assert.equal(h.ctx.data.students[0].balance, 10);
-    assert.equal(h.ctx.data.transactions.length, 3);
-    assert.equal(h.draftResets, 0);
-    assert.match(h.ctx.message, /could not be confirmed.*Refresh/);
-    assert.equal(h.ctx.requireTeacher(), false, 'existing refresh policy remains in force');
-    assert.match(h.ctx.message, /Refresh/);
-    assert.doesNotMatch(h.ctx.message, /Please wait/);
+    const h = await moneyFixture(); h.ctx.data.students[0].balance = 11;
+    await submit(h); assert.match(h.ctx.message, /unconfirmed local changes/);
+    const queued = await moneyFixture(); queued.ctx.approveTransaction(1); await submit(queued);
+    await queued.finishMoney(); assert.equal(queued.count(), 1); assert.equal(queued.store.get('classrooms/test-room/students/1').balance, 15);
   });
 }

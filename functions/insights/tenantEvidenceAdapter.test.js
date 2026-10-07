@@ -35,7 +35,7 @@ function fixture(overrides = {}) {
       classroomId: 'class-a',
       displayName: 'Teacher A',
     },
-    'classrooms/class-a': { ownerUid: 'teacher-a', version: 1 },
+    'classrooms/class-a': { accessControl: { schemaVersion: 1, mode: 'active', generation: 1, changedAt: '2026-08-01T00:00:00.000Z', auditId: 'fixture' }, ownerUid: 'teacher-a', version: 1 },
     'classrooms/class-a/students/1': {
       id: 1,
       name: 'May',
@@ -126,7 +126,7 @@ test('loads one tenant transactionally and removes identities and raw reasons', 
     now: () => NOW,
   })
   const envelope = await load({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: TIME_ZONE,
@@ -190,7 +190,7 @@ test('the signature is stable across read order and changes with relevant eviden
     firestore: createFirestoreDouble(data).firestore,
     calculateReport: buildClassInsightsReport,
     now: () => NOW,
-  })({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: TIME_ZONE })
+  })({ controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: TIME_ZONE })
 
   const original = await loadFrom(fixture())
   const reordered = await loadFrom(Object.fromEntries(Object.entries(fixture()).reverse()))
@@ -212,7 +212,7 @@ test('normalizes the exact legacy browser date before filtering and signing evid
     firestore: createFirestoreDouble(data).firestore,
     calculateReport: buildClassInsightsReport,
     now: () => NOW,
-  })({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: TIME_ZONE })
+  })({ controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: TIME_ZONE })
 
   const legacyEvidence = await loadFrom(legacy)
   const canonicalEvidence = await loadFrom(canonical)
@@ -250,7 +250,7 @@ test('keeps legacy trailing-cutoff-day evidence on the same time base as canonic
     firestore: createFirestoreDouble(data).firestore,
     calculateReport: buildClassInsightsReport,
     now: () => boundaryNow,
-  })({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 7, timeZone: TIME_ZONE })
+  })({ controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 7, timeZone: TIME_ZONE })
 
   const legacyEvidence = await loadFrom(legacy)
   const canonicalEvidence = await loadFrom(canonical)
@@ -269,7 +269,7 @@ test('rejects parseable transaction date shapes that Morgan Bank never persisted
     now: () => NOW,
   })
   await assert.rejects(
-    load({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: TIME_ZONE }),
+    load({ controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: TIME_ZONE }),
     error => error instanceof TenantEvidenceAdapterError && error.category === 'evidence-malformed',
   )
 })
@@ -284,7 +284,7 @@ test('a broken reciprocal foundation fails before any classroom collection read'
     now: () => NOW,
   })
   await assert.rejects(
-    load({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: TIME_ZONE }),
+    load({ controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: TIME_ZONE }),
     error => error instanceof TenantEvidenceAdapterError && error.category === 'tenant-invalid',
   )
   assert.deepEqual(fake.reads, ['teachers/teacher-a', 'classrooms/class-a'])
@@ -311,7 +311,7 @@ test('bounded query overflow fails before the deterministic calculator runs', as
     now: () => NOW,
   })
   await assert.rejects(
-    load({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: TIME_ZONE }),
+    load({ controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: TIME_ZONE }),
     error => error instanceof TenantEvidenceAdapterError && error.category === 'evidence-too-large',
   )
   assert.equal(calculatorCalls, 0)
@@ -338,7 +338,7 @@ test('misaligned provider and display reports fail closed', async () => {
     now: () => NOW,
   })
   await assert.rejects(
-    load({ teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: TIME_ZONE }),
+    load({ controlGeneration: 1, teacherUid: 'teacher-a', classroomId: 'class-a', periodDays: 30, timeZone: TIME_ZONE }),
     error => error instanceof TenantEvidenceAdapterError && error.category === 'calculator-invalid',
   )
 })
@@ -446,7 +446,7 @@ test('paired reports stay aligned across every deterministic observation generat
     now: () => NOW,
   })
   const envelope = await load({
-    teacherUid: 'teacher-a',
+    controlGeneration: 1, teacherUid: 'teacher-a',
     classroomId: 'class-a',
     periodDays: 30,
     timeZone: TIME_ZONE,
@@ -478,4 +478,15 @@ test('paired reports stay aligned across every deterministic observation generat
       priority, category, title,
     })),
   )
+})
+
+test('analysis evidence transaction refuses stale or paused control before student reads', async () => {
+  for (const patch of [{ mode: 'readOnly' }, { mode: 'suspended' }, { generation: 3 }]) {
+    const data = fixture()
+    Object.assign(data['classrooms/class-a'].accessControl, patch)
+    const fake = createFirestoreDouble(data)
+    const load = createFirestoreTenantEvidenceLoader({ firestore: fake.firestore, calculateReport: buildClassInsightsReport, now: () => NOW })
+    await assert.rejects(load({ teacherUid: 'teacher-a', classroomId: 'class-a', controlGeneration: 1, periodDays: 7, timeZone: TIME_ZONE }))
+    assert.deepEqual(fake.reads, ['teachers/teacher-a', 'classrooms/class-a'])
+  }
 })

@@ -230,10 +230,11 @@ export function createTenantDataLoader({
 /**
  * Build the production `loadStudentNetworkFn` adapter. A signed-in V2 student
  * reads exactly their own student document plus the classroom's narrowly
- * allowlisted rent display document. The classroom root, roster, other
+ * allowlisted rent display document, plus the authenticated settings callable.
+ * Direct access to the classroom root, roster, other
  * students, transactions collection, and login history remain unreadable.
  */
-export function createStudentDataLoader({ db, session, firestore, defaultSettings = {} }) {
+export function createStudentDataLoader({ db, session, firestore, defaultSettings = {}, loadSettings }) {
   const doc = requireFunction(firestore?.doc, "doc");
   const getDoc = requireFunction(firestore?.getDoc, "getDoc");
 
@@ -277,9 +278,10 @@ export function createStudentDataLoader({ db, session, firestore, defaultSetting
     requireCanonicalStudentId(student);
 
     const captured = session.captureIdentity();
-    const [snapshot, rentSnapshot] = await Promise.all([
+    const [snapshot, rentSnapshot, settingsReply] = await Promise.all([
       getDoc(doc(db, `classrooms/${tenant}/students/${student}`)),
-      getDoc(doc(db, `classrooms/${tenant}/studentDisplay/rent`))
+      getDoc(doc(db, `classrooms/${tenant}/studentDisplay/rent`)),
+      requireFunction(loadSettings, "loadSettings")()
     ]);
     assertIdentityUnchanged(session, captured);
 
@@ -296,6 +298,7 @@ export function createStudentDataLoader({ db, session, firestore, defaultSetting
       studentId: student,
       student: body,
       studentRent: readSnapshotData(rentSnapshot),
+      studentSettings: validateStudentSettings(settingsReply, tenant, student),
       defaultSettings
     });
   };
@@ -630,3 +633,19 @@ function readCollectionData(snapshot, collectionName) {
 }
 
 export { TenantProjectionError };
+
+
+function validateStudentSettings(reply, classroomId, studentId) {
+  const flags = ['studentRequestsEnabled', 'studentAddRequestsEnabled', 'studentSubtractRequestsEnabled'];
+  const lists = ['addMoneyCategories', 'subtractMoneyCategories'];
+  const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+  if (!exact(reply, ['protocolVersion', 'classroomId', 'studentId', 'settings']) ||
+      reply.protocolVersion !== 1 || reply.classroomId !== classroomId || reply.studentId !== studentId ||
+      !exact(reply.settings, [...flags, ...lists]) ||
+      flags.some(key => typeof reply.settings[key] !== 'boolean') ||
+      lists.some(key => !Array.isArray(reply.settings[key]) || reply.settings[key].some(item => typeof item !== 'string'))) {
+    throw new TenantDataServiceError('invalid-student-settings', 'Student settings are unavailable. Refresh and try again.');
+  }
+  return structuredClone(reply.settings);
+}

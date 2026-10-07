@@ -391,7 +391,7 @@ test('default PIN hashing happens once, outside the retriable transaction', asyn
   let aborted = false
   const firestore = createMockFirestore(foundation('classA', 'teacherA'), {
     beforeCommit: ({ attemptNumber }) => {
-      if (attemptNumber === 1 && !aborted) {
+      if (attemptNumber === 2 && !aborted) {
         aborted = true
         return 'abort'
       }
@@ -404,7 +404,7 @@ test('default PIN hashing happens once, outside the retriable transaction', asyn
     { firestore, hashPin: countingHash },
   )
 
-  assert.equal(firestore.transactionAttempts, 2)
+  assert.equal(firestore.transactionAttempts, 3)
   assert.equal(hashCalls, 1)
 })
 
@@ -717,7 +717,7 @@ test('foundation is validated inside the credential transaction, blocking a mid-
   let disabled = false
   const firestore = createMockFirestore(foundation('classA', 'teacherA'), {
     beforeCommit: ({ attemptNumber }) => {
-      if (attemptNumber === 1 && !disabled) {
+      if (attemptNumber === 2 && !disabled) {
         disabled = true
         firestore.store.set('teachers/teacherA', {
           uid: 'teacherA',
@@ -739,7 +739,7 @@ test('foundation is validated inside the credential transaction, blocking a mid-
     (err) => err instanceof SyncStudentProfilesError && err.code === 'failed-precondition',
   )
 
-  assert.equal(firestore.transactionAttempts, 2)
+  assert.equal(firestore.transactionAttempts, 3)
   assert.equal(firestore.store.get('classrooms/classA/studentCredentials/alex-smith'), undefined)
 
   // Both the classroom and teacher reads happen inside every attempt, before
@@ -907,4 +907,35 @@ test('a write with neither snapshot present is an inert no-op', async () => {
     Array.from(firestore.store.keys()).filter(p => p.includes('/studentCredentials/')).length,
     0,
   )
+})
+
+const enrolledControl = (mode='active') => ({schemaVersion:1,mode,generation:1,changedAt:'2026-10-05T00:00:00.000Z',auditId:'fictional'})
+for (const mode of ['active','readOnly','suspended']) for (const operation of ['create','update','delete']) test(`Stage 5 enrolled trigger no-op ${mode} ${operation}`,async()=>{
+  const docs = {...foundation('classA','teacherA'),
+    'classrooms/classA/studentCredentials/fictional':scopedCredential('classA','fictional','1',{active:false,pinHash:'unchanged'}),
+    'classrooms/classA/studentPins/1':{pin:'0427',studentId:'1',updatedAt:1000}}
+  docs['classrooms/classA'].accessControl=enrolledControl(mode)
+  const firestore=createMockFirestore(docs)
+  const result=await syncStudentProfilesV2Handler(v2WrittenEvent({classroomId:'classA',studentId:'1',
+    before:operation==='create'?undefined:{name:'Old'},after:operation==='delete'?undefined:{name:'New'}}),
+    {firestore,hashPin:async()=>{assert.fail('enrolled event must not hash')}})
+  assert.equal(result.action,'enrolled_noop');assert.deepEqual(Object.fromEntries(firestore.store),docs)
+  assert.ok(firestore.attemptOperations.flat().every(op=>op.kind==='read'))
+})
+for (const during of ['hash','retry']) test(`Stage 5 trigger fences enrollment during ${during}`,async()=>{
+  let firestore
+  const docs=foundation('classA','teacherA')
+  firestore=createMockFirestore(docs,{beforeCommit:({writes})=>{
+    if(during==='retry' && writes.length){firestore.store.get('classrooms/classA').accessControl=enrolledControl();return 'abort'}
+  }})
+  const result=await syncStudentProfilesV2Handler(v2WrittenEvent({classroomId:'classA',studentId:'1',after:{name:'Fictional'}}),
+    {firestore,hashPin:async()=>{if(during==='hash')firestore.store.get('classrooms/classA').accessControl=enrolledControl();return 'fictional-hash'}})
+  assert.equal(result.action,'enrolled_noop')
+  assert.equal([...firestore.store.keys()].some(p=>p.includes('/studentCredentials/')),false)
+})
+test('Stage 5 malformed control cannot reopen legacy trigger writes',async()=>{
+  const docs=foundation('classA','teacherA');docs['classrooms/classA'].accessControl={schemaVersion:1}
+  const firestore=createMockFirestore(docs)
+  await assert.rejects(()=>syncStudentProfilesV2Handler(v2WrittenEvent({classroomId:'classA',studentId:'1',after:{name:'Fictional'}}),{firestore,hashPin:async()=>{assert.fail('must fail before hash')}}))
+  assert.deepEqual(Object.fromEntries(firestore.store),docs)
 })

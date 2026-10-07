@@ -91,31 +91,25 @@ describe('Phase 3 student-identity source contract', () => {
     )
     assert.match(context, /const newStudent = \{/)
 
-    const v2Branch = enclosingV2Branch('orchestrateCreateStudent(v2TenantSession')
-    assert.match(v2Branch, /orchestrateCreateStudent\(v2TenantSession, callableAdapter, \{/)
-    assert.match(v2Branch, /name,\s*startingBalance,\s*pin/)
-    assert.match(
-      v2Branch,
-      /data\.students\.push\(\{ \.\.\.result\.result\.student, transactions: \[\] \}\)/,
-      'the four-field callable response must gain the required empty transaction mirror in the view',
-    )
+    const v2Branch = enclosingV2Branch('v2TeacherMoneyClient.createStudent(')
+    assert.match(v2Branch, /createStudent\(\{ name, startingBalanceCents, pin \}\)/)
+    assert.match(v2Branch, /finally/)
     assert.match(v2Branch, /return;/)
-    assert.doesNotMatch(v2Branch, /maxId|saveData\(/)
+    assert.doesNotMatch(v2Branch, /maxId|saveData\(|data\.students\.push/)
   })
 
-  it('source contract: V2 and legacy have exactly one isolated roster admission each', () => {
+  it('source contract: only legacy appends a roster row; V2 reloads confirmed history', () => {
     const pushes = matchingLines(/data\.students\.push\(/)
-    assert.equal(pushes.length, 2)
-    assert.match(lines[pushes[0] - 1], /result\.result\.student, transactions: \[\]/)
-    assert.match(lines[pushes[1] - 1], /newStudent/)
+    assert.equal(pushes.length, 1)
+    assert.match(lines[pushes[0] - 1], /newStudent/)
   })
 
   it('source contract: every Date.now() id is a transaction or login-history id, not a student id', () => {
     const dateNowIds = matchingLines(/id:\s*Date\.now\(\)/)
     assert.equal(
       dateNowIds.length,
-      7,
-      'the seven known Date.now() ID sites must remain accounted for',
+      4,
+      'the four remaining Date.now() ID sites must remain accounted for',
     )
 
     for (const lineNumber of dateNowIds) {
@@ -155,15 +149,15 @@ describe('Phase 3 student-identity source contract', () => {
     ).length
     assert.equal(
       idLiterals.length,
-      9,
-      `expected 9 known id: literals (1 allocator, 7 transaction/history, 1 claim echo); found ${idLiterals.length} at lines ${idLiterals.join(', ')}`,
+      6,
+      `expected 6 known id: literals (1 allocator, 4 transactions, 1 claim echo); found ${idLiterals.length} at lines ${idLiterals.join(', ')}`,
     )
     // Guards against two literals hiding on one line, which the line-based
     // count above would report as one.
     assert.equal(
       totalOccurrences,
-      9,
-      `expected 9 total id: occurrences; found ${totalOccurrences}`,
+      6,
+      `expected 6 total id: occurrences; found ${totalOccurrences}`,
     )
 
     const claimEcho = idLiterals.filter(lineNumber =>
@@ -228,7 +222,7 @@ describe('Phase 3 student-identity source contract', () => {
     const branch = enclosingV2Branch('orchestrateRemoveStudent(v2TenantSession')
     assert.match(branch, /orchestrateRemoveStudent\(v2TenantSession, callableAdapter, \{/)
     assert.match(branch, /studentId: String\(student\.id\)/)
-    assert.match(branch, /data\.students = data\.students\.filter/)
+    assert.match(branch, /await reloadV2ClassroomAfterSaveConflict\(\)/)
     assert.match(branch, /return;/)
     assert.doesNotMatch(branch, /saveData\(/)
   })

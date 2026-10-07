@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import process from 'node:process'
-import { after, before, beforeEach, test } from 'node:test'
+import { after, beforeEach, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { createInsightAnalysisService, InsightAnalysisServiceError } from '../../../functions/insights/analysisService.js'
@@ -22,7 +22,7 @@ import {
   createFirestoreUsageLedger,
 } from '../../../functions/insights/firestoreUsageLedger.js'
 import { createFirestoreTenantEvidenceLoader } from '../../../functions/insights/tenantEvidenceAdapter.js'
-import { resolveActiveTeacherTenant } from '../../../functions/phase2b/teacherTenantResolver.js'
+import { createInsightRequestScope } from '../../../functions/insights/insightAccess.js'
 import { buildClassInsightsReport } from '../../../src/insights/classInsights.js'
 
 const PROJECT_ID = 'demo-morgan-bank-version3-gemini-bridge'
@@ -77,6 +77,8 @@ function storedTransaction({
   }
 }
 
+const CONTROL = { schemaVersion: 1, mode: 'active', generation: 1, changedAt: '2026-08-01T00:00:00.000Z', auditId: 'fixture' }
+
 async function seedSyntheticClassrooms() {
   const batch = firestore.batch()
   batch.set(firestore.doc(`teachers/${TEACHER_A}`), {
@@ -85,7 +87,7 @@ async function seedSyntheticClassrooms() {
     classroomId: CLASS_A,
     displayName: 'Synthetic Teacher A',
   })
-  batch.set(firestore.doc(`classrooms/${CLASS_A}`), { ownerUid: TEACHER_A, version: 1 })
+  batch.set(firestore.doc(`classrooms/${CLASS_A}`), { ownerUid: TEACHER_A, version: 1, accessControl: CONTROL })
   batch.set(firestore.doc(`classrooms/${CLASS_A}/students/1`), {
     id: 1,
     name: 'May',
@@ -120,7 +122,7 @@ async function seedSyntheticClassrooms() {
     classroomId: CLASS_B,
     displayName: 'Synthetic Teacher B',
   })
-  batch.set(firestore.doc(`classrooms/${CLASS_B}`), { ownerUid: TEACHER_B, version: 1 })
+  batch.set(firestore.doc(`classrooms/${CLASS_B}`), { ownerUid: TEACHER_B, version: 1, accessControl: CONTROL })
   batch.set(firestore.doc(`classrooms/${CLASS_B}/students/7`), {
     id: 7,
     name: 'Blaise Example',
@@ -140,11 +142,15 @@ async function seedSyntheticClassrooms() {
       reason: 'Class store purchase',
     }),
   )
+  for (const [teacher, classroom] of [['ledger-teacher-a','ledger-class-a'],['ledger-teacher-b','ledger-class-b'],['rate-teacher','rate-classroom']]) {
+    batch.set(firestore.doc(`teachers/${teacher}`), { uid: teacher, classroomId: classroom, status: 'active' })
+    batch.set(firestore.doc(`classrooms/${classroom}`), { ownerUid: teacher, accessControl: CONTROL })
+  }
   await batch.commit()
 }
 
-before(seedSyntheticClassrooms)
 beforeEach(async () => {
+  await seedSyntheticClassrooms()
   for (const collectionName of [
     'insightUsageLedgers',
     'insightUsageRateLimits',
@@ -153,7 +159,10 @@ beforeEach(async () => {
     const snapshot = await firestore.collection(collectionName).get()
     if (snapshot.empty) continue
     const batch = firestore.batch()
-    for (const document of snapshot.docs) batch.delete(document.ref)
+    for (const document of snapshot.docs) {
+      if (collectionName === 'insightUsageReservations') await firestore.recursiveDelete(document.ref)
+      else batch.delete(document.ref)
+    }
     await batch.commit()
   }
 })
@@ -161,7 +170,7 @@ after(async () => app.delete())
 
 function reserveInput(overrides = {}) {
   return {
-    teacherUid: 'ledger-teacher-a',
+    controlGeneration: 1, teacherUid: 'ledger-teacher-a',
     classroomId: 'ledger-class-a',
     requestId: 'ledger_request_0001',
     monthKey: '2026-08',
@@ -200,20 +209,26 @@ function createBridgeHarness() {
       }
     },
   }
-  const service = createInsightAnalysisService({
+  const service = async request => {
+    const scope = await createInsightRequestScope({ firestore, auth: request.auth, usageLedger })
+    const analyze = createInsightAnalysisService({
     now: () => NOW,
-    resolveActiveTeacherTenant: ({ auth }) => resolveActiveTeacherTenant({ firestore, auth }),
-    loadDeidentifiedTenantEvidence: loadEvidence,
+    resolveActiveTeacherTenant: async () => scope.identity,
+    loadDeidentifiedTenantEvidence: input => scope.load(loadEvidence, input),
     buildFactPacket: buildFactPacketFromEvidence,
     async quoteWorstCaseCost() {
       return { rateCardId: 'fake-emulator-rate-v1', worstCaseCostMicroUsd: 4_000_000 }
     },
-    provider,
+    provider: { generate: input => scope.dispatch(() => provider.generate(input)) },
     async priceActualUsage() {
       return 3_000_000
     },
-    usageLedger,
+    usageLedger: scope.ledger,
   })
+    const result = await analyze(request)
+    await scope.assertActive()
+    return result
+  }
   return { loadEvidence, providerInputs, service, usageLedger }
 }
 
@@ -343,4 +358,78 @@ test('real Firestore ledger enforces the rolling Quick limit', async () => {
     error => error instanceof FirestoreUsageLedgerError &&
       error.category === 'rate-limit-exhausted',
   )
+})
+
+test('containment: claims serialize, pause fences new work, and existing accounting drains', async () => {
+  const ledger = createFirestoreUsageLedger({ firestore, now: () => NOW_MS })
+  const input = reserveInput()
+  const r = await ledger.reserve(input)
+  const dispatch = { teacherUid: input.teacherUid, classroomId: input.classroomId, controlGeneration: 1,
+    reservationId: r.reservationId, requestId: input.requestId, dispatchIndex: 1 }
+  const outcomes = await Promise.allSettled([ledger.claimDispatch(dispatch), ledger.claimDispatch(dispatch)])
+  assert.equal(outcomes.filter(o => o.status === 'fulfilled').length, 1)
+  assert.equal(outcomes.filter(o => o.status === 'rejected').length, 1)
+  const root = firestore.doc(`classrooms/${input.classroomId}`)
+  await root.update({ accessControl: { ...CONTROL, mode: 'suspended', generation: 2 } })
+  await ledger.finishDispatch({ reservationId: r.reservationId, requestId: input.requestId, dispatchIndex: 1, outcome: 'returned' })
+  await assert.rejects(ledger.claimDispatch({ ...dispatch, dispatchIndex: 2 }))
+  await assert.rejects(ledger.reserve({ ...input, requestId: 'another_request_0001' }))
+  await ledger.commit({ reservationId: r.reservationId, requestId: input.requestId, actualCostMicroUsd: 1, result: { fixture: true } })
+  const record = await firestore.doc(`insightUsageReservations/${r.reservationId}`).get()
+  assert.equal(record.data().status, 'completed')
+  assert.equal(record.data().controlGeneration, 1)
+  const claim = await record.ref.collection('dispatches').doc('1').get()
+  assert.equal(claim.data().status, 'finished')
+  assert.equal((await record.ref.collection('dispatches').get()).size, 1)
+  await root.update({ accessControl: { ...CONTROL, generation: 3 } })
+  await assert.rejects(ledger.reserve({ ...input, controlGeneration: 3 }))
+})
+
+test('containment: forced reservation callback replay rechecks pause and creates no reservation', async () => {
+  const input = reserveInput()
+  const root = firestore.doc(`classrooms/${input.classroomId}`)
+  let attempts = 0, paused = false
+  // Read-only snapshot first avoids a conflicting external write deadlocking on
+  // a pessimistic lock. Re-run the actual callback inside the write transaction,
+  // just as a discarded Firestore attempt must do after contention.
+  const wrapped = Object.create(firestore)
+  wrapped.runTransaction = async callback => {
+    await firestore.runTransaction(async t => {
+      attempts++
+      await callback({ get: ref => t.get(ref), set() {}, create() {} })
+    }, { readOnly: true })
+    await root.update({ accessControl: { ...CONTROL, mode: 'suspended', generation: 2 } })
+    paused = true
+    return firestore.runTransaction(t => { attempts++; return callback(t) })
+  }
+  const ledger = createFirestoreUsageLedger({ firestore: wrapped, now: () => NOW_MS })
+  await assert.rejects(ledger.reserve(input))
+  assert.equal(paused, true); assert.equal(attempts, 2)
+  assert.equal((await firestore.collection('insightUsageReservations').get()).size, 0)
+  assert.equal((await firestore.collection('insightUsageLedgers').get()).size, 0)
+})
+
+test('containment: audit witnesses remain create-only in every classroom mode', async () => {
+  const { recordBalanceWitness } = await import('../../../functions/insights/balanceHistoryLedger.js')
+  const root = firestore.doc(`classrooms/${CLASS_A}`)
+  const student = root.collection('students').doc('991')
+  const warnings = []
+  await student.set({ id: 991, balance: 10 })
+  let before = await student.get()
+  const witnesses = []
+  for (const mode of ['active', 'readOnly', 'suspended']) {
+    await student.update({ balance: before.data().balance + 1 })
+    const after = await student.get()
+    await root.update({ accessControl: { ...CONTROL, mode, generation: witnesses.length + 1 } })
+    const preserved = (await root.get()).data()
+    const event = { params: { classroomId: CLASS_A, studentId: '991' }, data: { before, after } }
+    await recordBalanceWitness(event, { firestore, warn: (...args) => warnings.push(args) })
+    await recordBalanceWitness(event, { firestore, warn: (...args) => warnings.push(args) })
+    assert.deepEqual((await student.get()).data(), after.data())
+    assert.deepEqual((await root.get()).data(), preserved)
+    witnesses.push(event); before = after
+  }
+  for (const event of witnesses.reverse()) await recordBalanceWitness(event, { firestore, warn: (...args) => warnings.push(args) })
+  assert.equal((await root.collection('balanceHistory').where('studentId', '==', '991').get()).size, 3)
+  assert.equal(warnings.length, 0)
 })

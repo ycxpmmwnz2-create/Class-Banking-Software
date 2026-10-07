@@ -91,6 +91,9 @@ function validatePlan(input) {
 const rootPath = row => `classrooms/${row.classroomId}`
 const auditPath = (plan, row) => `${rootPath(row)}/accessControlAudits/${plan.operationId}`
 const runPath = plan => `classroomInitializationRuns/${plan.operationId}`
+const OWNERSHIP_PATH = 'classroomInitializationState/ownership'
+const ownership = plan => ({ kind: KIND, projectId: plan.projectId, operationId: plan.operationId,
+  scopeDigest: plan.scopeDigest, changedAt: plan.changedAt, classroomCount: plan.rows.length })
 const control = plan => ({ schemaVersion: 1, mode: 'readOnly', generation: 1, changedAt: plan.changedAt, auditId: plan.operationId })
 const header = (plan, completedCount) => ({ kind: KIND, projectId: plan.projectId, scopeDigest: plan.scopeDigest,
   operationId: plan.operationId, changedAt: plan.changedAt, classroomCount: plan.rows.length, completedCount })
@@ -141,6 +144,19 @@ function foundation(root, owner, row) {
   if (!same(version(owner.updateTime), row.ownerVersion)) fail('version-conflict')
 }
 
+// The fixed document serializes different operation IDs even when both saw an
+// empty run query. Never infer abandonment from a zero count or elapsed time.
+async function readOwnership(transaction, firestore, plan) {
+  const owner = await transaction.get(firestore.doc(OWNERSHIP_PATH))
+  const runs = await transaction.get(firestore.collection('classroomInitializationRuns').limit(2))
+  if (!Array.isArray(runs.docs) || runs.docs.length > 1 || runs.docs.some(doc =>
+    !doc.exists || doc.ref.path !== runPath(plan))) fail('journal-conflict')
+  if (owner.exists) equalObject(owner.data(), ownership(plan), 'journal-conflict')
+  const run = runs.docs[0] ?? { exists: false }
+  if (owner.exists && !run.exists) fail('journal-conflict')
+  return { owner, run }
+}
+
 export async function planClassroomInitializationRehearsal({ firestore, projectId, operationId,
   clock = () => new Date().toISOString(), environment = process.env }) {
   return safe(async () => {
@@ -166,7 +182,8 @@ export async function planClassroomInitializationRehearsal({ firestore, projectI
       }
       const result = { kind: KIND, projectId, databaseId: '(default)', operationId, changedAt, rows }
       result.scopeDigest = digest(result)
-      if ((await transaction.get(firestore.doc(runPath(result)))).exists) fail('journal-conflict')
+      const { owner, run } = await readOwnership(transaction, firestore, result)
+      if (owner.exists || run.exists) fail('journal-conflict')
       return validatePlan(result)
     }, { readOnly: true })
     if (!same(await namespace(firestore), before)) fail('inventory-incomplete')
@@ -179,7 +196,7 @@ export async function planClassroomInitializationRehearsal({ firestore, projectI
 async function inspect(transaction, firestore, plan) {
   const found = await roots(transaction, firestore)
   if (!same(found.map(doc => doc.id), plan.rows.map(row => row.classroomId))) fail('inventory-incomplete')
-  const run = await transaction.get(firestore.doc(runPath(plan)))
+  const { owner, run } = await readOwnership(transaction, firestore, plan)
   const completed = []
   for (const [index, row] of plan.rows.entries()) {
     const root = found[index]
@@ -204,7 +221,7 @@ async function inspect(transaction, firestore, plan) {
   }
   if (run.exists) equalObject(run.data(), header(plan, completed.length), 'journal-conflict')
   else if (completed.length) fail('journal-conflict')
-  return { runExists: run.exists, completed }
+  return { runExists: run.exists, ownershipExists: owner.exists, completed }
 }
 
 export async function initializeClassroomControlsRehearsal({ firestore, projectId, plan: input, environment = process.env }) {
@@ -216,13 +233,16 @@ export async function initializeClassroomControlsRehearsal({ firestore, projectI
     await checkNamespace()
     await firestore.runTransaction(async transaction => {
       const state = await inspect(transaction, firestore, plan)
+      // Exact legacy journals may acquire ownership only after full inspection.
+      // New ownership and a new run are created in the same transaction.
+      if (!state.ownershipExists) transaction.create(firestore.doc(OWNERSHIP_PATH), ownership(plan))
       if (!state.runExists) transaction.create(firestore.doc(runPath(plan)), header(plan, 0))
     })
     for (const row of plan.rows) {
       await checkNamespace()
       await firestore.runTransaction(async transaction => {
         const state = await inspect(transaction, firestore, plan)
-        if (!state.runExists) fail('journal-conflict')
+        if (!state.runExists || !state.ownershipExists) fail('journal-conflict')
         if (state.completed.includes(row.classroomId)) return
         transaction.update(firestore.doc(rootPath(row)), { accessControl: control(plan) })
         transaction.create(firestore.doc(auditPath(plan, row)), auditBody(plan, row))
@@ -231,7 +251,7 @@ export async function initializeClassroomControlsRehearsal({ firestore, projectI
     }
     await checkNamespace()
     const state = await firestore.runTransaction(transaction => inspect(transaction, firestore, plan), { readOnly: true })
-    if (state.completed.length !== plan.rows.length) fail('journal-conflict')
+    if (!state.ownershipExists || state.completed.length !== plan.rows.length) fail('journal-conflict')
     await checkNamespace()
     return Object.freeze({ kind: KIND, classroomCount: plan.rows.length, completedCount: state.completed.length,
       mode: 'readOnly', productionEligible: false, activationAllowed: false })

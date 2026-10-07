@@ -1,3 +1,5 @@
+import { requireClassroomAccess } from '../phase3/classroomAccess.js'
+import { transactionClassification } from './transactionClassification.js'
 import { createHash } from 'node:crypto'
 
 import { INSIGHT_QUERY_PLAN_SCHEMA_VERSION } from './questionContracts.js'
@@ -57,6 +59,7 @@ export function createFirestoreQuestionEvidenceLoader({
   return async function loadQuestionEvidence({
     teacherUid,
     classroomId,
+    controlGeneration,
     periodDays,
     timeZone,
     question,
@@ -95,6 +98,9 @@ export function createFirestoreQuestionEvidenceLoader({
         classroomSnapshot,
         teacherUid: teacher,
         classroomId: classroom,
+      })
+      requireClassroomAccess(classroomSnapshot.data().accessControl, {
+        operation: 'mutate', protocolVersion: 1, controlGeneration,
       })
       const rentSnapshot = await transaction.get(
         classroomRef.collection('studentDisplay').doc('rent'),
@@ -507,6 +513,8 @@ function removeControlCharacters(value) {
 }
 
 function transactionPurpose(transaction) {
+  const classification = transactionClassification(transaction)
+  if (classification !== 'activity') return classification
   const labels = [transaction.category, transaction.reason].map(value => (
     normalizeDisplayCategory(value).normalize('NFKC').toLocaleLowerCase('en-US')
   ))

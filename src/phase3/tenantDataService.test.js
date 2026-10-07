@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test'
+import { describe, it, test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { TenantSession, SESSION_STATES } from '../phase2b/tenantSession.js'
@@ -372,7 +372,7 @@ describe('Phase 3 tenant data service — student loader', () => {
       },
     }
     const session = createResolvingStudentSession()
-    const load = createStudentDataLoader({ db: {}, session, firestore: spying })
+    const load = createStudentDataLoader({ db: {}, session, loadSettings: async () => ({ protocolVersion: 1, classroomId: CLASSROOM, studentId: '1', settings: { studentRequestsEnabled: true, studentAddRequestsEnabled: true, studentSubtractRequestsEnabled: true, addMoneyCategories: ['Homework'], subtractMoneyCategories: ['Rent'] } }), firestore: spying })
 
     const result = await load({ uid: 'student-uid', classroomId: CLASSROOM, studentId: '1' })
 
@@ -390,7 +390,7 @@ describe('Phase 3 tenant data service — student loader', () => {
     delete seed[`classrooms/${CLASSROOM}/studentDisplay/rent`]
     const { firestore } = createFirestoreDouble(seed)
     const session = createResolvingStudentSession()
-    const load = createStudentDataLoader({ db: {}, session, firestore })
+    const load = createStudentDataLoader({ db: {}, session, loadSettings: async () => ({ protocolVersion: 1, classroomId: CLASSROOM, studentId: '1', settings: { studentRequestsEnabled: true, studentAddRequestsEnabled: true, studentSubtractRequestsEnabled: true, addMoneyCategories: ['Homework'], subtractMoneyCategories: ['Rent'] } }), firestore })
 
     const result = await load({
       uid: 'student-uid',
@@ -404,7 +404,7 @@ describe('Phase 3 tenant data service — student loader', () => {
   it('fails closed on incomplete claims', async () => {
     const { firestore } = createFirestoreDouble(seededStore())
     const session = createResolvingStudentSession({ uid: 'u' })
-    const load = createStudentDataLoader({ db: {}, session, firestore })
+    const load = createStudentDataLoader({ db: {}, session, loadSettings: async () => ({ protocolVersion: 1, classroomId: CLASSROOM, studentId: '1', settings: { studentRequestsEnabled: true, studentAddRequestsEnabled: true, studentSubtractRequestsEnabled: true, addMoneyCategories: ['Homework'], subtractMoneyCategories: ['Rent'] } }), firestore })
 
     for (const claims of [
       { uid: '', classroomId: CLASSROOM, studentId: '1' },
@@ -421,7 +421,7 @@ describe('Phase 3 tenant data service — student loader', () => {
   it('fails closed when the student has no record', async () => {
     const { firestore } = createFirestoreDouble(seededStore())
     const session = createResolvingStudentSession({ uid: 'u' })
-    const load = createStudentDataLoader({ db: {}, session, firestore })
+    const load = createStudentDataLoader({ db: {}, session, loadSettings: async () => ({ protocolVersion: 1, classroomId: CLASSROOM, studentId: '1', settings: { studentRequestsEnabled: true, studentAddRequestsEnabled: true, studentSubtractRequestsEnabled: true, addMoneyCategories: ['Homework'], subtractMoneyCategories: ['Rent'] } }), firestore })
 
     await assert.rejects(
       () => load({ uid: 'u', classroomId: CLASSROOM, studentId: '99' }),
@@ -432,7 +432,7 @@ describe('Phase 3 tenant data service — student loader', () => {
   it('binds the requested uid and role to the resolving student session', async () => {
     const { firestore } = createFirestoreDouble(seededStore())
     const session = createResolvingStudentSession({ uid: 'student-uid' })
-    const load = createStudentDataLoader({ db: {}, session, firestore })
+    const load = createStudentDataLoader({ db: {}, session, loadSettings: async () => ({ protocolVersion: 1, classroomId: CLASSROOM, studentId: '1', settings: { studentRequestsEnabled: true, studentAddRequestsEnabled: true, studentSubtractRequestsEnabled: true, addMoneyCategories: ['Homework'], subtractMoneyCategories: ['Rent'] } }), firestore })
 
     await assert.rejects(
       () => load({ uid: 'other-uid', classroomId: CLASSROOM, studentId: '1' }),
@@ -456,7 +456,7 @@ describe('Phase 3 tenant data service — student loader', () => {
       },
     }
     const session = createResolvingStudentSession()
-    const load = createStudentDataLoader({ db: {}, session, firestore })
+    const load = createStudentDataLoader({ db: {}, session, loadSettings: async () => ({ protocolVersion: 1, classroomId: CLASSROOM, studentId: '1', settings: { studentRequestsEnabled: true, studentAddRequestsEnabled: true, studentSubtractRequestsEnabled: true, addMoneyCategories: ['Homework'], subtractMoneyCategories: ['Rent'] } }), firestore })
 
     for (const [claims, reason] of [
       [{ uid: 'student-uid', classroomId: CLASSROOM, studentId: '1/other' }, 'invalid-student-id'],
@@ -1148,4 +1148,50 @@ describe('Phase 3 tenant data service — saver', () => {
     )
     assert.equal(double.commits.length, 0)
   })
+})
+
+
+describe('CB1 authoritative student settings', () => {
+  it('uses only server choices and enablement, with identity bound to the current student', async () => {
+    const { firestore } = createFirestoreDouble(seededStore())
+    const settings = { studentRequestsEnabled: true, studentAddRequestsEnabled: false,
+      studentSubtractRequestsEnabled: true, addMoneyCategories: ['Custom Credit'], subtractMoneyCategories: ['Custom Debit'] }
+    const load = createStudentDataLoader({ db: {}, session: createResolvingStudentSession(), firestore,
+      defaultSettings: { addMoneyCategories: ['Wrong Default'], privateTeacherSetting: 'private' },
+      loadSettings: async () => ({ protocolVersion: 1, classroomId: CLASSROOM, studentId: '1', settings }) })
+    const result = await load({ uid: 'student-uid', classroomId: CLASSROOM, studentId: '1' })
+    assert.deepEqual(result.settings.addMoneyCategories, ['Custom Credit'])
+    assert.deepEqual(result.settings.subtractMoneyCategories, ['Custom Debit'])
+    assert.equal(result.settings.studentAddRequestsEnabled, false)
+    assert.equal(result.settings.rentAmount, RENT_AMOUNT)
+  })
+})
+
+
+test('CB1 invalid, foreign, missing and failed settings responses never fall back to local defaults', async () => {
+  const settings = { studentRequestsEnabled:true,studentAddRequestsEnabled:true,studentSubtractRequestsEnabled:true,
+    addMoneyCategories:['Custom'],subtractMoneyCategories:['Rent'] }
+  const valid = { protocolVersion:1,classroomId:CLASSROOM,studentId:'1',settings }
+  for (const reply of [null,{...valid,classroomId:'other'},{...valid,studentId:'2'},
+    {...valid,settings:{...settings,privateField:'no'}},{...valid,settings:{...settings,studentRequestsEnabled:'yes'}},
+    {...valid,settings:{...settings,addMoneyCategories:[3]}}]) {
+    const {firestore}=createFirestoreDouble(seededStore())
+    const load=createStudentDataLoader({db:{},session:createResolvingStudentSession(),firestore,loadSettings:async()=>reply})
+    await assert.rejects(load({uid:'student-uid',classroomId:CLASSROOM,studentId:'1'}),{reason:'invalid-student-settings'})
+  }
+  const {firestore}=createFirestoreDouble(seededStore())
+  const load=createStudentDataLoader({db:{},session:createResolvingStudentSession(),firestore,loadSettings:async()=>{throw new Error('unavailable')}})
+  await assert.rejects(load({uid:'student-uid',classroomId:CLASSROOM,studentId:'1'}),/unavailable/)
+})
+
+
+test('CB1 settings completion cannot publish after a student identity invalidation', async () => {
+  const {firestore}=createFirestoreDouble(seededStore())
+  const session=createResolvingStudentSession()
+  const load=createStudentDataLoader({db:{},session,firestore,loadSettings:async()=>{
+    session.invalidate()
+    return {protocolVersion:1,classroomId:CLASSROOM,studentId:'1',settings:{studentRequestsEnabled:true,
+      studentAddRequestsEnabled:true,studentSubtractRequestsEnabled:true,addMoneyCategories:['Custom'],subtractMoneyCategories:['Rent']}}
+  }})
+  await assert.rejects(load({uid:'student-uid',classroomId:CLASSROOM,studentId:'1'}),{reason:'stale-identity'})
 })

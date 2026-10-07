@@ -71,7 +71,7 @@ test('actual live composition saves a 40-student comparison without narration in
   assert.equal(s.calls.length, 1)
   assert.ok(s.calls.every(call => call.config.tools))
   assert.deepEqual(validateProviderQuestionResponse(result), result)
-  const reservations = [...s.store].filter(([path]) => path.startsWith('insightUsageReservations/'))
+  const reservations = [...s.store].filter(([path]) => (/^insightUsageReservations\/[^/]+$/u).test(path))
   assert.equal(reservations.length, 1)
   assert.equal(reservations[0][1].result.answerContract, 'conversational-v1')
   assert.equal(reservations[0][1].status, 'completed')
@@ -88,7 +88,7 @@ for (const mode of ['bad-json', 'truncated', 'html', 'timeout', 'missing-usage',
   assert.match(result.answer, /Total balance:/u)
   assert.equal(result.presentation.billingBasis, 'observed')
   assert.doesNotMatch(result.answer, /999|lazy/u)
-  const record = [...s.store].find(([path]) => path.startsWith('insightUsageReservations/'))[1]
+  const record = [...s.store].find(([path]) => (/^insightUsageReservations\/[^/]+$/u).test(path))[1]
   assert.ok(record.actualCostMicroUsd < record.worstCaseCostMicroUsd)
   assert.equal(s.calls.length, 2)
   assert.ok(s.writes.every(path => /^insightUsage/u.test(path)))
@@ -140,7 +140,7 @@ test('save and markUncertain failure keep the reservation active, blocking anoth
 test('when narration will not fit the remaining allowance, calculate within one base reservation', async () => {
   const s = setup(); await s.handler(s.request)
   const ledger = [...s.store].find(([path]) => path.startsWith('insightUsageLedgers/'))[1]
-  const prior = [...s.store].find(([path]) => path.startsWith('insightUsageReservations/'))[1]
+  const prior = [...s.store].find(([path]) => (/^insightUsageReservations\/[^/]+$/u).test(path))[1]
   // Leave slightly less than the combined quote but more than the base quote.
   ledger.chargedMicroUsd = GEMINI_MONTHLY_ALLOWANCE_MICRO_USD - prior.worstCaseCostMicroUsd + 1000
   const request = { ...s.request, data: { ...REQUEST, requestId: 'conversation-000000000002' } }
@@ -153,7 +153,7 @@ test('when narration will not fit the remaining allowance, calculate within one 
 
 test('a completed response with a different stored answer contract is refused without another call', async () => {
   const s = setup(); await s.handler(s.request)
-  const record = [...s.store].find(([path]) => path.startsWith('insightUsageReservations/'))[1]
+  const record = [...s.store].find(([path]) => (/^insightUsageReservations\/[^/]+$/u).test(path))[1]
   record.result.answerContract = 'structured-v1'
   await assert.rejects(s.handler(s.request), error => error.category === 'invalid-replay')
   assert.equal(s.calls.length, 1)

@@ -81,7 +81,7 @@ async function seedTeacher(uid, classroomId, studentName, transactionReason, off
     classroomId,
     displayName: 'Synthetic Teacher',
   })
-  batch.set(firestore.doc(`classrooms/${classroomId}`), { ownerUid: uid, version: 1 })
+  batch.set(firestore.doc(`classrooms/${classroomId}`), { ownerUid: uid, version: 1, accessControl: { schemaVersion: 1, mode: 'active', generation: 1, changedAt: '2026-08-01T00:00:00.000Z', auditId: 'fixture' } })
   batch.set(firestore.doc(`classrooms/${classroomId}/students/${offset}`), {
     id: offset,
     name: studentName,

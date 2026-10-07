@@ -94,7 +94,7 @@ test('rehearsal guard rejects real/default/mismatched projects, nondefault datab
 
 test('paginated whole-namespace read-only inventory is immutable and contains no raw records', async () => {
   const db = fixture(26), p = await plan(db)
-  assert.equal(p.rows.length, 26); assert.equal(db.pages, 28)
+  assert.equal(p.rows.length, 26); assert.equal(db.pages, 29)
   assert.deepEqual(db.options, [{ readOnly: true }]); assert.deepEqual(db.writes, [])
   assert.ok(Object.isFrozen(p) && Object.isFrozen(p.rows) && Object.isFrozen(p.rows[0].rootVersion))
   assert.ok(!JSON.stringify(p).includes('PRIVATE'))
@@ -241,4 +241,65 @@ test('SDK contention is an explicit retryable stop without exposing SDK details'
   assert.deepEqual(db.writes, [])
   db.runTransaction = original
   assert.equal((await execute(db, p)).completedCount, 2)
+})
+
+const foreignOperationId = '112233445566778899aabbccddeeff00'
+const ownershipPath = 'classroomInitializationState/ownership'
+
+test('a lost empty-run response blocks fresh planning and a previously saved competing plan', async () => {
+  const db = fixture(), original = await plan(db), competing = await plan(db, { operationId: foreignOperationId })
+  db.failAfterWrite = 1
+  await assert.rejects(execute(db, original), category('rehearsal-failed'))
+  const before = copy([...db.store]), writeCount = db.writes.length
+  assert.equal(db.store.get(`classroomInitializationRuns/${operationId}`).data.completedCount, 0)
+  await assert.rejects(plan(db, { operationId: foreignOperationId }), category('journal-conflict'))
+  await assert.rejects(execute(db, competing), category('journal-conflict'))
+  assert.equal(db.writes.length, writeCount); assert.deepEqual([...db.store], before)
+  assert.equal((await execute(db, original)).completedCount, 2)
+})
+
+test('a legacy empty run can be claimed only by its exact saved plan', async () => {
+  const db = fixture(), original = await plan(db), competing = await plan(db, { operationId: foreignOperationId })
+  db.failAfterWrite = 1; await assert.rejects(execute(db, original))
+  db.store.delete(ownershipPath) // A pre-correction run has no singleton owner.
+  const before = copy([...db.store]), writeCount = db.writes.length
+  await assert.rejects(execute(db, competing), category('journal-conflict'))
+  assert.equal(db.writes.length, writeCount); assert.deepEqual([...db.store], before)
+  assert.equal((await execute(db, original)).completedCount, 2)
+  assert.equal(db.store.get(ownershipPath).data.operationId, operationId)
+})
+
+test('foreign run appearing on callback retry aborts the pending claim before any write', async () => {
+  const db = fixture(), p = await plan(db); db.retryNext = true
+  db.onRetry = () => db.put(`classroomInitializationRuns/${foreignOperationId}`, { completedCount: 0 })
+  await assert.rejects(execute(db, p), category('journal-conflict'))
+  assert.deepEqual(db.writes, []); assert.equal(db.store.has(ownershipPath), false)
+})
+
+test('ownership drift or a second run halts partial recovery without changing rooms or journals', async () => {
+  for (const mutate of [
+    db => db.put(ownershipPath, { ...db.store.get(ownershipPath)?.data, operationId: foreignOperationId }),
+    db => db.put(ownershipPath, { ...db.store.get(ownershipPath)?.data, extra: true }),
+    db => db.put(`classroomInitializationRuns/${foreignOperationId}`, { completedCount: 0 }),
+  ]) {
+    const db = fixture(), p = await plan(db); db.failAfterWrite = 2
+    await assert.rejects(execute(db, p)); mutate(db)
+    const before = copy([...db.store]), writeCount = db.writes.length
+    await assert.rejects(execute(db, p), category('journal-conflict'))
+    assert.equal(db.writes.length, writeCount); assert.deepEqual([...db.store], before)
+  }
+})
+
+test('missing journal or malformed legacy journal cannot acquire or replace ownership', async () => {
+  for (const mutate of [
+    db => db.store.delete(`classroomInitializationRuns/${operationId}`),
+    db => { db.store.delete(ownershipPath); db.put(`classroomInitializationRuns/${operationId}`, { completedCount: 0 }) },
+    db => { db.store.delete(ownershipPath); db.put(`classroomInitializationRuns/${foreignOperationId}`, { completedCount: 0 }) },
+  ]) {
+    const db = fixture(), p = await plan(db); db.failAfterWrite = 1
+    await assert.rejects(execute(db, p)); mutate(db)
+    const before = copy([...db.store]), writeCount = db.writes.length
+    await assert.rejects(execute(db, p), category('journal-conflict'))
+    assert.equal(db.writes.length, writeCount); assert.deepEqual([...db.store], before)
+  }
 })

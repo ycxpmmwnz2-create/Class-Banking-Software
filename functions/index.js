@@ -1,3 +1,4 @@
+import { getStudentSettingsCallable } from './phase3/studentSettings.js'
 import process from 'node:process'
 
 import { getApps, initializeApp } from 'firebase-admin/app'
@@ -29,7 +30,9 @@ import {
 } from './phase3/studentLifecycle.js'
 import { listStudentPinsV2CallableHandler } from './phase3/studentPinDirectory.js'
 import { submitStudentTransactionV2CallableHandler } from './phase3/studentMoney.js'
+import { editTeacherProfileCallable } from './phase3/teacherProfile.js'
 import { getClassroomAccessCallable } from './phase3/classroomAccess.js'
+import { executeTeacherMoneyCallable, planTeacherMoneyCallable, recoverTeacherMoneyCallable } from './phase3/teacherMoneyCallables.js'
 import { assertMaintenanceAdmission } from './phase3/maintenanceMode.js'
 import {
   ALLOWED_PRODUCTION_PROJECT_ID,
@@ -204,6 +207,36 @@ export const getClassroomAccessV2 = onCall(async (request) => {
   return getClassroomAccessCallable(request, { firestore: getFirestore() })
 })
 
+export const editStudentProfileV2 = onCall(async (request) => {
+  assertV2Invocation('editStudentProfileV2')
+  return editTeacherProfileCallable(request, { firestore: getFirestore() })
+})
+
+export const planTeacherMoneyV2 = onCall(async (request) => {
+  const runtime = assertV2Invocation('planTeacherMoneyV2')
+  return planTeacherMoneyCallable(request, { firestore: getFirestore(), projectId: runtime.projectId })
+})
+
+export const executeTeacherMoneyV2 = onCall(async (request) => {
+  const runtime = assertV2Invocation('executeTeacherMoneyV2')
+  return executeTeacherMoneyCallable(request, { firestore: getFirestore(), projectId: runtime.projectId })
+})
+
+export const getTeacherMoneyStatusV2 = onCall(async (request) => {
+  const runtime = assertV2Invocation('getTeacherMoneyStatusV2')
+  return recoverTeacherMoneyCallable(request, { firestore: getFirestore(), projectId: runtime.projectId }, 'status')
+})
+
+export const acknowledgeTeacherMoneyV2 = onCall(async (request) => {
+  const runtime = assertV2Invocation('acknowledgeTeacherMoneyV2')
+  return recoverTeacherMoneyCallable(request, { firestore: getFirestore(), projectId: runtime.projectId }, 'acknowledge')
+})
+
+export const cancelTeacherMoneyV2 = onCall(async (request) => {
+  const runtime = assertV2Invocation('cancelTeacherMoneyV2')
+  return recoverTeacherMoneyCallable(request, { firestore: getFirestore(), projectId: runtime.projectId }, 'cancel')
+})
+
 export const resolveTeacherTenantV2 = onCall({
   minInstances: RESOLVE_TEACHER_TENANT_MIN_INSTANCES,
 }, async (request) => {
@@ -258,12 +291,15 @@ export const resetStudentPinV2 = onCall(async (request) => {
   )
 })
 
-export const createStudentV2 = onCall(async (request) => {
+// Versioned private retry binding; retain old keys while their receipts exist.
+const STUDENT_CREATION_HMAC_KEYS = defineSecret('STUDENT_CREATION_HMAC_KEYS')
+export const createStudentV2 = onCall({ secrets: [STUDENT_CREATION_HMAC_KEYS] }, async (request) => {
   assertV2Invocation('createStudentV2')
   return createStudentV2CallableHandler(
     request.data,
     request,
-    { firestore: getFirestore() },
+    { firestore: getFirestore(), projectId: projectID.value(),
+      keyRing: () => JSON.parse(STUDENT_CREATION_HMAC_KEYS.value()) },
   )
 })
 
@@ -283,6 +319,11 @@ export const listStudentPinsV2 = onCall(async (request) => {
     request,
     { firestore: getFirestore() },
   )
+})
+
+export const getStudentSettingsV2 = onCall(async request => {
+  assertV2Invocation('getStudentSettingsV2')
+  return getStudentSettingsCallable(request, { firestore: getFirestore() })
 })
 
 export const submitStudentTransactionV2 = onCall(async (request) => {

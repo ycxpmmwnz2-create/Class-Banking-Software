@@ -71,13 +71,13 @@ function serverDate(value) {
   return value
 }
 
-function copyStudent(student) {
+export function copyMoneyStudent(student, addingEntry = true) {
   if (!hasExactDataKeys(student, STUDENT_KEYS) || !positiveId(student.id) ||
       typeof student.name !== 'string' || !student.name.trim() ||
       typeof student.frozen !== 'boolean') fail('invalid-student')
   storedMoneyToCents(student.balance)
   const entries = dataArray(student.transactions, TEACHER_MONEY_LIMITS.mirrorEntries, 'invalid-mirror')
-  if (entries.length === TEACHER_MONEY_LIMITS.mirrorEntries) fail('mirror-capacity')
+  if (addingEntry && entries.length === TEACHER_MONEY_LIMITS.mirrorEntries) fail('mirror-capacity')
   const seen = new Set()
   const transactions = entries.map(entry => {
     if (!hasExactDataKeys(entry, ENTRY_KEYS) || !positiveId(entry.id) ||
@@ -110,7 +110,7 @@ export function buildTeacherAwardChanges(request, { identity, students, candidat
   if (students.length !== ledgerIds.length || candidateLedgerReads.length !== ledgerIds.length) fail('incomplete-inputs')
   const byStudent = new Map()
   for (const row of students) {
-    const student = copyStudent(row)
+    const student = copyMoneyStudent(row)
     if (byStudent.has(student.id)) fail('invalid-students')
     byStudent.set(student.id, student)
   }

@@ -6,7 +6,9 @@ const otherOperations = new Set([
   'onboardTeacherClassroomV2', 'createTeacherInvitationV2', 'revokeTeacherInvitationV2',
   'studentPinLoginV2', 'resetStudentPinV2', 'createStudentV2', 'removeStudentV2',
   'listStudentPinsV2', 'submitStudentTransactionV2', 'analyzeTeacherInsightsV3',
-  'syncStudentProfilesV2',
+  'syncStudentProfilesV2', 'getStudentSettingsV2',
+  'planTeacherMoneyV2', 'executeTeacherMoneyV2', 'getTeacherMoneyStatusV2',
+  'acknowledgeTeacherMoneyV2', 'cancelTeacherMoneyV2', 'editStudentProfileV2',
 ])
 
 export function assertMaintenanceAdmission({ mode, operation }) {

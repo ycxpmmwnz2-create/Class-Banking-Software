@@ -756,6 +756,40 @@ UID, classroom, schema, and epoch before cache admission.
 
 ## 11. Exact permitted implementation file scope
 
+October 2 containment candidate scope adds the paired
+`src/phase3/nonMoneyTenantDataSaver.js` and `.test.js`, the separate unselected
+`firestore.phase3.money.rules`, its demo-only runner/emulator and source-contract
+tests, and `WRITER_CONTAINMENT.md`. This stage implements the proposed client
+write boundary without selecting it in the page or deployment configuration.
+Remaining server-action migrations must precede either selection. It does not
+close all-writer containment, change a release gate, or authorize deployment.
+
+October 1, 2026 scoped extension authorized by Andrew: connect and test the
+existing V2 Quick Cash and custom Add/Subtract buttons to the reviewed planned
+award service, including durable recovery and explicit receipt acknowledgment.
+This permits `functions/phase3/teacherMoneyCallables.js` and its behavioral test,
+`src/phase3/teacherMoneyClient.js` and its behavioral test, the directly affected
+onboarding/control/approval tests, `tests/phase3/teacherAward.fixture.js`,
+`tests/browser/teacherMoneyHarness.js`, `tests/browser/money-form.test.js`, and
+the export/maintenance/release-order/source-identity contracts. Update
+`TEACHER_AWARD_SERVICE.md`, `TEACHER_MONEY_ACCESS_SURFACE.md`, and test READMEs
+to describe exactly that integration. Five new callables use the existing
+per-invocation project/release/maintenance guard; no parameter or gate is added.
+The existing Phase 2B server commands may use
+`tests/phase2b/runServerEmulatorTests.js` to copy public Functions sources to a
+temporary runtime, synthesize fictional parameter/secret fixtures there, and
+avoid reading or modifying the checkout's dotenv files. Pin closed for gate-off
+and normal for gate-on only in that demo runtime; preserve ADC refusal, isolated
+CLI configuration, demo project IDs, credential exclusion, and loopback guards.
+
+Invitation-controlled creation may atomically initialize the actor and quota
+for a brand-new classroom only after bounded probes reject existing money
+descendants, and seed the existing browser's category defaults. Onboarding
+replay never initializes or resets metadata. Existing-classroom initialization,
+other money writers, the scanner's Stage15 NO-GO, stricter money rules, and
+production qualification remain separate unresolved requirements. These changes
+authorize no deployment or activation and do not certify full writer containment.
+
 Existing files:
 
 - `index.html`
@@ -1039,3 +1073,58 @@ It must not implement production guards, a runner, lifecycle services, client
 wiring, rules artifacts, deployment logic, or production operations, and it
 must not access production, deploy, migrate production, activate a gate,
 commit, or push.
+
+
+### Section 11 amendment — October 4, 2026 writer containment stage 2
+
+Andrew authorized the remaining money writers. Permit exactly
+`functions/phase3/teacherRosterChanges.js`, `teacherRosterChanges.test.js`,
+`teacherProfile.js`, and `teacherProfile.test.js` in the existing Phase 3 Functions directory. The shared
+planned-money callable path now accepts complete approve/deny and adjust/reset
+intents; `editStudentProfileV2` is a separately guarded compare-and-set callable.
+Actual V2 page handlers use these services. Student replay validates historical
+names against exact mirror/ledger parity, not the current profile name.
+This adds no deployment, gate selection, rule selection, or production authority.
+See WRITER_CONTAINMENT.md for the incomplete writer and release checklist.
+
+
+### Writer containment Stage 4 candidate — October 5, 2026
+
+Admit `functions/phase3/studentCreationReceipt.js` and its paired test for the
+existing createStudentV2 full-intent keyed binding and receipt v4. The same actor,
+quota and recovery routes cover creation; no additional callable. New private
+STUDENT_CREATION_HMAC_KEYS binding is an explicit release prerequisite, with old
+keys retained while receipts remain. See WRITER_CONTAINMENT.md for the bounded
+wire, atomic opening ledger and actual UI/reporting integration. Static reviews
+and full release acceptance are separate; strict rules/saver remain unselected.
+
+
+### Writer containment Stage 6 candidate — October 5, 2026
+
+Andrew authorized finishing essential remaining writer containment after the
+Stage 5 bounded Muse/Claude closure. This local delta adds request-scoped Insights
+access wiring, generation-bound usage reservations and bounded durable dispatch
+claims, preserving existing accounting settlement and provider budgets. It
+propagates through live/emulator composition, evidence adapters and tool execution.
+The audit runtime remains create-only; tests prove the named pause exception.
+The pending lifecycle integration assertion is corrected and executed. Relevant
+Insights fixtures/tests, demo-emulator and rules tests, and containment/test docs
+are in scope. See WRITER_CONTAINMENT.md for the exact contract and cost bound.
+No selected rules/saver, gate, export, model, secret, production data, or deployment
+changes are authorized by this implementation record. Both reviews and release
+qualification remain separate.
+
+
+### Section 11 amendment — October 5, 2026 CB1 student settings repair
+
+Andrew authorized the bounded student category/enablement correction. Admit
+`functions/phase3/studentSettings.js` and its paired test, plus the read-only
+`getStudentSettingsV2` callable. Read current student credentials, reciprocal
+foundation/control and student existence transactionally; project only the five
+settings used by student money admission through the same normalizer. No new
+Firestore read permissions, mirror document, initializer or configuration gate.
+The client requires this endpoint on student load and fails closed if unavailable.
+Release must deploy the reviewed endpoint before the dependent client; old clients
+remain compatible but retain the old menu defect. New clients cannot roll back to
+a backend without this endpoint. Selected rules/saver and release authority stay
+unchanged; local CB1 implementation is not release-profile Stage8 L2 completion.

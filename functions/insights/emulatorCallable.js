@@ -5,7 +5,7 @@ import { createFirestoreTenantEvidenceLoader } from './tenantEvidenceAdapter.js'
 import { createFirestoreQuestionEvidenceLoader } from './questionEvidenceAdapter.js'
 import { INSIGHT_QUERY_PLAN_SCHEMA_VERSION } from './questionContracts.js'
 import { createInsightQuestionService } from './questionService.js'
-import { resolveActiveTeacherTenant } from '../phase2b/teacherTenantResolver.js'
+import { createInsightRequestScope } from './insightAccess.js'
 
 export {
   callableErrorCode,
@@ -93,23 +93,6 @@ export function createVersion3GeminiEmulatorHandler({
         usage: { inputTokens: 120, outputTokens: 30, thinkingTokens: 0 },
       }
     },
-  })
-  const analyzeInsights = createInsightAnalysisService({
-    now,
-    resolveActiveTeacherTenant: ({ auth }) => resolveActiveTeacherTenant({ firestore, auth }),
-    loadDeidentifiedTenantEvidence: loadEvidence,
-    buildFactPacket: buildFactPacketFromEvidence,
-    async quoteWorstCaseCost() {
-      return {
-        rateCardId: FAKE_RATE_CARD_ID,
-        worstCaseCostMicroUsd: FAKE_WORST_CASE_COST_MICRO_USD,
-      }
-    },
-    provider,
-    async priceActualUsage() {
-      return FAKE_ACTUAL_COST_MICRO_USD
-    },
-    usageLedger,
   })
   const loadQuestionEvidence = createFirestoreQuestionEvidenceLoader({ firestore, now })
   const questionProvider = Object.freeze({
@@ -283,26 +266,44 @@ export function createVersion3GeminiEmulatorHandler({
       }
     },
   })
-  const askQuestion = createInsightQuestionService({
-    now,
-    resolveActiveTeacherTenant: ({ auth }) => resolveActiveTeacherTenant({ firestore, auth }),
-    loadQuestionEvidence,
-    async quoteWorstCaseCost() {
-      return {
-        rateCardId: FAKE_RATE_CARD_ID,
-        worstCaseCostMicroUsd: FAKE_WORST_CASE_COST_MICRO_USD,
-      }
-    },
-    provider: questionProvider,
-    async priceActualUsage() {
-      return FAKE_ACTUAL_COST_MICRO_USD
-    },
-    usageLedger,
-  })
   return async function handleVersion3AiRequest(request) {
-    return request?.data?.kind === 'question'
-      ? askQuestion(request)
-      : analyzeInsights(request)
+    const scope = await createInsightRequestScope({ firestore, auth: request?.auth, usageLedger })
+    const analyzeInsights = createInsightAnalysisService({
+      now,
+      resolveActiveTeacherTenant: async () => scope.identity,
+      loadDeidentifiedTenantEvidence: input => scope.load(loadEvidence, input),
+      buildFactPacket: buildFactPacketFromEvidence,
+      async quoteWorstCaseCost() {
+        return {
+          rateCardId: FAKE_RATE_CARD_ID,
+          worstCaseCostMicroUsd: FAKE_WORST_CASE_COST_MICRO_USD,
+        }
+      },
+      provider: { generate: input => scope.dispatch(() => provider.generate(input)) },
+      async priceActualUsage() {
+        return FAKE_ACTUAL_COST_MICRO_USD
+      },
+      usageLedger: scope.ledger,
+    })
+    const askQuestion = createInsightQuestionService({
+      now,
+      resolveActiveTeacherTenant: async () => scope.identity,
+      loadQuestionEvidence: input => scope.load(loadQuestionEvidence, input),
+      async quoteWorstCaseCost() {
+        return {
+          rateCardId: FAKE_RATE_CARD_ID,
+          worstCaseCostMicroUsd: FAKE_WORST_CASE_COST_MICRO_USD,
+        }
+      },
+      provider: { interpret: input => scope.dispatch(() => questionProvider.interpret(input)) },
+      async priceActualUsage() {
+        return FAKE_ACTUAL_COST_MICRO_USD
+      },
+      usageLedger: scope.ledger,
+    })
+    const result = await (request?.data?.kind === 'question' ? askQuestion(request) : analyzeInsights(request))
+    await scope.assertActive()
+    return result
   }
 }
 

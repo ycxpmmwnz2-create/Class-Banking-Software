@@ -4491,3 +4491,19 @@ for (const answer of [
     assert.equal(result.answer, answer)
   })
 }
+
+test('authorization is awaited before every tool in one provider batch', async () => {
+  let gates = 0, executions = 0, providerCalls = 0
+  const base = createClassroomAssistantToolbox(evidence())
+  const toolbox = { ...base, execute(...args) { executions++; return base.execute(...args) } }
+  const assistant = createGeminiClassroomAssistant({ async generateContent() {
+    providerCalls++
+    const calls = ['first', 'second'].map(id => ({ id, name: 'get_balances', args: {} }))
+    return { functionCalls: calls, candidateContent: { role: 'model', parts: calls.map(functionCall => ({ functionCall })) },
+      finishReason: 'STOP', usageMetadata: USAGE }
+  } })
+  await assert.rejects(assistant.answer({ assistantEvidence: evidence(), toolbox,
+    async beforeTool() { if (++gates === 2) throw new Error('fictional pause between tools') },
+  }), /fictional pause between tools/)
+  assert.equal(gates, 2); assert.equal(executions, 1); assert.equal(providerCalls, 1)
+})

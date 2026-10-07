@@ -234,3 +234,82 @@ These results close the repository/emulator evidence required by Item 11 and
 the Phase 2B completion gate. They do not prove deployment state, real-account
 behavior, live onboarding, or production rollout ordering. Phase 3 remains an
 architecture/release-planning handoff and requires explicit authorization.
+# October 1 teacher-money callable candidate
+
+`npm run test:phase2b:server` keeps its gate-off/gate-on demo project and loopback
+contracts. The runner now copies public Functions JavaScript and package files
+to a disposable runtime with the installed dependency directory linked. It never
+reads or changes repository dotenv files. Fictional parameter/disabled-provider
+fixtures and isolated CLI configuration are written only in that runtime and
+removed afterward. ADC presence is refused; credential/provider/project overrides
+are excluded by a system-environment allowlist. Gate-off pins maintenance closed;
+gate-on pins normal for the demo runtime only. No release setting is changed.
+
+The new C1 cases use the actual money client and Firebase HTTPS callables to save,
+recover a deliberately lost client response, explicitly acknowledge, preserve
+pending metadata on onboarding replay, fence a stale plan, and reject anonymous
+and foreign-classroom recovery. Gate-off checks include all five added exports.
+These are local fictional Auth/Functions/Firestore evidence, not production or
+full money-writer containment evidence.
+
+
+October 4 teacher-writer coverage: approvals/denials, adjustment/reset, separate
+profile compare-and-set, immutable-name student replay, lost-response recovery,
+and stale/group refusals use the existing Phase 3 unit, Phase 2B client/server,
+and offline `node --test tests/browser/money-form.test.js` suites. The server
+runner remains isolated to its fixed demo projects; current selected rules are
+unchanged. Strict candidate-rule selection and remaining writers are separate.
+
+
+Stage 3 adds the fixed `student-writers` focus to the gate-on isolated runner:
+`node tests/phase2b/runServerEmulatorTests.js gate-on student-writers`.
+This selects C2 plus anonymous denial, retaining demo-only project/environment
+isolation. Student requests use protocol/controlGeneration/amountCents; removal
+also sends captured classroomId. Old requests are deliberately refused.
+
+
+October 5 Stage 4 creation coverage: existing student-writers emulator focus now
+includes receipted positive/negative opening history, replay/PIN binding, old-wire
+refusal, cancellation and stale generation. Synthetic/browser tests cover lost
+responses, failed refresh, minimal markers and both page engines. Lifecycle
+concurrency now expects identical requests to allocate once and a newly
+acknowledged request to allocate the next ID. Emulator keys are fictional and
+injected only in the disposable demo copy. No production secret or data access.
+
+
+## Writer containment Stage 5 — credential boundary
+
+The current PIN reset fixture wire includes captured classroomId, protocolVersion
+and controlGeneration. Old wire is an explicit negative test. Login replies add
+only the access descriptor beside the token; claims remain unchanged. Run the
+focused server acceptance with `node tests/phase2b/runServerEmulatorTests.js gate-on
+credential-writers` (one shell line): C3 covers current controls; D explicitly
+uses unenrolled emulator classrooms for retained trigger compatibility; E/F seed
+explicit inactive credentials because enrolled triggers no longer provision them.
+These fixture writes use only the already isolated demo emulator.
+
+Phase 2B unit regressions cover post-hash authority changes/retry, pre-mint
+pause/resume/reset/removal, readOnly/suspended policy, malformed control and
+concurrent enrollment. Actual page handler tests in student-money-form.test.js
+cover profile, single and bulk PIN paths in Chromium/WebKit, including a fixed
+bulk generation across pause/resume and stale-session refusal before dispatch.
+
+## Writer containment Stage 7 strict-rule profile
+
+`npm run test:phase3:writer-containment:server` runs the complete gate-on suite
+against `firestore.phase3.money.rules` in the isolated demo runtime. C1 now checks
+opening history plus exactly one recovered award and preserves the entire prior
+ledger on stale-plan/cancellation refusal. C2 validates the minimal login access
+descriptor and uses plan/execute/acknowledge for its money save; direct balance and
+ledger mutation is additionally denied under this profile. No test is skipped to
+make the strict rules pass. The existing default profile still selects final rules.
+See tests/phase3/README.md for the paired Chromium/WebKit composition and limits.
+
+
+### CB1 student settings candidate
+Student data loads additionally require the narrow `getStudentSettingsV2` callable.
+The existing self/rent Firestore paths do not expand. Custom menu and enablement
+coverage is in the combined Chromium/WebKit suite; see tests/phase3/README.md.
+At this boundary validate both `test:phase2b:server:gate-on` (selected rules) and
+`test:phase3:writer-containment:server` (strict candidate rules). Deploy the callable
+before its dependent client; no production selection or deployment is implied.

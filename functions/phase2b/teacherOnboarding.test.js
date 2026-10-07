@@ -75,6 +75,7 @@ function createMockFirestore(initialDocs = {}) {
     deletes,
     collection(collectionName) {
       return {
+        limit(count) { return { queryInfo: { collectionName, limit: count } } },
         doc(docId) {
           const generatedId = docId || `auto-id-${Math.random().toString(36).slice(2, 8)}`
           const path = `${collectionName}/${generatedId}`
@@ -105,7 +106,7 @@ function createMockFirestore(initialDocs = {}) {
             const matches = []
             for (const [p, data] of store.entries()) {
               if (p.startsWith(`${collectionName}/`)) {
-                if (op === '==' && data[field] === value) {
+                if (op === undefined || (op === '==' && data[field] === value)) {
                   matches.push({ id: p.split('/')[1], path: p, data: () => data })
                 }
               }
@@ -217,7 +218,30 @@ test('onboardTeacherClassroomService: successful atomic creation', async () => {
     1,
   )
   assert.ok(db.store.has(`classroomLoginCodes/23456789`))
+  const quota = db.store.get(`classrooms/${result.classroom.id}/teacherMoneyMetadata/receiptQuota`)
+  assert.deepEqual(quota, { version: 1, count: 0 })
+  const actors = [...db.store].filter(([path]) => path.startsWith(`classrooms/${result.classroom.id}/teacherMoneyActors/`))
+  assert.equal(actors.length, 1)
+  assert.deepEqual(actors[0][1], { version: 1, actorUid: 'teacher-uid-1', unacknowledgedRequestId: null })
   assert.equal(db.store.get(`teacherInvitations/${emailDigest}`).status, 'consumed')
+})
+
+test('onboarding rejects an orphan money namespace without consuming the invitation or creating a foundation', async () => {
+  const emailDigest = hashEmailDigest('teacher@example.com')
+  const db = createMockFirestore({
+    [`teacherInvitations/${emailDigest}`]: { email: 'teacher@example.com', status: 'active' },
+    'classrooms/colliding-room/teacherMoneyReceipts/orphan': { status: 'committed' },
+  })
+  const original = db.collection.bind(db)
+  db.collection = path => {
+    const collection = original(path)
+    if (path !== 'classrooms') return collection
+    return { ...collection, doc: id => collection.doc(id || 'colliding-room') }
+  }
+  await assert.rejects(onboardTeacherClassroomService({ firestore: db, auth: googleAuth(),
+    data: { classroomName: 'Fictional' }, codeGenerator: () => '23456789' }), { code: 'failed-precondition' })
+  assert.equal(db.creates.length, 0); assert.equal(db.updates.length, 0)
+  assert.equal(db.store.get(`teacherInvitations/${emailDigest}`).status, 'active')
 })
 
 test('onboardTeacherClassroomService: rejects unauthenticated or invalid provider/unverified email', async () => {

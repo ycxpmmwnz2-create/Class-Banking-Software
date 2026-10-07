@@ -7,6 +7,9 @@ import {
   utcMonthKey,
 } from './costPolicy.js'
 import { InsightIdentityError, validateInsightIdentity } from './identity.js'
+import { readInsightAccess } from './insightAccess.js'
+import { isControlGeneration } from '../phase3/classroomAccess.js'
+import { CLASSROOM_ASSISTANT_MAX_TURNS } from './classroomAssistantUsageContract.js'
 
 const APPLICATION_LEDGER_COLLECTION = 'insightUsageLedgers'
 const RATE_LIMIT_COLLECTION = 'insightUsageRateLimits'
@@ -70,6 +73,8 @@ export function createFirestoreUsageLedger({ firestore, now = Date.now } = {}) {
     reserve: input => reserve({ firestore, now, input }),
     commit: input => commit({ firestore, now, input }),
     markUncertain: input => markUncertain({ firestore, input }),
+    claimDispatch: input => claimDispatch({ firestore, now, input }),
+    finishDispatch: input => finishDispatch({ firestore, now, input }),
   })
 }
 
@@ -89,6 +94,7 @@ async function reserve({ firestore, now, input }) {
   const reservationRef = firestore.collection(RESERVATION_COLLECTION).doc(reservationId)
 
   return firestore.runTransaction(async transaction => {
+    await readInsightAccess({ firestore, transaction, ...validated })
     const reservationSnapshot = await transaction.get(reservationRef)
     if (reservationSnapshot.exists) {
       const existing = validateReservationDocument(reservationSnapshot.data(), nowMs)
@@ -172,7 +178,8 @@ async function reserve({ firestore, now, input }) {
       updatedAtMs: nowMs,
     }
     const reservation = {
-      schemaVersion: SCHEMA_VERSION,
+      schemaVersion: 4,
+      controlGeneration: validated.controlGeneration,
       scopeDigest,
       ledgerId,
       rateLimitLedgerId,
@@ -198,6 +205,93 @@ async function reserve({ firestore, now, input }) {
         validated.monthlyAllowanceMicroUsd - nextCharged,
     })
   })
+}
+
+// One private, durable claim per outbound attempt, bounded by the existing four
+// model-turn quote (including narration). A finished claim never grants a retry.
+async function claimDispatch({ firestore, now, input }) {
+  requireExactObject(input, ['teacherUid', 'classroomId', 'controlGeneration', 'reservationId', 'requestId', 'dispatchIndex'], 'dispatch input')
+  const { reservationRef, claimRef } = dispatchRefs(firestore, input)
+  const nowMs = requireNow(now())
+  return firestore.runTransaction(async transaction => {
+    await readInsightAccess({ firestore, transaction, ...input })
+    const snapshot = await transaction.get(reservationRef)
+    if (!snapshot.exists) fail('reservation-missing', 'The usage reservation is missing.')
+    const reservation = validateReservationDocument(snapshot.data(), nowMs)
+    requireDispatchReservation(reservation, input)
+    if (reservation.status !== 'reserved' || reservation.controlGeneration !== input.controlGeneration || reservation.scopeDigest !== digest(`${input.teacherUid}\u0000${input.classroomId}`)) {
+      fail('reservation-unavailable', 'The dispatch reservation is unavailable.')
+    }
+    const existing = await transaction.get(claimRef)
+    if (existing.exists) fail('request-unavailable', 'The dispatch was already claimed.')
+    if (input.dispatchIndex > 1) {
+      const previous = await transaction.get(reservationRef.collection('dispatches').doc(String(input.dispatchIndex - 1)))
+      const prior = previous.exists ? validateDispatch(previous.data(), { ...input, dispatchIndex: input.dispatchIndex - 1 }) : null
+      if (!prior || prior.status !== 'finished' || prior.controlGeneration !== input.controlGeneration) fail('request-unavailable', 'The previous dispatch is unresolved.')
+    }
+    transaction.create(claimRef, {
+      schemaVersion: 1, reservationId: input.reservationId,
+      requestIdDigest: digest(input.requestId), scopeDigest: reservation.scopeDigest,
+      controlGeneration: input.controlGeneration, dispatchIndex: input.dispatchIndex,
+      status: 'claimed', claimedAtMs: nowMs, finishedAtMs: null, outcome: null,
+    })
+  })
+}
+
+async function finishDispatch({ firestore, now, input }) {
+  requireExactObject(input, ['reservationId', 'requestId', 'dispatchIndex', 'outcome'], 'dispatch settlement')
+  if (!['returned', 'failed'].includes(input.outcome)) fail('invalid-request', 'Invalid dispatch outcome.')
+  const { reservationRef, claimRef } = dispatchRefs(firestore, input)
+  const nowMs = requireNow(now())
+  // Completion of a previously claimed call is accounting only: no current-mode
+  // requirement, allowance increase, new claim, or provider invocation.
+  return firestore.runTransaction(async transaction => {
+    const reservation = await transaction.get(reservationRef)
+    const snapshot = await transaction.get(claimRef)
+    if (!reservation.exists || !snapshot.exists) fail('reservation-missing', 'The dispatch is missing.')
+    const reserved = validateReservationDocument(reservation.data(), nowMs)
+    requireDispatchReservation(reserved, input)
+    const claim = validateDispatch(snapshot.data(), input)
+    if (claim.scopeDigest !== reserved.scopeDigest || nowMs < claim.claimedAtMs) fail('reservation-mismatch', 'Invalid dispatch identity or clock.')
+    if (claim.status !== 'claimed') {
+      if (claim.outcome !== input.outcome) fail('reservation-mismatch', 'The dispatch outcome differs.')
+      return
+    }
+    // A timeout/failure does not prove the remote provider stopped processing.
+    // Keep it visible as uncertain; it cannot authorize the next dispatch.
+    transaction.set(claimRef, { ...claim,
+      status: input.outcome === 'returned' ? 'finished' : 'uncertain',
+      finishedAtMs: input.outcome === 'returned' ? nowMs : null, outcome: input.outcome })
+  })
+}
+
+function dispatchRefs(firestore, input) {
+  if (!DIGEST_PATTERN.test(input.reservationId) || !REQUEST_ID_PATTERN.test(input.requestId) ||
+      !Number.isSafeInteger(input.dispatchIndex) || input.dispatchIndex < 1 || input.dispatchIndex > CLASSROOM_ASSISTANT_MAX_TURNS) {
+    fail('invalid-request', 'Invalid dispatch identity or limit.')
+  }
+  const reservationRef = firestore.collection(RESERVATION_COLLECTION).doc(input.reservationId)
+  return { reservationRef, claimRef: reservationRef.collection('dispatches').doc(String(input.dispatchIndex)) }
+}
+
+function requireDispatchReservation(reservation, input) {
+  if (reservation.requestIdDigest !== digest(input.requestId) || input.reservationId !== digest(`${reservation.rateLimitLedgerId}\u0000${reservation.requestIdDigest}`)) {
+    fail('reservation-mismatch', 'The dispatch request differs.')
+  }
+}
+
+function validateDispatch(value, input) {
+  requireExactObject(value, ['schemaVersion', 'reservationId', 'requestIdDigest', 'scopeDigest', 'controlGeneration', 'dispatchIndex', 'status', 'claimedAtMs', 'finishedAtMs', 'outcome'], 'dispatch claim')
+  if (value.schemaVersion !== 1 || value.reservationId !== input.reservationId ||
+      value.requestIdDigest !== digest(input.requestId) || value.dispatchIndex !== input.dispatchIndex ||
+      !DIGEST_PATTERN.test(value.scopeDigest) || !isControlGeneration(value.controlGeneration) ||
+      !Number.isSafeInteger(value.claimedAtMs) || value.claimedAtMs < 0 ||
+      !((value.status === 'claimed' && value.finishedAtMs === null && value.outcome === null) ||
+        (value.status === 'uncertain' && value.finishedAtMs === null && value.outcome === 'failed') ||
+        (value.status === 'finished' && Number.isSafeInteger(value.finishedAtMs) && value.finishedAtMs >= value.claimedAtMs && value.outcome === 'returned'))) {
+    fail('reservation-malformed', 'The dispatch claim is malformed.')
+  }
+  return value
 }
 
 async function commit({ firestore, now, input }) {
@@ -284,6 +378,7 @@ function validateReserveInput(value) {
   requireExactObject(value, [
     'teacherUid',
     'classroomId',
+    'controlGeneration',
     'requestId',
     'monthKey',
     'mode',
@@ -308,6 +403,7 @@ function validateReserveInput(value) {
   }
   const profile = insightModeProfile(value.mode)
   if (
+    !isControlGeneration(value.controlGeneration) ||
     value.hourlyRequestLimit !== profile.hourlyRequestLimit ||
     value.monthlyAllowanceMicroUsd !== GEMINI_MONTHLY_ALLOWANCE_MICRO_USD ||
     !RATE_CARD_PATTERN.test(value.rateCardId) ||
@@ -321,6 +417,7 @@ function validateReserveInput(value) {
   return Object.freeze({
     teacherUid,
     classroomId,
+    controlGeneration: value.controlGeneration,
     requestId: value.requestId,
     monthKey: value.monthKey,
     mode: value.mode,
@@ -400,9 +497,10 @@ function validateRateLimitLedgerDocument(value, { scopeDigest, monthKey, nowMs }
 }
 
 function validateReservationDocument(value, nowMs) {
-  requireExactObject(value, RESERVATION_KEYS, 'reservation document')
+  requireExactObject(value, value?.schemaVersion === 4 ? [...RESERVATION_KEYS, 'controlGeneration'] : RESERVATION_KEYS, 'reservation document')
   if (
-    value.schemaVersion !== SCHEMA_VERSION ||
+    ![3, 4].includes(value.schemaVersion) ||
+    (value.schemaVersion === 4 && !isControlGeneration(value.controlGeneration)) ||
     !DIGEST_PATTERN.test(value.scopeDigest) ||
     !DIGEST_PATTERN.test(value.ledgerId) ||
     !DIGEST_PATTERN.test(value.rateLimitLedgerId) ||
@@ -444,6 +542,7 @@ function validateReservationDocument(value, nowMs) {
 
 function requireMatchingReservation(existing, expected) {
   for (const key of [
+    'controlGeneration',
     'scopeDigest',
     'ledgerId',
     'rateLimitLedgerId',

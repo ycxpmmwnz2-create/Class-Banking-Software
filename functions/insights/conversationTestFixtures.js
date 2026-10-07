@@ -5,7 +5,7 @@ export function database() {
   const initial = {}
   for (const tenant of ['a', 'b']) {
     initial[`teachers/teacher-${tenant}`] = { uid: `teacher-${tenant}`, status: 'active', classroomId: `class-${tenant}` }
-    initial[`classrooms/class-${tenant}`] = { ownerUid: `teacher-${tenant}` }
+    initial[`classrooms/class-${tenant}`] = { ownerUid: `teacher-${tenant}`, accessControl: { schemaVersion: 1, mode: 'active', generation: 1, changedAt: '2026-08-01T00:00:00.000Z', auditId: 'fixture' } }
     initial[`classrooms/class-${tenant}/studentDisplay/rent`] = { rentAmount: 10, updatedAt: '2026-08-27T17:00:00.000Z' }
     for (const id of [1, 2]) initial[`classrooms/class-${tenant}/students/${id}`] = {
       id, name: tenant === 'a' ? 'Avery Morgan' : 'Blake Smith', balance: tenant === 'a' ? id : id * 10,
@@ -34,7 +34,7 @@ export function database() {
   return {
     initial, store, reads, writes,
     firestore: {
-      collection: query,
+      doc, collection: query,
       runTransaction(callback) {
         const execute = async () => {
         const pending = new Map()

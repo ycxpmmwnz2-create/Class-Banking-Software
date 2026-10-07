@@ -1,9 +1,12 @@
-# Teacher award/deduct service — Stage19 preview and recovery candidate
+# Teacher award/deduct service — button integration candidate
 
 Stage17 committed as 9ab312a and Stage18 as a69833b after Muse/Claude reviews.
-Stage19 preview/recovery candidate awaits Muse then Claude review. Dormant: not exported by functions/index.js,
-not callable from the browser, and not deployed. Stage16 is committed as 2c1cb0a;
-this stage builds on its reviewed calculations. No real-data scanner activation.
+Stage19 preview/recovery was reviewed and committed as 88e4084. Andrew subsequently
+authorized connecting and testing the existing Quick Cash and custom Add/Subtract
+buttons. The current uncommitted candidate wires those V2 buttons and five guarded
+callables. It awaits detailed Muse checking and independent Claude final review;
+it is not deployed or production-qualified. Stage16 is committed as 2c1cb0a.
+No real-data scanner activation or existing-classroom initialization is included.
 
 ## Scope and storage contract
 
@@ -45,10 +48,30 @@ receipt is migrated. Before any future activation, all receipt readers and
 recovery endpoints must understand both committed formats. Rolling back to
 Stage17 after creating v2 receipts would make those replays fail closed; retain
 compatible readers and use maintenance/readOnly recovery, never delete receipts
-or replace request IDs to work around a version mismatch. The service is dormant,
-so this stage needs no live migration.
+or replace request IDs to work around a version mismatch. This candidate has no
+live receipt migration and grants no activation authority.
 
-Actor and quota documents MUST already exist from a future reviewed initializer.
+Actor and quota documents MUST already exist. The invitation-controlled new-
+classroom transaction now initializes them atomically with its foundation only
+after bounded probes find no students, ledgers, receipts, actors or metadata
+under that new ID. It also seeds the existing browser's category defaults.
+Existing-classroom onboarding replay never initializes or resets metadata.
+Existing classrooms still need a separately qualified initializer; none is
+available for real data under the current scanner NO-GO.
+The startup status check cannot succeed without valid actor/quota metadata.
+Until status is confirmed, the current browser locks its guarded teacher actions,
+including non-money classroom edits, to prevent a stale whole-classroom save from
+overwriting a money action. The status panel describes this lock without claiming
+a previous save exists. Read-only navigation remains available.
+
+Activation prerequisite: every classroom reached by this new V2 client must
+already have valid, consistent actor/quota metadata and counted terminal receipts.
+Do not deploy/enable this integration for older V2 classrooms lacking that setup.
+Fictional local/staging acceptance can use newly invitation-onboarded classrooms.
+Preserve existing real classrooms until a separately reviewed initializer is
+qualified; do not delete/recreate them or manually seed/reset metadata as a bypass.
+This documents the existing protective lock and grants no activation authority.
+
 An absent or malformed counter is never inferred to mean zero. No initializer,
 reset, deletion or counter repair is provided here. Existing terminal receipts
 must already be counted, including cancellation tombstones. These collections
@@ -172,30 +195,64 @@ maximum plus headroom bounds that read set below 8 MiB; exact metadata schemas
 and the 8 KiB receipt cap bound writes. Planning remains read-only, not a
 reservation, and must never concatenate separate snapshots into one class plan.
 
-Server fencing is now available, but the future client still must persist the
-bound unresolved marker before dispatch, make one status/cancel recovery attempt
-following a rejected/uncertain dispatch, keep blocked on failed recovery, and
-require explicit acknowledgment before a new group. Callable error mapping must
-return fixed safe responses and distinguish rejection from terminal cancellation.
-Those browser/callable paths are NOT implemented or qualified here. Tests simulate
-service invocations, not teacher confirmation or end-to-end UI behavior.
+The candidate client persists the project/UID/classroom/request ID marker before
+dispatch, outside tenant-cache keys so logout cannot erase it. The marker contains
+no money, names, memo or PIN. It makes one status/cancel recovery attempt after a
+rejected or uncertain dispatch, retains the original rejection reason, and stays
+blocked on failed recovery. It never resubmits a dispatched money action. Startup
+also resolves the server actor pointer, including after local-storage loss.
+
+The teacher sees the server's selected students, current/expected balances and
+excluded count/names in an explicit confirmation. Excluded names come from the
+loaded classroom roster; the planner returns their ordered IDs without fetching
+or verifying that remainder. Only the planned prefix is sent. On a directly
+confirmed partial save, the client returns the exact validated notYetPlanned
+list; the page keeps the amount/type/category/memo, switches to Selected Students,
+checks only those IDs and names them in the result. No click or acknowledgment
+automatically submits them. Each next group needs a fresh preview and explicit
+confirmation. After a complete refreshed save the draft resets as before.
+Saved groups remain
+blocked until explicit acknowledgment. A recovery panel outside the classroom
+projection permits minimal-receipt acknowledgment after reload failure without
+claiming the view refreshed. Account/epoch changes prevent stale publication,
+cache writes and clearing the outgoing marker. Failed acknowledgment can be
+checked or retried for the same receipt without applying money again.
+Only a successful planned-execute response confirms the current draft. A minimal
+recovered receipt (including another device's pending action found before planning)
+confirms a saved action but cannot establish its equivalence to that draft. The
+UI then uses recovery wording and keeps the draft; it does not claim the selected
+amount/recipients were saved or reset the form. Fresh balances are still loaded
+when available, and acknowledgment remains explicit before another deliberate save.
+
+`teacherMoneyCallables.js` maps only recognized, reauthorized and digest-bound
+validation refusals to `{status: "rejected", wroteNothing: true}`. That means
+this invocation staged no money, not that another invocation cannot commit the
+same key. SDK/transport errors remain ambiguous and safely redacted. The five
+exports in `functions/index.js` use the existing project/release/global-maintenance
+guard before opening handles; closed/verification maintenance blocks all five.
+Only the planned executor is callable. Each recovery route supplies its own
+operation; clients cannot override it or select another teacher's classroom.
 
 Stage16 Claude C1 is addressed by extracting the unchanged estimator algorithm
 into moneyDocumentSize.js. The scanner retains its existing exported wrapper and
 error contract. moneyCompatibility.js stays excluded from the deployed graph;
-the new service is also explicitly excluded while dormant. The release-order
-file inventory gains only the paired estimator/service modules and tests.
+the award service is now deliberately included through the callable adapter.
+The release-order contract pins this change while keeping operator scanner and
+compatibility modules outside the deployed graph.
 
-Before application use: review these preview/recovery services, implement/review
-metadata initialization and the callable/client recovery integration, strict rules
-and UI, other money writers, compatibility qualification and the release sequence.
+Before release: complete both independent reviews and qualify the entire deployed
+writer/rules/access boundary, existing-classroom initialization, compatibility
+and the release sequence. Approvals, roster adjustments, opening balances,
+student money, Insights dispatch and credential-trigger containment have not
+all adopted the final teacher-money contract. The existing generic saver and
+rules remain unchanged; this button integration is not full writer containment.
 The actor stays blocked after a save until explicit acknowledgment through the
 recovery service. Never clear metadata manually to make a pilot work. This does
 not supersede Stage15's scanner NO-GO or certify production readiness.
 
-Andrew's October 1 finish line is this bounded server step plus an outstanding-work
-audit, then a stop before further implementation. No UI integration or additional
-feature implementation is inferred from the remaining requirements.
+Andrew expanded the earlier October 1 server-only finish line to finish connecting
+and testing the existing money buttons, then review and resolve required cleanup.
+This is an authorized local candidate, not a clean bill of health for the site.
 
 Tests use fictional records: optimistic transaction fakes for retries, revocation,
 quota, malformed state and budgets; actual Firestore emulator transactions for
@@ -204,4 +261,29 @@ Commands: npm run test:phase3:unit, npm run test:phase3:contracts,
 npm run test:phase3:teacher-award, npm run test:phase3:money-compatibility,
 npm run lint, npm --prefix functions run lint. The guarded emulator command
 retains the existing credential exclusions and pins a demo project and localhost.
-These are not live, browser, complete recovery or production acceptance tests.
+The new client and offline Chromium/WebKit tests reach the actual money services
+using fictional optimistic storage. `npm run test:phase2b:server` separately reaches
+the actual five exports through Firebase client SDK HTTPS calls with real emulator
+Auth tokens and Admin SDK Firestore transactions, including a deliberately lost
+client response, replay-preserving onboarding, cancellation and tenant refusal.
+These layers do not prove production IAM, deployment, a native human confirmation,
+full writer containment or signed-in production acceptance.
+
+
+## October 4 local extension: complete teacher groups
+
+The shared money callable/recovery service now also accepts `approve`/`deny`
+with unique `transactionIds` plus explicit `allowNegative`, and `adjust`/`reset`
+with unique `{studentId, expectedCents, targetCents}` adjustments. New-action
+canonical intent digests use a separate versioned domain. Version-3 receipts
+retain the private compact target/ledger mapping; decision entries map existing
+transaction IDs to themselves, while adjustments derive new action-specific IDs.
+Every new group is complete or rejected; there is no automatic prefix/remainder.
+Prior award/deduct plans and version-1/2 recovery remain supported.
+
+The separate `editStudentProfileV2` callable accepts protocol/generation,
+captured classroom, student ID, expected name and requested name. Narrow name-only
+compare-and-set preserves historical records; exact desired-name retry still
+checks current authority. Browser name and balance controls are separate and
+keep failed drafts. These source changes await Muse and Claude and do not select
+strict rules, activate remaining writers or authorize deployment.

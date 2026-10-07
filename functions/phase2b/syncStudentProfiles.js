@@ -1,3 +1,4 @@
+import { requireClassroomControl } from '../phase3/classroomAccess.js'
 import bcrypt from 'bcryptjs'
 import {
   normalizeStudentLoginId,
@@ -216,6 +217,12 @@ async function readValidatedFoundation(transaction, firestore, classroomId) {
   }
 
   const classroomData = classroomSnap.data() ?? {}
+  // Enrolled lifecycle/reset services own credentials synchronously. Any control
+  // marker must validate or fail closed; never treat malformed control as legacy.
+  if (Object.hasOwn(classroomData, 'accessControl')) {
+    requireClassroomControl(classroomData.accessControl)
+    return false
+  }
   let ownerUid
   try {
     ownerUid = validateCanonicalDocumentId(classroomData.ownerUid, 'ownerUid')
@@ -249,6 +256,7 @@ async function readValidatedFoundation(transaction, firestore, classroomId) {
       'Teacher account is inactive or classroom ownership is mismatched.',
     )
   }
+  return true
 }
 
 /**
@@ -339,6 +347,11 @@ export async function syncStudentProfilesV2Handler(
     operation = 'update'
   }
 
+  // Avoid bcrypt for already enrolled rooms. This is only an optimization:
+  // every write callback rechecks the marker to fence concurrent enrollment.
+  const legacy = await firestore.runTransaction(transaction => readValidatedFoundation(transaction, firestore, classroomId), { readOnly: true })
+  if (!legacy) return Object.freeze({ success: true, action: 'enrolled_noop' })
+
   const attemptTime = now()
 
   // bcrypt runs once, before the transaction: hashing inside a callback
@@ -361,7 +374,9 @@ export async function syncStudentProfilesV2Handler(
 
   const runOnce = () => firestore.runTransaction(async (transaction) => {
     // ---- reads: foundation, then the studentId uniqueness check ----
-    await readValidatedFoundation(transaction, firestore, classroomId)
+    if (!await readValidatedFoundation(transaction, firestore, classroomId)) {
+      return Object.freeze({ success: true, action: 'enrolled_noop' })
+    }
 
     const existingCredQuery = credColRef.where('studentId', '==', studentId).limit(2)
     const existingCredSnap = await transaction.get(existingCredQuery)

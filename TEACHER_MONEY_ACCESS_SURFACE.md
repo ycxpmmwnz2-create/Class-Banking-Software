@@ -1,9 +1,15 @@
 # Teacher money and recovery: complete source export matrix (R4)
 
 Baseline: `86c7c148611250cad93502e2bc9b13179b34a65c`.
-This is the proposed disposition of all 17 callable/trigger exports in
-`functions/index.js`, not a claim that the wiring has been implemented.
-The nine parameter/secret/release-constant exports are configuration, not
+This preserves the policy disposition of the 17 baseline callable/trigger
+exports. The current source inventory has 24 invocation exports, including
+`getClassroomAccessV2` and the five award/recovery routes in the October 1
+uncommitted button-integration candidate. Those five routes are wired locally;
+this does not establish the implementation of every policy below or release
+readiness. The October 4 local candidate adds `editStudentProfileV2` and extends
+the shared money routes to complete approval/denial and adjustment/reset groups.
+All retained writer migrations and release qualification remain incomplete.
+The ten current parameter/secret/release-constant exports are configuration, not
 invocation surfaces. No scheduled Function is declared in that file.
 Production deployed-export inventory remains a separate release preflight.
 
@@ -36,6 +42,21 @@ denies application data access. Operator actions are separately authorized.
 
 ## New planned surfaces
 
+The five teacher-money routes and `getClassroomAccessV2` are present in the current
+source export inventory. All five money routes use the same global invocation
+guard and are blocked in closed/verification maintenance. Their service policy
+revalidates reciprocal ownership and classroom control inside transactions.
+New-classroom onboarding creates their actor/quota atomically; existing-classroom
+replay leaves them untouched, including when absent. See `TEACHER_AWARD_SERVICE.md`
+for the exact client integration and its outstanding rollout limitations.
+If startup cannot verify actor/quota metadata, the current client also locks
+guarded non-money teacher actions; it does not merely disable money buttons.
+The panel accurately reports unconfirmed money status without inventing a prior
+save. Activation of this integration requires valid metadata for every affected
+V2 classroom. Older classrooms without it must wait for a qualified initializer;
+only fictional acceptance classrooms may use a fresh invitation-controlled start.
+Never reset metadata or recreate real classrooms to bypass this condition.
+
 | Surface | Policy |
 | --- | --- |
 | `planTeacherMoneyV2` | Active current owner/generation, read-only consistent bounded-prefix preview of at most 100 supplied IDs; 64 KiB request/reply. Reserve worst-case complete dependency-group bytes BEFORE each read within the planner's own 8 MiB budget, including existing-document/overhead bounds. Stop before an unsafe read; return feasible prefix plus ordered remaining `notYetPlanned` IDs only, or explicit single-target limit without a plan. No unbounded query/all-target prefetch. Retry resets accounting; continuation freshly reauthorizes and never merges snapshots. Exact-action/version/size plan expires in 60 seconds. No receipt/money writes or auto-submit. Authorized summaries only; a plan grants no authority and execution revalidates all fields. |
@@ -44,6 +65,7 @@ denies application data access. Operator actions are separately authorized.
 | `acknowledgeTeacherMoneyV2` | Active/readOnly, own committed receipt and exact pointer; recovery metadata only. Explicit teacher acknowledgment may use terminal status without a successful classroom reload; no stale data publication. |
 | `cancelTeacherMoneyV2` | Active/readOnly, create-only cancelled tombstone fences the whole authenticated request key, any digest; no money write, no different-pointer change. Automatic recovery after ordinary dispatched rejection is allowed; committed winner instead requires acknowledgment. No payload/PIN needed. |
 | `editStudentProfileV2` | Active current-generation expected-name compare-and-set, or successful no-op if current already equals requested new name; immutable historical names, current profile only. Separate from balance adjustment. |
+| `getStudentSettingsV2` | Active/readOnly, exact version-bound student identity plus reciprocal foundation and extant own student; consistent read-only transaction. Return only bound classroom/student IDs, protocol version, normalized category lists and three enablement flags. Empty request; no teacher-private data, writes, new Firestore permissions or student-chosen tenant. Normal maintenance admission only. |
 | `getClassroomAccessV2` | Active/readOnly; authenticated reciprocal teacher or exact active version-bound student credential. Return only mode, protocolVersion and generation. Suspended generic denial; no sensitive data and no writes. |
 | Local operator CLI | Existing IAM plus explicit project/classroom list, expected generation and operation ID. Plan/dry-run by default; separately authorized execute writes control and audit atomically. No browser role escalation. |
 
@@ -94,3 +116,46 @@ Implementation must add barrier tests per caller and real final-rules tests;
 a unit test of the shared helper is not enough. Actual deployment inventory,
 old-revision drain and trigger delivery are release evidence, not proven by this
 document or its source inventory check.
+
+
+### Stage 3 local integration status — October 4, 2026
+
+The candidate student callable and actual page use integer amountCents plus
+protocol/captured generation; current control, bounded balance arithmetic and
+credential checks run before every save/replay attempt. Removal now binds captured
+classroom/control and refuses pending mirror or ledger requests before deletion.
+This prevents new orphan pending records; existing orphans stay explicitly visible
+outside the current-roster approval group. Student creation, PIN/login and background
+writers remain uncontained for this cutover. No deployment/selection is implied.
+
+
+October 5 Stage 4 candidate: `createStudentV2` uses captured classroom/generation,
+shared actor/quota, receipt v4 and keyed full-intent HMAC. The existing status and
+acknowledgment routes recover allocated student/login IDs without exposing PIN,
+password hash or HMAC. Active/readOnly receipt recovery and active-only new writes
+remain distinct. STUDENT_CREATION_HMAC_KEYS is a private callable secret binding,
+not a new invocation export. Provisioning/retention is a release prerequisite.
+
+
+### October 5 Stage 5 local implementation (bounded Muse/Claude PASS; no release)
+
+PIN reset now binds classroom/protocol/generation and transactionally rechecks
+foundation/control after hashing; all three page callers capture access, with
+one generation for a bulk group. Login checks read control in the verifier and
+fresh code/foundation/generation/credential/version before token mint, returning
+a minimal access descriptor beside its token. Existing sensitive PIN directory
+checks remain unchanged. Enrolled credential triggers are transactionally inert
+in every mode; malformed markers fail closed and pre-enrollment writes recheck
+concurrent enrollment. This records local wiring, not release or activation.
+
+
+### October 5 Stage 6 local candidate (reviews pending)
+
+Insights composition now propagates one captured active generation through both
+evidence loaders, usage reserve/replay, each durable provider-dispatch claim,
+each tool execution and final publication. New reservation schema 4 is generation
+bound; schema 3 retains settlement-only compatibility. Private dispatch records
+are bounded by the existing four-turn budget and cannot be reused for retry.
+The audit writer stays unchanged and create-only in all modes, with new emulator
+proof. See WRITER_CONTAINMENT.md for cost, draining and rollback constraints.
+No selected rules/saver, export, gate, model, secret or allowance changes.

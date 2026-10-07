@@ -1085,6 +1085,7 @@ export function projectStudentSelfData({
   studentId,
   student,
   studentRent = null,
+  studentSettings = null,
   defaultSettings = {}
 } = {}) {
   if (typeof classroomId !== "string" || !classroomId.trim()) {
@@ -1104,6 +1105,7 @@ export function projectStudentSelfData({
   }
 
   const settings = cloneSettings(defaultSettings);
+  if (studentSettings) Object.assign(settings, studentSettings);
   settings.rentAmount = projectStudentRent(studentRent);
 
   return {

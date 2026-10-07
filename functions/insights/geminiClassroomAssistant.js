@@ -200,7 +200,8 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
   if (typeof now !== 'function') throw new TypeError('now must be a function.')
   if (!['legacy-prose', STRUCTURED_ANSWER_CONTRACT, CONVERSATIONAL_ANSWER_CONTRACT].includes(answerContract)) throw new TypeError('Unknown answer contract.')
   return Object.freeze({
-    async answer({ assistantEvidence, toolbox: suppliedToolbox, narrationAllowed = true } = {}) {
+    async answer({ assistantEvidence, toolbox: suppliedToolbox, narrationAllowed = true, beforeTool } = {}) {
+      if (beforeTool !== undefined && typeof beforeTool !== 'function') throw new TypeError('beforeTool must be a function.')
       const deadline = now() + CLASSROOM_ASSISTANT_MAX_DURATION_MS
       const toolbox = resolveToolbox(assistantEvidence, suppliedToolbox)
       const conversational = answerContract === CONVERSATIONAL_ANSWER_CONTRACT
@@ -356,6 +357,7 @@ export function createGeminiClassroomAssistant({ generateContent, now = Date.now
             })
           }
           const name = typeof call?.name === 'string' ? call.name : ''
+          await beforeTool?.()
           const registered = registry ? registry.execute(name, call?.args ?? {}) : null
           const result = registered ? registered.output : toolbox.execute(name, call?.args ?? {})
           const toolResponse = registered ?? Object.freeze({ evidenceCallId: callId, output: result })

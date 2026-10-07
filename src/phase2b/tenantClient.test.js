@@ -137,7 +137,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     const payload = {
       transactionId: 1700000000000,
       type: "Add",
-      amount: 5,
+      protocolVersion: 1, controlGeneration: 1, amountCents: 500,
       reason: "Homework"
     };
     const calls = [];
@@ -173,7 +173,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     const payload = {
       transactionId: 1700000000000,
       type: "Subtract",
-      amount: 2,
+      protocolVersion: 1, controlGeneration: 1, amountCents: 200,
       reason: "Rent"
     };
     const validTransaction = {
@@ -213,7 +213,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     const payload = {
       transactionId: 1700000000000,
       type: "Add",
-      amount: 5,
+      protocolVersion: 1, controlGeneration: 1, amountCents: 500,
       reason: "Homework"
     };
     const failed = await orchestrateStudentTransaction(
@@ -1106,6 +1106,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
           loginId: "ada"
         } };
       }
+      if (name === "getClassroomAccessV2") return { data: { protocolVersion: 1, mode: "active", generation: 1 } };
       if (name === "removeStudentV2") return { data: { success: true } };
       throw new Error("unexpected callable");
     };
@@ -1123,7 +1124,8 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.deepEqual(removed, { executed: true, result: { success: true } });
     assert.deepEqual(calls, [
       { name: "createStudentV2", payload: { name: "Ada", startingBalance: 5, pin: "1234" } },
-      { name: "removeStudentV2", payload: { studentId: "9" } }
+      { name: "getClassroomAccessV2", payload: {} },
+      { name: "removeStudentV2", payload: { studentId: "9", classroomId: "room_1", protocolVersion: 1, controlGeneration: 1 } }
     ]);
   });
 
@@ -1859,9 +1861,8 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       "viewStudentProfile must take its V2 classroom only from the resolved session"
     );
 
-    // The V2 PIN payload is exactly { studentId, newPin }: resetStudentPinV2
-    // rejects any additional key server-side, so a classroomId here would make
-    // every V2 PIN reset fail with invalid-argument.
+    // PIN drafts contain only studentId/newPin. The actual callable closures
+    // add the captured classroom/protocol/generation after a current access read.
     const pinPayloads = v2Source.match(/const payload = \{[\s\S]*?\};/g) || [];
     assert.equal(pinPayloads.length >= 2, true, "Expected the profile and activation V2 PIN payloads");
     for (const payload of pinPayloads) {
@@ -1889,12 +1890,12 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     assert.match(moneySource, /await orchestrateStudentTransaction\(/);
     assert.match(
       moneySource,
-      /\{ transactionId: Date\.now\(\), type, amount, reason \}/,
+      /\{ transactionId: Date\.now\(\), protocolVersion: 1,[\s\S]*?controlGeneration: access\.generation, type, amountCents, reason \}/,
       "The client must send only the exact student transaction payload",
     );
     assert.match(
       moneySource,
-      /retryPayload\.type === type[\s\S]*?retryPayload\.amount === amount[\s\S]*?retryPayload\.reason === reason/,
+      /retryPayload\.type === type[\s\S]*?retryPayload\.amountCents === amountCents[\s\S]*?retryPayload\.reason === reason/,
       "An exact retry must reuse its original transaction ID after an ambiguous failure",
     );
     assert.match(moneySource, /studentMoneyRetryPayload = payload;/);
@@ -1974,7 +1975,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       ["studentAuthLogs", "openStudentAuthLogs"],
       ["orchestrateProductionLogout", "logout"],
       ["orchestrateBulkOperation", "bulkActivateStudents"],
-      ["orchestrateCreateStudent", "addStudent"],
+      ["v2TeacherMoneyClient.createStudent", "addStudent"],
       ["orchestrateRemoveStudent", "removeStudent"],
       ["handleAuthTransition", "the auth observer"]
     ];

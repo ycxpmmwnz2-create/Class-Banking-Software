@@ -383,6 +383,7 @@ function installHarness() {
       return waiters.length;
     },
     isHeld: (name) => barrier(name).held,
+    waiting: (name) => barrier(name).waiters.length,
 
     // index.html does NOT expose its TenantSession on window, and Item 10 is
     // tests-only, so the session object cannot be reached from here. Everything

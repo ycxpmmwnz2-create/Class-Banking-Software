@@ -27,7 +27,7 @@ import { createFirestoreQuestionEvidenceLoader } from './questionEvidenceAdapter
 import { createInsightQuestionService } from './questionService.js'
 import { createInsightToolQuestionService } from './toolQuestionService.js'
 import { createFirestoreTenantEvidenceLoader } from './tenantEvidenceAdapter.js'
-import { resolveActiveTeacherTenant } from '../phase2b/teacherTenantResolver.js'
+import { createInsightRequestScope } from './insightAccess.js'
 
 export function createVersion3GeminiLiveHandler({
   firestore,
@@ -47,51 +47,51 @@ export function createVersion3GeminiLiveHandler({
     now: () => now().getTime(),
   })
   const generateContentOnce = createGeminiGenerateContentOnce({ apiKey, GoogleGenAIClass })
-  const provider = createGeminiProviderAdapter({ generateContentOnce })
-  const questionProvider = createGeminiQuestionAdapter({ generateContentOnce })
+  const generateContent = toolAssistantEnabled
+    ? createGeminiGenerateContent({ apiKey, GoogleGenAIClass, maxAttempts: 1 }) : null
   const loadQuestionEvidence = createFirestoreQuestionEvidenceLoader({ firestore, now })
 
-  const analyzeInsights = createInsightAnalysisService({
-    now,
-    resolveActiveTeacherTenant: ({ auth }) => resolveActiveTeacherTenant({ firestore, auth }),
-    loadDeidentifiedTenantEvidence: loadEvidence,
-    buildFactPacket: buildFactPacketFromEvidence,
-    quoteWorstCaseCost: quoteGeminiWorstCaseCost,
-    provider,
-    priceActualUsage: priceGeminiActualUsage,
-    usageLedger,
-  })
-  const askQuestion = createInsightQuestionService({
-    now,
-    resolveActiveTeacherTenant: ({ auth }) => resolveActiveTeacherTenant({ firestore, auth }),
-    loadQuestionEvidence,
-    quoteWorstCaseCost: quoteGeminiQuestionWorstCaseCost,
-    provider: questionProvider,
-    priceActualUsage: priceGeminiQuestionActualUsage,
-    usageLedger,
-  })
-  const askQuestionWithTools = toolAssistantEnabled
-    ? createInsightToolQuestionService({
+  return async function handleVersion3AiRequest(request) {
+    const scope = await createInsightRequestScope({ firestore, auth: request?.auth, usageLedger })
+    const scopedGenerateOnce = input => scope.dispatch(() => generateContentOnce(input))
+    const shared = {
       now,
-      resolveActiveTeacherTenant: ({ auth }) => resolveActiveTeacherTenant({ firestore, auth }),
-      loadQuestionEvidence,
+      resolveActiveTeacherTenant: async () => scope.identity,
+      usageLedger: scope.ledger,
+    }
+    const analyzeInsights = createInsightAnalysisService({
+      ...shared,
+      loadDeidentifiedTenantEvidence: input => scope.load(loadEvidence, input),
+      buildFactPacket: buildFactPacketFromEvidence,
+      quoteWorstCaseCost: quoteGeminiWorstCaseCost,
+      provider: createGeminiProviderAdapter({ generateContentOnce: scopedGenerateOnce }),
+      priceActualUsage: priceGeminiActualUsage,
+    })
+    const askQuestion = createInsightQuestionService({
+      ...shared,
+      loadQuestionEvidence: input => scope.load(loadQuestionEvidence, input),
+      quoteWorstCaseCost: quoteGeminiQuestionWorstCaseCost,
+      provider: createGeminiQuestionAdapter({ generateContentOnce: scopedGenerateOnce }),
+      priceActualUsage: priceGeminiQuestionActualUsage,
+    })
+    const assistant = toolAssistantEnabled ? createConversationalClassroomAssistant({
+      // Every model turn and optional narration gets its own durable claim.
+      generateContent: input => scope.dispatch(() => generateContent(input)),
+    }) : null
+    const askQuestionWithTools = toolAssistantEnabled ? createInsightToolQuestionService({
+      ...shared,
+      loadQuestionEvidence: input => scope.load(loadQuestionEvidence, input),
       answerContract: CONVERSATIONAL_ANSWER_CONTRACT,
       quoteWorstCaseCost: quoteConversationalWorstCaseCost,
       quoteBaseWorstCaseCost: quoteGeminiToolAssistantWorstCaseCost,
-      assistant: createConversationalClassroomAssistant({
-        // An ambiguous failed request may still be billed. Keep one transport
-        // attempt per reserved model turn; the service retains the reservation
-        // on failure instead of invisibly retrying and undercounting usage.
-        generateContent: createGeminiGenerateContent({ apiKey, GoogleGenAIClass, maxAttempts: 1 }),
-      }),
+      assistant: { answer: input => assistant.answer({ ...input, beforeTool: scope.assertActive }) },
       priceActualUsage: priceGeminiToolAssistantActualUsage,
-      usageLedger,
-    })
-    : null
-
-  return async function handleVersion3AiRequest(request) {
-    return request?.data?.kind === 'question'
+    }) : null
+    const result = await (request?.data?.kind === 'question'
       ? (toolAssistantEnabled ? askQuestionWithTools(request) : askQuestion(request))
-      : analyzeInsights(request)
+      : analyzeInsights(request))
+    // Includes completed-result replay and deterministic/narration fallbacks.
+    await scope.assertActive()
+    return result
   }
 }

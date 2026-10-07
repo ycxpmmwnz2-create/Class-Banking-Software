@@ -168,3 +168,67 @@ test('retained audit history blocks resetting a missing control under a new oper
   await assert.rejects(execute(p), category('journal-conflict'))
   assert.equal((await db.collection('classroomInitializationRuns').get()).size, 0)
 })
+
+const foreignOperationId = '112233445566778899aabbccddeeff00'
+const ownershipPath = 'classroomInitializationState/ownership'
+const competingPlan = () => planClassroomInitializationRehearsal({ firestore: db, projectId, operationId: foreignOperationId, clock })
+
+test('lost empty-run response preserves ownership; only the original saved plan resumes', async () => {
+  const p = await plan(), other = await competingPlan(), original = db.runTransaction.bind(db)
+  let calls = 0
+  db.runTransaction = async (...args) => {
+    const result = await original(...args)
+    if (++calls === 1) throw new Error('simulated lost response after ownership commit')
+    return result
+  }
+  try { await assert.rejects(execute(p), category('rehearsal-failed')) } finally { db.runTransaction = original }
+  const owner = await db.doc(ownershipPath).get(), run = await db.doc(`classroomInitializationRuns/${operationId}`).get()
+  assert.ok(owner.updateTime.isEqual(run.updateTime)); assert.equal(run.data().completedCount, 0)
+  const roots = await Promise.all(p.rows.map(row => db.doc(`classrooms/${row.classroomId}`).get()))
+  await assert.rejects(competingPlan(), category('journal-conflict'))
+  await assert.rejects(execute(other), category('journal-conflict'))
+  assert.equal((await db.collection('classroomInitializationRuns').get()).size, 1)
+  assert.ok((await owner.ref.get()).updateTime.isEqual(owner.updateTime))
+  assert.ok((await run.ref.get()).updateTime.isEqual(run.updateTime))
+  for (const root of roots) assert.ok((await root.ref.get()).updateTime.isEqual(root.updateTime))
+  const restarted = createDb()
+  try { assert.equal((await execute(JSON.parse(JSON.stringify(p)), restarted)).completedCount, 2) }
+  finally { await restarted.terminate() }
+  const client = env.authenticatedContext('owner-0').firestore()
+  await assertFails(client.doc(ownershipPath).get())
+  await assertFails(client.doc(ownershipPath).set({ operationId: foreignOperationId }))
+})
+
+test('two different operations race for one permanent owner; losing plan cannot create an empty run', async () => {
+  const plans = [await plan(), await competingPlan()]
+  const outcomes = await Promise.allSettled(plans.map(p => execute(p)))
+  assert.ok(outcomes.every(result => result.status === 'fulfilled' ||
+    ['journal-conflict', 'retryable-conflict'].includes(result.reason.category)))
+  const owner = await db.doc(ownershipPath).get()
+  assert.ok(owner.exists)
+  const winningPlan = plans.find(p => p.operationId === owner.data().operationId)
+  assert.ok(winningPlan)
+  const loser = plans.find(p => p !== winningPlan)
+  assert.equal((await execute(winningPlan)).completedCount, 2)
+  await assert.rejects(execute(loser), category('journal-conflict'))
+  const runs = await db.collection('classroomInitializationRuns').get()
+  assert.deepEqual(runs.docs.map(doc => doc.id), [winningPlan.operationId])
+  for (const row of winningPlan.rows) {
+    const root = await db.doc(`classrooms/${row.classroomId}`).get()
+    assert.equal(root.data().accessControl.auditId, winningPlan.operationId)
+    assert.equal((await root.ref.collection('accessControlAudits').get()).size, 1)
+  }
+})
+
+test('a legacy zero-room journal blocks other operations and can acquire ownership on exact replay', async () => {
+  const p = await plan(), other = await competingPlan()
+  await db.doc(`classroomInitializationRuns/${operationId}`).create({
+    kind: p.kind, projectId, scopeDigest: p.scopeDigest, operationId, changedAt: p.changedAt,
+    classroomCount: p.rows.length, completedCount: 0,
+  })
+  await assert.rejects(competingPlan(), category('journal-conflict'))
+  await assert.rejects(execute(other), category('journal-conflict'))
+  assert.equal((await db.doc(ownershipPath).get()).exists, false)
+  assert.equal((await execute(p)).completedCount, 2)
+  assert.equal((await db.doc(ownershipPath).get()).data().operationId, operationId)
+})

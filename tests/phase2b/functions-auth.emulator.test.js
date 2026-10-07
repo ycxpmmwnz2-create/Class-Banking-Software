@@ -1,3 +1,4 @@
+import { deriveBaseLoginId } from '../../functions/phase2b/syncStudentProfiles.js'
 /**
  * Phase 2B Item 8 — real Auth/Functions/Firestore emulator acceptance.
  *
@@ -15,12 +16,14 @@
 import { describe, it, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 import process from 'node:process'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
+import { createTeacherMoneyClient } from '../../src/phase3/teacherMoneyClient.js'
+import { teacherAwardPaths } from '../../functions/phase3/teacherAwardService.js'
 
 import { initializeApp, deleteApp } from 'firebase/app'
 import {
@@ -37,7 +40,7 @@ import {
   doc,
   getDoc,
   getFirestore,
-  writeBatch,
+  updateDoc,
 } from 'firebase/firestore'
 import {
   getFunctions,
@@ -63,7 +66,8 @@ const GATE_OFF_PROJECT_ID = 'demo-morgan-bank-phase2b-server-off-test'
 const GATE_ON_PROJECT_ID = 'demo-morgan-bank-phase2b-server-test'
 const FUNCTIONS_EMULATOR_HOST = '127.0.0.1'
 const FUNCTIONS_EMULATOR_PORT = 5001
-const FINAL_RULES_PATH = path.join(REPO_ROOT, 'firestore.phase3.final.rules')
+const FINAL_RULES_PATH = path.join(REPO_ROOT, process.env.PHASE3_WRITER_CONTAINMENT === 'true'
+  ? 'firestore.phase3.money.rules' : 'firestore.phase3.final.rules')
 
 /** The hardcoded UID the untouched legacy handlers still authorize. */
 const LEGACY_TEACHER_UID = 'YkYUzIzy0aW7roolM1VaLcIJPuN2'
@@ -199,10 +203,23 @@ async function drainStudentTriggers() {
   try {
     const students = await db.collectionGroup('students').get()
     if (students.empty) return
+    const legacy = []
+    for (const student of students.docs) {
+      const classroomId = student.ref.parent.parent.id
+      const root = await student.ref.parent.parent.get()
+      if (root.data()?.accessControl) continue // enrolled triggers intentionally do not deactivate
+      const creds = await credentialsRef(classroomId).where('studentId','==',student.id).get()
+      for (const cred of creds.docs) legacy.push({ ref:cred.ref, updatedAt:cred.data().updatedAt })
+    }
     await Promise.all(students.docs.map(doc => doc.ref.delete()))
     await waitFor(async () => {
-      const creds = await db.collectionGroup('studentCredentials').get()
-      return creds.docs.every(doc => doc.data().active !== true)
+      // An already inactive credential is not evidence that its delete event
+      // finished. Observe the trigger timestamp too before deleting foundation.
+      for (const prior of legacy) {
+        const current = await prior.ref.get()
+        if (current.exists && (current.data().active !== false || current.data().updatedAt === prior.updatedAt)) return false
+      }
+      return true
     }, { timeoutMs: 10000, pollIntervalMs: 100, label: 'student delete triggers to drain' })
   } catch {
     // A fixture whose foundation a test deliberately broke cannot drain
@@ -393,8 +410,37 @@ async function waitForCredentialByStudentId(classroomId, studentId, label) {
  * `resetStudentPinV2`; a student document's own fields never control a
  * credential.
  */
+// Explicit pre-enrollment compatibility fixture, confined to the D trigger suite.
+async function onboardUnenrolledTeacher(email, name) {
+  const teacher = await onboardGoogleTeacher(email, name)
+  const root = db.doc(`classrooms/${teacher.classroomId}`)
+  const data = (await root.get()).data()
+  delete data.accessControl
+  await root.set(data)
+  return teacher
+}
+
+// E/F test credentials are explicit emulator fixtures: enrolled roots no longer
+// delegate credential creation to asynchronous student-document events.
+async function seedInactiveCredential(classroomId, studentId) {
+  const student = (await studentDocRef(classroomId,studentId).get()).data()
+  const loginId = deriveBaseLoginId(student.name)
+  const ref = credentialsRef(classroomId).doc(loginId)
+  await ref.create({loginId,classroomId,studentId,
+    authUid:deriveStudentAuthUid(classroomId,studentId),schemaVersion:1,active:false,
+    pinHash:await bcrypt.hash('1234',12),pinUpdatedAt:1000,createdAt:1000,updatedAt:1000,
+    failedAttempts:0,lockedUntil:null})
+  return ref.get()
+}
+
+async function resetWire(teacherFunctions, studentId, newPin) {
+  const {data} = await httpsCallable(teacherFunctions,'resolveTeacherTenantV2')({})
+  const access = (await httpsCallable(teacherFunctions,'getClassroomAccessV2')({})).data
+  return {studentId,newPin,classroomId:data.classroom.id,protocolVersion:1,controlGeneration:access.generation}
+}
+
 async function activateStudentPin(teacherFunctions, studentId, newPin) {
-  const res = await httpsCallable(teacherFunctions, 'resetStudentPinV2')({ studentId, newPin })
+  const res = await httpsCallable(teacherFunctions, 'resetStudentPinV2')(await resetWire(teacherFunctions, studentId, newPin))
   assert.equal(res.data.success, true)
   return res.data
 }
@@ -432,6 +478,8 @@ if (testMode === 'gate-off') {
         'removeStudentV2',
         'listStudentPinsV2',
         'submitStudentTransactionV2',
+        'planTeacherMoneyV2', 'executeTeacherMoneyV2', 'getTeacherMoneyStatusV2',
+        'acknowledgeTeacherMoneyV2', 'cancelTeacherMoneyV2', 'editStudentProfileV2',
       ]) {
         let error = null
         try {
@@ -476,6 +524,8 @@ if (testMode === 'gate-off') {
         'removeStudentV2',
         'listStudentPinsV2',
         'submitStudentTransactionV2',
+        'planTeacherMoneyV2', 'executeTeacherMoneyV2', 'getTeacherMoneyStatusV2',
+        'acknowledgeTeacherMoneyV2', 'cancelTeacherMoneyV2', 'editStudentProfileV2',
       ]) {
         await expectCallableError(
           () => httpsCallable(functions, name)({}),
@@ -665,6 +715,7 @@ if (testMode === 'gate-on') {
     FIREBASE_AUTH_EMULATOR_HOST: authHost,
     GCLOUD_PROJECT: GATE_ON_PROJECT_ID,
     MULTI_TEACHER_V2_ENABLED: 'true',
+    MULTI_TEACHER_V2_MAINTENANCE_MODE: 'normal',
     MORGAN_BANK_DEPLOYMENT_TIER: 'production',
     MORGAN_BANK_STAGING_PROJECT_ID: '',
   })
@@ -1503,17 +1554,206 @@ if (testMode === 'gate-on') {
     })
 
     // -----------------------------------------------------------------------
+    describe('C1. Planned teacher money callable integration', () => {
+      it('real client recovers a lost callable response, acknowledges explicitly, and onboarding replay preserves its pending receipt', async () => {
+        const teacher = await onboardGoogleTeacher('money.flow@school.org', 'Fictional Money Room')
+        await createStudentFixture(teacher, { name: 'Fictional Avery', startingBalance: 10, pin: '2468' })
+        const values = new Map(), calls = [], projectId = expectedProject
+        const session = { projectId, captureIdentity: () => ({ uid: teacher.uid, role: 'teacher', classroomId: teacher.classroomId }),
+          validateCapturedIdentity: captured => captured.uid === teacher.uid && captured.classroomId === teacher.classroomId }
+        const paths = teacherAwardPaths(teacher.classroomId, teacher.uid, '01'.repeat(16))
+        let preview, loaded
+        const client = createTeacherMoneyClient({ session, currentUid: () => teacher.auth.currentUser?.uid,
+          storage: { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) },
+          random: { getRandomValues(bytes) { bytes.fill(1); return bytes } },
+          confirmPlan: result => { preview = result; return true },
+          reload: async () => { loaded = (await getDoc(doc(teacher.firestore, `classrooms/${teacher.classroomId}/students/1`))).data(); return true },
+          call: async (name, data) => {
+            calls.push(name)
+            if (name === 'executeTeacherMoneyV2') assert.equal(values.size, 1, 'durable marker before dispatch')
+            const result = (await httpsCallable(teacher.functions, name)(data)).data
+            // Lose only the client response AFTER the actual HTTP invocation and
+            // Admin SDK transaction complete, then recover over real HTTP.
+            if (name === 'executeTeacherMoneyV2') throw new Error('fictional lost client response')
+            return result
+          },
+        })
+        assert.equal((await client.check()).status, 'idle')
+        const recovered = await client.run({ action: 'award', studentIds: [1], amountCents: 110,
+          reason: 'Homework', category: 'Homework', memo: '' })
+        assert.equal(recovered.status, 'committed'); assert.equal(recovered.intentConfirmed, false)
+        assert.equal(loaded.balance, 11.1); assert.equal(loaded.transactions.length, 2)
+        assert.equal(client.isBlocked(), true); assert.equal(values.size, 1)
+        assert.equal((await client.run({})).status, 'blocked')
+        assert.equal(calls.filter(name => name === 'executeTeacherMoneyV2').length, 1)
+        assert.equal((await db.doc(paths.quota).get()).data().count, 2)
+        assert.equal((await db.doc(paths.actor).get()).data().unacknowledgedRequestId, preview.request.requestId)
+        const repeat = await httpsCallable(teacher.functions, 'onboardTeacherClassroomV2')({ classroomName: 'Ignored' })
+        assert.equal(repeat.data.created, false)
+        assert.equal((await db.doc(paths.quota).get()).data().count, 2)
+        assert.equal((await db.doc(paths.actor).get()).data().unacknowledgedRequestId, preview.request.requestId)
+        assert.equal((await client.acknowledge()).status, 'acknowledged')
+        assert.equal(client.isBlocked(), false); assert.equal(values.size, 0)
+        assert.equal((await db.doc(paths.actor).get()).data().unacknowledgedRequestId, null)
+        const ledgers = await db.collection(`classrooms/${teacher.classroomId}/transactions`).get()
+        assert.equal(ledgers.size, 2, 'opening balance plus exactly one recovered award')
+        assert.deepEqual(ledgers.docs.map(d => d.data()).sort((a,b) => a.id-b.id),
+          [...loaded.transactions].sort((a,b) => a.id-b.id))
+        assert.equal(loaded.transactions.filter(t => t.source === 'Opening Balance').length, 1)
+      })
+
+      it('stale plan refusal is correlated, status absence stays unconfirmed, and cancellation fences execution', async () => {
+        const teacher = await onboardGoogleTeacher('money.stale@school.org', 'Fictional Stale Room')
+        await createStudentFixture(teacher, { name: 'Fictional Blake', startingBalance: 10, pin: '2468' })
+        const ledgerBefore = (await db.collection(`classrooms/${teacher.classroomId}/transactions`).get()).docs.map(d => d.data())
+        const access = (await httpsCallable(teacher.functions, 'getClassroomAccessV2')({})).data
+        const requestId = 'ab'.repeat(16)
+        const preview = (await httpsCallable(teacher.functions, 'planTeacherMoneyV2')({ protocolVersion: 1,
+          controlGeneration: access.generation, requestId, action: 'deduct', studentIds: [1], amountCents: 110,
+          reason: 'Rent', category: 'Rent', memo: '' })).data
+        await db.doc(`classrooms/${teacher.classroomId}/students/1`).update({ balance: 12 })
+        const envelope = { request: preview.request, plan: preview.plan }
+        const rejected = (await httpsCallable(teacher.functions, 'executeTeacherMoneyV2')(envelope)).data
+        assert.deepEqual(rejected, { protocolVersion: 1, status: 'rejected', requestId,
+          digest: preview.plan.digest, reason: 'stale-plan', wroteNothing: true })
+        const recovery = { protocolVersion: 1, classroomId: teacher.classroomId, requestId }
+        assert.equal((await httpsCallable(teacher.functions, 'getTeacherMoneyStatusV2')(recovery)).data.status, 'unconfirmed')
+        assert.equal((await httpsCallable(teacher.functions, 'cancelTeacherMoneyV2')(recovery)).data.status, 'cancelled')
+        assert.equal((await httpsCallable(teacher.functions, 'executeTeacherMoneyV2')(envelope)).data.reason, 'request-cancelled')
+        assert.equal((await db.doc(`classrooms/${teacher.classroomId}/students/1`).get()).data().balance, 12)
+        assert.deepEqual((await db.collection(`classrooms/${teacher.classroomId}/transactions`).get()).docs.map(d => d.data()), ledgerBefore)
+      })
+
+      it('new routes deny anonymous access and foreign-classroom recovery without leaking a receipt', async () => {
+        const anonymous = createTestClientApp()
+        for (const name of ['planTeacherMoneyV2', 'executeTeacherMoneyV2', 'getTeacherMoneyStatusV2',
+          'acknowledgeTeacherMoneyV2', 'cancelTeacherMoneyV2', 'editStudentProfileV2']) {
+          await expectCallableError(() => httpsCallable(anonymous.functions, name)({}), 'unauthenticated')
+        }
+        const a = await onboardGoogleTeacher('money.owner@school.org', 'Fictional Owner Room')
+        const b = await onboardGoogleTeacher('money.foreign@school.org', 'Fictional Other Room')
+        for (const name of ['getTeacherMoneyStatusV2', 'acknowledgeTeacherMoneyV2', 'cancelTeacherMoneyV2']) {
+          await expectCallableError(() => httpsCallable(b.functions, name)({ protocolVersion: 1,
+            classroomId: a.classroomId, requestId: 'a'.repeat(32) }), 'failed-precondition')
+        }
+        assert.equal((await db.collection(`classrooms/${a.classroomId}/teacherMoneyReceipts`).get()).size, 0)
+        assert.equal((await db.collection(`classrooms/${b.classroomId}/teacherMoneyReceipts`).get()).size, 0)
+      })
+    })
+
+    describe('C1b. Remaining teacher money writers', () => {
+      it('real callable approval, denial, rename and reset preserve exact ledger/mirror pairs', async () => {
+        const teacher = await onboardGoogleTeacher('roster.money@school.org', 'Fictional Roster Room')
+        await createStudentFixture(teacher, { name: 'Fictional Avery', startingBalance: 20, pin: '2468' })
+        const root = `classrooms/${teacher.classroomId}`, studentRef = db.doc(`${root}/students/1`)
+        const pending = [11, 12].map(id => ({ id, studentId: 1, studentName: 'Fictional Avery', date: '2026-09-01T00:00:00.000Z',
+          type: 'Add', amount: 2.35, reason: 'Homework', memo: '', category: '', status: 'Pending', source: 'Student' }))
+        const seed = db.batch()
+        for (const row of pending) seed.create(db.doc(`${root}/transactions/${row.id}`), row)
+        seed.update(studentRef, { transactions: [...pending, ...(await studentRef.get()).data().transactions] }); await seed.commit()
+        const access = (await httpsCallable(teacher.functions, 'getClassroomAccessV2')({})).data
+        let sequence = 1
+        async function run(payload) {
+          const requestId = String(sequence++).padStart(32, '0')
+          const preview = (await httpsCallable(teacher.functions, 'planTeacherMoneyV2')({ ...payload, protocolVersion: 1,
+            controlGeneration: access.generation, requestId })).data
+          assert.deepEqual(preview.notYetPlanned, [])
+          const envelope = { request: preview.request, plan: preview.plan }
+          const saved = (await httpsCallable(teacher.functions, 'executeTeacherMoneyV2')(envelope)).data
+          assert.equal(saved.status, 'committed')
+          assert.deepEqual((await httpsCallable(teacher.functions, 'executeTeacherMoneyV2')(envelope)).data, saved)
+          const recovery = { protocolVersion: 1, classroomId: teacher.classroomId, requestId }
+          assert.equal((await httpsCallable(teacher.functions, 'getTeacherMoneyStatusV2')(recovery)).data.action, payload.action)
+          await httpsCallable(teacher.functions, 'acknowledgeTeacherMoneyV2')(recovery)
+        }
+        await run({ action: 'approve', transactionIds: [11], allowNegative: false })
+        await run({ action: 'deny', transactionIds: [12], allowNegative: false })
+        assert.equal((await studentRef.get()).data().balance, 22.35)
+        const rename = { protocolVersion: 1, controlGeneration: access.generation, classroomId: teacher.classroomId, studentId: 1,
+          expectedName: 'Fictional Avery', name: 'Fictional New Name' }
+        await httpsCallable(teacher.functions, 'editStudentProfileV2')(rename)
+        await httpsCallable(teacher.functions, 'editStudentProfileV2')(rename)
+        await run({ action: 'adjust', adjustments: [{ studentId: 1, expectedCents: 2235, targetCents: -110 }] })
+        await run({ action: 'reset', adjustments: [{ studentId: 1, expectedCents: -110, targetCents: 0 }] })
+        const student = (await studentRef.get()).data(), ledger = await db.collection(`${root}/transactions`).get()
+        assert.equal(student.balance, 0); assert.equal(student.name, 'Fictional New Name'); assert.equal(ledger.size, 5)
+        for (const snap of ledger.docs) assert.deepEqual(snap.data(), student.transactions.find(row => row.id === Number(snap.id)))
+        assert.equal(student.transactions.find(row => row.id === 11).studentName, 'Fictional Avery')
+        await db.doc(root).update({ 'accessControl.mode': 'readOnly' })
+        await expectCallableError(() => httpsCallable(teacher.functions, 'editStudentProfileV2')(rename), 'failed-precondition')
+      })
+      it('real stale reset rejects atomically without receipts or partial updates', async () => {
+        const teacher = await onboardGoogleTeacher('roster.stale@school.org', 'Fictional Stale Roster')
+        await createStudentFixture(teacher, { name: 'Fictional Blake', startingBalance: 20, pin: '2468' })
+        const root = `classrooms/${teacher.classroomId}`, ref = db.doc(`${root}/students/1`)
+        const access = (await httpsCallable(teacher.functions, 'getClassroomAccessV2')({})).data
+        const preview = (await httpsCallable(teacher.functions, 'planTeacherMoneyV2')({ protocolVersion: 1,
+          controlGeneration: access.generation, requestId: 'b'.repeat(32), action: 'reset',
+          adjustments: [{ studentId: 1, expectedCents: 2000, targetCents: 0 }] })).data
+        await ref.update({ balance: 21 })
+        const result = (await httpsCallable(teacher.functions, 'executeTeacherMoneyV2')({ request: preview.request, plan: preview.plan })).data
+        assert.equal(result.reason, 'balance-conflict'); assert.equal(result.wroteNothing, true)
+        assert.equal((await ref.get()).data().balance, 21)
+        assert.equal((await db.collection(`${root}/teacherMoneyReceipts`).get()).size, 1)
+        assert.equal((await db.collection(`${root}/transactions`).get()).size, 1)
+      })
+    })
+
+    async function createStudentFixture(teacher, input) {
+      const receipt = (await httpsCallable(teacher.functions, 'createStudentV2')({
+        name: input.name, pin: input.pin, startingBalanceCents: input.startingBalance * 100,
+        protocolVersion: 1, controlGeneration: 1, classroomId: teacher.classroomId, requestId: randomBytes(16).toString('hex'),
+      })).data
+      await httpsCallable(teacher.functions, 'acknowledgeTeacherMoneyV2')({protocolVersion:1,classroomId:teacher.classroomId,requestId:receipt.requestId})
+      const student = (await db.doc(`classrooms/${teacher.classroomId}/students/${receipt.studentId}`).get()).data()
+      return {data:{...receipt,student:{id:student.id,name:student.name,balance:student.balance,frozen:student.frozen}}}
+    }
+
     describe('C2. Fresh-classroom lifecycle seam', () => {
+      it('creation commits one opening entry, retries once by receipt, binds PIN and refuses old wire', async () => {
+        const teacher = await onboardGoogleTeacher('creation.receipt@school.org','Fictional Creation')
+        const wire = {protocolVersion:1,controlGeneration:1,classroomId:teacher.classroomId,requestId:'c'.repeat(32),name:'Fictional New',startingBalanceCents:-1234,pin:'0427'}
+        const create = httpsCallable(teacher.functions,'createStudentV2')
+        const first = (await create(wire)).data, retry = (await create(wire)).data
+        assert.deepEqual(retry,first)
+        await expectCallableError(()=>create({...wire,pin:'9999'}),'already-exists')
+        await expectCallableError(()=>create({name:'Old',startingBalance:1,pin:'1234'}),'invalid-argument')
+        const root = `classrooms/${teacher.classroomId}`
+        const student = (await db.doc(`${root}/students/${first.studentId}`).get()).data()
+        assert.equal(student.balance,-12.34); assert.equal(student.transactions.length,1)
+        assert.equal(student.transactions[0].source,'Opening Balance')
+        assert.equal(student.transactions[0].type,'Subtract')
+        assert.equal((await db.collection(`${root}/transactions`).get()).size,1)
+        const rows = (await db.collection(`${root}/teacherMoneyReceipts`).get()).docs
+        assert.equal(rows.length,1); assert.equal(rows[0].data().digest,undefined)
+        const receipt = rows[0].data()
+        // An opaque hexadecimal HMAC can coincidentally contain the four PIN
+        // digits. Pin exact schema and plaintext values instead of scanning
+        // arbitrary substrings of identifiers, timestamps and cryptographic data.
+        assert.deepEqual(Object.keys(receipt).sort(), ['version', 'actorUid', 'requestId', 'generation',
+          'status', 'serverTime', 'action', 'itemCount', 'ledgerIds', 'acknowledged', 'studentId',
+          'loginId', 'keyVersion', 'intentHmac'].sort())
+        assert.match(receipt.intentHmac, /^[a-f0-9]{64}$/)
+        assert.equal(Object.values(receipt).includes(wire.pin), false)
+        assert.equal(Object.values(receipt).includes(wire.name), false)
+        assert.equal((await db.doc(root).get()).data().nextStudentNumber,2)
+        const key={protocolVersion:1,classroomId:teacher.classroomId,requestId:wire.requestId}
+        assert.equal((await httpsCallable(teacher.functions,'getTeacherMoneyStatusV2')(key)).data.studentId,first.studentId)
+        await httpsCallable(teacher.functions,'acknowledgeTeacherMoneyV2')(key)
+        await db.doc(root).update({'accessControl.generation':2})
+        await expectCallableError(()=>create({...wire,requestId:'d'.repeat(32)}),'permission-denied')
+        const cancelled={...key,requestId:'e'.repeat(32)}
+        await httpsCallable(teacher.functions,'cancelTeacherMoneyV2')(cancelled)
+        await expectCallableError(()=>create({...wire,controlGeneration:2,requestId:cancelled.requestId}),'failed-precondition')
+        assert.equal((await db.collection(`${root}/students`).get()).size,1)
+      })
+
       it('persists student Add and Subtract submissions so the owning teacher reads the pending credit', async () => {
         const teacher = await onboardGoogleTeacher(
           'student.money@school.org',
           'Student Money Classroom',
         )
-        const created = await httpsCallable(
-          teacher.functions,
-          'createStudentV2',
-        )({
-          name: 'Money Student',
+        const created = await createStudentFixture(teacher, { name: 'Money Student',
           startingBalance: 25,
           pin: '2468',
         })
@@ -1567,7 +1807,7 @@ if (testMode === 'gate-on') {
         const addPayload = {
           transactionId: 1101,
           type: 'Add',
-          amount: 10,
+          protocolVersion: 1, controlGeneration: 1, amountCents: 1000,
           reason: 'Homework',
         }
         const add = await httpsCallable(
@@ -1605,7 +1845,9 @@ if (testMode === 'gate-on') {
         const studentPath = `classrooms/${teacher.classroomId}/students/1`
         const afterAdd = await getDoc(doc(studentClient.firestore, studentPath))
         assert.equal(afterAdd.data().balance, 25)
-        assert.deepEqual(afterAdd.data().transactions, [add.data.transaction])
+        const opening = afterAdd.data().transactions.find(row => row.source === 'Opening Balance')
+        assert.ok(opening)
+        assert.deepEqual(afterAdd.data().transactions, [add.data.transaction, opening])
 
         const subtract = await httpsCallable(
           studentClient.functions,
@@ -1613,7 +1855,7 @@ if (testMode === 'gate-on') {
         )({
           transactionId: 1102,
           type: 'Subtract',
-          amount: 4,
+          protocolVersion: 1, controlGeneration: 1, amountCents: 400,
           reason: 'Rent',
         })
         assert.equal(subtract.data.balance, 21)
@@ -1623,7 +1865,7 @@ if (testMode === 'gate-on') {
         assert.equal(afterSubtract.data().balance, 21)
         assert.deepEqual(
           afterSubtract.data().transactions.map(transaction => transaction.id),
-          [1102, 1101],
+          [1102, 1101, opening.id],
         )
 
         await expectCallableError(
@@ -1633,7 +1875,7 @@ if (testMode === 'gate-on') {
           )({
             transactionId: 1103,
             type: 'Add',
-            amount: 1,
+            protocolVersion: 1, controlGeneration: 1, amountCents: 100,
             reason: 'Homework',
             classroomId: teacher.classroomId,
           }),
@@ -1645,6 +1887,14 @@ if (testMode === 'gate-on') {
           false,
         )
 
+        await assert.rejects(httpsCallable(teacher.functions, 'removeStudentV2')({
+          studentId, classroomId: teacher.classroomId, protocolVersion: 1, controlGeneration: 1,
+        }), error => error.code === 'functions/failed-precondition' && error.details.reason === 'pending-requests')
+        assert.equal((await db.doc(studentPath).get()).exists, true)
+        await expectCallableError(() => httpsCallable(studentClient.functions, 'submitStudentTransactionV2')({
+          transactionId: 1199, type: 'Add', amount: 1, reason: 'Homework',
+        }), 'invalid-argument')
+
         for (let transactionId = 1104; transactionId <= 1111; transactionId += 1) {
           const withinWindow = await httpsCallable(
             studentClient.functions,
@@ -1652,7 +1902,7 @@ if (testMode === 'gate-on') {
           )({
             transactionId,
             type: 'Add',
-            amount: 1,
+            protocolVersion: 1, controlGeneration: 1, amountCents: 100,
             reason: 'Homework',
           })
           assert.equal(withinWindow.data.transaction.id, transactionId)
@@ -1679,7 +1929,7 @@ if (testMode === 'gate-on') {
           )({
             transactionId: 1112,
             type: 'Add',
-            amount: 1,
+            protocolVersion: 1, controlGeneration: 1, amountCents: 100,
             reason: 'Homework',
           }),
           'resource-exhausted',
@@ -1690,7 +1940,18 @@ if (testMode === 'gate-on') {
           false,
         )
         const afterThrottle = await getDoc(doc(studentClient.firestore, studentPath))
-        assert.equal(afterThrottle.data().transactions.length, 10)
+        assert.equal(afterThrottle.data().transactions.length, 11)
+        const rootRef = db.doc(`classrooms/${teacher.classroomId}`)
+        const control = (await rootRef.get()).data().accessControl
+        await rootRef.update({ accessControl: { ...control, mode: 'readOnly' } })
+        await expectCallableError(() => httpsCallable(studentClient.functions, 'submitStudentTransactionV2')(addPayload), 'permission-denied')
+        await rootRef.update({ accessControl: { ...control, generation: control.generation + 2 } })
+        await expectCallableError(() => httpsCallable(studentClient.functions, 'submitStudentTransactionV2')(addPayload), 'permission-denied')
+        await expectCallableError(() => httpsCallable(teacher.functions, 'removeStudentV2')({
+          studentId, classroomId: teacher.classroomId, protocolVersion: 1, controlGeneration: 1,
+        }), 'permission-denied')
+        assert.deepEqual((await db.doc(studentPath).get()).data(), afterThrottle.data())
+
         assert.equal(moneyThrottle.data().attempts.length, 10)
       })
 
@@ -1721,11 +1982,7 @@ if (testMode === 'gate-on') {
           'normal onboarding must initialize the first lifecycle identity',
         )
 
-        const created = await httpsCallable(
-          teacherA.functions,
-          'createStudentV2',
-        )({
-          name: 'Fresh Student',
+        const created = await createStudentFixture(teacherA, { name: 'Fresh Student',
           startingBalance: 25,
           pin: '2468',
         })
@@ -1738,8 +1995,7 @@ if (testMode === 'gate-on') {
         assert.equal(created.data.loginId, 'fresh-student')
 
         const studentPath = `classrooms/${teacherA.classroomId}/students/1`
-        const transactionPath =
-          `classrooms/${teacherA.classroomId}/transactions/1001`
+        let transactionPath
         const createdStudent = await db.doc(studentPath).get()
         assert.deepEqual(Object.keys(createdStudent.data()).sort(), [
           'balance',
@@ -1763,7 +2019,8 @@ if (testMode === 'gate-on') {
           loginId: created.data.loginId,
           pin: '2468',
         })
-        assert.deepEqual(Object.keys(login.data), ['token'])
+        assert.deepEqual(Object.keys(login.data).sort(), ['access', 'token'])
+        assert.deepEqual(login.data.access, { protocolVersion: 1, mode: 'active', generation: 1 })
         const signedInStudent = await signInWithCustomToken(
           anonymousStudent.auth,
           login.data.token,
@@ -1772,27 +2029,31 @@ if (testMode === 'gate-on') {
         assert.equal(claims.claims.classroomId, teacherA.classroomId)
         assert.equal(claims.claims.studentId, '1')
 
-        const transaction = {
-          id: 1001,
-          date: '2026-07-31T12:00:00.000Z',
-          studentId: 1,
-          studentName: 'Fresh Student',
-          type: 'Add',
-          amount: 10,
-          reason: 'Fresh-classroom acceptance',
-          memo: '',
-          category: 'Class',
-          status: 'Approved',
-          source: 'Teacher',
+        // The lifecycle acceptance follows the migrated server writer instead
+        // of depending on the old direct client balance/ledger permission.
+        const preview = (await httpsCallable(teacherA.functions, 'planTeacherMoneyV2')({
+          protocolVersion: 1, controlGeneration: 1, requestId: 'ce'.repeat(16),
+          action: 'award', studentIds: [1], amountCents: 1000,
+          reason: 'Homework', category: 'Homework', memo: 'Fresh-classroom acceptance',
+        })).data
+        const envelope = { request: preview.request, plan: preview.plan }
+        const saved = (await httpsCallable(teacherA.functions, 'executeTeacherMoneyV2')(envelope)).data
+        assert.equal(saved.status, 'committed')
+        const written = await db.collection(`classrooms/${teacherA.classroomId}/transactions`).get()
+        const transaction = written.docs.map(d => d.data()).find(t => t.memo === 'Fresh-classroom acceptance')
+        assert.ok(transaction)
+        transactionPath = `classrooms/${teacherA.classroomId}/transactions/${transaction.id}`
+        assert.equal(transaction.amount, 10)
+        assert.equal(transaction.status, 'Approved')
+        if (process.env.PHASE3_WRITER_CONTAINMENT === 'true') {
+          await assert.rejects(() => updateDoc(doc(teacherA.firestore, studentPath), { balance: 999 }),
+            error => error?.code === 'permission-denied')
+          await assert.rejects(() => updateDoc(doc(teacherA.firestore, transactionPath), { status: 'Denied' }),
+            error => error?.code === 'permission-denied')
         }
-        const teacherBatch = writeBatch(teacherA.firestore)
-        teacherBatch.set(doc(teacherA.firestore, studentPath), {
-          ...createdStudent.data(),
-          balance: 35,
-          transactions: [transaction],
+        await httpsCallable(teacherA.functions, 'acknowledgeTeacherMoneyV2')({
+          protocolVersion: 1, classroomId: teacherA.classroomId, requestId: preview.request.requestId,
         })
-        teacherBatch.set(doc(teacherA.firestore, transactionPath), transaction)
-        await teacherBatch.commit()
 
         const teacherRead = await getDoc(doc(teacherA.firestore, transactionPath))
         assert.deepEqual(teacherRead.data(), transaction)
@@ -1800,7 +2061,8 @@ if (testMode === 'gate-on') {
           doc(anonymousStudent.firestore, studentPath),
         )
         assert.equal(studentRead.data().balance, 35)
-        assert.deepEqual(studentRead.data().transactions, [transaction])
+        assert.deepEqual([...studentRead.data().transactions].sort((a,b) => a.id-b.id),
+          [...createdStudent.data().transactions, transaction].sort((a,b) => a.id-b.id))
 
         await assert.rejects(
           () => getDoc(doc(teacherB.firestore, studentPath)),
@@ -1827,7 +2089,7 @@ if (testMode === 'gate-on') {
         const removed = await httpsCallable(
           teacherA.functions,
           'removeStudentV2',
-        )({ studentId: '1' })
+        )({ studentId: '1', classroomId: teacherA.classroomId, protocolVersion: 1, controlGeneration: 1 })
         assert.deepEqual(removed.data, { success: true })
         assert.equal((await db.doc(studentPath).get()).exists, false)
         assert.equal(
@@ -1862,9 +2124,66 @@ if (testMode === 'gate-on') {
     })
 
     // -----------------------------------------------------------------------
+    describe('C3. Credential containment', () => {
+      it('current PIN wire, login modes, stale reset and sensitive read denial use real callables', async () => {
+        const teacher = await onboardGoogleTeacher('credential-control@school.org','Credential Control')
+        const created = await createStudentFixture(teacher, { name:'Fictional Credential',startingBalance:0,pin:'0427' })
+        const studentId=String(created.data.student.id), root=db.doc(`classrooms/${teacher.classroomId}`)
+        const control=(await root.get()).data().accessControl
+        const payload={studentId,newPin:'2468',classroomId:teacher.classroomId,protocolVersion:1,controlGeneration:control.generation}
+        await httpsCallable(teacher.functions,'resetStudentPinV2')(payload)
+        const credential=(await credentialsRef(teacher.classroomId).where('studentId','==',studentId).get()).docs[0]
+        assert.ok(await bcrypt.compare('2468',credential.data().pinHash))
+        const student=createTestClientApp()
+        const login=()=>httpsCallable(student.functions,'studentPinLoginV2')({classroomCode:teacher.studentLoginCode,loginId:credential.id,pin:'2468'})
+        const token=(await login()).data.token
+        await signInWithCustomToken(student.auth,token)
+        for(const mode of ['readOnly','suspended']) {
+          await root.update({accessControl:{...control,mode}})
+          await expectCallableError(()=>httpsCallable(teacher.functions,'resetStudentPinV2')(payload),'permission-denied')
+          await expectCallableError(()=>httpsCallable(teacher.functions,'listStudentPinsV2')({}),'permission-denied')
+          if(mode==='readOnly') assert.equal((await login()).data.access.mode,'readOnly')
+          else {
+            await expectCallableError(login,'unauthenticated')
+            await expectCallableError(()=>httpsCallable(student.functions,'getClassroomAccessV2')({}),'permission-denied')
+          }
+        }
+        await root.update({accessControl:{...control,generation:control.generation+2}})
+        await expectCallableError(()=>httpsCallable(teacher.functions,'resetStudentPinV2')(payload),'permission-denied')
+        await expectCallableError(()=>httpsCallable(teacher.functions,'resetStudentPinV2')({studentId,newPin:'9999'}),'invalid-argument')
+        assert.equal((await db.doc(`classrooms/${teacher.classroomId}/studentPins/${studentId}`).get()).data().pin,'2468')
+        await httpsCallable(teacher.functions,'resetStudentPinV2')({...payload,controlGeneration:control.generation+2,newPin:'5678'})
+        assert.equal((await db.doc(`classrooms/${teacher.classroomId}/studentPins/${studentId}`).get()).data().pin,'5678')
+      })
+      it('old student events cannot overwrite reset credentials or revive a removed account',async()=>{
+        const {syncStudentProfilesV2Handler}=await import('../../functions/phase2b/syncStudentProfiles.js')
+        const teacher=await onboardGoogleTeacher('late-credential@school.org','Late Credential')
+        const created=await createStudentFixture(teacher,{name:'Fictional Late',startingBalance:0,pin:'0427'})
+        const studentId=String(created.data.student.id), root=db.doc(`classrooms/${teacher.classroomId}`)
+        const control=(await root.get()).data().accessControl
+        const cred=(await credentialsRef(teacher.classroomId).where('studentId','==',studentId).get()).docs[0]
+        await httpsCallable(teacher.functions,'resetStudentPinV2')({studentId,newPin:'5678',classroomId:teacher.classroomId,protocolVersion:1,controlGeneration:control.generation})
+        const changed=(await cred.ref.get()).data()
+        const event=(kind)=>({params:{classroomId:teacher.classroomId,studentId},data:{before:{exists:kind!=='create',data:()=>({name:'Old'})},after:{exists:kind!=='delete',data:()=>({name:'Late'})}}})
+        for(const mode of ['active','readOnly','suspended']) {
+          await root.update({accessControl:{...control,mode}})
+          for(const kind of ['create','update','delete']) {
+            assert.equal((await syncStudentProfilesV2Handler(event(kind),{firestore:db,hashPin:async()=>{assert.fail('enrolled event hash')}})).action,'enrolled_noop')
+            assert.deepEqual((await cred.ref.get()).data(),changed)
+          }
+        }
+        await root.update({accessControl:control})
+        await httpsCallable(teacher.functions,'removeStudentV2')({studentId,classroomId:teacher.classroomId,protocolVersion:1,controlGeneration:control.generation})
+        const removed=(await cred.ref.get()).data();assert.equal(removed.active,false)
+        await syncStudentProfilesV2Handler(event('create'),{firestore:db,hashPin:async()=>{assert.fail('late event hash')}})
+        assert.deepEqual((await cred.ref.get()).data(),removed)
+        assert.equal((await db.doc(`classrooms/${teacher.classroomId}/studentPins/${studentId}`).get()).exists,false)
+      })
+    })
+
     describe('D. V2 student sync trigger', () => {
       it('creates an inactive credential with the default PIN at bcrypt cost 12', async () => {
-        const teacher = await onboardGoogleTeacher('sync@school.org', 'Sync Room')
+        const teacher = await onboardUnenrolledTeacher('sync@school.org', 'Sync Room')
         await studentDocRef(teacher.classroomId, 's-stu1').set({ name: 'Bob Jones', balance: 0 })
 
         const credDoc = await waitForCredentialByStudentId(teacher.classroomId, 's-stu1')
@@ -1886,7 +2205,7 @@ if (testMode === 'gate-on') {
       })
 
       it('keeps concurrent same-name creates distinct with no overwrite or identity alias', async () => {
-        const teacher = await onboardGoogleTeacher('collide@school.org', 'Collide Room')
+        const teacher = await onboardUnenrolledTeacher('collide@school.org', 'Collide Room')
 
         // Genuinely overlapping writes: both student documents are written
         // without awaiting the first credential.
@@ -1922,7 +2241,7 @@ if (testMode === 'gate-on') {
       })
 
       it('rejects a recycled studentId instead of producing a second credential', async () => {
-        const teacher = await onboardGoogleTeacher('recycle@school.org', 'Recycle Room')
+        const teacher = await onboardUnenrolledTeacher('recycle@school.org', 'Recycle Room')
         await studentDocRef(teacher.classroomId, 's-1').set({ name: 'First Occupant' })
         const original = await waitForCredentialByStudentId(teacher.classroomId, 's-1')
 
@@ -1947,7 +2266,7 @@ if (testMode === 'gate-on') {
       })
 
       it('keeps the assigned login ID stable when a student is renamed', async () => {
-        const teacher = await onboardGoogleTeacher('rename@school.org', 'Rename Room')
+        const teacher = await onboardUnenrolledTeacher('rename@school.org', 'Rename Room')
         await studentDocRef(teacher.classroomId, 's-r').set({ name: 'Original Name' })
         const before = await waitForCredentialByStudentId(teacher.classroomId, 's-r')
         assert.equal(before.id, 'original-name')
@@ -1969,8 +2288,8 @@ if (testMode === 'gate-on') {
       })
 
       it('deactivates only the deleted student’s own classroom credential', async () => {
-        const teacherA = await onboardGoogleTeacher('del.a@school.org', 'Delete Room A')
-        const teacherB = await onboardGoogleTeacher('del.b@school.org', 'Delete Room B')
+        const teacherA = await onboardUnenrolledTeacher('del.a@school.org', 'Delete Room A')
+        const teacherB = await onboardUnenrolledTeacher('del.b@school.org', 'Delete Room B')
 
         await studentDocRef(teacherA.classroomId, 's-shared').set({ name: 'Same Name' })
         await studentDocRef(teacherB.classroomId, 's-shared').set({ name: 'Same Name' })
@@ -1993,7 +2312,7 @@ if (testMode === 'gate-on') {
       })
 
       it('refuses to sync when the owning teacher is disabled', async () => {
-        const teacher = await onboardGoogleTeacher('syncdisabled@school.org', 'Sync Disabled Room')
+        const teacher = await onboardUnenrolledTeacher('syncdisabled@school.org', 'Sync Disabled Room')
         await db.collection('teachers').doc(teacher.uid).update({ status: 'disabled' })
         await studentDocRef(teacher.classroomId, 's-blocked').set({ name: 'Blocked Student' })
         await waitForStableAbsence(async () => {
@@ -2007,7 +2326,7 @@ if (testMode === 'gate-on') {
       })
 
       it('refuses to sync when the reciprocal ownership link is inconsistent', async () => {
-        const teacher = await onboardGoogleTeacher('syncbroken@school.org', 'Sync Broken Room')
+        const teacher = await onboardUnenrolledTeacher('syncbroken@school.org', 'Sync Broken Room')
         await db.collection('classrooms').doc(teacher.classroomId).update({ ownerUid: 'not-the-owner' })
         await studentDocRef(teacher.classroomId, 's-blocked').set({ name: 'Blocked Student' })
         await waitForStableAbsence(async () => {
@@ -2024,7 +2343,7 @@ if (testMode === 'gate-on') {
       it('activates and rehashes at cost 12 while preserving every identity field', async () => {
         const teacher = await onboardGoogleTeacher('reset@school.org', 'Reset Room')
         await studentDocRef(teacher.classroomId, 's-reset').set({ name: 'Reset Target' })
-        const before = await waitForCredentialByStudentId(teacher.classroomId, 's-reset')
+        const before = await seedInactiveCredential(teacher.classroomId, 's-reset')
         const beforeData = before.data()
 
         await activateStudentPin(teacher.functions, 's-reset', '9876')
@@ -2044,7 +2363,7 @@ if (testMode === 'gate-on') {
       it('rejects a forged classroomId field on the reset request', async () => {
         const teacher = await onboardGoogleTeacher('resetfield@school.org', 'Reset Field Room')
         await studentDocRef(teacher.classroomId, 's-f').set({ name: 'Field Target' })
-        await waitForCredentialByStudentId(teacher.classroomId, 's-f')
+        await seedInactiveCredential(teacher.classroomId, 's-f')
 
         await expectCallableError(
           () => httpsCallable(teacher.functions, 'resetStudentPinV2')({
@@ -2055,11 +2374,11 @@ if (testMode === 'gate-on') {
           'invalid-argument',
         )
         await expectCallableError(
-          () => httpsCallable(teacher.functions, 'resetStudentPinV2')({ studentId: 's-f', newPin: '12x4' }),
+          () => httpsCallable(teacher.functions, 'resetStudentPinV2')({ studentId: 's-f', newPin: '12x4', classroomId: teacher.classroomId, protocolVersion: 1, controlGeneration: 1 }),
           'invalid-argument',
         )
         await expectCallableError(
-          () => httpsCallable(teacher.functions, 'resetStudentPinV2')({ studentId: 'bad/id', newPin: '1111' }),
+          () => httpsCallable(teacher.functions, 'resetStudentPinV2')({ studentId: 'bad/id', newPin: '1111', classroomId: teacher.classroomId, protocolVersion: 1, controlGeneration: 1 }),
           'invalid-argument',
         )
       })
@@ -2067,7 +2386,7 @@ if (testMode === 'gate-on') {
       it('fails closed for an unknown student in the caller’s own classroom', async () => {
         const teacher = await onboardGoogleTeacher('resetmissing@school.org', 'Reset Missing Room')
         await expectCallableError(
-          () => httpsCallable(teacher.functions, 'resetStudentPinV2')({ studentId: 's-nope', newPin: '1111' }),
+          () => httpsCallable(teacher.functions, 'resetStudentPinV2')({ studentId: 's-nope', newPin: '1111', classroomId: teacher.classroomId, protocolVersion: 1, controlGeneration: 1 }),
           'not-found',
         )
       })
@@ -2078,17 +2397,17 @@ if (testMode === 'gate-on') {
 
         await studentDocRef(teacherA.classroomId, 's-a-only').set({ name: 'Alpha Only' })
         await studentDocRef(teacherB.classroomId, 's-b-only').set({ name: 'Beta Only' })
-        const credA = await waitForCredentialByStudentId(teacherA.classroomId, 's-a-only')
-        const credB = await waitForCredentialByStudentId(teacherB.classroomId, 's-b-only')
+        const credA = await seedInactiveCredential(teacherA.classroomId, 's-a-only')
+        const credB = await seedInactiveCredential(teacherB.classroomId, 's-b-only')
         const beforeA = credA.data()
         const beforeB = credB.data()
 
         await expectCallableError(
-          () => httpsCallable(teacherA.functions, 'resetStudentPinV2')({ studentId: 's-b-only', newPin: '2222' }),
+          () => httpsCallable(teacherA.functions, 'resetStudentPinV2')({ studentId: 's-b-only', newPin: '2222', classroomId: teacherA.classroomId, protocolVersion: 1, controlGeneration: 1 }),
           'not-found',
         )
         await expectCallableError(
-          () => httpsCallable(teacherB.functions, 'resetStudentPinV2')({ studentId: 's-a-only', newPin: '2222' }),
+          () => httpsCallable(teacherB.functions, 'resetStudentPinV2')({ studentId: 's-a-only', newPin: '2222', classroomId: teacherB.classroomId, protocolVersion: 1, controlGeneration: 1 }),
           'not-found',
         )
 
@@ -2099,7 +2418,7 @@ if (testMode === 'gate-on') {
       it('refuses to repair a credential whose identity does not match the tenant', async () => {
         const teacher = await onboardGoogleTeacher('resetforged@school.org', 'Reset Forged Room')
         await studentDocRef(teacher.classroomId, 's-forged').set({ name: 'Forged Target' })
-        const cred = await waitForCredentialByStudentId(teacher.classroomId, 's-forged')
+        const cred = await seedInactiveCredential(teacher.classroomId, 's-forged')
         const credRef = credentialsRef(teacher.classroomId).doc(cred.id)
         const original = cred.data()
 
@@ -2112,7 +2431,7 @@ if (testMode === 'gate-on') {
         for (const forgery of forgeries) {
           await credRef.set({ ...original, ...forgery })
           await expectCallableError(
-            () => httpsCallable(teacher.functions, 'resetStudentPinV2')({ studentId: 's-forged', newPin: '3333' }),
+            () => httpsCallable(teacher.functions, 'resetStudentPinV2')({ studentId: 's-forged', newPin: '3333', classroomId: teacher.classroomId, protocolVersion: 1, controlGeneration: 1 }),
             'failed-precondition',
             'Contact your administrator',
           )
@@ -2125,18 +2444,18 @@ if (testMode === 'gate-on') {
       it('denies a disabled teacher and an inconsistent foundation', async () => {
         const teacher = await onboardGoogleTeacher('resetdisabled@school.org', 'Reset Disabled Room')
         await studentDocRef(teacher.classroomId, 's-d').set({ name: 'Disabled Target' })
-        await waitForCredentialByStudentId(teacher.classroomId, 's-d')
+        await seedInactiveCredential(teacher.classroomId, 's-d')
 
         await db.collection('teachers').doc(teacher.uid).update({ status: 'disabled' })
         await expectCallableError(
-          () => httpsCallable(teacher.functions, 'resetStudentPinV2')({ studentId: 's-d', newPin: '4444' }),
+          () => httpsCallable(teacher.functions, 'resetStudentPinV2')({ studentId: 's-d', newPin: '4444', classroomId: teacher.classroomId, protocolVersion: 1, controlGeneration: 1 }),
           'permission-denied',
         )
 
         await db.collection('teachers').doc(teacher.uid).update({ status: 'active' })
         await db.collection('classrooms').doc(teacher.classroomId).update({ ownerUid: 'someone-else' })
         await expectCallableError(
-          () => httpsCallable(teacher.functions, 'resetStudentPinV2')({ studentId: 's-d', newPin: '4444' }),
+          () => httpsCallable(teacher.functions, 'resetStudentPinV2')({ studentId: 's-d', newPin: '4444', classroomId: teacher.classroomId, protocolVersion: 1, controlGeneration: 1 }),
           'failed-precondition',
         )
 
@@ -2146,7 +2465,7 @@ if (testMode === 'gate-on') {
       it('requires authentication', async () => {
         const { functions } = createTestClientApp()
         await expectCallableError(
-          () => httpsCallable(functions, 'resetStudentPinV2')({ studentId: 's-x', newPin: '1111' }),
+          () => httpsCallable(functions, 'resetStudentPinV2')({ studentId: 's-x', newPin: '1111', classroomId: 'fictional-room', protocolVersion: 1, controlGeneration: 1 }),
           'unauthenticated',
         )
       })
@@ -2156,7 +2475,7 @@ if (testMode === 'gate-on') {
     describe('F. Student login, tokens, logs, locks, and throttles', () => {
       async function seedActivatedStudent(teacher, studentId, name, pin) {
         await studentDocRef(teacher.classroomId, studentId).set({ name })
-        const cred = await waitForCredentialByStudentId(teacher.classroomId, studentId)
+        const cred = await seedInactiveCredential(teacher.classroomId, studentId)
         await activateStudentPin(teacher.functions, studentId, pin)
         return cred.id
       }
@@ -2172,7 +2491,8 @@ if (testMode === 'gate-on') {
           pin: '4321',
         })
         assert.ok(res.data.token)
-        assert.deepEqual(Object.keys(res.data), ['token'], 'only a token may be returned')
+        assert.deepEqual(Object.keys(res.data).sort(), ['access','token'], 'only token and minimal access may be returned')
+        assert.deepEqual(res.data.access,{protocolVersion:1,mode:'active',generation:1})
 
         // Commit-before-mint: the transaction's writes are already durable at
         // the moment the caller receives the token.
@@ -2206,7 +2526,7 @@ if (testMode === 'gate-on') {
       it('refuses an inactive credential until the teacher activates it', async () => {
         const teacher = await onboardGoogleTeacher('inactive@school.org', 'Inactive Room')
         await studentDocRef(teacher.classroomId, 's-inactive').set({ name: 'Not Yet' })
-        const cred = await waitForCredentialByStudentId(teacher.classroomId, 's-inactive')
+        const cred = await seedInactiveCredential(teacher.classroomId, 's-inactive')
         assert.equal(cred.data().active, false)
 
         const student = createTestClientApp()

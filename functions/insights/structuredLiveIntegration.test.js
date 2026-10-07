@@ -13,7 +13,7 @@ function database() {
   const initial = {}
   for (const tenant of ['a', 'b']) {
     initial[`teachers/teacher-${tenant}`] = { uid: `teacher-${tenant}`, status: 'active', classroomId: `class-${tenant}` }
-    initial[`classrooms/class-${tenant}`] = { ownerUid: `teacher-${tenant}` }
+    initial[`classrooms/class-${tenant}`] = { ownerUid: `teacher-${tenant}`, accessControl: { schemaVersion: 1, mode: 'active', generation: 1, changedAt: '2026-08-01T00:00:00.000Z', auditId: 'fixture' } }
     initial[`classrooms/class-${tenant}/studentDisplay/rent`] = { rentAmount: 10, updatedAt: '2026-08-27T17:00:00.000Z' }
     for (const id of [1, 2]) initial[`classrooms/class-${tenant}/students/${id}`] = {
       id, name: tenant === 'a' ? 'Avery Morgan' : 'Blake Smith', balance: tenant === 'a' ? id : id * 10,
@@ -41,7 +41,7 @@ function database() {
   return {
     initial, store, reads, writes,
     firestore: {
-      collection: query,
+      doc, collection: query,
       async runTransaction(callback) {
         const pending = new Map()
         const result = await callback({
@@ -124,7 +124,7 @@ test('live composition refuses legacy factual prose and retains the uncertain re
     assert.ok(!JSON.stringify(error).includes('Avery'))
     return true
   })
-  const reservations = [...setup.store.entries()].filter(([path]) => path.startsWith('insightUsageReservations/'))
+  const reservations = [...setup.store.entries()].filter(([path]) => (/^insightUsageReservations\/[^/]+$/u).test(path))
   assert.equal(reservations.length, 1)
   assert.equal(reservations[0][1].status, 'uncertain')
   assert.equal(reservations[0][1].result, null)

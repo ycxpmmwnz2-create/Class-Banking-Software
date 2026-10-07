@@ -1028,6 +1028,10 @@ describe('Phase 3 release-order source contract', () => {
       'tenantDataProjection.test.js',
       'tenantDataService.js',
       'tenantDataService.test.js',
+      'teacherMoneyClient.js',
+      'teacherMoneyClient.test.js',
+      'nonMoneyTenantDataSaver.js',
+      'nonMoneyTenantDataSaver.test.js',
     ])
 
     for (const entry of readdirSync(directory)) {
@@ -1036,7 +1040,7 @@ describe('Phase 3 release-order source contract', () => {
 
     // Each implementation module must ship with its colocated suite in the same
     // commit; Section 11 forbids adding either as a placeholder.
-    for (const module of ['tenantDataProjection', 'tenantDataService']) {
+    for (const module of ['tenantDataProjection', 'tenantDataService', 'nonMoneyTenantDataSaver']) {
       assert.ok(
         existsSync(new URL(`${module}.js`, directory)),
         `${module}.js must exist`,
@@ -1068,7 +1072,7 @@ describe('Phase 3 release-order source contract', () => {
       'productionReconciliation.js', 'productionReconciliation.test.js',
       'inventory.js', 'inventory.test.js',
       'preflight.js', 'write.js', 'reverify.js',
-      'studentLifecycle.js', 'studentLifecycle.test.js',
+      'studentLifecycle.js', 'studentLifecycle.test.js', 'studentCreationReceipt.js', 'studentCreationReceipt.test.js',
       // Approved student-money regression fix. Student writes remain denied by
       // rules; this paired module owns the claim-derived, atomic callable path.
       'studentMoney.js', 'studentMoney.test.js',
@@ -1089,8 +1093,11 @@ describe('Phase 3 release-order source contract', () => {
       'teacherAwardChanges.js', 'teacherAwardChanges.test.js',
       'moneyDocumentSize.js', 'moneyDocumentSize.test.js',
       'teacherAwardService.js', 'teacherAwardService.test.js',
+      'teacherMoneyCallables.js', 'teacherMoneyCallables.test.js',
+      'teacherRosterChanges.js', 'teacherRosterChanges.test.js', 'teacherProfile.js', 'teacherProfile.test.js',
       'plannerReadBudget.js', 'plannerReadBudget.test.js',
       'classroomAccess.js', 'classroomAccess.test.js',
+      'studentSettings.js', 'studentSettings.test.js',
       'classroomAccessPlan.js', 'classroomAccessPlan.test.js',
       'maintenanceMode.js', 'maintenanceMode.test.js',
       'classroomInitialization.js', 'classroomInitialization.test.js',
@@ -1153,7 +1160,7 @@ describe('Phase 3 release-order source contract', () => {
     for (const name of [
       'productionWriter.js', 'productionWriter.test.js',
       'write.js', 'reverify.js',
-      'studentLifecycle.js', 'studentLifecycle.test.js',
+      'studentLifecycle.js', 'studentLifecycle.test.js', 'studentCreationReceipt.js', 'studentCreationReceipt.test.js',
       'studentMoney.js', 'studentMoney.test.js',
       'productionInventory.js', 'productionInventory.test.js',
       'inventory.js', 'inventory.test.js',
@@ -1332,9 +1339,16 @@ describe('Phase 3 release-order source contract', () => {
       `${OPERATOR_ONLY} is operator-only and must stay out of the deployed graph`,
     )
 
-    for (const module of ['phase3/classroomInitialization.js', 'phase3/moneyCompatibility.js', 'phase3/teacherAwardService.js']) {
+    for (const module of ['phase3/classroomInitialization.js', 'phase3/moneyCompatibility.js']) {
       assert.ok(!visited.has(module), `${module} must remain outside the deployed graph`)
     }
+    for (const name of readdirSync(new URL('../../functions/operator/cutoverQualification/', import.meta.url))) {
+      if (name.endsWith('.js') && !name.endsWith('.test.js')) {
+        assert.ok(!visited.has(`operator/cutoverQualification/${name}`), 'qualification tools must remain operator-only')
+      }
+    }
+    assert.ok(visited.has('phase3/teacherMoneyCallables.js'))
+    assert.ok(visited.has('phase3/teacherAwardService.js'))
 
     // Stage16 Claude C1: the dormant service must be importable without pulling
     // the advisory scanner into a future callable's dependency graph.

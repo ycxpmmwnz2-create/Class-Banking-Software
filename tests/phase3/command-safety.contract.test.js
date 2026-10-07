@@ -187,6 +187,13 @@ describe('Phase 3 command-safety source contract', () => {
     assert.ok(script.includes('--only firestore "node --test tests/phase3/maintenance-rules.emulator.test.js"'))
   })
 
+  it('source contract: qualification reader stays in its isolated fictional Firestore suite', () => {
+    const name = 'test:phase3:qualification'
+    assert.ok(ISOLATED_EMULATOR_COMMANDS.includes(name))
+    assert.deepEqual(projectArguments(scripts[name]), ['demo-morgan-bank-cutover-qualification'])
+    assert.ok(scripts[name].includes('--only firestore "node --test tests/phase3/cutover-qualification.emulator.test.js"'))
+  })
+
   it('source contract: classroom initialization rehearsal stays in its guarded demo suite', () => {
     const name = 'test:phase3:classroom-initialization'
     assert.ok(ISOLATED_EMULATOR_COMMANDS.includes(name), 'initialization rehearsal gate must be discovered')

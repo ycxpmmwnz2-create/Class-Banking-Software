@@ -2,6 +2,28 @@
 
 Cleanup checkpoints require review; they do not authorize automatic code deletion.
 
+## October 1, 2026 current cleanup candidate
+
+Andrew authorized connecting and testing the existing V2 Quick Cash/custom
+Add/Subtract buttons, and requested a detailed Muse review of the result. This
+uncommitted candidate connects planned server saves, durable status/cancellation,
+explicit receipt acknowledgment, and new-classroom metadata. It also removes
+five proven-unused functions and four unused consumer imports from `index.html`.
+Public module exports and legacy rollback paths are retained. The dead-code-only
+intermediate build was byte-identical for both V2-off and V2-on artifacts.
+
+The branch comparison found no missing runtime work in
+`codex/ai-insights-canary-diagnostic-v3`; its unique work was incorporated or
+superseded. The useful cleanup from `feature/multi-teacher` is applied here.
+Its separate developer sandbox-runner experiment is optional tooling, not a
+missing website function or a required cherry-pick. Neither old branch was
+merged or deleted. Detailed comparison evidence is preserved outside the repo.
+
+Local tests are supplied evidence for Muse, followed by independent Claude final
+review. Commit, push and release authority remain separate. This candidate does
+not close the real-data scanner NO-GO, existing-classroom initialization, other
+money writers/rules, actual release acceptance, or all stabilization checkpoints.
+
 ## Checkpoint 1 — After Phase 2A
 
 - Audit migration tooling, scripts, documentation, and test commands.
