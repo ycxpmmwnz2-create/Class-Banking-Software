@@ -1,8 +1,8 @@
 rules_version = '2';
 
-// MONEY CONTROL RULES — UNSELECTED CANDIDATE; NOT RELEASE-READY.
+// MONEY CONTROL RULES — SELECTED LOCAL RELEASE CANDIDATE; NOT DEPLOYED.
 //
-// Separate from the pinned final/maintenance/rollback artifacts. Do not select or
+// Separate from the pinned final/maintenance/rollback artifacts. Do not
 // deploy until every retained writer and client action is compatible and reviewed.
 // Rules constrain client SDKs only. Admin SDK writers require their own guards.
 

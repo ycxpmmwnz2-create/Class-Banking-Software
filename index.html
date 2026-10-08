@@ -1502,7 +1502,8 @@ import { orchestrateProductionLogout, orchestrateStudentLogin, orchestrateTeache
 import { buildStudentAuthLogsCsv, formatStudentAuthLogTimestamp, studentAuthLogOutcomeLabel, studentAuthLogResultLabel, studentAuthLogStudentLabel } from "./src/phase2b/studentAuthLogView.js";
 import { sortStudentsByName } from "./src/phase2b/studentDisplay.js";
 import { DEFAULT_ADD_MONEY_CATEGORIES, effectiveAddMoneyCategories, sortTransactionCategories } from "./src/phase2b/transactionCategoryDisplay.js";
-import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";
+import { createTenantDataLoader, createStudentDataLoader } from "./src/phase3/tenantDataService.js";
+import { createNonMoneyTenantDataSaver as createTenantDataSaver } from "./src/phase3/nonMoneyTenantDataSaver.js";
 import { MAX_RENT_AMOUNT, projectBackupExport } from "./src/phase3/tenantDataProjection.js";
 import { createTeacherMoneyClient, parseTeacherMoneyAmount, parseTeacherMoneyBalance, teacherMoneyBalanceCents } from "./src/phase3/teacherMoneyClient.js";
 import { applyRosterBalanceEdits } from "./src/teacher/rosterBalanceAdjustments.js";

@@ -1,5 +1,17 @@
 # Bundle A — local qualification candidate and blocking capabilities
 
+## Scoped amendment — accepted 2026-10-08
+
+For the one controlled Morgan Bank maintenance release,
+[CONTROLLED_MAINTENANCE_CONTRACT.md](CONTROLLED_MAINTENANCE_CONTRACT.md) takes
+precedence only for its explicitly listed assurance and D1 sequencing substitutions.
+Andrew accepted those reviewed substitutions on 2026-10-08. The original text below
+remains historical evidence and governs every requirement not replaced. Existing
+demo-only guards, advisory report schemas and production-ineligibility flags are
+unchanged; they cannot certify the new operational standard. No live evidence or
+cloud/private-data authority follows from this amendment.
+
+
 Status (2026-10-07): **partial Bundle A; NO-GO for production**. The reviewed
 `PRODUCTION_MONEY_CUTOVER_PLAN.md` remains the authority. This candidate provides
 bounded fictional readers/reports, a static capability status command, and a

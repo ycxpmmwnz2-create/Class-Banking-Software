@@ -1,5 +1,17 @@
 # Cloud scan proof decision — Stage14 proposal
 
+## Scoped amendment — accepted 2026-10-08
+
+For the one controlled Morgan Bank maintenance release,
+[CONTROLLED_MAINTENANCE_CONTRACT.md](CONTROLLED_MAINTENANCE_CONTRACT.md) takes
+precedence only for its explicitly listed assurance and D1 sequencing substitutions.
+Andrew accepted those reviewed substitutions on 2026-10-08. The original text below
+remains historical evidence and governs every requirement not replaced. Existing
+demo-only guards, advisory report schemas and production-ineligibility flags are
+unchanged; they cannot certify the new operational standard. No live evidence or
+cloud/private-data authority follows from this amendment.
+
+
 Status: correction1 design candidate, September 28, 2026; Muse delta and Claude
 closure pending after Claude's F1/F2 findings.
 Baseline: `fd6b60e199b68a869408894261e151cfa2daafe8`, branch

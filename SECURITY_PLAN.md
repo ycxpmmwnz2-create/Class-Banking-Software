@@ -93,14 +93,20 @@ Controls:
   Closing it properly requires narrowing the recursive legacy rule, which is a
   change to the live V1 ruleset and has not been made.
 
-  The operative control is release ordering — decision 8 of
+  The original clean-start control is release ordering — decision 8 of
   `PHASE3_RECONCILED_IMPLEMENTATION_BRIEF.md` requires final rules to deploy
   before the V2 server gate, and V2 is gated off until then, so no document can
   exist in this collection while the legacy ruleset is live. One standing
   hazard remains: never run a V2 Function that writes here while
   `firestore.rules` is active. The default deployment target in `firebase.json`
-  is now `firestore.phase3.final.rules`, and the release-order contract pins that
+  is now `firestore.phase3.money.rules`, and the release-order contract pins that
   target so a routine rules deploy cannot select the recursive legacy baseline.
+  This is a local candidate selection, not evidence of deployed rules. For the
+  accepted controlled-maintenance upgrade, `CONTROLLED_MAINTENANCE_CONTRACT.md`
+  replaces the old sequencing: verified interim client-denial rules precede the
+  pinned V2-enabled, closed Functions revision, retaining the create-only audit.
+  Final money rules and the restricted saver follow preparation, before normal
+  admissions. No intermediate phase exposes the credential directory to clients.
   `tests/firestore/rules.baseline.test.js` retains the legacy exposure as
   historical evidence so narrowing that artifact later fails loudly.
 - **Read only through `listStudentPinsV2`,** which resolves the classroom from

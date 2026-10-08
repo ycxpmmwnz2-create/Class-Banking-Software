@@ -1,5 +1,17 @@
 # Teacher money integrity and classroom recovery
 
+## Scoped amendment — accepted 2026-10-08
+
+For the one controlled Morgan Bank maintenance release,
+[CONTROLLED_MAINTENANCE_CONTRACT.md](CONTROLLED_MAINTENANCE_CONTRACT.md) takes
+precedence only for its explicitly listed assurance and D1 sequencing substitutions.
+Andrew accepted those reviewed substitutions on 2026-10-08. The original text below
+remains historical evidence and governs every requirement not replaced. Existing
+demo-only guards, advisory report schemas and production-ineligibility flags are
+unchanged; they cannot certify the new operational standard. No live evidence or
+cloud/private-data authority follows from this amendment.
+
+
 Status: revised proposal R4 following Claude R3 finding F-G; awaiting focused
 Muse recheck, then Claude independent closure. No runtime or production
 change. Codex selected the contracts below; reviewers evaluate them rather than

@@ -11,10 +11,12 @@ test('combined test composition changes only the reviewed saver import and fails
   const oldLine = 'import { createTenantDataLoader, createStudentDataLoader, createTenantDataSaver } from "./src/phase3/tenantDataService.js";';
   const newLines = 'import { createTenantDataLoader, createStudentDataLoader } from "./src/phase3/tenantDataService.js";\n' +
     'import { createNonMoneyTenantDataSaver as createTenantDataSaver } from "./src/phase3/nonMoneyTenantDataSaver.js";';
-  assert.equal(candidate.replace(newLines, oldLine), page);
-  assert.throws(() => useReviewedNonMoneySaver(page.replace(oldLine, '')), /exactly once/);
+  assert.equal(candidate, page, 'normal release already selects the tested saver');
+  assert.equal(useReviewedNonMoneySaver(page.replace(newLines, oldLine)), page);
+  assert.throws(() => useReviewedNonMoneySaver(page.replace(newLines, '')), /exactly once/);
+  assert.throws(() => useReviewedNonMoneySaver(page + newLines), /exactly once/);
   assert.throws(() => useReviewedNonMoneySaver(page + oldLine), /exactly once/);
-  assert.equal(JSON.parse(read('../../firebase.json')).firestore.rules, 'firestore.phase3.final.rules');
+  assert.equal(JSON.parse(read('../../firebase.json')).firestore.rules, 'firestore.phase3.money.rules');
 });
 
 test('combined runner refuses arbitrary modes and arguments before launching any services', () => {

@@ -1,5 +1,17 @@
 # Real-data scanner feasibility — Stage15
 
+## Scoped amendment — accepted 2026-10-08
+
+For the one controlled Morgan Bank maintenance release,
+[CONTROLLED_MAINTENANCE_CONTRACT.md](CONTROLLED_MAINTENANCE_CONTRACT.md) takes
+precedence only for its explicitly listed assurance and D1 sequencing substitutions.
+Andrew accepted those reviewed substitutions on 2026-10-08. The original text below
+remains historical evidence and governs every requirement not replaced. Existing
+demo-only guards, advisory report schemas and production-ineligibility flags are
+unchanged; they cannot certify the new operational standard. No live evidence or
+cloud/private-data authority follows from this amendment.
+
+
 Status: Codex assessment for independent review; Muse and Claude pending.
 September 28, 2026 (America/Denver). Baseline:
 `d6e371b276908bc7a2e9f0d4baa8837d69e064aa`.

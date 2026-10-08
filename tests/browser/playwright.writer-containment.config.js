@@ -1,4 +1,4 @@
-// Isolated candidate composition; production and the legacy acceptance stay unchanged.
+// Fictional combined writer rehearsal of the now-selected rules/saver composition.
 import { fileURLToPath } from 'node:url';
 import base from '../../playwright.config.js';
 export default {

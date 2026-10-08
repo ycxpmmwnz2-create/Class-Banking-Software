@@ -290,7 +290,7 @@ describe('Phase 3 command-safety source contract', () => {
       scripts['build:legacy-rollback'],
       'env -u VITE_MULTI_TEACHER_V2_ENABLED vite build',
     )
-    assert.equal(firebaseJson.firestore?.rules, 'firestore.phase3.final.rules')
+    assert.equal(firebaseJson.firestore?.rules, 'firestore.phase3.money.rules')
   })
 
   it('source contract: unqualified Firebase commands cannot select a real project', () => {

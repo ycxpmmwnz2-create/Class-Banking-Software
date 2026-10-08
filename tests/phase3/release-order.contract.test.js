@@ -704,13 +704,13 @@ describe('Phase 3 release-order source contract', () => {
     }
   })
 
-  it('boundary: the default production Firebase config can deploy only final rules', () => {
+  it('boundary: the default production Firebase config selects reviewed money rules', () => {
     const firebaseConfig = JSON.parse(
       readFileSync(new URL('../../firebase.json', import.meta.url), 'utf8'),
     )
     assert.equal(
       firebaseConfig.firestore?.rules,
-      'firestore.phase3.final.rules',
+      'firestore.phase3.money.rules',
       'a routine production rules deploy must never select the recursive legacy baseline',
     )
   })
@@ -718,8 +718,8 @@ describe('Phase 3 release-order source contract', () => {
   it('boundary: the security plan records the safe default rules target', () => {
     assert.match(
       securityPlan,
-      /default deployment target in `firebase\.json`\s+is now `firestore\.phase3\.final\.rules`/,
-      'the security plan must identify final rules as the default deployment target',
+      /default deployment target in `firebase\.json`\s+is now `firestore\.phase3\.money\.rules`/,
+      'the security plan must identify money rules as the default deployment target',
     )
     assert.doesNotMatch(
       securityPlan,

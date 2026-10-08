@@ -41,7 +41,7 @@ for (const [name, mutate] of [
   })
 }
 
-test('default release configuration and legacy rules remain unchanged', () => {
-  assert.equal(JSON.parse(read('firebase.json')).firestore.rules, 'firestore.phase3.final.rules')
+test('default release selects money rules while legacy rules remain unchanged', () => {
+  assert.equal(JSON.parse(read('firebase.json')).firestore.rules, 'firestore.phase3.money.rules')
   assert.equal(sha(read('firestore.rules')), '0659a85719b24bb700048f6c6fc0b1fd3536936ed804b184986a7a54cff2cf50')
 })

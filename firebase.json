@@ -20,7 +20,7 @@
   "firestore": {
     "database": "(default)",
     "location": "nam5",
-    "rules": "firestore.phase3.final.rules",
+    "rules": "firestore.phase3.money.rules",
     "indexes": "firestore.indexes.json"
   },
   "hosting": {
