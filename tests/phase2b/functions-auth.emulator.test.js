@@ -2258,7 +2258,7 @@ if (testMode === 'gate-on') {
         )
       })
 
-      it('caps failure telemetry without locking out a victim who knows the PIN', async () => {
+      it('caps failure telemetry and rejects every PIN while the identifier bucket is full', async () => {
         const teacher = await onboardGoogleTeacher('lock@school.org', 'Lock Room')
         const loginId = await seedActivatedStudent(teacher, 's-lock', 'Locked Student', '4321')
         const student = createTestClientApp()
@@ -2275,15 +2275,23 @@ if (testMode === 'gate-on') {
           assert.equal(snap.data().lockedUntil, null)
         }
 
-        const recovered = await login({
-          classroomCode: teacher.studentLoginCode,
-          loginId,
-          pin: '4321',
-        })
-        assert.ok(recovered.data.token)
+        await expectCallableError(
+          () => login({
+            classroomCode: teacher.studentLoginCode,
+            loginId,
+            pin: '4321',
+          }),
+          'unauthenticated',
+          'Invalid student credentials.',
+        )
         const credential = await credentialsRef(teacher.classroomId).doc(loginId).get()
-        assert.equal(credential.data().failedAttempts, 0)
+        assert.equal(credential.data().failedAttempts, 5)
         assert.equal(credential.data().lockedUntil, null)
+
+        const digest = throttleDigest(canonicalizeCode(teacher.studentLoginCode), loginId)
+        const bucket = await db.collection('studentLoginThrottle').doc(digest).get()
+        assert.equal(bucket.data().attempts.length, 10,
+          'a rejected correct PIN must not clear or extend the full identifier bucket')
       })
 
       it('throttles the eleventh attempt in a rolling window for one identifier digest', async () => {
