@@ -9,6 +9,7 @@ const NOW = Date.parse('2026-07-02T12:00:00Z')
 function firestoreWithTestCredential(record, exists = true) {
   const state = {
     record: record ? { ...record } : undefined,
+    credentialReads: 0,
     logs: [],
     throttles: new Map(),
   }
@@ -56,6 +57,7 @@ function firestoreWithTestCredential(record, exists = true) {
               }
             }
             assert.equal(ref.kind, 'credential')
+            state.credentialReads += 1
             return {
               exists,
               data: () => ({ ...state.record }),
@@ -226,7 +228,7 @@ test('an old lock cannot prevent the correct PIN from signing in', async () => {
   })
 })
 
-test('a filled identifier bucket cannot lock out the victim correct PIN', async () => {
+test('a filled identifier bucket rejects every PIN until its window expires', async () => {
   const testStore = firestoreWithTestCredential(temporaryTestRecord)
 
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -243,16 +245,40 @@ test('a filled identifier bucket cannot lock out the victim correct PIN', async 
     )
   }
 
+  const credentialReadsBeforeThrottle = testStore.state.credentialReads
+  const logsBeforeThrottle = testStore.state.logs.length
+  for (const pin of ['7391', '0000']) {
+    const blocked = await verifyStudentCredentials(
+      { loginId: 'test-student', pin },
+      {
+        firestore: testStore.firestore,
+        now: () => NOW + 11,
+        sourceKey: 'same-source',
+      },
+    )
+    assert.equal(blocked, null)
+  }
+  assert.equal(testStore.state.credentialReads, credentialReadsBeforeThrottle)
+  assert.equal(testStore.state.logs.length, logsBeforeThrottle)
+  assert.deepEqual(
+    Array.from(testStore.state.throttles.values())
+      .map(value => value.attempts.length)
+      .sort((a, b) => a - b),
+    [10, 12, 12],
+  )
+  assert.equal(testStore.state.record.failedAttempts, 5)
+
   const student = await verifyStudentCredentials(
     { loginId: 'test-student', pin: '7391' },
     {
       firestore: testStore.firestore,
-      now: () => NOW + 11,
+      now: () => NOW + (6 * 60 * 1000),
       sourceKey: 'same-source',
     },
   )
 
   assert.equal(student?.authUid, 'test-student')
+  assert.equal(testStore.state.credentialReads, credentialReadsBeforeThrottle + 1)
   assert.equal(testStore.state.record.failedAttempts, 0)
   assert.equal(testStore.state.record.lockedUntil, null)
 })

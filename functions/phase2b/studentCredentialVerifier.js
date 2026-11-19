@@ -307,11 +307,11 @@ export async function verifyStudentCredentialV2(
       globalAttemptsInWindow.length >= MAX_GLOBAL_ATTEMPTS
     const identifierThrottled = attemptsInWindow.length >= MAX_THROTTLE_ATTEMPTS
 
-    // A victim's correct PIN must remain usable after an attacker fills only
-    // that login ID's bucket. Source/global circuit breakers still bound the
-    // extra lookup and bcrypt work, while malformed or unknown identities can
-    // be rejected without bcrypt once their identifier bucket is full.
-    const resolved = !sourceOrGlobalThrottled && shapeValid && canonicalCode && canonicalLoginId
+    // A full identifier bucket is a hard pre-verification gate. Source/global
+    // circuit breakers remain independent additional controls, but no classroom
+    // or credential lookup may continue a distributed four-digit PIN search.
+    const resolved = !sourceOrGlobalThrottled && !identifierThrottled &&
+      shapeValid && canonicalCode && canonicalLoginId
       ? await resolveClassroomFromCode(transaction, firestore, canonicalCode)
       : null
     const classroomId = resolved?.classroomId ?? null
@@ -338,15 +338,15 @@ export async function verifyStudentCredentialV2(
     if (sourceOrGlobalThrottled) {
       outcome = STUDENT_LOGIN_OUTCOMES.THROTTLED
       dummyCompareNeeded = false
+    } else if (identifierThrottled) {
+      outcome = STUDENT_LOGIN_OUTCOMES.THROTTLED
+      dummyCompareNeeded = false
     } else if (!shapeValid) {
       outcome = STUDENT_LOGIN_OUTCOMES.MALFORMED_REQUEST
     } else if (normalizationFailed) {
       outcome = STUDENT_LOGIN_OUTCOMES.INVALID_CODE_OR_LOGIN
     } else if (!classroomId || !credSnap?.exists) {
-      outcome = identifierThrottled
-        ? STUDENT_LOGIN_OUTCOMES.THROTTLED
-        : STUDENT_LOGIN_OUTCOMES.INVALID_CREDENTIALS
-      dummyCompareNeeded = !identifierThrottled
+      outcome = STUDENT_LOGIN_OUTCOMES.INVALID_CREDENTIALS
     } else {
       const credData = credSnap.data() ?? {}
       studentId = optionalCanonicalId(credData.studentId, 'studentId')
@@ -362,10 +362,7 @@ export async function verifyStudentCredentialV2(
       ) {
         // studentId is only logged when the credential itself resolved a
         // canonical one; an unusable credential still logs nothing else.
-        outcome = identifierThrottled
-          ? STUDENT_LOGIN_OUTCOMES.THROTTLED
-          : STUDENT_LOGIN_OUTCOMES.INVALID_CREDENTIALS
-        dummyCompareNeeded = !identifierThrottled
+        outcome = STUDENT_LOGIN_OUTCOMES.INVALID_CREDENTIALS
       } else {
         credentialVersion = credentialVersionMillis(credData.pinUpdatedAt)
         const pinMatches = await verifyPin(submittedPin, credData.pinHash)
@@ -381,8 +378,6 @@ export async function verifyStudentCredentialV2(
             lockedUntil: null,
             updatedAt: attemptTime,
           }
-        } else if (identifierThrottled) {
-          outcome = STUDENT_LOGIN_OUTCOMES.THROTTLED
         } else {
           const previousAttempts = typeof credData.failedAttempts === 'number'
             ? credData.failedAttempts

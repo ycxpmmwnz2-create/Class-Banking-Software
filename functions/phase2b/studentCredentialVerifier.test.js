@@ -507,7 +507,7 @@ test('wrong PINs never create a victim-controlled lockout and a correct PIN rema
   assert.equal(unlockedCred.lockedUntil, null)
 })
 
-test('ten-attempt throttle boundary and window reset', async () => {
+test('a full identifier bucket blocks every PIN before verification until expiry', async () => {
   const initialDocs = {
     ...classroomFixture('classA', 'teacherA', CLASS_A_CODE),
     ...credentialFixture('classA', 'alex-smith', 'stu1', { pinHash: 'hash' }),
@@ -516,6 +516,11 @@ test('ten-attempt throttle boundary and window reset', async () => {
   const firestore = createMockFirestore(initialDocs)
   const factory = tokenFactory()
   let currentTime = 1000000
+  let pinVerifications = 0
+  const verifyPin = async pin => {
+    pinVerifications += 1
+    return pin === 'correct'
+  }
 
   // Ten failed attempts fill the rolling window.
   for (let i = 0; i < 10; i += 1) {
@@ -525,7 +530,7 @@ test('ten-attempt throttle boundary and window reset', async () => {
           { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'wrong' },
           {
             firestore,
-            verifyPin: async () => false,
+            verifyPin,
             now: () => currentTime,
             createCustomToken: factory.createCustomToken,
           },
@@ -537,45 +542,65 @@ test('ten-attempt throttle boundary and window reset', async () => {
   const throttleDocs = logEntries(firestore, 'studentLoginThrottle/')
   assert.equal(throttleDocs.length, 3)
   assert.equal(throttleDocs.every(entry => entry.data.attempts.length === 10), true)
+  assert.equal(pinVerifications, 10)
 
-  // An attacker can fill the identifier bucket, but the victim's correct PIN
-  // still works while the independent source/global budgets remain available.
+  for (const pin of ['correct', 'wrong']) {
+    await assert.rejects(
+      () => verifyStudentCredentialV2(
+        { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin },
+        {
+          firestore,
+          verifyPin,
+          now: () => currentTime + 1000,
+          createCustomToken: factory.createCustomToken,
+        },
+      ),
+      StudentVerifierError,
+    )
+  }
+
+  assert.equal(pinVerifications, 10, 'throttled attempts must skip credential PIN verification')
+  assert.equal(factory.calls.length, 0, 'throttled attempts must never mint a token')
+  for (const operations of firestore.attemptOperations.slice(-2)) {
+    const readPaths = operations
+      .filter(operation => operation.kind === 'read')
+      .map(operation => operation.path)
+    assert.equal(
+      readPaths.length,
+      3,
+      'a throttled attempt may read only identifier, source, and global buckets',
+    )
+    assert.equal(
+      readPaths.every(path => path.startsWith('studentLoginThrottle/')),
+      true,
+      'a throttled attempt must not resolve a classroom or credential',
+    )
+  }
+  assert.deepEqual(
+    logEntries(firestore, 'studentLoginThrottle/')
+      .map(entry => entry.data.attempts.length).sort((a, b) => a - b),
+    [10, 12, 12],
+  )
+
+  // Fast forward past the window: the legitimate PIN is verified and the
+  // identifier bucket is cleared without erasing source/global evidence.
+  currentTime += 6 * 60 * 1000
   const recovered = await verifyStudentCredentialV2(
     { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'correct' },
     {
       firestore,
-      verifyPin: async () => true,
-      now: () => currentTime + 1000,
+      verifyPin,
+      now: () => currentTime,
       createCustomToken: factory.createCustomToken,
     },
   )
   assert.ok(recovered)
+  assert.equal(pinVerifications, 11)
   assert.equal(factory.calls.length, 1)
   assert.deepEqual(
     logEntries(firestore, 'studentLoginThrottle/')
       .map(entry => entry.data.attempts.length).sort((a, b) => a - b),
-    [0, 10, 10],
-  )
-
-  // Fast forward past the window: another failure starts all three rolling
-  // budgets at one rather than preserving stale timestamps.
-  currentTime += 6 * 60 * 1000
-  await assert.rejects(
-    verifyStudentCredentialV2(
-      { classroomCode: CLASS_A_CODE, loginId: 'alex-smith', pin: 'wrong' },
-      {
-        firestore,
-        verifyPin: async () => false,
-        now: () => currentTime,
-        createCustomToken: factory.createCustomToken,
-      },
-    ),
-    StudentVerifierError,
-  )
-  assert.equal(
-    logEntries(firestore, 'studentLoginThrottle/')
-      .every(entry => entry.data.attempts.length === 1),
-    true,
+    [0, 12, 12],
   )
 })
 

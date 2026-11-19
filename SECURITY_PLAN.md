@@ -140,8 +140,11 @@ Residual risk: on a shared or unattended browser the locator narrows an attacker
 to guessing a 4-digit PIN against a login ID that is now visible on the sign-in
 screen. Server-side bcrypt verification plus bounded per-identifier,
 per-source, and global rolling-window throttles limit compute, writes, and
-logging without letting an attacker lock out a known student. "Use a different
-student" clears the locator and is student-operable.
+logging. Ten failures make the identifier bucket a hard pre-verification gate
+for correct and incorrect PINs until the five-minute window expires; this
+bounded availability tradeoff prevents distributed callers from continuing the
+four-digit search by rotating source identities. "Use a different student"
+clears the locator and is student-operable.
 
 ## Student-Visible Class Rent
 

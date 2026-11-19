@@ -100,15 +100,7 @@ export async function verifyStudentCredentials(
       return null
     }
 
-    const snapshot = await transaction.get(credentialRef)
-    const logRef = firestore.collection(AUTH_LOG_COLLECTION).doc()
-    const recordFailureBudgets = () => {
-      if (!identifierThrottled) {
-        transaction.set(identifierThrottleRef, {
-          attempts: [...identifierAttempts, attemptTime].slice(-MAX_IDENTIFIER_ATTEMPTS),
-          updatedAt: attemptTime,
-        })
-      }
+    const recordSourceAndGlobalFailureBudgets = () => {
       transaction.set(sourceThrottleRef, {
         attempts: [...sourceAttempts, attemptTime].slice(-MAX_SOURCE_ATTEMPTS),
         updatedAt: attemptTime,
@@ -119,9 +111,26 @@ export async function verifyStudentCredentials(
       })
     }
 
+    // A full identifier bucket is a hard authentication gate. Reject before
+    // reading the credential or comparing any PIN so rotating source identities
+    // cannot continue a distributed search for the four-digit value.
+    if (identifierThrottled) {
+      recordSourceAndGlobalFailureBudgets()
+      return null
+    }
+
+    const snapshot = await transaction.get(credentialRef)
+    const logRef = firestore.collection(AUTH_LOG_COLLECTION).doc()
+    const recordFailureBudgets = () => {
+      transaction.set(identifierThrottleRef, {
+        attempts: [...identifierAttempts, attemptTime].slice(-MAX_IDENTIFIER_ATTEMPTS),
+        updatedAt: attemptTime,
+      })
+      recordSourceAndGlobalFailureBudgets()
+    }
+
     if (!snapshot.exists) {
       recordFailureBudgets()
-      if (identifierThrottled) return null
       // Keep missing-ID and wrong-PIN responses similar without revealing
       // whether a credential document exists.
       await verifyHashedPin(pin, DUMMY_PIN_HASH)
@@ -145,7 +154,6 @@ export async function verifyStudentCredentials(
 
     if (!hasValidIdentity) {
       recordFailureBudgets()
-      if (identifierThrottled) return null
       await verifyHashedPin(pin, hash)
       transaction.set(logRef, authenticationLog({
         loginId: normalizedLoginId,
@@ -160,7 +168,6 @@ export async function verifyStudentCredentials(
     const pinMatches = await verifyHashedPin(pin, hash)
     if (!pinMatches) {
       recordFailureBudgets()
-      if (identifierThrottled) return null
       const previousAttempts = Math.max(0, Number(record.failedAttempts) || 0)
       const failedAttempts = Math.min(previousAttempts + 1, MAX_FAILED_ATTEMPTS)
 
