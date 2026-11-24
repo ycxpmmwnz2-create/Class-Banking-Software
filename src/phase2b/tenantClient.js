@@ -183,8 +183,14 @@ export async function orchestrateStudentLogin(
     }
 
     const result = response?.data;
-    if (!exactObject(result, ["token"]) ||
+    if (!exactObject(result, ["token", "access"]) ||
         typeof result.token !== "string" || !result.token.trim()) {
+      return { executed: false, reason: "malformed-login-response" };
+    }
+    const access = result.access;
+    if (!exactObject(access, ["protocolVersion", "mode", "generation"]) ||
+        access.protocolVersion !== 1 || !["active", "readOnly"].includes(access.mode) ||
+        !Number.isSafeInteger(access.generation) || access.generation < 1) {
       return { executed: false, reason: "malformed-login-response" };
     }
 

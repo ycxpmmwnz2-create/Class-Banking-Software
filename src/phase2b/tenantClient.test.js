@@ -381,47 +381,48 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
     });
   });
 
-  test("Commit 8 V2 student login sends the exact classroom-qualified payload and consumes only an exact token response", async () => {
-    const session = new TenantSession();
-    const calls = [];
-    const signIns = [];
-    const result = await orchestrateStudentLogin(
-      session,
-      async (name, payload) => {
-        calls.push({ name, payload });
-        return { data: { token: "custom-token" } };
-      },
-      async token => {
-        signIns.push(token);
-        return { user: { uid: "student-auth-11" } };
-      },
-      { classroomCode: "AAAA-2345", loginId: "shared-name", pin: "2468" }
-    );
+  test("student login accepts the server's active and read-only responses", async () => {
+    const request = { classroomCode: "AAAA-2345", loginId: "shared-name", pin: "2468" };
+    for (const mode of ["active", "readOnly"]) {
+      const calls = [];
+      const signIns = [];
+      const result = await orchestrateStudentLogin(
+        new TenantSession(),
+        async (name, payload) => {
+          calls.push({ name, payload });
+          return { data: { token: "custom-token", access: { protocolVersion: 1, mode, generation: 2 } } };
+        },
+        async token => { signIns.push(token); return { user: { uid: "student-auth-11" } }; },
+        request
+      );
+      assert.equal(result.executed, true);
+      assert.deepEqual(calls, [{ name: "studentPinLoginV2", payload: request }]);
+      assert.deepEqual(signIns, ["custom-token"]);
+    }
+  });
 
-    assert.equal(result.executed, true);
-    assert.deepEqual(calls, [{
-      name: "studentPinLoginV2",
-      payload: { classroomCode: "AAAA-2345", loginId: "shared-name", pin: "2468" }
-    }]);
-    assert.deepEqual(signIns, ["custom-token"]);
-
+  test("student login refuses incomplete or invalid access responses before Firebase Auth", async () => {
+    const access = { protocolVersion: 1, mode: "active", generation: 1 };
     for (const malformed of [
-      null,
-      {},
-      { token: "" },
-      { token: "ok", pin: "leak" },
-      { token: 123 }
+      null, {}, { token: "ok" }, { access }, { token: "", access }, { token: 123, access },
+      { token: "ok", access, pin: "extra" }, { token: "ok", access: null },
+      ...[
+        { ...access, mode: "suspended" }, { ...access, mode: "unknown" },
+        { ...access, protocolVersion: 2 }, { ...access, generation: 0 },
+        { ...access, generation: 1.5 }, { ...access, generation: Number.MAX_SAFE_INTEGER + 1 },
+        { mode: "active", generation: 1 }, { ...access, unexpected: true }
+      ].map(invalidAccess => ({ token: "ok", access: invalidAccess }))
     ]) {
       let consumed = false;
       const rejected = await orchestrateStudentLogin(
-        session,
+        new TenantSession(),
         async () => ({ data: malformed }),
         async () => { consumed = true; },
         { classroomCode: "AAAA-2345", loginId: "shared-name", pin: "2468" }
       );
       assert.equal(rejected.executed, false);
       assert.equal(rejected.reason, "malformed-login-response");
-      assert.equal(consumed, false, "a malformed response must never reach Firebase Auth");
+      assert.equal(consumed, false);
     }
   });
 
@@ -442,7 +443,7 @@ describe("TenantClient Orchestration and Production Isolation Contracts", () => 
       role: "teacher",
       state: SESSION_STATES.AUTHENTICATING
     });
-    release({ data: { token: "stale-custom-token" } });
+    release({ data: { token: "stale-custom-token", access: { protocolVersion: 1, mode: "active", generation: 1 } } });
 
     assert.deepEqual(await login, { executed: false, reason: "stale-epoch-ignored" });
     assert.equal(consumed, false, "a stale custom token must not replace the newer identity");

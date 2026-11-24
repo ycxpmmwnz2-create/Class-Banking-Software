@@ -109,9 +109,11 @@ test('mixed teacher, student, credential and nonmoney writes persist under stric
   const studentPage = await studentContext.newPage();
   await studentPage.goto('/');
   await studentPage.waitForFunction(() => typeof window.loginStudent === 'function');
-  const login = await callable(studentPage, 'studentPinLoginV2', { classroomCode: TENANT_A.studentLoginCode, loginId: 'combined-pupil', pin: '2468' });
-  expect(login.code).toBeUndefined();
-  await studentPage.evaluate(token => window.__PHASE2B_TEST__.signInWithToken(token), login.data.token);
+  await studentPage.getByRole('button', { name: 'Student Login', exact: true }).click();
+  await studentPage.locator('#studentClassroomCode').fill(TENANT_A.studentLoginCode);
+  await studentPage.locator('#studentLoginId').fill('combined-pupil');
+  await studentPage.locator('#studentPin').fill('2468');
+  await studentPage.getByRole('button', { name: 'Login as Student', exact: true }).click();
   await expect(studentPage.locator('#studentAddAmount')).toBeVisible();
   await expect(studentPage.locator('#studentAddReason option')).toHaveText(['Custom Credit']);
   await expect(studentPage.locator('#studentSubtractReason option')).toHaveText(['Custom Debit']);
